@@ -1,0 +1,176 @@
+#include "app/engine.h"
+#include "core/log.h"
+
+#include <chrono>
+
+namespace uldum {
+
+static constexpr const char* TAG = "Engine";
+static constexpr float TICK_RATE = 16.0f;  // ticks per second
+static constexpr float TICK_DT  = 1.0f / TICK_RATE;
+
+bool Engine::init() {
+    log::info(TAG, "=== Initializing Uldum Engine ===");
+
+#ifdef ULDUM_DEBUG
+    log::set_level(log::Level::Trace);
+    log::info(TAG, "Debug mode — verbose logging enabled");
+#else
+    log::set_level(log::Level::Info);
+#endif
+
+    // Platform
+    m_platform = platform::Platform::create();
+    platform::Config platform_config{};
+    platform_config.title  = "Uldum Engine";
+    platform_config.width  = 1280;
+    platform_config.height = 720;
+
+    if (!m_platform->init(platform_config)) {
+        log::error(TAG, "Platform init failed");
+        return false;
+    }
+
+    // RHI
+    rhi::Config rhi_config{};
+#ifdef ULDUM_DEBUG
+    rhi_config.enable_validation = true;
+#else
+    rhi_config.enable_validation = false;
+#endif
+
+    if (!m_rhi.init(rhi_config, *m_platform)) {
+        log::error(TAG, "RHI init failed");
+        return false;
+    }
+
+    // Asset manager
+    if (!m_asset.init()) {
+        log::error(TAG, "AssetManager init failed");
+        return false;
+    }
+
+    // Renderer
+    if (!m_renderer.init(m_rhi)) {
+        log::error(TAG, "Renderer init failed");
+        return false;
+    }
+
+    // Audio
+    if (!m_audio.init()) {
+        log::error(TAG, "AudioEngine init failed");
+        return false;
+    }
+
+    // Scripting
+    if (!m_script.init()) {
+        log::error(TAG, "ScriptEngine init failed");
+        return false;
+    }
+
+    // Simulation
+    if (!m_simulation.init(m_script)) {
+        log::error(TAG, "Simulation init failed");
+        return false;
+    }
+
+    // Network
+    if (!m_network.init(m_simulation)) {
+        log::error(TAG, "NetworkManager init failed");
+        return false;
+    }
+
+    // Map
+    if (!m_map.init()) {
+        log::error(TAG, "MapManager init failed");
+        return false;
+    }
+
+    // Editor
+    if (!m_editor.init()) {
+        log::error(TAG, "Editor init failed");
+        return false;
+    }
+
+    log::info(TAG, "=== All modules initialized ===");
+    return true;
+}
+
+void Engine::run() {
+    log::info(TAG, "Entering main loop (tick rate: {} Hz, dt: {:.4f}s)", TICK_RATE, TICK_DT);
+
+    auto previous_time = std::chrono::high_resolution_clock::now();
+    float accumulator = 0.0f;
+    u32 frame_count = 0;
+
+    while (m_platform->poll_events()) {
+        // Input
+        if (m_platform->input().key_escape) {
+            break;
+        }
+
+        // Handle resize
+        if (m_platform->was_resized()) {
+            m_rhi.handle_resize(m_platform->width(), m_platform->height());
+        }
+
+        // Delta time
+        auto current_time = std::chrono::high_resolution_clock::now();
+        float frame_dt = std::chrono::duration<float>(current_time - previous_time).count();
+        previous_time = current_time;
+
+        // Cap delta to avoid spiral of death
+        if (frame_dt > 0.25f) frame_dt = 0.25f;
+
+        // Network: receive state / commands
+        m_network.update();
+
+        // Fixed timestep simulation
+        accumulator += frame_dt;
+        while (accumulator >= TICK_DT) {
+            m_simulation.tick(TICK_DT);
+            m_script.update(TICK_DT);
+            accumulator -= TICK_DT;
+        }
+
+        // Audio
+        m_audio.update();
+
+        // Editor
+        m_editor.update();
+
+        // Render
+        m_rhi.begin_frame();
+        m_renderer.begin_frame();
+        m_renderer.end_frame();
+        m_editor.render();
+        m_rhi.end_frame();
+
+        frame_count++;
+        if (frame_count == 1) {
+            log::info(TAG, "First frame completed — all systems running");
+        }
+    }
+
+    log::info(TAG, "Exiting main loop (ran {} frames)", frame_count);
+}
+
+void Engine::shutdown() {
+    log::info(TAG, "=== Shutting down Uldum Engine ===");
+
+    // Shutdown in reverse init order
+    m_editor.shutdown();
+    m_map.shutdown();
+    m_network.shutdown();
+    m_simulation.shutdown();
+    m_script.shutdown();
+    m_audio.shutdown();
+    m_renderer.shutdown();
+    m_asset.shutdown();
+    m_rhi.shutdown();
+    m_platform->shutdown();
+
+    log::info(TAG, "=== All modules shut down ===");
+}
+
+} // namespace uldum

@@ -1,0 +1,41 @@
+# Build
+build/
+out/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.sln
+*.vcxproj*
+CMakeSettings.json
+CMakePresets.json
+
+# Claude Code
+.claude/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Compiled
+*.obj
+*.o
+*.lib
+*.a
+*.dll
+*.so
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# Shaders (compiled)
+*.spv
+
+# Dependencies (if vendored via FetchContent)
+_deps/

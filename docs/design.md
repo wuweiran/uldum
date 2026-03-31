@@ -1,0 +1,318 @@
+# Uldum Engine — Technical Design
+
+## 1. Vision
+
+A modern game engine for unit-centric, map-based games with scripting and multiplayer — inspired by Warcraft III's architecture, built with zero legacy burden.
+
+## 2. Target Platforms
+
+- Windows (Win32 + Vulkan)
+- Android (GameActivity + Vulkan)
+
+## 3. Module Architecture
+
+```
+uldum/
+├── core/           # Allocators, containers, math (glm), logging, profiling (Tracy)
+├── platform/       # Custom platform layer
+│   ├── windows/    #   Win32 window, input, filesystem
+│   └── android/    #   GameActivity, touch input, APK filesystem
+├── rhi/            # Thin Vulkan 1.3 abstraction
+│   └── vulkan/     #   Instance, device, swapchain, command buffers, sync
+├── render/         # Render graph, materials, terrain, skeletal anim, particles, UI
+├── simulation/     # ECS, units, abilities, buffs, pathfinding, collision, AI
+├── script/         # Lua 5.4 VM, sol2 bindings, trigger/event system
+├── map/            # Map format (FlatBuffers), terrain data, object placement
+├── network/        # Server-authoritative: server sim, client prediction, state sync
+├── audio/          # miniaudio: 3D positional, SFX, music streaming
+├── asset/          # Resource manager, glTF/PNG/OGG loaders, async loading
+├── editor/         # In-engine terrain editor (ImGui): sculpt, paint, place, pathing
+└── app/            # Entry point, main loop, game state machine
+```
+
+## 4. Core Module
+
+Provides foundational utilities used by all other modules.
+
+- **Types**: Fixed-width aliases (`u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, `f32`, `f64`)
+- **Logging**: Level-based logging (trace, debug, info, warn, error) using `std::format`
+- **Math**: glm for rendering math. Standard float for all gameplay (no fixed-point).
+- **Memory**: Custom allocators (linear, pool) for hot paths — future work
+- **Profiling**: Tracy integration — future work
+
+## 5. Platform Module
+
+Abstracts OS-specific window management, input, and filesystem.
+
+### Interface
+
+```cpp
+namespace uldum::platform {
+
+struct Config {
+    const char* title;
+    u32 width;
+    u32 height;
+};
+
+class Platform {
+public:
+    virtual ~Platform() = default;
+    virtual bool init(const Config& config) = 0;
+    virtual void shutdown() = 0;
+    virtual bool poll_events() = 0;  // false = quit requested
+    virtual void* native_window_handle() const = 0;
+    virtual void* native_instance_handle() const = 0;
+    static std::unique_ptr<Platform> create();
+};
+
+}
+```
+
+### Windows Implementation
+
+- `CreateWindowExW` for window creation
+- `WndProc` message pump for input and lifecycle events
+- Returns `HWND` and `HINSTANCE` for Vulkan surface creation
+
+### Android Implementation (future)
+
+- GameActivity from Android Game Development Kit
+- Touch input mapping
+- APK asset access via AAssetManager
+
+## 6. RHI Module (Vulkan 1.3)
+
+Thin abstraction over Vulkan. Not a generic RHI — Vulkan-specific, but organized cleanly.
+
+### Phase 1 (minimal)
+
+- Vulkan instance + validation layers (debug)
+- Physical device selection (prefer discrete GPU)
+- Logical device + graphics/present queue
+- Swapchain (FIFO present mode)
+- Per-frame command buffer, semaphores, fences
+- Frame loop: acquire → record (clear) → submit → present
+
+### Future
+
+- Render graph with automatic barriers and transient resources
+- GPU-driven rendering (indirect draw, compute culling)
+- Bindless resources via descriptor indexing
+- VMA integration for memory management
+- Shader compilation pipeline (shaderc)
+
+## 7. Rendering
+
+### Terrain
+
+- Heightmap-based terrain with tile grid
+- Splatmap texturing (blend up to 4 textures per tile)
+- Pathing overlay (walkable, flyable, buildable)
+
+### Units
+
+- Skeletal animation with GPU skinning
+- Animation state machine
+- Selection circles, health bars (billboarded)
+
+### Particles
+
+- Compute-based particle system
+- Emitter types: point, sphere, cone, mesh surface
+
+### UI
+
+- Custom retained-mode UI for game HUD
+- Dear ImGui for editor and debug overlay
+
+## 8. Simulation
+
+### ECS
+
+Internal entity-component-system for cache-friendly data layout.
+
+Core components:
+- `Transform` — position, rotation, scale
+- `Health` — current/max HP, armor, regeneration
+- `Movement` — speed, pathing state, waypoints
+- `Combat` — attack damage, range, cooldown, target
+- `Ability` — ability slots, cooldowns, mana cost
+- `Buff` — active buffs/debuffs with duration
+- `Vision` — sight range, fog of war contribution
+- `Owner` — player/team ownership
+
+### Unit Facade
+
+The "Unit" concept wraps an entity with known components, exposed to Lua:
+
+```lua
+local hero = CreateUnit("hero_paladin", player1, x, y)
+UnitAddAbility(hero, "ability_holy_light")
+SetUnitMaxHealth(hero, 1000)
+```
+
+### Pathfinding
+
+- A* on tile grid with flow field optimization for group movement
+- Navigation mesh for complex terrain (future)
+
+### Fixed Timestep
+
+- Simulation ticks at fixed rate (e.g. 16/sec = 62.5ms per tick)
+- Render interpolates between sim states for smooth visuals
+- Input is sampled and queued per tick
+
+## 9. Scripting (Lua 5.4)
+
+### Trigger System (WC3-style)
+
+```lua
+-- Event → Condition → Action
+CreateTrigger("on_unit_death", {
+    event = EVENT_UNIT_DIES,
+    condition = function(unit)
+        return GetUnitType(unit) == "hero"
+    end,
+    action = function(unit)
+        local killer = GetKillingUnit()
+        AddHeroExperience(killer, 200)
+        DisplayMessage("A hero has fallen!")
+    end
+})
+```
+
+### Sandboxing
+
+- Map scripts run in sandboxed Lua states
+- No filesystem access, no os.execute
+- Engine API is the only interface to the outside world
+
+## 10. Map System
+
+### Map Package Structure
+
+```
+my_map.uldmap/
+├── manifest.json       # Metadata, player slots, teams, game mode
+├── terrain.bin         # Heightmap, splatmap, pathing grid
+├── objects.json        # Preplaced units, doodads, regions, cameras
+├── scripts/
+│   ├── main.lua        # Map entry point
+│   └── ...             # Additional modules
+├── models/             # Map-specific glTF models
+├── textures/           # Map-specific PNG textures
+├── audio/              # Map-specific OGG sounds
+└── overrides/
+    ├── unit_types.json     # Override/add unit types
+    └── ability_types.json  # Override/add abilities
+```
+
+### Engine Assets
+
+```
+engine/
+├── shaders/            # GLSL shaders
+├── models/             # Shared base models
+├── textures/           # Default terrain tileset, UI textures, icons
+├── scripts/            # Core Lua API library
+├── audio/              # UI sounds
+└── config/
+    ├── unit_types.json
+    ├── ability_types.json
+    ├── buff_types.json
+    └── engine.json
+```
+
+### Override Mechanism
+
+1. Engine loads base definitions from `engine/config/`
+2. Map loads, its `overrides/` merge on top (add or replace entries by ID)
+3. Map scripts can further modify at runtime via Lua API
+
+## 11. Networking
+
+### Server-Authoritative Model
+
+- **Server** runs the authoritative simulation
+- **Clients** send player commands (move, attack, cast ability)
+- **Server** validates commands, advances simulation, broadcasts state deltas
+- **Clients** receive state, interpolate/predict for smooth visuals
+
+### Single Player
+
+- Same server simulation runs in-process (no sockets)
+- Client calls server functions directly via local interface
+- Identical game logic, zero network overhead
+
+### Transport
+
+- ENet for reliable/unreliable UDP channels
+- Reliable: commands, chat, game state critical updates
+- Unreliable: position interpolation hints, cosmetic state
+
+### Lobby
+
+- Host-based model (one player hosts, or dedicated server)
+- Map selection, player slots, team assignment
+- Ready check → synchronized game start
+
+## 12. Audio
+
+- miniaudio for cross-platform playback
+- 3D positional audio (units, effects) with distance attenuation
+- Streaming for music tracks
+- Buffered playback for short SFX
+- Per-channel volume control (master, music, SFX, voice)
+
+## 13. Editor (Terrain Editor v1)
+
+In-engine tool using Dear ImGui. Activated via editor mode toggle.
+
+### Features
+
+- **Heightmap sculpting**: raise, lower, smooth, flatten brushes
+- **Texture painting**: paint terrain textures with brush (splatmap editing)
+- **Pathing marking**: mark tiles as walkable, flyable, buildable, unbuildable
+- **Object placement**: place/move/delete units, doodads, regions, cameras
+- **Save/Load**: serialize to map package format
+
+### Future (beyond v1)
+
+- Full World Editor (separate application)
+- Trigger editor (visual scripting)
+- Ability editor
+- Import/export tools
+
+## 14. Third-Party Libraries
+
+| Library | Version | Purpose | License |
+|---------|---------|---------|---------|
+| VMA | latest | Vulkan memory management | MIT |
+| shaderc | latest | GLSL → SPIR-V compilation | Apache 2.0 |
+| sol2 | 3.x | C++ ↔ Lua binding | MIT |
+| Lua | 5.4 | Scripting runtime | MIT |
+| ENet | 1.3.x | UDP networking | MIT |
+| miniaudio | latest | Audio playback | MIT/Public Domain |
+| Dear ImGui | latest | Editor/debug UI | MIT |
+| Tracy | latest | Profiling | BSD |
+| glm | latest | Math (rendering) | MIT |
+| cgltf | latest | glTF 2.0 loading | MIT |
+| stb_image | latest | PNG/JPEG loading | MIT/Public Domain |
+| stb_vorbis | latest | OGG Vorbis decoding | MIT/Public Domain |
+| FlatBuffers | latest | Binary serialization | Apache 2.0 |
+| rapidjson | latest | JSON parsing | MIT |
+
+## 15. Build Phases
+
+### Phase 1 — Minimal Running Engine
+
+Core loop, Win32 window, Vulkan init, clear screen to a color, input to close window. Proves the foundation works.
+
+### Phase 2 — Full Structure with Stubs
+
+All modules created with interfaces defined, CMake targets wired up, stub implementations. Compiles but most features return early.
+
+### Phase 3+ — Module Implementation
+
+Fill in modules: render pipeline, ECS, Lua scripting, map loading, networking, audio, editor. Each module can be developed somewhat independently.
