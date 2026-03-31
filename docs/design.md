@@ -313,40 +313,33 @@ Core loop, Win32 window, Vulkan init, clear screen to a color, input to close wi
 
 All modules created with interfaces defined, CMake targets wired up, stub implementations. Compiles but most features return early.
 
-### Phase 3 — Core & Asset Foundation
+### Phase 3 — Core & Asset Foundation ✓
 
 Prerequisite layer that all gameplay and rendering modules depend on.
 
-- **Core enhancements**: custom allocators (linear, pool), math utilities, profiling (Tracy integration)
-- **Asset manager**: resource loading pipeline, async loading support
+- **Core enhancements**: custom allocators (linear, pool), generational handle system, ResourcePool
+- **Asset manager**: handle-based resource loading with path caching
   - glTF 2.0 model loading (cgltf)
   - PNG texture loading (stb_image)
-  - OGG audio loading (stb_vorbis)
-  - JSON config loading (rapidjson)
-  - Handle-based resource references with ref counting
+  - JSON config loading (nlohmann/json)
+- **Third-party deps**: glm, stb, cgltf, nlohmann/json via CMake FetchContent
 
-### Phase 4 — Simulation (ECS + Units)
+### Phase 4 — Simulation (ECS + Unit Model)
 
-The heart of the engine — entity management and gameplay systems.
+The heart of the engine — entity management and gameplay systems. Requires unit/object model design before implementation.
 
 - **ECS core**: entity creation/destruction, component storage (sparse set or archetype), system iteration
 - **Core components**: Transform, Health, Movement, Combat, Ability, Buff, Vision, Owner
 - **Unit facade**: unit-centric API wrapping ECS entities (CreateUnit, UnitAddAbility, etc.)
+- **Unit type definitions**: data-driven unit types loaded from JSON
+- **Ability/buff system**: cooldowns, effects, targeting, duration
+- **Order system**: move, attack, cast, patrol, hold position
 - **Pathfinding**: A* on tile grid, flow field for group movement
 - **Collision**: simple spatial grid for unit-unit and unit-terrain queries
 
-### Phase 5 — Scripting (Lua 5.4)
+### Phase 5 — Render Pipeline
 
-Brings the simulation to life with modder-accessible logic.
-
-- **Lua VM**: Lua 5.4 integration, sandboxed per map
-- **sol2 bindings**: expose unit facade, trigger API, game state queries to Lua
-- **Trigger system**: event → condition → action (WC3-style)
-- **Engine API**: CreateUnit, DamageTarget, SetUnitPosition, DisplayMessage, etc.
-
-### Phase 6 — Render Pipeline
-
-Now there's actual data to draw.
+Visual feedback — draw the entities and terrain from Phase 4.
 
 - **Render graph**: automatic resource barriers, transient allocations, pass ordering
 - **VMA integration**: GPU memory management
@@ -357,15 +350,24 @@ Now there's actual data to draw.
 - **Particles**: compute-based particle system
 - **Camera**: game camera (top-down with tilt, zoom, pan like WC3)
 
-### Phase 7 — Map System
+### Phase 6 — Map System
 
-Ties simulation + render + script together into playable content.
+Ties simulation + render together into loadable, playable content.
 
 - **Map format**: FlatBuffers serialization for terrain and object data
 - **Terrain data**: heightmap, splatmap, pathing grid — loaded into both simulation and render
 - **Object placement**: preplaced units, doodads, regions, cameras
 - **Override system**: map-level unit/ability type overrides merging on top of engine defaults
 - **Map loading/unloading**: full lifecycle with cleanup
+
+### Phase 7 — Scripting (Lua 5.4)
+
+Now the unit model, renderer, and map system are stable — Lua binds against a tested API.
+
+- **Lua VM**: Lua 5.4 integration, sandboxed per map
+- **sol2 bindings**: expose unit facade, trigger API, game state queries to Lua
+- **Trigger system**: event → condition → action (WC3-style)
+- **Engine API**: CreateUnit, DamageTarget, SetUnitPosition, DisplayMessage, etc.
 
 ### Phase 8 — Editor (Terrain Editor v1)
 
