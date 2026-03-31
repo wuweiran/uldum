@@ -45,9 +45,33 @@ bool Engine::init() {
     }
 
     // Asset manager
-    if (!m_asset.init()) {
+    if (!m_asset.init("engine")) {
         log::error(TAG, "AssetManager init failed");
         return false;
+    }
+
+    // Verify asset pipeline with test loads
+    {
+        auto tex = m_asset.load_texture("textures/test_2x2.png");
+        if (!tex.is_valid()) log::error(TAG, "Test texture load FAILED");
+
+        auto model = m_asset.load_model("models/test_triangle.gltf");
+        if (!model.is_valid()) log::error(TAG, "Test model load FAILED");
+
+        auto cfg = m_asset.load_config("config/engine.json");
+        if (cfg.is_valid()) {
+            auto* doc = m_asset.get(cfg);
+            if (doc && doc->data.contains("engine")) {
+                auto& eng = doc->data["engine"];
+                log::info(TAG, "Config loaded — engine: {} v{}",
+                          eng.value("name", "?"), eng.value("version", "?"));
+            }
+        } else {
+            log::error(TAG, "Test config load FAILED");
+        }
+
+        log::info(TAG, "Asset pipeline verified — {} textures, {} models, {} configs loaded",
+                  m_asset.texture_count(), m_asset.model_count(), m_asset.config_count());
     }
 
     // Renderer

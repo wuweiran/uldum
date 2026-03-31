@@ -33,4 +33,5 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+add_subdirectory(third_party)
 add_subdirectory(src)

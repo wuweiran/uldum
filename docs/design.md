@@ -313,6 +313,87 @@ Core loop, Win32 window, Vulkan init, clear screen to a color, input to close wi
 
 All modules created with interfaces defined, CMake targets wired up, stub implementations. Compiles but most features return early.
 
-### Phase 3+ — Module Implementation
+### Phase 3 — Core & Asset Foundation
 
-Fill in modules: render pipeline, ECS, Lua scripting, map loading, networking, audio, editor. Each module can be developed somewhat independently.
+Prerequisite layer that all gameplay and rendering modules depend on.
+
+- **Core enhancements**: custom allocators (linear, pool), math utilities, profiling (Tracy integration)
+- **Asset manager**: resource loading pipeline, async loading support
+  - glTF 2.0 model loading (cgltf)
+  - PNG texture loading (stb_image)
+  - OGG audio loading (stb_vorbis)
+  - JSON config loading (rapidjson)
+  - Handle-based resource references with ref counting
+
+### Phase 4 — Simulation (ECS + Units)
+
+The heart of the engine — entity management and gameplay systems.
+
+- **ECS core**: entity creation/destruction, component storage (sparse set or archetype), system iteration
+- **Core components**: Transform, Health, Movement, Combat, Ability, Buff, Vision, Owner
+- **Unit facade**: unit-centric API wrapping ECS entities (CreateUnit, UnitAddAbility, etc.)
+- **Pathfinding**: A* on tile grid, flow field for group movement
+- **Collision**: simple spatial grid for unit-unit and unit-terrain queries
+
+### Phase 5 — Scripting (Lua 5.4)
+
+Brings the simulation to life with modder-accessible logic.
+
+- **Lua VM**: Lua 5.4 integration, sandboxed per map
+- **sol2 bindings**: expose unit facade, trigger API, game state queries to Lua
+- **Trigger system**: event → condition → action (WC3-style)
+- **Engine API**: CreateUnit, DamageTarget, SetUnitPosition, DisplayMessage, etc.
+
+### Phase 6 — Render Pipeline
+
+Now there's actual data to draw.
+
+- **Render graph**: automatic resource barriers, transient allocations, pass ordering
+- **VMA integration**: GPU memory management
+- **Shader pipeline**: GLSL → SPIR-V compilation (shaderc), shader hot-reload in debug
+- **Terrain rendering**: heightmap mesh, splatmap texturing, pathing debug overlay
+- **Mesh rendering**: glTF model drawing, material system, instanced rendering
+- **Skeletal animation**: GPU skinning, animation state machine
+- **Particles**: compute-based particle system
+- **Camera**: game camera (top-down with tilt, zoom, pan like WC3)
+
+### Phase 7 — Map System
+
+Ties simulation + render + script together into playable content.
+
+- **Map format**: FlatBuffers serialization for terrain and object data
+- **Terrain data**: heightmap, splatmap, pathing grid — loaded into both simulation and render
+- **Object placement**: preplaced units, doodads, regions, cameras
+- **Override system**: map-level unit/ability type overrides merging on top of engine defaults
+- **Map loading/unloading**: full lifecycle with cleanup
+
+### Phase 8 — Editor (Terrain Editor v1)
+
+Needs render + map working first.
+
+- **ImGui integration**: ImGui rendering via Vulkan backend
+- **Heightmap sculpting**: raise, lower, smooth, flatten brushes
+- **Texture painting**: splatmap editing with brush
+- **Pathing marking**: walkable, flyable, buildable tile flags
+- **Object placement**: place, move, delete units and doodads
+- **Save/Load**: serialize edited map to .uldmap package
+
+### Phase 9 — Audio
+
+Independent module, can be developed in parallel with other phases.
+
+- **miniaudio integration**: device init, playback
+- **3D positional audio**: per-unit sound, distance attenuation, listener tracking
+- **Music streaming**: background music with crossfade
+- **SFX system**: fire-and-forget sound effects, pooled voices
+
+### Phase 10 — Networking
+
+Last because it's the most complex and needs a working local game loop.
+
+- **ENet integration**: reliable/unreliable UDP channels
+- **Local server**: in-process server for single player (no sockets, direct calls)
+- **Remote server**: networked server with state delta broadcasting
+- **Client prediction**: local simulation with server reconciliation
+- **Lobby system**: host/join, map selection, player slots, team assignment, ready check
+- **Desync detection**: periodic state checksums for debugging

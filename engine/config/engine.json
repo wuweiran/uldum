@@ -1,0 +1,14 @@
+{
+    "engine": {
+        "name": "Uldum",
+        "version": "0.1.0"
+    },
+    "simulation": {
+        "tick_rate": 16,
+        "max_units": 4096
+    },
+    "render": {
+        "vsync": true,
+        "max_draw_calls": 8192
+    }
+}

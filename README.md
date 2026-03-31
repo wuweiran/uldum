@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 2: all modules stubbed and wired up. The engine opens a Vulkan window and runs the full init → loop → shutdown lifecycle with placeholder implementations.
+Phase 3 complete. Core foundation and asset pipeline implemented. The engine loads textures (PNG via stb_image), models (glTF via cgltf), and configs (JSON via nlohmann/json) through a handle-based AssetManager with path caching. Custom allocators (linear, pool) and a generational ResourcePool are in place. All other modules remain stubbed.
 
 ## Requirements
 
