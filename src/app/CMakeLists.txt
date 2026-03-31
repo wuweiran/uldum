@@ -24,3 +24,11 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         set_target_properties(uldum PROPERTIES WIN32_EXECUTABLE TRUE)
     endif()
 endif()
+
+# Copy engine assets to output directory after build
+add_custom_command(TARGET uldum POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/engine
+        $<TARGET_FILE_DIR:uldum>/engine
+    COMMENT "Copying engine assets to output directory"
+)

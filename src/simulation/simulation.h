@@ -1,25 +1,27 @@
 #pragma once
 
-namespace uldum::script { class ScriptEngine; }
+#include "simulation/world.h"
+#include "simulation/type_registry.h"
+
+namespace uldum::asset { class AssetManager; }
 
 namespace uldum::simulation {
 
 class Simulation {
 public:
-    bool init(script::ScriptEngine& script);
+    bool init(asset::AssetManager& assets);
     void shutdown();
     void tick(float dt);
 
-    // Future API:
-    // Entity create_entity();
-    // void destroy_entity(Entity e);
-    // template<typename T> T& add_component(Entity e);
-    // template<typename T> T& get_component(Entity e);
-    //
-    // Unit-centric facade (exposed to Lua):
-    // UnitHandle create_unit(UnitTypeId type, PlayerId owner, float x, float y);
-    // void unit_add_ability(UnitHandle unit, AbilityTypeId ability);
-    // void issue_order(UnitHandle unit, Order order);
+    World&       world()       { return m_world; }
+    const World& world() const { return m_world; }
+
+    TypeRegistry&       types()       { return m_types; }
+    const TypeRegistry& types() const { return m_types; }
+
+private:
+    World        m_world;
+    TypeRegistry m_types;
 };
 
 } // namespace uldum::simulation

@@ -93,9 +93,29 @@ bool Engine::init() {
     }
 
     // Simulation
-    if (!m_simulation.init(m_script)) {
+    if (!m_simulation.init(m_asset)) {
         log::error(TAG, "Simulation init failed");
         return false;
+    }
+
+    // Verify simulation: create test units
+    {
+        using namespace simulation;
+        auto& world = m_simulation.world();
+        Player p1{0};
+
+        auto footman = create_unit(world, "footman", p1, 10.0f, 20.0f);
+        auto paladin = create_unit(world, "paladin", p1, 15.0f, 20.0f);
+        auto barracks = create_unit(world, "barracks", p1, 5.0f, 5.0f);
+
+        if (footman.is_valid() && paladin.is_valid() && barracks.is_valid()) {
+            log::info(TAG, "Test units created — footman(hp={}) paladin(hp={}, hero={}, lvl={}) barracks(hp={}, building={})",
+                      get_health(world, footman),
+                      get_health(world, paladin), is_hero(world, paladin), hero_get_level(world, paladin),
+                      get_health(world, barracks), is_building(world, barracks));
+        } else {
+            log::error(TAG, "Test unit creation FAILED");
+        }
     }
 
     // Network
