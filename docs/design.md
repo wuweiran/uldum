@@ -128,40 +128,22 @@ Thin abstraction over Vulkan. Not a generic RHI — Vulkan-specific, but organiz
 
 ## 8. Simulation
 
-### ECS
+See [gameplay-model.md](gameplay-model.md) for the full object model design, including:
+- Entity categories (Unit, Building, Hero, Destructable, Item, Doodad, Projectile)
+- Complete component design (Transform, Health, Movement, Combat, Abilities, Buffs, etc.)
+- Order system (Move, Attack, Cast, Train, Build, Patrol, etc.)
+- Ability system (data-driven definitions, cooldowns, targeting, passive auras)
+- Buff system (stat modifiers, periodic effects, duration, stacking)
+- Type definition system (JSON-driven, map-overridable)
+- ECS implementation (sparse sets, systems, World struct, unit facade API)
 
-Internal entity-component-system for cache-friendly data layout.
+### Key Architecture Points
 
-Core components:
-- `Transform` — position, rotation, scale
-- `Health` — current/max HP, armor, regeneration
-- `Movement` — speed, pathing state, waypoints
-- `Combat` — attack damage, range, cooldown, target
-- `Ability` — ability slots, cooldowns, mana cost
-- `Buff` — active buffs/debuffs with duration
-- `Vision` — sight range, fog of war contribution
-- `Owner` — player/team ownership
-
-### Unit Facade
-
-The "Unit" concept wraps an entity with known components, exposed to Lua:
-
-```lua
-local hero = CreateUnit("hero_paladin", player1, x, y)
-UnitAddAbility(hero, "ability_holy_light")
-SetUnitMaxHealth(hero, 1000)
-```
-
-### Pathfinding
-
-- A* on tile grid with flow field optimization for group movement
-- Navigation mesh for complex terrain (future)
-
-### Fixed Timestep
-
-- Simulation ticks at fixed rate (e.g. 16/sec = 62.5ms per tick)
+- ECS internally (sparse set per component type, cache-friendly iteration)
+- Unit-centric facade API externally (free functions operating on entity IDs)
+- Data-driven types: unit/ability/buff definitions loaded from JSON
+- Fixed timestep simulation (16 ticks/sec = 62.5ms per tick)
 - Render interpolates between sim states for smooth visuals
-- Input is sampled and queued per tick
 
 ## 9. Scripting (Lua 5.4)
 
