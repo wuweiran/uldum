@@ -381,3 +381,14 @@ Last because it's the most complex and needs a working local game loop.
 - **Client prediction**: local simulation with server reconciliation
 - **Lobby system**: host/join, map selection, player slots, team assignment, ready check
 - **Desync detection**: periodic state checksums for debugging
+
+### Phase 11 — Packaging & Distribution
+
+Cross-platform build output and asset protection.
+
+- **PAK archive format**: pack engine assets and map assets into single archive files (engine.pak, map.pak)
+- **Encryption**: encrypt map PAK files to protect gameplay logic from reverse engineering; optionally encrypt engine assets too
+- **Build output**: self-contained distribution folder per platform (exe + engine.pak + any platform-specific files)
+- **Windows packaging**: output folder or installer
+- **Android packaging**: APK/AAB with assets bundled
+- **Asset baking pipeline**: optional offline step — pre-compile shaders to SPIR-V, compress textures to GPU formats (KTX2), bake JSON configs to binary if needed
