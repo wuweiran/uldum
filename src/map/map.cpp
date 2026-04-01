@@ -203,6 +203,29 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 auto* t = world.transforms.get(unit.id);
                 if (t) t->position.z = sample_height(pu.x, pu.y);
 
+                // Buildings block pathing tiles
+                auto* cls = world.classifications.get(unit.id);
+                if (cls && simulation::has_classification(cls->flags, "structure")) {
+                    auto& td = m_scene.terrain;
+                    if (td.is_valid()) {
+                        // Block a 2x2 area of tiles around the building position
+                        i32 cx = static_cast<i32>(pu.x / td.tile_size);
+                        i32 cy = static_cast<i32>(pu.y / td.tile_size);
+                        for (i32 dy = -1; dy <= 1; ++dy) {
+                            for (i32 dx = -1; dx <= 1; ++dx) {
+                                i32 tx = cx + dx;
+                                i32 ty = cy + dy;
+                                if (tx >= 0 && ty >= 0 &&
+                                    static_cast<u32>(tx) < td.tiles_x &&
+                                    static_cast<u32>(ty) < td.tiles_y) {
+                                    td.pathing_at(static_cast<u32>(tx), static_cast<u32>(ty)) &=
+                                        ~map::PATHING_WALKABLE;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Issue initial move order if specified
                 if (u.contains("move_to")) {
                     auto& mt = u["move_to"];

@@ -1,8 +1,8 @@
 {
     "units": [
-        { "type": "footman",  "x": 44.0, "y": 52.0, "facing": 0.0, "owner": 0, "move_to": { "x": 70.0, "y": 80.0 } },
+        { "type": "footman",  "x": 44.0, "y": 52.0, "facing": 0.0, "owner": 0, "move_to": { "x": 44.0, "y": 80.0 } },
         { "type": "paladin",  "x": 46.0, "y": 54.0, "facing": 0.0, "owner": 0, "move_to": { "x": 80.0, "y": 60.0 } },
-        { "type": "barracks", "x": 45.0, "y": 50.0, "facing": 0.0, "owner": 0 }
+        { "type": "barracks", "x": 44.0, "y": 64.0, "facing": 0.0, "owner": 0 }
     ],
     "destructables": [],
     "items": [],

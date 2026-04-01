@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 7a complete. Units pathfind and move across terrain with slope tilt.
+Phase 7b complete. Units pathfind around buildings with collision avoidance.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -34,6 +34,10 @@ Phase 7a complete. Units pathfind and move across terrain with slope tilt.
 - MovementSystem: path following, steering, turn rate, terrain height placement
 - Terrain slope tilt: entities visually align to terrain surface normal
 - Move orders from map placement data (objects.json `move_to` field)
+- Spatial grid for efficient proximity queries (units_in_range, units_in_rect, nearest_unit)
+- UnitFilter for query filtering (owner, enemy_of, classifications, alive_only, etc.)
+- Unit-unit collision avoidance (separation steering)
+- Buildings block pathing tiles (units pathfind around them)
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
 - Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias

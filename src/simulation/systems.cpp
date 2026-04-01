@@ -1,6 +1,7 @@
 #include "simulation/systems.h"
 #include "simulation/world.h"
 #include "simulation/pathfinding.h"
+#include "simulation/spatial_query.h"
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
@@ -46,7 +47,10 @@ static f32 angle_diff(f32 from, f32 to) {
 
 // ── Movement system ───────────────────────────────────────────────────────
 
-void system_movement(World& world, float dt, const Pathfinder& pathfinder) {
+void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
+    static constexpr f32 SEPARATION_RADIUS = 2.5f;
+    static constexpr f32 SEPARATION_FORCE  = 4.0f;
+
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
         auto& mov = world.movements.data()[i];
@@ -63,7 +67,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder) {
 
         auto* move_order = std::get_if<orders::Move>(&oq->current->payload);
         if (!move_order) {
-            // Not a move order — skip (other systems handle Attack, Cast, etc.)
             continue;
         }
 
@@ -72,10 +75,9 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder) {
             auto result = pathfinder.find_path(transform->position, move_order->target, mov.type);
             if (result.valid && result.waypoints.size() > 1) {
                 mov.path = std::move(result.waypoints);
-                mov.path_index = 1;  // skip first waypoint (it's our current position)
+                mov.path_index = 1;
                 mov.moving = true;
             } else {
-                // Can't reach target — clear order
                 oq->current.reset();
                 mov.moving = false;
                 continue;
@@ -83,7 +85,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder) {
         }
 
         if (mov.path_index >= mov.path.size()) {
-            // Reached end of path
             mov.path.clear();
             mov.path_index = 0;
             mov.moving = false;
@@ -98,17 +99,16 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder) {
         // Current target waypoint
         glm::vec3 wp = mov.path[mov.path_index];
         glm::vec3 to_wp = wp - transform->position;
-        to_wp.z = 0;  // movement on XY plane
+        to_wp.z = 0;
         f32 dist = glm::length(to_wp);
 
-        // Arrived at waypoint?
         if (dist < 0.3f) {
             mov.path_index++;
             continue;
         }
 
         // Turn toward waypoint
-        f32 desired_facing = std::atan2(-to_wp.x, to_wp.y);  // 0 = +Y in game coords
+        f32 desired_facing = std::atan2(-to_wp.x, to_wp.y);
         f32 diff = angle_diff(transform->facing, desired_facing);
         f32 max_turn = mov.turn_rate * dt;
 
@@ -127,6 +127,35 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder) {
             glm::vec3 dir = glm::normalize(to_wp);
             transform->position.x += dir.x * step;
             transform->position.y += dir.y * step;
+        }
+
+        // Collision avoidance: push away from nearby units
+        Unit self;
+        self.id = id;
+        self.generation = world.handle_infos.get(id)->generation;
+
+        UnitFilter filter;
+        filter.exclude_buildings = true;
+        auto nearby = grid.units_in_range(world, transform->position, SEPARATION_RADIUS, filter);
+
+        glm::vec3 separation{0.0f};
+        for (auto& other : nearby) {
+            if (other.id == id) continue;
+            auto* other_t = world.transforms.get(other.id);
+            if (!other_t) continue;
+
+            glm::vec3 away = transform->position - other_t->position;
+            away.z = 0;
+            f32 d = glm::length(away);
+            if (d > 0.01f && d < SEPARATION_RADIUS) {
+                separation += (away / d) * (1.0f - d / SEPARATION_RADIUS);
+            }
+        }
+
+        if (glm::length(separation) > 0.01f) {
+            separation = glm::normalize(separation) * SEPARATION_FORCE * dt;
+            transform->position.x += separation.x;
+            transform->position.y += separation.y;
         }
 
         // Update Z from terrain height

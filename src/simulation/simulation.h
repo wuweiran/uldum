@@ -3,6 +3,7 @@
 #include "simulation/world.h"
 #include "simulation/type_registry.h"
 #include "simulation/pathfinding.h"
+#include "simulation/spatial_query.h"
 
 namespace uldum::asset { class AssetManager; }
 namespace uldum::map { struct TerrainData; }
@@ -15,8 +16,8 @@ public:
     void shutdown();
     void tick(float dt);
 
-    // Set terrain for pathfinding and height queries.
-    void set_terrain(const map::TerrainData* terrain) { m_pathfinder.set_terrain(terrain); }
+    // Set terrain for pathfinding, height queries, and spatial grid sizing.
+    void set_terrain(const map::TerrainData* terrain);
 
     World&       world()       { return m_world; }
     const World& world() const { return m_world; }
@@ -27,10 +28,14 @@ public:
     Pathfinder&       pathfinder()       { return m_pathfinder; }
     const Pathfinder& pathfinder() const { return m_pathfinder; }
 
+    SpatialGrid&       spatial_grid()       { return m_spatial_grid; }
+    const SpatialGrid& spatial_grid() const { return m_spatial_grid; }
+
 private:
     World        m_world;
     TypeRegistry m_types;
     Pathfinder   m_pathfinder;
+    SpatialGrid  m_spatial_grid;
 };
 
 } // namespace uldum::simulation

@@ -382,7 +382,7 @@ Maps are self-contained gameplay packages. The engine provides mechanics; maps p
 Requires terrain data from Phase 6. Completes the simulation systems left incomplete in Phase 4.
 
 **7a — Pathfinding + movement**
-- Pathfinding subsystem: A* on tile grid. Stateless query — "find path from A to B." Respects terrain pathing flags and obstacles
+- Pathfinding subsystem: A* on tile grid for single-unit pathing. Current implementation produces tile-center waypoints. Future: flowfield pathfinding for group movement (modern RTS standard — replaces per-unit A* when many units share a destination)
 - MovementSystem: consumes pathfinding, moves units along paths each tick. Steering, turn rate, speed
 - Terrain height placement: update position.z from heightmap each tick
 - Terrain slope tilt: renderer aligns model to terrain normal (visual only, no sim data)

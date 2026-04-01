@@ -4,6 +4,7 @@ add_library(uldum_simulation STATIC
     type_registry.cpp
     systems.cpp
     pathfinding.cpp
+    spatial_query.cpp
 )
 
 target_include_directories(uldum_simulation PUBLIC ${CMAKE_SOURCE_DIR}/src)
