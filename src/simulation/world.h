@@ -17,6 +17,8 @@ struct World {
     SparseSet<Transform>            transforms;
     SparseSet<HandleInfo>           handle_infos;
     SparseSet<Health>               healths;
+    SparseSet<StateBlock>           state_blocks;
+    SparseSet<AttributeBlock>       attribute_blocks;
     SparseSet<Selectable>           selectables;
     SparseSet<Owner>                owners;
     SparseSet<Movement>             movements;
@@ -24,7 +26,6 @@ struct World {
     SparseSet<Vision>               visions;
     SparseSet<OrderQueue>           order_queues;
     SparseSet<AbilitySet>           ability_sets;
-    SparseSet<BuffList>             buff_lists;
     SparseSet<UnitClassificationComp> classifications;
     SparseSet<HeroComp>            heroes;
     SparseSet<Inventory>            inventories;

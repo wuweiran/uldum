@@ -2,9 +2,10 @@
     "footman": {
         "display_name": "Footman",
         "model": "models/units/footman.gltf",
-        "health": { "max": 420, "regen": 0.25, "armor": 2, "armor_type": "heavy" },
+        "health": { "max": 420, "regen": 0.25 },
+        "attributes": { "armor": 2, "armor_type": "heavy", "attack_type": "normal" },
         "movement": { "speed": 270, "turn_rate": 0.6, "type": "ground" },
-        "combat": { "damage": 13, "range": 1.0, "cooldown": 1.35, "attack_type": "normal" },
+        "combat": { "damage": 13, "range": 1.0, "cooldown": 1.35 },
         "vision": { "day": 1400, "night": 800 },
         "abilities": ["attack", "move", "stop", "hold_position", "defend"],
         "classifications": ["ground"],
@@ -13,15 +14,19 @@
     "paladin": {
         "display_name": "Paladin",
         "model": "models/units/paladin.gltf",
-        "health": { "max": 650, "regen": 2.0, "armor": 4, "armor_type": "hero" },
+        "health": { "max": 650, "regen": 2.0 },
+        "states": { "mana": { "max": 255, "regen": 0.85 } },
+        "attributes": {
+            "armor": 4, "armor_type": "hero", "attack_type": "hero",
+            "strength": 22, "agility": 13, "intelligence": 17
+        },
         "movement": { "speed": 320, "turn_rate": 0.8, "type": "ground" },
-        "combat": { "damage": 26, "range": 1.0, "cooldown": 1.8, "attack_type": "hero" },
+        "combat": { "damage": 26, "range": 1.0, "cooldown": 1.8 },
         "vision": { "day": 1800, "night": 800 },
         "abilities": ["attack", "move", "holy_light", "divine_shield", "devotion_aura", "resurrection"],
         "hero": {
-            "primary_attr": "str",
-            "str": 22, "agi": 13, "int": 17,
-            "str_per_level": 2.7, "agi_per_level": 1.5, "int_per_level": 1.8
+            "primary_attr": "strength",
+            "attr_per_level": { "strength": 2.7, "agility": 1.5, "intelligence": 1.8 }
         },
         "classifications": ["ground", "hero"],
         "selection": { "radius": 1.0, "priority": 10 }
@@ -29,7 +34,8 @@
     "barracks": {
         "display_name": "Barracks",
         "model": "models/buildings/barracks.gltf",
-        "health": { "max": 1500, "regen": 0.5, "armor": 5, "armor_type": "fortified" },
+        "health": { "max": 1500, "regen": 0.5 },
+        "attributes": { "armor": 5, "armor_type": "fortified" },
         "movement": { "speed": 0, "turn_rate": 0, "type": "ground" },
         "vision": { "day": 900, "night": 600 },
         "abilities": [],

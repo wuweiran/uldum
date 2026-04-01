@@ -12,6 +12,8 @@ static void remove_all_components(World& world, u32 id) {
     world.transforms.remove(id);
     world.handle_infos.remove(id);
     world.healths.remove(id);
+    world.state_blocks.remove(id);
+    world.attribute_blocks.remove(id);
     world.selectables.remove(id);
     world.owners.remove(id);
     world.movements.remove(id);
@@ -19,7 +21,6 @@ static void remove_all_components(World& world, u32 id) {
     world.visions.remove(id);
     world.order_queues.remove(id);
     world.ability_sets.remove(id);
-    world.buff_lists.remove(id);
     world.classifications.remove(id);
     world.heroes.remove(id);
     world.inventories.remove(id);
@@ -50,18 +51,34 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit, h.generation});
 
-    // Widget
-    world.healths.add(id, Health{def->max_health, def->max_health, def->health_regen, def->armor_type, def->armor});
+    // Widget — HP is engine built-in
+    world.healths.add(id, Health{def->max_health, def->max_health, def->health_regen});
     world.selectables.add(id, Selectable{def->selection_radius, def->selection_priority});
+
+    // Map-defined states (mana, energy, etc.)
+    if (!def->states.empty()) {
+        StateBlock sb;
+        for (auto& [sid, sd] : def->states) {
+            sb.states[sid] = StateValue{sd.max, sd.max, sd.regen};
+        }
+        world.state_blocks.add(id, std::move(sb));
+    }
+
+    // Map-defined attributes (armor, attack_type, strength, etc.)
+    if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
+        AttributeBlock ab;
+        ab.numeric = def->attributes_numeric;
+        ab.string_attrs = def->attributes_string;
+        world.attribute_blocks.add(id, std::move(ab));
+    }
 
     // Unit
     world.owners.add(id, Owner{owner});
     world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->move_type, {}, false});
-    world.combats.add(id, Combat{def->damage, def->attack_range, def->attack_cooldown, 0, def->attack_type, {}});
+    world.combats.add(id, Combat{def->damage, def->attack_range, def->attack_cooldown, 0, {}});
     world.visions.add(id, Vision{def->sight_range_day, def->sight_range_night});
     world.order_queues.add(id, OrderQueue{});
     world.ability_sets.add(id, AbilitySet{});
-    world.buff_lists.add(id, BuffList{});
     world.classifications.add(id, UnitClassificationComp{def->classifications});
 
     // Renderable
@@ -69,22 +86,17 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         world.renderables.add(id, Renderable{def->model_path, true});
     }
 
-    // Hero (if type has hero data)
-    if (has_flag(def->classifications, Classification::Hero)) {
+    // Hero (if type has "hero" classification)
+    if (has_classification(def->classifications, "hero")) {
         HeroComp hero;
-        hero.str = def->hero_str;
-        hero.agi = def->hero_agi;
-        hero.int_ = def->hero_int;
-        hero.str_per_level = def->hero_str_per_level;
-        hero.agi_per_level = def->hero_agi_per_level;
-        hero.int_per_level = def->hero_int_per_level;
-        hero.primary_attr  = def->hero_primary_attr;
+        hero.primary_attr    = def->hero_primary_attr;
+        hero.attr_per_level  = def->hero_attr_per_level;
         world.heroes.add(id, std::move(hero));
         world.inventories.add(id, Inventory{});
     }
 
-    // Building (if type has structure flag)
-    if (has_flag(def->classifications, Classification::Structure)) {
+    // Building (if type has "structure" classification)
+    if (has_classification(def->classifications, "structure")) {
         world.buildings.add(id, BuildingComp{});
     }
 
@@ -109,9 +121,16 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
-    world.healths.add(id, Health{def->max_health, def->max_health, 0, def->armor_type, def->armor});
+    world.healths.add(id, Health{def->max_health, def->max_health, 0});
     world.selectables.add(id, Selectable{1.0f, 1});
     world.destructables.add(id, DestructableComp{std::string(type_id), variation});
+
+    if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
+        AttributeBlock ab;
+        ab.numeric = def->attributes_numeric;
+        ab.string_attrs = def->attributes_string;
+        world.attribute_blocks.add(id, std::move(ab));
+    }
 
     if (!def->model_path.empty()) {
         world.renderables.add(id, Renderable{def->model_path, true});
@@ -138,7 +157,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, 0, 1.0f});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item, h.generation});
-    world.healths.add(id, Health{1, 1, 0, ArmorType::Unarmored, 0});
+    world.healths.add(id, Health{1, 1, 0});
     world.selectables.add(id, Selectable{0.5f, 1});
     world.item_infos.add(id, ItemInfo{std::string(type_id), def->charges, def->cooldown, 0});
     world.carriables.add(id, Carriable{});
@@ -229,16 +248,20 @@ void hero_add_xp(World& world, Unit hero, u32 xp) {
     auto* h = world.heroes.get(hero.id);
     if (!h) return;
 
+    auto* attrs = world.attribute_blocks.get(hero.id);
+
     h->xp += xp;
     while (h->xp >= h->xp_to_next) {
         h->xp -= h->xp_to_next;
         h->level++;
-        h->str += h->str_per_level;
-        h->agi += h->agi_per_level;
-        h->int_ += h->int_per_level;
-        h->xp_to_next = h->level * 200; // simple scaling
-        log::info(TAG, "Hero leveled up to {} (str={:.0f}, agi={:.0f}, int={:.0f})",
-                  h->level, h->str, h->agi, h->int_);
+        // Apply per-level attribute growth
+        if (attrs) {
+            for (auto& [attr, growth] : h->attr_per_level) {
+                attrs->numeric[attr] += growth;
+            }
+        }
+        h->xp_to_next = h->level * 200;
+        log::info(TAG, "Hero leveled up to {}", h->level);
     }
 }
 

@@ -3,6 +3,15 @@
 This document defines the game object hierarchy, component design, and gameplay systems.
 Inspired by Warcraft III's object model, implemented via ECS internally.
 
+See `docs/map-system.md` for the full engine vs map boundary definition.
+
+### Key Terminology
+
+- **Ability**: anything attached to a unit that has effects — active (cast by player), passive (always on), or applied (given to a unit by another ability, with optional duration and auto-remove). In WC3 terms, "buffs" and "auras" are both just abilities.
+- **State**: a depletable/regenerating resource (HP, mana, energy). Has `current`, `max`, `regen`. HP is engine-built-in; others are map-defined.
+- **Attribute**: a single-value modifier (strength, agility, intelligence). Does not deplete. All map-defined.
+- **Classification**: a string-based targeting flag ("ground", "air", "hero"). All map-defined.
+
 ## 1. Object Hierarchy
 
 ### WC3 Reference
@@ -39,7 +48,7 @@ Handle (u32 id + u32 generation)
 │   │
 │   │   The three Widget subtypes — the core gameplay objects:
 │   │
-│   ├── Unit (Widget + Owner + Movement + Combat + Vision + OrderQueue + AbilitySet + BuffList)
+│   ├── Unit (Widget + Owner + Movement + Combat + Vision + OrderQueue + AbilitySet)
 │   │   │
 │   │   │   Unit subtypes are NOT separate categories. They are regular
 │   │   │   units with extra components + classification flags:
@@ -126,7 +135,7 @@ Every game object in the world has these components (stored internally, indexed 
 ```
 Transform {
     vec3  position
-    f32   facing        // rotation around Y axis, in radians
+    f32   facing        // rotation around Z axis (up), in radians. 0 = facing +Y
     f32   scale         // uniform scale, default 1.0
 }
 
@@ -147,8 +156,18 @@ Health {
     f32       current
     f32       max
     f32       regen_per_sec
-    ArmorType armor_type    // light, medium, heavy, fortified, hero, unarmored
-    f32       armor          // damage reduction value
+}
+
+// Additional states (mana, energy, etc.) are map-defined.
+// The engine provides a generic state storage system.
+StateBlock {
+    map<string, StateValue>  states   // "mana" → {current, max, regen}
+}
+
+StateValue {
+    f32  current
+    f32  max
+    f32  regen_per_sec
 }
 
 Selectable {
@@ -156,6 +175,10 @@ Selectable {
     i32  priority            // selection priority (heroes > units > buildings)
 }
 ```
+
+Note: `armor`, `armor_type`, and `attack_type` are no longer engine concepts.
+They are map-defined strings stored in unit type definitions. The map's Lua
+damage handler reads them from the attacker/target and applies its own formula.
 
 ### Unit Components
 
@@ -167,7 +190,7 @@ Owner {
 Movement {
     f32       speed          // units per second
     f32       turn_rate      // radians per second
-    MoveType  type           // ground, air, amphibious
+    MoveType  type           // ground, air, amphibious — engine preset (needed for pathfinding)
     vec3      target_pos     // current movement target (used by MovementSystem)
     bool      moving         // currently in motion
 }
@@ -177,7 +200,7 @@ Combat {
     f32        range          // attack range (melee ~1.0, ranged ~6.0+)
     f32        attack_cooldown // seconds between attacks
     f32        cooldown_remaining
-    AttackType attack_type    // normal, pierce, siege, magic, chaos, hero
+    string     attack_type    // map-defined string (e.g. "normal", "pierce", "siege")
     Unit       target         // current attack target (typed handle, not raw ID)
 }
 
@@ -193,43 +216,45 @@ OrderQueue {
 
 AbilitySet {
     std::vector<AbilityInstance>  abilities
-}
-
-BuffList {
-    std::vector<BuffInstance>  active_buffs
+    // All ability types live here: active, passive, auras, and applied abilities
+    // (what WC3 calls "buffs"). No separate component for any of these.
 }
 
 UnitClassification {
-    u32 flags   // bitmask: ground, air, mechanical, undead, worker, ancient, hero, summoned...
+    set<string> flags   // map-defined strings: "ground", "air", "hero", "structure", etc.
+}
+
+// Map-defined attributes (strength, agility, intelligence, etc.)
+AttributeBlock {
+    map<string, f32>  values   // "strength" → 22.0, "agility" → 13.0
 }
 ```
+
+Note: `MoveType` is one of the few engine-defined enums because pathfinding needs
+to query terrain differently for ground vs air vs amphibious movement.
 
 ### Hero Components (added to hero-type units)
 
 ```
 Hero {
-    u32  level
-    u32  xp
-    u32  xp_to_next
+    u32     level
+    u32     xp
+    u32     xp_to_next
+    string  primary_attr          // map-defined attribute name (e.g. "strength")
 
-    // Primary attributes
-    f32  str
-    f32  agi
-    f32  int_
-
-    // Growth per level
-    f32  str_per_level
-    f32  agi_per_level
-    f32  int_per_level
-
-    // Primary attribute determines which stat gives bonus damage
-    Attribute primary_attr   // str, agi, int
+    // Per-level attribute growth rates — map-defined attribute names
+    map<string, f32>  attr_per_level   // "strength" → 2.7, "agility" → 1.5
 }
 
 Inventory {
     std::array<Item, 6>  slots   // typed Item handles, null if empty
 }
 ```
+
+Hero attributes (strength, agility, intelligence, etc.) are stored in the unit's
+`AttributeBlock` component, not in the Hero component. The Hero component only
+tracks leveling metadata. Attribute values and growth rates reference map-defined
+attribute names via strings.
 
 ### Building Components (added to building-type units)
 
@@ -408,8 +433,8 @@ on_kill             // this unit kills another unit
 on_death            // this unit dies
 on_ability_cast     // this unit finishes casting an ability
 on_order_received   // this unit receives an order
-on_buff_applied     // a buff is applied to this unit
-on_buff_removed     // a buff is removed from this unit
+on_ability_applied  // an ability is applied to this unit (by another unit/ability)
+on_ability_removed  // an applied ability is removed from this unit
 ```
 
 Example: Critical Strike is a `stat_modifier` (no active component) with an
@@ -423,9 +448,9 @@ Example: Critical Strike is a `stat_modifier` (no active component) with an
 - Range checking and target validation (friend/foe/self filters)
 - Cast animation timing (effect fires at the cast point frame)
 - Projectile spawning, movement, and hit detection
-- Buff application, duration tracking, and removal
-- Stat modifier stacking and recalculation (base + all modifiers = effective)
-- Aura radius scanning (apply/remove aura buffs)
+- Applied ability tracking: application, duration, and removal
+- Modifier stacking and recalculation (base + all active ability modifiers = effective)
+- Aura radius scanning (apply/remove aura abilities to nearby units)
 - Toggle state management and per-second mana drain
 - Channel tick timing and interruption on stun/move
 - Automatic revert of all effects when ability is removed from unit
@@ -589,63 +614,58 @@ AbilityInstance {
 - **attack_modifier**: hooks into CombatSystem; on each attack hit, apply bonus damage + on_hit_buff
 - **trigger bindings**: registered with the event system; fire Lua callback when event occurs
 
-## 6. Buff System
+## 6. Applied Abilities (WC3 "Buffs")
 
-### Buff Definition (data-driven, loaded from JSON)
+In WC3 terms, a "buff" or "debuff" is an ability applied to a unit by another
+ability. In Uldum, these are just ability instances in the target's AbilitySet —
+not a separate system. An applied ability:
+- Has a duration (auto-removed when expired, or permanent if duration = 0)
+- Can modify attributes/states while active
+- Can tick periodic effects (damage, heal)
+- Can be dispelled
+- Has a source (the unit that applied it)
 
-```
-BuffDef {
-    BuffId      id              // e.g. "devotion_aura_buff"
-    std::string name
-    f32         duration        // seconds, 0 = permanent (until dispelled)
-    f32         tick_interval   // seconds between periodic effects, 0 = no tick
+### Applied Ability Definition (part of ability definitions)
 
-    // Stat modifiers (applied while buff is active)
-    StatModifiers modifiers {
-        f32  move_speed_flat        // +/- flat value
-        f32  move_speed_percent     // +/- percentage
-        f32  armor_flat
-        f32  damage_flat
-        f32  attack_speed_percent
-        // ...
+```json
+{
+    "frost_slow": {
+        "form": "passive",
+        "duration": 5.0,
+        "tick_interval": 0,
+        "dispellable": true,
+        "is_positive": false,
+        "modifiers": {
+            "move_speed_percent": -25
+        }
+    },
+    "poison_sting": {
+        "form": "passive",
+        "duration": 10.0,
+        "tick_interval": 1.0,
+        "dispellable": true,
+        "is_positive": false,
+        "periodic_damage": 4,
+        "modifiers": {
+            "move_speed_percent": -25
+        }
     }
-
-    // Periodic effects (applied every tick_interval)
-    PeriodicEffect periodic {
-        f32  damage              // damage per tick
-        f32  heal                // heal per tick
-    }
-
-    // Flags
-    bool stackable              // can multiple instances coexist
-    bool dispellable            // can be removed by dispel abilities
-    bool is_positive            // positive (buff) or negative (debuff)
 }
 ```
 
-### Buff Instance (per-unit runtime state)
+### Applied Ability Processing (each tick, part of AbilitySystem)
 
-```
-BuffInstance {
-    BuffId     def_id
-    Unit       source            // unit that applied this buff
-    f32        remaining_duration
-    f32        tick_timer         // time until next periodic tick
-}
-```
-
-### Buff Processing (each tick)
-
-1. Tick `remaining_duration` — remove expired buffs
-2. Tick `tick_timer` — apply periodic damage/heal when timer fires
-3. Stat modifiers are recalculated whenever buffs change
-   - Base stats + sum of all active buff modifiers = effective stats
-   - Systems read effective stats, not base stats
+1. Tick `remaining_duration` on all ability instances that have a duration — remove expired
+2. Tick periodic effects (damage/heal) at `tick_interval`
+3. Recalculate effective values when abilities change:
+   - Base attribute + sum of all active ability modifiers = effective attribute
+   - Systems read effective values, not base values
 
 ## 7. Type Definition System
 
-Types are defined in JSON, loaded by the AssetManager. Engine ships base types,
-maps can override via their `overrides/` directory.
+Types are defined in JSON, loaded from the map's `types/` directory. The engine
+defines no gameplay types — maps are fully self-contained. See `docs/map-system.md`
+for the map package structure.
 
 ### Unit Type Example (Regular Unit)
 
@@ -658,34 +678,22 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
         "category": "unit",
         "display_name": "Footman",
         "model": "models/units/footman.gltf",
-        "icon": "textures/icons/footman.png",
-        "health": {
-            "max": 420,
-            "regen": 0.25,
+        "icon": "icons/footman.png",
+        "health": { "max": 420, "regen": 0.25 },
+        "states": {
+            "mana": { "max": 0, "regen": 0 }
+        },
+        "attributes": {
             "armor": 2,
-            "armor_type": "heavy"
-        },
-        "movement": {
-            "speed": 270,
-            "turn_rate": 0.6,
-            "type": "ground"
-        },
-        "combat": {
-            "damage": 13,
-            "range": 1.0,
-            "cooldown": 1.35,
+            "armor_type": "heavy",
             "attack_type": "normal"
         },
-        "vision": {
-            "day": 1400,
-            "night": 800
-        },
+        "movement": { "speed": 270, "turn_rate": 0.6, "type": "ground" },
+        "combat": { "damage": 13, "range": 1.0, "cooldown": 1.35 },
+        "vision": { "day": 1400, "night": 800 },
         "abilities": ["attack", "move", "stop", "hold_position", "defend"],
         "classifications": ["ground"],
-        "selection": {
-            "radius": 0.8,
-            "priority": 5
-        }
+        "selection": { "radius": 0.8, "priority": 5 }
     }
 }
 ```
@@ -700,38 +708,26 @@ A hero is a unit with `"classifications": ["hero", ...]` and a `"hero"` block.
         "category": "unit",
         "display_name": "Paladin",
         "model": "models/units/paladin.gltf",
-        "health": {
-            "max": 650,
-            "regen": 2.0,
+        "health": { "max": 650, "regen": 2.0 },
+        "states": {
+            "mana": { "max": 255, "regen": 0.85 }
+        },
+        "attributes": {
             "armor": 4,
-            "armor_type": "hero"
+            "armor_type": "hero",
+            "attack_type": "hero",
+            "strength": 22, "agility": 13, "intelligence": 17
         },
-        "movement": {
-            "speed": 320,
-            "turn_rate": 0.8,
-            "type": "ground"
-        },
-        "combat": {
-            "damage": 26,
-            "range": 1.0,
-            "cooldown": 1.8,
-            "attack_type": "hero"
-        },
-        "vision": {
-            "day": 1800,
-            "night": 800
-        },
+        "movement": { "speed": 320, "turn_rate": 0.8, "type": "ground" },
+        "combat": { "damage": 26, "range": 1.0, "cooldown": 1.8 },
+        "vision": { "day": 1800, "night": 800 },
         "abilities": ["attack", "move", "holy_light", "divine_shield", "devotion_aura", "resurrection"],
         "hero": {
-            "primary_attr": "str",
-            "str": 22, "agi": 13, "int": 17,
-            "str_per_level": 2.7, "agi_per_level": 1.5, "int_per_level": 1.8
+            "primary_attr": "strength",
+            "attr_per_level": { "strength": 2.7, "agility": 1.5, "intelligence": 1.8 }
         },
         "classifications": ["ground", "hero"],
-        "selection": {
-            "radius": 1.0,
-            "priority": 10
-        }
+        "selection": { "radius": 1.0, "priority": 10 }
     }
 }
 ```
@@ -747,21 +743,13 @@ Movement speed is 0 (immobile).
         "category": "unit",
         "display_name": "Barracks",
         "model": "models/buildings/barracks.gltf",
-        "health": {
-            "max": 1500,
-            "regen": 0.5,
+        "health": { "max": 1500, "regen": 0.5 },
+        "attributes": {
             "armor": 5,
             "armor_type": "fortified"
         },
-        "movement": {
-            "speed": 0,
-            "turn_rate": 0,
-            "type": "ground"
-        },
-        "vision": {
-            "day": 900,
-            "night": 600
-        },
+        "movement": { "speed": 0, "turn_rate": 0, "type": "ground" },
+        "vision": { "day": 900, "night": 600 },
         "abilities": ["train_footman", "train_rifleman", "research_defend"],
         "classifications": ["structure", "ground"],
         "building": {
@@ -769,13 +757,8 @@ Movement speed is 0 (immobile).
             "trains": ["footman", "rifleman"],
             "researches": ["defend"]
         },
-        "pathing": {
-            "blocked_tiles": [[0,0], [1,0], [0,1], [1,1]]
-        },
-        "selection": {
-            "radius": 2.0,
-            "priority": 2
-        }
+        "pathing": { "blocked_tiles": [[0,0], [1,0], [0,1], [1,1]] },
+        "selection": { "radius": 2.0, "priority": 2 }
     }
 }
 ```
@@ -788,14 +771,9 @@ Movement speed is 0 (immobile).
         "category": "destructable",
         "display_name": "Ashenvale Tree",
         "model": "models/destructables/tree_ashenvale.gltf",
-        "health": {
-            "max": 50,
-            "armor": 0,
-            "armor_type": "fortified"
-        },
-        "pathing": {
-            "blocked_tiles": [[0, 0]]
-        },
+        "health": { "max": 50 },
+        "attributes": { "armor": 0, "armor_type": "fortified" },
+        "pathing": { "blocked_tiles": [[0, 0]] },
         "variations": 3
     }
 }
@@ -848,7 +826,7 @@ Movement speed is 0 (immobile).
 }
 ```
 
-### Buff Definition Example
+### Applied Ability Definition Example
 
 ```json
 {
@@ -904,13 +882,12 @@ Systems are functions that iterate over component tuples each simulation tick:
 | System | Components | Responsibility |
 |--------|------------|----------------|
 | `MovementSystem` | Transform, Movement, OrderQueue | Move units toward targets, handle pathfinding |
-| `CombatSystem` | Transform, Combat, OrderQueue | Acquire targets, attack, spawn projectiles |
-| `AbilitySystem` | AbilitySet, OrderQueue | Tick cooldowns, execute cast orders |
-| `BuffSystem` | BuffList, Health | Tick durations, apply periodic effects, remove expired |
-| `AuraSystem` | AbilitySet, Transform, Owner | Apply/remove aura buffs to nearby units |
+| `CombatSystem` | Transform, Combat, OrderQueue | Acquire targets, attack flow (cast point, backswing), spawn projectiles |
+| `AbilitySystem` | AbilitySet, OrderQueue, Transform, Owner | Tick cooldowns, execute cast orders, tick applied ability durations, remove expired, scan aura radii and apply/remove |
 | `VisionSystem` | Transform, Vision, Owner | Update per-player fog of war |
-| `ProjectileSystem` | Projectile, Transform | Move projectiles, check hit, apply damage |
-| `HealthSystem` | Health | Apply regen, check death, trigger death events |
+| `ProjectileSystem` | Projectile, Transform | Move projectiles, check hit, fire impact event |
+| `HealthSystem` | Health | Apply regen, check death (HP ≤ 0), fire death event |
+| `StateSystem` | StateBlock | Tick regen for all map-defined states (mana, energy, etc.) |
 | `TrainSystem` | Building | Progress train queues, spawn trained units |
 | `ConstructionSystem` | Construction | Progress building construction |
 
@@ -936,7 +913,6 @@ struct World {
     SparseSet<Owner>        owners;
     SparseSet<OrderQueue>   order_queues;
     SparseSet<AbilitySet>   ability_sets;
-    SparseSet<BuffList>     buff_lists;
     SparseSet<Vision>       visions;
     SparseSet<Hero>         heroes;
     SparseSet<Inventory>    inventories;
@@ -980,8 +956,8 @@ void          destroy(World& world, Item item);
 void     issue_order(World& world, Unit unit, Order order);
 void     add_ability(World& world, Unit unit, AbilityId ability);
 void     remove_ability(World& world, Unit unit, AbilityId ability);
-void     apply_buff(World& world, Unit target, BuffId buff, Unit source);
-void     remove_buff(World& world, Unit target, BuffId buff);
+void     apply_ability(World& world, Unit target, AbilityId ability, Unit source);
+void     remove_ability(World& world, Unit target, AbilityId ability);
 
 f32      get_health(const World& world, Unit unit);
 void     set_health(World& world, Unit unit, f32 health);

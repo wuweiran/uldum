@@ -6,48 +6,6 @@ namespace uldum::simulation {
 
 static constexpr const char* TAG = "TypeRegistry";
 
-// Helper: parse classification flags from JSON array
-static Classification parse_classifications(const nlohmann::json& arr) {
-    Classification flags = Classification::None;
-    for (const auto& s : arr) {
-        std::string v = s.get<std::string>();
-        if (v == "ground")     flags = flags | Classification::Ground;
-        else if (v == "air")        flags = flags | Classification::Air;
-        else if (v == "mechanical") flags = flags | Classification::Mechanical;
-        else if (v == "undead")     flags = flags | Classification::Undead;
-        else if (v == "worker")     flags = flags | Classification::Worker;
-        else if (v == "ancient")    flags = flags | Classification::Ancient;
-        else if (v == "hero")       flags = flags | Classification::Hero;
-        else if (v == "structure")  flags = flags | Classification::Structure;
-        else if (v == "summoned")   flags = flags | Classification::Summoned;
-    }
-    return flags;
-}
-
-static ArmorType parse_armor_type(const std::string& s) {
-    if (s == "light")     return ArmorType::Light;
-    if (s == "medium")    return ArmorType::Medium;
-    if (s == "heavy")     return ArmorType::Heavy;
-    if (s == "fortified") return ArmorType::Fortified;
-    if (s == "hero")      return ArmorType::Hero;
-    return ArmorType::Unarmored;
-}
-
-static AttackType parse_attack_type(const std::string& s) {
-    if (s == "pierce") return AttackType::Pierce;
-    if (s == "siege")  return AttackType::Siege;
-    if (s == "magic")  return AttackType::Magic;
-    if (s == "chaos")  return AttackType::Chaos;
-    if (s == "hero")   return AttackType::Hero;
-    return AttackType::Normal;
-}
-
-static MoveType parse_move_type(const std::string& s) {
-    if (s == "air")        return MoveType::Air;
-    if (s == "amphibious") return MoveType::Amphibious;
-    return MoveType::Ground;
-}
-
 bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view path) {
     auto handle = assets.load_config(path);
     auto* doc = assets.get(handle);
@@ -64,10 +22,8 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
 
         if (val.contains("health")) {
             auto& h = val["health"];
-            def.max_health  = h.value("max", 100.0f);
+            def.max_health   = h.value("max", 100.0f);
             def.health_regen = h.value("regen", 0.0f);
-            def.armor       = h.value("armor", 0.0f);
-            def.armor_type  = parse_armor_type(h.value("armor_type", "unarmored"));
         }
 
         if (val.contains("movement")) {
@@ -79,10 +35,9 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
 
         if (val.contains("combat")) {
             auto& c = val["combat"];
-            def.damage         = c.value("damage", 10.0f);
-            def.attack_range   = c.value("range", 1.0f);
+            def.damage          = c.value("damage", 10.0f);
+            def.attack_range    = c.value("range", 1.0f);
             def.attack_cooldown = c.value("cooldown", 1.0f);
-            def.attack_type    = parse_attack_type(c.value("attack_type", "normal"));
         }
 
         if (val.contains("vision")) {
@@ -97,8 +52,11 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             def.selection_priority = s.value("priority", 5);
         }
 
+        // Classifications — map-defined string flags
         if (val.contains("classifications")) {
-            def.classifications = parse_classifications(val["classifications"]);
+            for (const auto& c : val["classifications"]) {
+                def.classifications.push_back(c.get<std::string>());
+            }
         }
 
         if (val.contains("abilities")) {
@@ -107,19 +65,42 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             }
         }
 
+        // Map-defined states beyond HP (e.g. mana)
+        if (val.contains("states")) {
+            for (auto& [sid, sval] : val["states"].items()) {
+                UnitTypeDef::StateDef sd;
+                sd.max   = sval.value("max", 0.0f);
+                sd.regen = sval.value("regen", 0.0f);
+                def.states[sid] = sd;
+            }
+        }
+
+        // Map-defined attributes (numeric and string)
+        if (val.contains("attributes")) {
+            for (auto& [aid, aval] : val["attributes"].items()) {
+                if (aval.is_number()) {
+                    def.attributes_numeric[aid] = aval.get<f32>();
+                } else if (aval.is_string()) {
+                    def.attributes_string[aid] = aval.get<std::string>();
+                }
+            }
+        }
+
         // Hero data
         if (val.contains("hero")) {
             auto& h = val["hero"];
-            def.hero_str = h.value("str", 0.0f);
-            def.hero_agi = h.value("agi", 0.0f);
-            def.hero_int = h.value("int", 0.0f);
-            def.hero_str_per_level = h.value("str_per_level", 0.0f);
-            def.hero_agi_per_level = h.value("agi_per_level", 0.0f);
-            def.hero_int_per_level = h.value("int_per_level", 0.0f);
-            std::string attr = h.value("primary_attr", "str");
-            if (attr == "agi") def.hero_primary_attr = Attribute::Agi;
-            else if (attr == "int") def.hero_primary_attr = Attribute::Int;
-            else def.hero_primary_attr = Attribute::Str;
+            def.hero_primary_attr = h.value("primary_attr", "");
+            if (h.contains("attr_per_level")) {
+                for (auto& [attr, growth] : h["attr_per_level"].items()) {
+                    def.hero_attr_per_level[attr] = growth.get<f32>();
+                }
+            }
+            // Base hero attributes come from the "attributes" block above
+            for (auto& [attr, growth] : def.hero_attr_per_level) {
+                if (def.attributes_numeric.contains(attr)) {
+                    def.hero_base_attrs[attr] = def.attributes_numeric[attr];
+                }
+            }
         }
 
         // Building data
@@ -155,8 +136,16 @@ bool TypeRegistry::load_destructable_types(asset::AssetManager& assets, std::str
         if (val.contains("health")) {
             auto& h = val["health"];
             def.max_health = h.value("max", 50.0f);
-            def.armor      = h.value("armor", 0.0f);
-            def.armor_type = parse_armor_type(h.value("armor_type", "fortified"));
+        }
+
+        if (val.contains("attributes")) {
+            for (auto& [aid, aval] : val["attributes"].items()) {
+                if (aval.is_number()) {
+                    def.attributes_numeric[aid] = aval.get<f32>();
+                } else if (aval.is_string()) {
+                    def.attributes_string[aid] = aval.get<std::string>();
+                }
+            }
         }
 
         m_destructable_types[key] = std::move(def);

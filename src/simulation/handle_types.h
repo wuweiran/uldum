@@ -2,6 +2,10 @@
 
 #include "core/types.h"
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 namespace uldum::simulation {
 
 // Base handle — shared layout for all game object types.
@@ -25,35 +29,26 @@ struct Player {
     bool operator==(const Player&) const = default;
 };
 
-// Classification flags (bitmask)
-enum class Classification : u32 {
-    None        = 0,
-    Ground      = 1 << 0,
-    Air         = 1 << 1,
-    Mechanical  = 1 << 2,
-    Undead      = 1 << 3,
-    Worker      = 1 << 4,
-    Ancient     = 1 << 5,
-    Hero        = 1 << 6,
-    Structure   = 1 << 7,
-    Summoned    = 1 << 8,
-};
-
-inline Classification operator|(Classification a, Classification b) {
-    return static_cast<Classification>(static_cast<u32>(a) | static_cast<u32>(b));
-}
-inline Classification operator&(Classification a, Classification b) {
-    return static_cast<Classification>(static_cast<u32>(a) & static_cast<u32>(b));
-}
-inline bool has_flag(Classification flags, Classification test) {
-    return (flags & test) == test;
-}
-
-// Enums
+// Entity categories — engine-defined, fixed set.
 enum class Category : u8 { Unit, Destructable, Item, Doodad, Projectile };
+
+// Movement types — engine-defined preset because pathfinding needs them.
 enum class MoveType : u8 { Ground, Air, Amphibious };
-enum class ArmorType : u8 { Unarmored, Light, Medium, Heavy, Fortified, Hero };
-enum class AttackType : u8 { Normal, Pierce, Siege, Magic, Chaos, Hero };
-enum class Attribute : u8 { Str, Agi, Int };
+
+// Parse MoveType from string. Returns Ground for unrecognized values.
+inline MoveType parse_move_type(const std::string& s) {
+    if (s == "air")        return MoveType::Air;
+    if (s == "amphibious") return MoveType::Amphibious;
+    return MoveType::Ground;
+}
+
+// Classifications are map-defined string flags (e.g., "ground", "air", "hero", "structure").
+// The engine provides the infrastructure for targeting filters; maps define the actual values.
+inline bool has_classification(const std::vector<std::string>& flags, const std::string& flag) {
+    return std::find(flags.begin(), flags.end(), flag) != flags.end();
+}
+
+// Attack types, armor types, and attributes are all map-defined strings.
+// The engine stores them as std::string — no enums.
 
 } // namespace uldum::simulation

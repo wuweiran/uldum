@@ -9,6 +9,7 @@
 
 #include <array>
 #include <deque>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -19,7 +20,7 @@ namespace uldum::simulation {
 
 struct Transform {
     glm::vec3 position{0.0f};
-    f32       facing = 0.0f;   // radians around Y axis
+    f32       facing = 0.0f;   // radians around Z axis (up). 0 = facing +Y
     f32       scale  = 1.0f;
 };
 
@@ -31,12 +32,29 @@ struct HandleInfo {
 
 // ── Widget Components ──────────────────────────────────────────────────────
 
+// HP is engine-built-in (engine fires death event when current reaches 0).
 struct Health {
-    f32       current     = 0;
-    f32       max         = 0;
-    f32       regen_per_sec = 0;
-    ArmorType armor_type  = ArmorType::Unarmored;
-    f32       armor       = 0;
+    f32 current     = 0;
+    f32 max         = 0;
+    f32 regen_per_sec = 0;
+};
+
+// Map-defined states beyond HP (mana, energy, rage, etc.).
+struct StateValue {
+    f32 current     = 0;
+    f32 max         = 0;
+    f32 regen_per_sec = 0;
+};
+
+struct StateBlock {
+    std::map<std::string, StateValue> states;
+};
+
+// Map-defined attributes (strength, agility, armor, armor_type, attack_type, etc.).
+// Single values that don't deplete or regenerate.
+struct AttributeBlock {
+    std::map<std::string, f32>         numeric;   // "armor" → 5.0, "strength" → 22.0
+    std::map<std::string, std::string> string_attrs; // "armor_type" → "heavy", "attack_type" → "normal"
 };
 
 struct Selectable {
@@ -53,18 +71,17 @@ struct Owner {
 struct Movement {
     f32       speed     = 0;
     f32       turn_rate = 0;
-    MoveType  type      = MoveType::Ground;
+    MoveType  type      = MoveType::Ground;  // engine preset (pathfinding needs it)
     glm::vec3 target_pos{0.0f};
     bool      moving    = false;
 };
 
 struct Combat {
-    f32        damage          = 0;
-    f32        range           = 1.0f;
-    f32        attack_cooldown = 1.0f;
-    f32        cooldown_remaining = 0;
-    AttackType attack_type     = AttackType::Normal;
-    Unit       target;
+    f32         damage          = 0;
+    f32         range           = 1.0f;
+    f32         attack_cooldown = 1.0f;
+    f32         cooldown_remaining = 0;
+    Unit        target;
 };
 
 struct Vision {
@@ -83,36 +100,32 @@ struct AbilityInstance {
     f32         cooldown_remaining = 0;
     bool        auto_cast          = false;
     bool        toggle_active      = false;
+    // Applied ability fields (for WC3 "buffs")
+    Unit        source;                      // unit that applied this (null if self/innate)
+    f32         remaining_duration = -1.0f;  // -1 = permanent (innate), >= 0 = timed
+    f32         tick_timer         = 0;
 };
 
 struct AbilitySet {
     std::vector<AbilityInstance> abilities;
+    // All ability types live here: active, passive, auras, and applied abilities
+    // (what WC3 calls "buffs"). No separate component for any of these.
 };
 
-struct BuffInstance {
-    std::string buff_id;
-    Unit        source;
-    f32         remaining_duration = 0;
-    f32         tick_timer         = 0;
-};
-
-struct BuffList {
-    std::vector<BuffInstance> active;
-};
-
+// Map-defined classification flags (e.g., "ground", "air", "hero", "structure").
 struct UnitClassificationComp {
-    Classification flags = Classification::None;
+    std::vector<std::string> flags;
 };
 
 // ── Hero Components ────────────────────────────────────────────────────────
 
 struct HeroComp {
-    u32       level = 1;
-    u32       xp    = 0;
-    u32       xp_to_next = 200;
-    f32       str = 0, agi = 0, int_ = 0;
-    f32       str_per_level = 0, agi_per_level = 0, int_per_level = 0;
-    Attribute primary_attr = Attribute::Str;
+    u32         level = 1;
+    u32         xp    = 0;
+    u32         xp_to_next = 200;
+    std::string primary_attr;  // map-defined attribute name (e.g. "strength")
+    // Per-level attribute growth — attribute name → growth per level
+    std::map<std::string, f32> attr_per_level;
 };
 
 struct Inventory {
@@ -178,7 +191,6 @@ struct ProjectileComp {
 
 struct Renderable {
     std::string model_path;
-    // AnimationState will be added in render phase
     bool        visible = true;
 };
 

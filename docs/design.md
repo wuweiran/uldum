@@ -20,7 +20,7 @@ uldum/
 ├── rhi/            # Thin Vulkan 1.3 abstraction
 │   └── vulkan/     #   Instance, device, swapchain, command buffers, sync
 ├── render/         # Render graph, materials, terrain, skeletal anim, particles, UI
-├── simulation/     # ECS, units, abilities, buffs, pathfinding, collision, AI
+├── simulation/     # ECS, units, abilities, pathfinding, collision, AI
 ├── script/         # Lua 5.4 VM, sol2 bindings, trigger/event system
 ├── map/            # Map format (FlatBuffers), terrain data, object placement
 ├── network/        # Server-authoritative: server sim, client prediction, state sync
@@ -130,18 +130,22 @@ Thin abstraction over Vulkan. Not a generic RHI — Vulkan-specific, but organiz
 
 See [gameplay-model.md](gameplay-model.md) for the full object model design, including:
 - Entity categories (Unit, Building, Hero, Destructable, Item, Doodad, Projectile)
-- Complete component design (Transform, Health, Movement, Combat, Abilities, Buffs, etc.)
+- Component design (Transform, Health, States, Attributes, Movement, Combat, Abilities, etc.)
 - Order system (Move, Attack, Cast, Train, Build, Patrol, etc.)
-- Ability system (data-driven definitions, cooldowns, targeting, passive auras)
-- Buff system (stat modifiers, periodic effects, duration, stacking)
-- Type definition system (JSON-driven, map-overridable)
+- Ability system (data-driven definitions, cooldowns, targeting, passive auras, buffs as abilities)
+- Generic state system (HP built-in, mana/energy/etc. map-defined)
+- Generic attribute system (strength/agility/etc. all map-defined)
+- String-based classifications, attack types, armor types (map-defined)
+- Type definition system (JSON-driven, map-only — no engine defaults)
 - ECS implementation (sparse sets, systems, World struct, unit facade API)
+
+See [map-system.md](map-system.md) for the engine vs map boundary and map package format.
 
 ### Key Architecture Points
 
 - ECS internally (sparse set per component type, cache-friendly iteration)
 - Unit-centric facade API externally (free functions operating on entity IDs)
-- Data-driven types: unit/ability/buff definitions loaded from JSON
+- Data-driven types: unit/ability definitions loaded from JSON
 - Fixed timestep simulation (16 ticks/sec = 62.5ms per tick)
 - Render interpolates between sim states for smooth visuals
 
@@ -200,9 +204,6 @@ engine/
 ├── scripts/            # Core Lua API library
 ├── audio/              # UI sounds
 └── config/
-    ├── unit_types.json
-    ├── ability_types.json
-    ├── buff_types.json
     └── engine.json
 ```
 
@@ -311,11 +312,11 @@ Prerequisite layer that all gameplay and rendering modules depend on.
 ECS foundation and data-driven unit creation.
 
 - **ECS core**: sparse set component storage, handle allocator, generational typed handles
-- **Core components**: Transform, Health, Movement, Combat, Ability, Buff, Vision, Owner, etc.
+- **Core components**: Transform, Health, Movement, Combat, Ability, Vision, Owner, etc.
 - **Typed handles**: Unit, Destructable, Item — distinct types wrapping Handle base
 - **Unit facade**: create_unit, get_health, is_hero, is_building, issue_order, etc.
 - **Unit type definitions**: data-driven types loaded from JSON via TypeRegistry
-- **Systems**: health regen, cooldown ticking, buff duration — stubs for complex systems
+- **Systems**: health regen, cooldown ticking, ability duration — stubs for complex systems
 
 ### Phase 5 — Render Pipeline
 
@@ -361,13 +362,17 @@ Visual feedback — draw entities and terrain. Built progressively in stages.
 
 ### Phase 6 — Map System
 
-Ties simulation + render together into loadable, playable content.
+Maps are self-contained gameplay packages. The engine provides mechanics; maps provide all content and rules. See `docs/map-system.md` for full design.
 
-- **Map format**: FlatBuffers serialization for terrain and object data
-- **Terrain data**: heightmap, splatmap, pathing grid — loaded into both simulation and render
-- **Object placement**: preplaced units, doodads, regions, cameras
-- **Override system**: map-level unit/ability type overrides merging on top of engine defaults
+- **Map package**: `.uldmap` directory with manifest, types, scenes, scripts, assets
+- **Manifest**: metadata, player slots, teams, map-defined enumerations (classifications, attack/armor types, states, attributes)
+- **Terrain loading**: heightmap, tile types, pathing from binary format
+- **Object placement**: preplaced units, destructables, items, doodads, regions, cameras
+- **Type loading**: unit/ability/item/destructable types from map's `types/` directory (no engine defaults)
+- **Scene system**: multiple terrains per map, transitions via Lua API
+- **Tileset**: map-defined ground texture set
 - **Map loading/unloading**: full lifecycle with cleanup
+- **Test map**: move current test data (unit_types.json, destructable_types.json, item_types.json, test units) into a proper `.uldmap` package. Engine init creates no gameplay content — map system handles everything
 
 ### Phase 7 — Gameplay Systems
 
@@ -376,9 +381,10 @@ Requires terrain data from Phase 6. Completes the simulation systems left incomp
 - **Pathfinding**: A* on tile grid, flow field for group movement
 - **Collision**: spatial grid for unit-unit and unit-terrain queries
 - **Order execution**: MovementSystem processes Move/Patrol, CombatSystem processes Attack, AbilitySystem processes Cast
-- **Combat logic**: target acquisition, range checking, damage calculation, attack animation timing
-- **Ability execution**: cast flow (validate → animate → fire effect), projectile spawning, aura scanning
-- **Buff application**: stat modifier stacking/recalculation, periodic effects, dispel
+- **Combat logic**: target acquisition, range checking, attack animation timing (cast point, backswing), projectile launch
+- **Damage event**: engine fires event with raw damage + context, map Lua applies multipliers
+- **Ability execution**: cast flow (validate → cost check → animate → fire effect), projectile spawning, aura scanning
+- **Applied abilities**: tick durations, apply periodic effects, recalculate modifiers (all part of AbilitySystem)
 
 ### Phase 8 — Scripting (Lua 5.4)
 

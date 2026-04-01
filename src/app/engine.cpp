@@ -99,6 +99,11 @@ bool Engine::init() {
         return false;
     }
 
+    // Load test type definitions (temporary — Phase 6 map system will handle this)
+    m_simulation.types().load_unit_types(m_asset, "config/unit_types.json");
+    m_simulation.types().load_destructable_types(m_asset, "config/destructable_types.json");
+    m_simulation.types().load_item_types(m_asset, "config/item_types.json");
+
     // Test units created below, after map terrain is available
 
     // Network

@@ -2,9 +2,11 @@
 
 #include "simulation/handle_types.h"
 
+#include <map>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace uldum::asset { class AssetManager; }
 
@@ -15,11 +17,9 @@ struct UnitTypeDef {
     std::string display_name;
     std::string model_path;
 
-    // Health
-    f32       max_health = 100;
-    f32       health_regen = 0;
-    f32       armor = 0;
-    ArmorType armor_type = ArmorType::Unarmored;
+    // Health (engine built-in state)
+    f32 max_health = 100;
+    f32 health_regen = 0;
 
     // Movement
     f32      move_speed = 270;
@@ -27,10 +27,9 @@ struct UnitTypeDef {
     MoveType move_type = MoveType::Ground;
 
     // Combat
-    f32        damage = 10;
-    f32        attack_range = 1.0f;
-    f32        attack_cooldown = 1.0f;
-    AttackType attack_type = AttackType::Normal;
+    f32 damage = 10;
+    f32 attack_range = 1.0f;
+    f32 attack_cooldown = 1.0f;
 
     // Vision
     f32 sight_range_day = 1400;
@@ -40,18 +39,26 @@ struct UnitTypeDef {
     f32 selection_radius = 1.0f;
     i32 selection_priority = 5;
 
-    // Classification
-    Classification classifications = Classification::Ground;
+    // Classification — map-defined string flags
+    std::vector<std::string> classifications;
 
     // Abilities
     std::vector<std::string> abilities;
 
-    // Hero (if hero flag set)
-    f32       hero_str = 0, hero_agi = 0, hero_int = 0;
-    f32       hero_str_per_level = 0, hero_agi_per_level = 0, hero_int_per_level = 0;
-    Attribute hero_primary_attr = Attribute::Str;
+    // Map-defined states beyond HP (e.g. "mana" → {max, regen})
+    struct StateDef { f32 max = 0; f32 regen = 0; };
+    std::map<std::string, StateDef> states;
 
-    // Building (if structure flag set)
+    // Map-defined attributes (numeric: "armor" → 5.0, string: "armor_type" → "heavy")
+    std::map<std::string, f32>         attributes_numeric;
+    std::map<std::string, std::string> attributes_string;
+
+    // Hero (if "hero" classification set)
+    std::string                  hero_primary_attr;
+    std::map<std::string, f32>   hero_base_attrs;      // "strength" → 22.0
+    std::map<std::string, f32>   hero_attr_per_level;   // "strength" → 2.7
+
+    // Building (if "structure" classification set)
     f32 build_time = 0;
 };
 
@@ -60,8 +67,8 @@ struct DestructableTypeDef {
     std::string display_name;
     std::string model_path;
     f32         max_health = 50;
-    f32         armor = 0;
-    ArmorType   armor_type = ArmorType::Fortified;
+    std::map<std::string, f32>         attributes_numeric;  // "armor" → 0
+    std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
     u8          variations = 1;
 };
 
