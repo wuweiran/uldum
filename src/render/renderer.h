@@ -2,6 +2,7 @@
 
 #include "render/camera.h"
 #include "render/gpu_mesh.h"
+#include "render/terrain.h"
 #include "core/handle.h"
 #include "asset/model.h"
 
@@ -15,6 +16,7 @@
 namespace uldum::rhi { class VulkanRhi; }
 namespace uldum::simulation { struct World; }
 namespace uldum::platform { struct InputState; }
+namespace uldum::map { struct TerrainData; }
 
 namespace uldum::render {
 
@@ -25,6 +27,9 @@ public:
 
     void update_camera(const platform::InputState& input, f32 dt);
     void handle_resize(f32 aspect);
+
+    // Build (or rebuild) the terrain GPU mesh from terrain data.
+    void set_terrain(const map::TerrainData& terrain);
 
     // Record draw commands into the given command buffer.
     // Reads Transform + Renderable components from the world.
@@ -48,6 +53,9 @@ private:
 
     // Placeholder mesh for models that fail to load
     GpuMesh m_placeholder_mesh{};
+
+    // Terrain
+    TerrainMesh m_terrain{};
 };
 
 } // namespace uldum::render

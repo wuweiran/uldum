@@ -1,5 +1,6 @@
 #include "render/renderer.h"
 #include "rhi/vulkan/vulkan_rhi.h"
+#include "map/terrain_data.h"
 #include "simulation/world.h"
 #include "simulation/components.h"
 #include "asset/model.h"
@@ -47,39 +48,48 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
 
     if (!create_mesh_pipeline()) return false;
 
-    // Create a placeholder box mesh for entities without a real model
+    // Create a placeholder box mesh for entities without a real model.
+    // Defined directly in Z-up game coordinates: base at Z=0, top at Z=2.
+    // This is NOT a glTF model, so the renderer skips the Y-up→Z-up rotation for it.
     asset::MeshData placeholder;
-    // Box: 6 faces, each face has 4 vertices + 2 triangles
-    const float s = 1.0f; // half-size
+    const float s = 1.0f; // half-size on X/Y
+    const float h = 2.0f; // height on Z
+    // Texcoord carries per-face base color (R,G) until Phase 5d adds real textures.
+    // Warm orange/red tones to contrast with terrain green.
+    glm::vec2 top_c{0.9f, 0.6f}, bot_c{0.3f, 0.2f};
+    glm::vec2 frt_c{0.8f, 0.5f}, bak_c{0.6f, 0.4f};
+    glm::vec2 rgt_c{0.7f, 0.45f}, lft_c{0.65f, 0.35f};
     placeholder.vertices = {
-        // Top face (Y+) — visible from above
-        {{-s, 2*s, -s}, {0,1,0}, {0,0}}, {{ s, 2*s, -s}, {0,1,0}, {1,0}},
-        {{ s, 2*s,  s}, {0,1,0}, {1,1}}, {{-s, 2*s,  s}, {0,1,0}, {0,1}},
-        // Front face (Z+)
-        {{-s, 0,  s}, {0,0,1}, {0,0}}, {{ s, 0,  s}, {0,0,1}, {1,0}},
-        {{ s, 2*s,  s}, {0,0,1}, {1,1}}, {{-s, 2*s,  s}, {0,0,1}, {0,1}},
-        // Back face (Z-)
-        {{ s, 0, -s}, {0,0,-1}, {0,0}}, {{-s, 0, -s}, {0,0,-1}, {1,0}},
-        {{-s, 2*s, -s}, {0,0,-1}, {1,1}}, {{ s, 2*s, -s}, {0,0,-1}, {0,1}},
+        // Top face (Z+) — visible from above
+        {{-s, -s, h}, {0,0,1}, top_c}, {{ s, -s, h}, {0,0,1}, top_c},
+        {{ s,  s, h}, {0,0,1}, top_c}, {{-s,  s, h}, {0,0,1}, top_c},
+        // Bottom face (Z-)
+        {{-s,  s, 0}, {0,0,-1}, bot_c}, {{ s,  s, 0}, {0,0,-1}, bot_c},
+        {{ s, -s, 0}, {0,0,-1}, bot_c}, {{-s, -s, 0}, {0,0,-1}, bot_c},
+        // Front face (Y+)
+        {{-s, s, 0}, {0,1,0}, frt_c}, {{ s, s, 0}, {0,1,0}, frt_c},
+        {{ s, s, h}, {0,1,0}, frt_c}, {{-s, s, h}, {0,1,0}, frt_c},
+        // Back face (Y-)
+        {{ s, -s, 0}, {0,-1,0}, bak_c}, {{-s, -s, 0}, {0,-1,0}, bak_c},
+        {{-s, -s, h}, {0,-1,0}, bak_c}, {{ s, -s, h}, {0,-1,0}, bak_c},
         // Right face (X+)
-        {{ s, 0,  s}, {1,0,0}, {0,0}}, {{ s, 0, -s}, {1,0,0}, {1,0}},
-        {{ s, 2*s, -s}, {1,0,0}, {1,1}}, {{ s, 2*s,  s}, {1,0,0}, {0,1}},
+        {{ s, s, 0}, {1,0,0}, rgt_c}, {{ s, -s, 0}, {1,0,0}, rgt_c},
+        {{ s, -s, h}, {1,0,0}, rgt_c}, {{ s,  s, h}, {1,0,0}, rgt_c},
         // Left face (X-)
-        {{-s, 0, -s}, {-1,0,0}, {0,0}}, {{-s, 0,  s}, {-1,0,0}, {1,0}},
-        {{-s, 2*s,  s}, {-1,0,0}, {1,1}}, {{-s, 2*s, -s}, {-1,0,0}, {0,1}},
-        // Bottom face (Y-)
-        {{-s, 0,  s}, {0,-1,0}, {0,0}}, {{ s, 0,  s}, {0,-1,0}, {1,0}},
-        {{ s, 0, -s}, {0,-1,0}, {1,1}}, {{-s, 0, -s}, {0,-1,0}, {0,1}},
+        {{-s, -s, 0}, {-1,0,0}, lft_c}, {{-s,  s, 0}, {-1,0,0}, lft_c},
+        {{-s,  s, h}, {-1,0,0}, lft_c}, {{-s, -s, h}, {-1,0,0}, lft_c},
     };
+    // Winding convention: cross(e1, e2) must equal outward face normal (matches terrain).
     placeholder.indices = {
-         0, 2, 1,  0, 3, 2,   // top (reversed — original normal pointed inward)
-         4, 5, 6,  4, 6, 7,   // front
-         8, 9,10,  8,10,11,   // back
-        12,13,14, 12,14,15,   // right
-        16,17,18, 16,18,19,   // left
-        20,22,21, 20,23,22,   // bottom (reversed — original normal pointed inward)
+         0, 1, 3,  1, 2, 3,   // top    (+Z)
+         4, 5, 7,  5, 6, 7,   // bottom (-Z)
+         8,10, 9,  8,11,10,   // front  (+Y)
+        12,14,13, 12,15,14,   // back   (-Y)
+        16,18,17, 16,19,18,   // right  (+X)
+        20,22,21, 20,23,22,   // left   (-X)
     };
     m_placeholder_mesh = upload_mesh(m_rhi->allocator(), placeholder);
+    m_placeholder_mesh.native_z_up = true;
 
     log::info(TAG, "Renderer initialized — mesh pipeline + camera ready");
     return true;
@@ -90,6 +100,7 @@ void Renderer::shutdown() {
     VkDevice device = m_rhi->device();
     VmaAllocator alloc = m_rhi->allocator();
 
+    destroy_terrain_mesh(alloc, m_terrain);
     destroy_mesh(alloc, m_placeholder_mesh);
     for (auto& [path, mesh] : m_mesh_cache) {
         destroy_mesh(alloc, mesh);
@@ -111,6 +122,12 @@ void Renderer::update_camera(const platform::InputState& input, f32 dt) {
 
 void Renderer::handle_resize(f32 aspect) {
     m_camera.set_aspect(aspect);
+}
+
+void Renderer::set_terrain(const map::TerrainData& terrain) {
+    VmaAllocator alloc = m_rhi->allocator();
+    destroy_terrain_mesh(alloc, m_terrain);
+    m_terrain = build_terrain_mesh(alloc, terrain);
 }
 
 // ── Mesh pipeline ──────────────────────────────────────────────────────────
@@ -177,8 +194,9 @@ bool Renderer::create_mesh_pipeline() {
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil{};
     depth_stencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_stencil.depthTestEnable  = VK_FALSE; // No depth buffer yet — 5c will add it
-    depth_stencil.depthWriteEnable = VK_FALSE;
+    depth_stencil.depthTestEnable  = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS;
 
     VkPipelineColorBlendAttachmentState blend_attachment{};
     blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -195,11 +213,11 @@ bool Renderer::create_mesh_pipeline() {
     dynamic_state.dynamicStateCount = 2;
     dynamic_state.pDynamicStates    = dynamic_states;
 
-    // Push constant: mat4 MVP
+    // Push constants: mat4 MVP + mat4 model
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     push_range.offset     = 0;
-    push_range.size       = sizeof(glm::mat4);
+    push_range.size       = 2 * sizeof(glm::mat4);
 
     VkPipelineLayoutCreateInfo layout_ci{};
     layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -214,10 +232,12 @@ bool Renderer::create_mesh_pipeline() {
     }
 
     VkFormat color_format = m_rhi->swapchain_format();
+    VkFormat depth_format = m_rhi->depth_format();
     VkPipelineRenderingCreateInfo rendering_ci{};
     rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering_ci.colorAttachmentCount    = 1;
     rendering_ci.pColorAttachmentFormats = &color_format;
+    rendering_ci.depthAttachmentFormat   = depth_format;
 
     VkGraphicsPipelineCreateInfo pipeline_ci{};
     pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -279,6 +299,20 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
     glm::mat4 vp = m_camera.view_projection();
 
+    // Draw terrain (identity model matrix — terrain is already in world space)
+    if (m_terrain.gpu_mesh.vertex_buffer) {
+        glm::mat4 terrain_model{1.0f};
+        glm::mat4 terrain_mvp = vp * terrain_model;
+        struct { glm::mat4 mvp; glm::mat4 model; } terrain_push{terrain_mvp, terrain_model};
+        vkCmdPushConstants(cmd, m_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(terrain_push), &terrain_push);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
+    }
+
     // Iterate all entities with Transform + Renderable
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
@@ -291,20 +325,24 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         const auto* transform = transforms.get(id);
         if (!transform) continue;
 
+        GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
+        if (!mesh.vertex_buffer) continue;
+
         // Model matrix from Transform (game coords: X=right, Y=forward, Z=up)
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
         model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});  // rotate around Z (up)
         model = glm::scale(model, glm::vec3{transform->scale});
-        // glTF models are Y-up; rotate -90° around X to convert to Z-up
-        model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+        if (!mesh.native_z_up) {
+            // glTF models are Y-up; rotate -90° around X to convert to Z-up
+            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+        }
 
         glm::mat4 mvp = vp * model;
 
+        // Push MVP + model matrix
+        struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
         vkCmdPushConstants(cmd, m_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(glm::mat4), &mvp);
-
-        GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
-        if (!mesh.vertex_buffer) continue;
+                           0, sizeof(push), &push);
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex_buffer, &offset);

@@ -48,6 +48,7 @@ public:
     VmaAllocator     allocator() const { return m_allocator; }
     VkExtent2D       extent()    const { return m_swapchain_extent; }
     VkFormat         swapchain_format() const { return m_swapchain_format; }
+    VkFormat         depth_format()     const { return m_depth_format; }
     u32              current_image_index() const { return m_current_image_index; }
     VkImageView      current_image_view() const { return m_swapchain_views[m_current_image_index]; }
     VkImage          current_image()      const { return m_swapchain_images[m_current_image_index]; }
@@ -88,6 +89,12 @@ private:
     VkExtent2D               m_swapchain_extent = {};
     std::vector<VkImage>     m_swapchain_images;
     std::vector<VkImageView> m_swapchain_views;
+
+    // Depth buffer
+    VkImage       m_depth_image  = VK_NULL_HANDLE;
+    VmaAllocation m_depth_alloc  = VK_NULL_HANDLE;
+    VkImageView   m_depth_view   = VK_NULL_HANDLE;
+    VkFormat      m_depth_format = VK_FORMAT_D32_SFLOAT;
 
     // Per-frame resources
     VkCommandPool   m_command_pools[MAX_FRAMES_IN_FLIGHT]   = {};

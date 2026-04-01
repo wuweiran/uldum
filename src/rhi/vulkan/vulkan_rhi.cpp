@@ -403,11 +403,54 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
         }
     }
 
+    // Create depth buffer
+    {
+        VkImageCreateInfo depth_ci{};
+        depth_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        depth_ci.imageType     = VK_IMAGE_TYPE_2D;
+        depth_ci.format        = m_depth_format;
+        depth_ci.extent        = {extent.width, extent.height, 1};
+        depth_ci.mipLevels     = 1;
+        depth_ci.arrayLayers   = 1;
+        depth_ci.samples       = VK_SAMPLE_COUNT_1_BIT;
+        depth_ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        depth_ci.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        depth_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+        if (vmaCreateImage(m_allocator, &depth_ci, &alloc_ci, &m_depth_image, &m_depth_alloc, nullptr) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create depth image");
+            return false;
+        }
+
+        VkImageViewCreateInfo view_ci{};
+        view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image    = m_depth_image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.format   = m_depth_format;
+        view_ci.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+        view_ci.subresourceRange.baseMipLevel   = 0;
+        view_ci.subresourceRange.levelCount     = 1;
+        view_ci.subresourceRange.baseArrayLayer = 0;
+        view_ci.subresourceRange.layerCount     = 1;
+
+        if (vkCreateImageView(m_device, &view_ci, nullptr, &m_depth_view) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create depth image view");
+            return false;
+        }
+    }
+
     log::info(TAG, "Swapchain created: {}x{}, {} images", extent.width, extent.height, image_count);
     return true;
 }
 
 void VulkanRhi::destroy_swapchain() {
+    if (m_depth_view)  { vkDestroyImageView(m_device, m_depth_view, nullptr); m_depth_view = VK_NULL_HANDLE; }
+    if (m_depth_image) { vmaDestroyImage(m_allocator, m_depth_image, m_depth_alloc); m_depth_image = VK_NULL_HANDLE; m_depth_alloc = VK_NULL_HANDLE; }
+
     for (auto view : m_swapchain_views) {
         vkDestroyImageView(m_device, view, nullptr);
     }
@@ -502,22 +545,33 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &begin_info);
 
-    // Transition: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
-    VkImageMemoryBarrier2 to_render{};
-    to_render.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    to_render.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
-    to_render.srcAccessMask = VK_ACCESS_2_NONE;
-    to_render.dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_render.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    to_render.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_render.newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    to_render.image         = m_swapchain_images[m_current_image_index];
-    to_render.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    // Transition: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL (color)
+    VkImageMemoryBarrier2 barriers[2]{};
+    barriers[0].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barriers[0].srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    barriers[0].srcAccessMask = VK_ACCESS_2_NONE;
+    barriers[0].dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barriers[0].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[0].newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barriers[0].image         = m_swapchain_images[m_current_image_index];
+    barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    // Transition: UNDEFINED → DEPTH_ATTACHMENT_OPTIMAL (depth)
+    barriers[1].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barriers[1].srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    barriers[1].srcAccessMask = VK_ACCESS_2_NONE;
+    barriers[1].dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barriers[1].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[1].newLayout     = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    barriers[1].image         = m_depth_image;
+    barriers[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
 
     VkDependencyInfo dep{};
     dep.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount  = 1;
-    dep.pImageMemoryBarriers     = &to_render;
+    dep.imageMemoryBarrierCount  = 2;
+    dep.pImageMemoryBarriers     = barriers;
     vkCmdPipelineBarrier2(cmd, &dep);
 
     // Begin dynamic rendering
@@ -529,12 +583,21 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     color_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
     color_attachment.clearValue  = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
 
+    VkRenderingAttachmentInfo depth_attachment{};
+    depth_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depth_attachment.imageView   = m_depth_view;
+    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth_attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_attachment.clearValue.depthStencil = {1.0f, 0};
+
     VkRenderingInfo rendering{};
     rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
     rendering.renderArea           = {{0, 0}, m_swapchain_extent};
     rendering.layerCount           = 1;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments    = &color_attachment;
+    rendering.pDepthAttachment     = &depth_attachment;
 
     vkCmdBeginRendering(cmd, &rendering);
 

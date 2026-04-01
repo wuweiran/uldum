@@ -16,6 +16,7 @@ struct GpuMesh {
     VmaAllocation index_alloc   = VK_NULL_HANDLE;
     u32           index_count   = 0;
     u32           vertex_count  = 0;
+    bool          native_z_up   = false; // true = already in Z-up game coords, skip glTF rotation
 };
 
 // Upload CPU-side MeshData to GPU buffers via VMA.

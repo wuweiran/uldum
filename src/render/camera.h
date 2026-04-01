@@ -27,7 +27,7 @@ private:
     void recalculate();
 
     // Game coordinates: X=right, Y=forward, Z=up
-    glm::vec3 m_position{10.0f, -10.0f, 25.0f};
+    glm::vec3 m_position{45.0f, 30.0f, 25.0f};
     f32 m_pitch = -0.8f;   // radians, negative = looking down
     f32 m_yaw   = 0.0f;    // 0 = looking toward +Y (forward)
 

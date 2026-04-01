@@ -347,7 +347,14 @@ Visual feedback — draw entities and terrain. Built progressively in stages.
 - Terrain splatmap texturing (blend up to 4 textures per tile)
 - Verify: textured terrain
 
-**5e — Animation + particles (can defer)**
+**5e — Shadow mapping**
+- Light-space depth pass (render scene from directional light's perspective)
+- Shadow map texture (depth-only framebuffer, typically 2048x2048)
+- Shadow sampling in main fragment shader (compare fragment depth vs shadow map)
+- PCF (percentage-closer filtering) for soft shadow edges
+- Verify: directional shadows cast by units onto terrain
+
+**5f — Animation + particles (can defer)**
 - Skeletal animation: GPU skinning, animation state machine
 - Compute-based particle system
 - Render graph refactor: automatic barriers, transient resources, pass ordering
