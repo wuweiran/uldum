@@ -319,16 +319,38 @@ ECS foundation and data-driven unit creation.
 
 ### Phase 5 — Render Pipeline
 
-Visual feedback — draw the entities and terrain from Phase 4.
+Visual feedback — draw entities and terrain. Built progressively in stages.
 
-- **Render graph**: automatic resource barriers, transient allocations, pass ordering
-- **VMA integration**: GPU memory management
-- **Shader pipeline**: GLSL → SPIR-V compilation (shaderc), shader hot-reload in debug
-- **Terrain rendering**: heightmap mesh, splatmap texturing, pathing debug overlay
-- **Mesh rendering**: glTF model drawing, material system, instanced rendering
-- **Skeletal animation**: GPU skinning, animation state machine
-- **Particles**: compute-based particle system
-- **Camera**: game camera (top-down with tilt, zoom, pan like WC3)
+**5a — Triangle on screen**
+- VMA integration for GPU memory management
+- Shader pipeline: GLSL → SPIR-V (pre-compiled or shaderc)
+- Graphics pipeline: vertex layout, rasterizer state, depth
+- Vertex buffer with hardcoded triangle, draw call in frame loop
+- Verify: colored triangle rendered on screen
+
+**5b — 3D mesh rendering + camera**
+- Camera system: top-down with tilt, zoom, pan (WC3-style), MVP matrices
+- GPU mesh upload: vertex/index buffers from asset-loaded glTF data
+- 3D projection and basic per-vertex coloring
+- Verify: test_triangle.gltf rendered in 3D, camera can move
+
+**5c — Terrain + lighting**
+- Heightmap terrain mesh generation (procedural or from data)
+- Basic directional lighting (Blinn-Phong or similar)
+- Depth buffer and proper 3D sorting
+- Verify: 3D terrain surface with shading
+
+**5d — Textures + materials**
+- Texture GPU upload from asset-loaded PNG data
+- Sampler and descriptor set management
+- Material system: shader + texture bindings
+- Terrain splatmap texturing (blend up to 4 textures per tile)
+- Verify: textured terrain
+
+**5e — Animation + particles (can defer)**
+- Skeletal animation: GPU skinning, animation state machine
+- Compute-based particle system
+- Render graph refactor: automatic barriers, transient resources, pass ordering
 
 ### Phase 6 — Map System
 
