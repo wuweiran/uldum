@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 5d complete. The engine renders textured terrain with splatmap blending and textured 3D entities.
+Phase 5e complete. The engine renders textured terrain with splatmap blending, directional shadow mapping with PCF, and textured 3D entities.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -25,10 +25,11 @@ Phase 5d complete. The engine renders textured terrain with splatmap blending an
 - Data-driven unit types loaded from JSON (TypeRegistry)
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
+- Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias
 - GPU texture upload with staging buffers, one-shot command buffer helpers
 - Depth buffer (D32_SFLOAT) with proper 3D sorting
 - Terrain system: TerrainData (heightmap + tile types + pathing) in map module, GPU mesh built from data
-- Directional lighting with world-space normals
+- Directional lighting with world-space normals and shadows
 - Game coordinates: X=right, Y=forward, Z=up (documented in docs/coordinates.md)
 - Build output is self-contained (engine assets copied to output directory)
 

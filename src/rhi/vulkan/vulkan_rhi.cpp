@@ -618,7 +618,14 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     dep.pImageMemoryBarriers     = barriers;
     vkCmdPipelineBarrier2(cmd, &dep);
 
-    // Begin dynamic rendering
+    m_frame_active = true;
+    return cmd;
+}
+
+void VulkanRhi::begin_rendering() {
+    if (!m_frame_active) return;
+    VkCommandBuffer cmd = m_command_buffers[m_frame_index];
+
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     color_attachment.imageView   = m_swapchain_views[m_current_image_index];
@@ -644,9 +651,6 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     rendering.pDepthAttachment     = &depth_attachment;
 
     vkCmdBeginRendering(cmd, &rendering);
-
-    m_frame_active = true;
-    return cmd;
 }
 
 void VulkanRhi::end_frame() {

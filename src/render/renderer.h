@@ -5,6 +5,7 @@
 #include "render/gpu_texture.h"
 #include "render/terrain.h"
 #include "render/material.h"
+#include "render/shadow.h"
 #include "core/handle.h"
 #include "asset/model.h"
 
@@ -33,7 +34,10 @@ public:
     // Build (or rebuild) the terrain GPU mesh and splatmap from terrain data.
     void set_terrain(const map::TerrainData& terrain);
 
-    // Record draw commands into the given command buffer.
+    // Record shadow depth pass (must be called before begin_rendering).
+    void draw_shadows(VkCommandBuffer cmd, const simulation::World& world);
+
+    // Record main pass draw commands into the given command buffer.
     // Reads Transform + Renderable components from the world.
     void draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world);
 
@@ -43,29 +47,44 @@ private:
     bool create_descriptor_layouts();
     bool create_mesh_pipeline();
     bool create_terrain_pipeline();
+    bool create_shadow_pipeline();
+    bool create_shadow_resources();
     bool create_default_texture();
     bool create_terrain_textures();
     GpuMesh& get_or_upload_mesh(const std::string& model_path);
     VkDescriptorSet allocate_mesh_descriptor(const GpuTexture& diffuse);
     VkDescriptorSet allocate_terrain_descriptor(const TerrainMaterial& mat);
+    VkDescriptorSet allocate_shadow_descriptor();
+
+    void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world);
 
     rhi::VulkanRhi* m_rhi = nullptr;
     Camera          m_camera;
 
     // Descriptor infrastructure
-    VkDescriptorSetLayout m_mesh_desc_layout    = VK_NULL_HANDLE;  // 1 diffuse sampler
-    VkDescriptorSetLayout m_terrain_desc_layout = VK_NULL_HANDLE;  // 4 layers + 1 splatmap
+    VkDescriptorSetLayout m_mesh_desc_layout    = VK_NULL_HANDLE;  // set 0: 1 diffuse sampler
+    VkDescriptorSetLayout m_terrain_desc_layout = VK_NULL_HANDLE;  // set 0: 4 layers + 1 splatmap
+    VkDescriptorSetLayout m_shadow_desc_layout  = VK_NULL_HANDLE;  // set 1: UBO + shadow map
     VkDescriptorPool      m_descriptor_pool     = VK_NULL_HANDLE;
 
-    // Mesh pipeline (3D with MVP push constants + 1 texture)
+    // Mesh pipeline (set 0 = material, set 1 = shadow)
     VkPipelineLayout m_mesh_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_mesh_pipeline        = VK_NULL_HANDLE;
 
-    // Terrain pipeline (terrain shader with splatmap)
+    // Terrain pipeline (set 0 = terrain material, set 1 = shadow)
     VkPipelineLayout m_terrain_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_terrain_pipeline        = VK_NULL_HANDLE;
 
-    // Default white texture for untextured meshes
+    // Shadow depth pass pipeline (push constant = light MVP, depth-only)
+    VkPipelineLayout m_shadow_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_shadow_pipeline        = VK_NULL_HANDLE;
+
+    // Shadow map resources
+    ShadowMap       m_shadow_map{};
+    ShadowBuffer    m_shadow_ubo{};
+    VkDescriptorSet m_shadow_desc_set = VK_NULL_HANDLE;
+
+    // Default texture for untextured meshes
     GpuTexture      m_default_texture{};
     MeshMaterial    m_default_material{};
 

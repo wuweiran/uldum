@@ -1,5 +1,6 @@
 #include "render/camera.h"
 
+#include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <cmath>
@@ -50,7 +51,7 @@ void Camera::recalculate() {
     glm::vec3 up{0.0f, 0.0f, 1.0f};  // Z is up in game coordinates
 
     m_view = glm::lookAt(m_position, target, up);
-    m_proj = glm::perspective(m_fov, m_aspect, m_near, m_far);
+    m_proj = glm::perspectiveRH_ZO(m_fov, m_aspect, m_near, m_far);
     // Flip Y for Vulkan clip space
     m_proj[1][1] *= -1.0f;
 

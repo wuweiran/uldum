@@ -234,6 +234,8 @@ void Engine::run() {
         // Render
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd) {
+            m_renderer.draw_shadows(cmd, m_simulation.world());
+            m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
             m_editor.render();
             m_rhi.end_frame();

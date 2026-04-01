@@ -38,7 +38,9 @@ public:
 
     // begin_frame acquires swapchain image, returns command buffer to record into.
     // Returns null if swapchain needs recreate (caller should skip the frame).
+    // Call begin_rendering() after any pre-render passes (e.g. shadow) to start the main pass.
     VkCommandBuffer begin_frame();
+    void begin_rendering();  // starts main color+depth rendering scope
     void end_frame();
 
     void handle_resize(u32 width, u32 height);

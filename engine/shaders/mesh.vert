@@ -11,9 +11,12 @@ layout(location = 2) in vec2 in_texcoord;
 
 layout(location = 0) out vec3 frag_world_normal;
 layout(location = 1) out vec2 frag_texcoord;
+layout(location = 2) out vec3 frag_world_pos;
 
 void main() {
+    vec4 world_pos = pc.model * vec4(in_position, 1.0);
     gl_Position = pc.mvp * vec4(in_position, 1.0);
     frag_world_normal = mat3(pc.model) * in_normal;
     frag_texcoord = in_texcoord;
+    frag_world_pos = world_pos.xyz;
 }

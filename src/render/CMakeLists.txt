@@ -3,6 +3,7 @@ add_library(uldum_render STATIC
     camera.cpp
     gpu_mesh.cpp
     gpu_texture.cpp
+    shadow.cpp
     terrain.cpp
 )
 
