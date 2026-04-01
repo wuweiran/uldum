@@ -14,7 +14,19 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 3 complete. Core foundation and asset pipeline implemented. The engine loads textures (PNG via stb_image), models (glTF via cgltf), and configs (JSON via nlohmann/json) through a handle-based AssetManager with path caching. Custom allocators (linear, pool) and a generational ResourcePool are in place. All other modules remain stubbed.
+Phase 5b complete. The engine renders 3D objects from ECS entities with a movable camera.
+
+**What works:**
+- Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
+- VMA for GPU memory, GLSL shaders compiled to SPIR-V at build time
+- Asset pipeline: PNG textures (stb_image), glTF models (cgltf), JSON configs (nlohmann/json)
+- Handle-based AssetManager with path caching
+- ECS simulation: sparse set storage, generational typed handles (Unit, Destructable, Item)
+- Data-driven unit types loaded from JSON (TypeRegistry)
+- 3D mesh pipeline with MVP push constants, camera with WASD+QE movement
+- Renderer iterates ECS World (Transform + Renderable) and draws entities
+- Game coordinates: X=right, Y=forward, Z=up
+- Build output is self-contained (engine assets copied to output directory)
 
 ## Requirements
 

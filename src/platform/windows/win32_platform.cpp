@@ -80,7 +80,6 @@ void Win32Platform::shutdown() {
 }
 
 bool Win32Platform::poll_events() {
-    m_input = {};
     MSG msg{};
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
@@ -131,8 +130,19 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
     }
 
     case WM_KEYDOWN:
-        if (wparam == VK_ESCAPE) self->m_input.key_escape = true;
+    case WM_KEYUP: {
+        bool pressed = (msg == WM_KEYDOWN);
+        switch (wparam) {
+        case VK_ESCAPE: self->m_input.key_escape = pressed; break;
+        case 'W':       self->m_input.key_w = pressed; break;
+        case 'A':       self->m_input.key_a = pressed; break;
+        case 'S':       self->m_input.key_s = pressed; break;
+        case 'D':       self->m_input.key_d = pressed; break;
+        case 'Q':       self->m_input.key_q = pressed; break;
+        case 'E':       self->m_input.key_e = pressed; break;
+        }
         return 0;
+    }
 
     default:
         break;

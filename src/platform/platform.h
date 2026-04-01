@@ -15,6 +15,12 @@ struct Config {
 
 struct InputState {
     bool key_escape = false;
+    bool key_w = false;
+    bool key_a = false;
+    bool key_s = false;
+    bool key_d = false;
+    bool key_q = false;  // down
+    bool key_e = false;  // up
 };
 
 class Platform {

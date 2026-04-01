@@ -36,7 +36,9 @@ public:
     bool init(const Config& config, platform::Platform& platform);
     void shutdown();
 
-    bool begin_frame();
+    // begin_frame acquires swapchain image, returns command buffer to record into.
+    // Returns null if swapchain needs recreate (caller should skip the frame).
+    VkCommandBuffer begin_frame();
     void end_frame();
 
     void handle_resize(u32 width, u32 height);
@@ -46,6 +48,9 @@ public:
     VmaAllocator     allocator() const { return m_allocator; }
     VkExtent2D       extent()    const { return m_swapchain_extent; }
     VkFormat         swapchain_format() const { return m_swapchain_format; }
+    u32              current_image_index() const { return m_current_image_index; }
+    VkImageView      current_image_view() const { return m_swapchain_views[m_current_image_index]; }
+    VkImage          current_image()      const { return m_swapchain_images[m_current_image_index]; }
 
 private:
     bool create_instance(const Config& config);
@@ -92,7 +97,9 @@ private:
     VkFence         m_in_flight[MAX_FRAMES_IN_FLIGHT]       = {};
 
     u32  m_frame_index = 0;
+    u32  m_current_image_index = 0;
     bool m_swapchain_dirty = false;
+    bool m_frame_active = false;
 
     // Triangle resources (Phase 5a)
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;

@@ -156,6 +156,8 @@ void Engine::run() {
         // Handle resize
         if (m_platform->was_resized()) {
             m_rhi.handle_resize(m_platform->width(), m_platform->height());
+            f32 aspect = static_cast<f32>(m_platform->width()) / static_cast<f32>(m_platform->height());
+            m_renderer.handle_resize(aspect);
         }
 
         // Delta time
@@ -177,6 +179,9 @@ void Engine::run() {
             accumulator -= TICK_DT;
         }
 
+        // Update camera
+        m_renderer.update_camera(m_platform->input(), frame_dt);
+
         // Audio
         m_audio.update();
 
@@ -184,11 +189,12 @@ void Engine::run() {
         m_editor.update();
 
         // Render
-        m_rhi.begin_frame();
-        m_renderer.begin_frame();
-        m_renderer.end_frame();
-        m_editor.render();
-        m_rhi.end_frame();
+        VkCommandBuffer cmd = m_rhi.begin_frame();
+        if (cmd) {
+            m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
+            m_editor.render();
+            m_rhi.end_frame();
+        }
 
         frame_count++;
         if (frame_count == 1) {

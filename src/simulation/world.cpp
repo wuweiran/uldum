@@ -47,7 +47,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     u32 id = h.id;
 
     // All game objects
-    world.transforms.add(id, Transform{{x, 0.0f, y}, facing, 1.0f});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit, h.generation});
 
     // Widget
@@ -107,7 +107,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     Handle h = world.handles.allocate();
     u32 id = h.id;
 
-    world.transforms.add(id, Transform{{x, 0.0f, y}, facing, 1.0f});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
     world.healths.add(id, Health{def->max_health, def->max_health, 0, def->armor_type, def->armor});
     world.selectables.add(id, Selectable{1.0f, 1});
@@ -136,7 +136,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     Handle h = world.handles.allocate();
     u32 id = h.id;
 
-    world.transforms.add(id, Transform{{x, 0.0f, y}, 0, 1.0f});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, 0, 1.0f});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item, h.generation});
     world.healths.add(id, Health{1, 1, 0, ArmorType::Unarmored, 0});
     world.selectables.add(id, Selectable{0.5f, 1});
@@ -199,7 +199,7 @@ glm::vec3 get_position(const World& world, Unit unit) {
 void set_position(World& world, Unit unit, f32 x, f32 y) {
     if (!world.validate(unit)) return;
     auto* t = world.transforms.get(unit.id);
-    if (t) { t->position.x = x; t->position.z = y; }
+    if (t) { t->position.x = x; t->position.y = y; }
 }
 
 Player get_owner(const World& world, Unit unit) {

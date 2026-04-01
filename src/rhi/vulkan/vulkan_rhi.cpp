@@ -479,18 +479,17 @@ void VulkanRhi::handle_resize(u32 width, u32 height) {
     m_swapchain_dirty = true;
 }
 
-bool VulkanRhi::begin_frame() {
+VkCommandBuffer VulkanRhi::begin_frame() {
     vkWaitForFences(m_device, 1, &m_in_flight[m_frame_index], VK_TRUE, UINT64_MAX);
 
-    u32 image_index = 0;
     VkResult result = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
-        m_image_available[m_frame_index], VK_NULL_HANDLE, &image_index);
+        m_image_available[m_frame_index], VK_NULL_HANDLE, &m_current_image_index);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || m_swapchain_dirty) {
         m_swapchain_dirty = false;
         vkDeviceWaitIdle(m_device);
         create_swapchain(m_swapchain_extent.width, m_swapchain_extent.height);
-        return false;
+        return VK_NULL_HANDLE;
     }
 
     vkResetFences(m_device, 1, &m_in_flight[m_frame_index]);
@@ -498,7 +497,78 @@ bool VulkanRhi::begin_frame() {
     VkCommandBuffer cmd = m_command_buffers[m_frame_index];
     vkResetCommandBuffer(cmd, 0);
 
-    record_command_buffer(cmd, image_index);
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin_info);
+
+    // Transition: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL
+    VkImageMemoryBarrier2 to_render{};
+    to_render.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    to_render.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    to_render.srcAccessMask = VK_ACCESS_2_NONE;
+    to_render.dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_render.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_render.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_render.newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_render.image         = m_swapchain_images[m_current_image_index];
+    to_render.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkDependencyInfo dep{};
+    dep.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount  = 1;
+    dep.pImageMemoryBarriers     = &to_render;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    // Begin dynamic rendering
+    VkRenderingAttachmentInfo color_attachment{};
+    color_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_attachment.imageView   = m_swapchain_views[m_current_image_index];
+    color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.clearValue  = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
+
+    VkRenderingInfo rendering{};
+    rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering.renderArea           = {{0, 0}, m_swapchain_extent};
+    rendering.layerCount           = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments    = &color_attachment;
+
+    vkCmdBeginRendering(cmd, &rendering);
+
+    m_frame_active = true;
+    return cmd;
+}
+
+void VulkanRhi::end_frame() {
+    if (!m_frame_active) return;
+    m_frame_active = false;
+
+    VkCommandBuffer cmd = m_command_buffers[m_frame_index];
+
+    vkCmdEndRendering(cmd);
+
+    // Transition: COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC
+    VkImageMemoryBarrier2 to_present{};
+    to_present.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    to_present.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_present.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_present.dstStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    to_present.dstAccessMask = VK_ACCESS_2_NONE;
+    to_present.oldLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_present.newLayout     = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    to_present.image         = m_swapchain_images[m_current_image_index];
+    to_present.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkDependencyInfo dep{};
+    dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers    = &to_present;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    vkEndCommandBuffer(cmd);
 
     // Submit
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -522,19 +592,14 @@ bool VulkanRhi::begin_frame() {
     present.pWaitSemaphores    = &m_render_finished[m_frame_index];
     present.swapchainCount     = 1;
     present.pSwapchains        = &m_swapchain;
-    present.pImageIndices      = &image_index;
+    present.pImageIndices      = &m_current_image_index;
 
-    result = vkQueuePresentKHR(m_present_queue, &present);
+    VkResult result = vkQueuePresentKHR(m_present_queue, &present);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
         m_swapchain_dirty = true;
     }
 
     m_frame_index = (m_frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
-    return true;
-}
-
-void VulkanRhi::end_frame() {
-    // Currently a no-op — future: ImGui rendering, profiling end, etc.
 }
 
 // ---------------------------------------------------------------------------
