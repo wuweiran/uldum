@@ -49,3 +49,18 @@ target_include_directories(cgltf SYSTEM PUBLIC ${cgltf_SOURCE_DIR})
 if(MSVC)
     target_compile_options(cgltf PRIVATE /W0)
 endif()
+
+# ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
+FetchContent_Declare(vma
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG        v3.1.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_Populate(vma)
+
+add_library(vma STATIC vma_impl.cpp)
+target_include_directories(vma SYSTEM PUBLIC ${vma_SOURCE_DIR}/include)
+target_link_libraries(vma PUBLIC Vulkan::Vulkan)
+if(MSVC)
+    target_compile_options(vma PRIVATE /W0)
+endif()

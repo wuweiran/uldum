@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <vector>
 
@@ -61,9 +63,11 @@ bool VulkanRhi::init(const Config& config, platform::Platform& platform) {
     if (!create_surface(platform)) return false;
     if (!pick_physical_device())   return false;
     if (!create_device())          return false;
+    if (!create_allocator())       return false;
     if (!create_swapchain(platform.width(), platform.height())) return false;
     if (!create_command_resources()) return false;
     if (!create_sync_objects())    return false;
+    if (!create_triangle_resources()) return false;
 
     log::info(TAG, "Vulkan RHI initialized");
     return true;
@@ -71,6 +75,8 @@ bool VulkanRhi::init(const Config& config, platform::Platform& platform) {
 
 void VulkanRhi::shutdown() {
     if (m_device) vkDeviceWaitIdle(m_device);
+
+    destroy_triangle_resources();
 
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         if (m_in_flight[i])       vkDestroyFence(m_device, m_in_flight[i], nullptr);
@@ -81,8 +87,9 @@ void VulkanRhi::shutdown() {
 
     destroy_swapchain();
 
-    if (m_device)  { vkDestroyDevice(m_device, nullptr);   m_device = VK_NULL_HANDLE; }
-    if (m_surface) { vkDestroySurfaceKHR(m_instance, m_surface, nullptr); m_surface = VK_NULL_HANDLE; }
+    if (m_allocator) { vmaDestroyAllocator(m_allocator); m_allocator = VK_NULL_HANDLE; }
+    if (m_device)    { vkDestroyDevice(m_device, nullptr); m_device = VK_NULL_HANDLE; }
+    if (m_surface)   { vkDestroySurfaceKHR(m_instance, m_surface, nullptr); m_surface = VK_NULL_HANDLE; }
 
     if (m_debug_messenger) {
         destroy_debug_messenger(m_instance, m_debug_messenger);
@@ -531,7 +538,228 @@ void VulkanRhi::end_frame() {
 }
 
 // ---------------------------------------------------------------------------
-// Command recording (Phase 1: just clear to a color)
+// VMA allocator
+// ---------------------------------------------------------------------------
+
+bool VulkanRhi::create_allocator() {
+    VmaAllocatorCreateInfo ci{};
+    ci.instance       = m_instance;
+    ci.physicalDevice  = m_physical_device;
+    ci.device          = m_device;
+    ci.vulkanApiVersion = VK_API_VERSION_1_3;
+
+    if (vmaCreateAllocator(&ci, &m_allocator) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create VMA allocator");
+        return false;
+    }
+
+    log::info(TAG, "VMA allocator created");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Shader loading
+// ---------------------------------------------------------------------------
+
+VkShaderModule VulkanRhi::load_shader(std::string_view path) {
+    std::string path_str(path);
+    std::ifstream file(path_str, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        log::error(TAG, "Failed to open shader file '{}'", path);
+        return VK_NULL_HANDLE;
+    }
+
+    auto size = file.tellg();
+    std::vector<char> code(size);
+    file.seekg(0);
+    file.read(code.data(), size);
+
+    VkShaderModuleCreateInfo ci{};
+    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    ci.codeSize = code.size();
+    ci.pCode    = reinterpret_cast<const u32*>(code.data());
+
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(m_device, &ci, nullptr, &module) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create shader module from '{}'", path);
+        return VK_NULL_HANDLE;
+    }
+
+    log::trace(TAG, "Loaded shader '{}'", path);
+    return module;
+}
+
+// ---------------------------------------------------------------------------
+// Triangle resources (Phase 5a)
+// ---------------------------------------------------------------------------
+
+bool VulkanRhi::create_triangle_resources() {
+    // Load shaders
+    VkShaderModule vert = load_shader("engine/shaders/triangle.vert.spv");
+    VkShaderModule frag = load_shader("engine/shaders/triangle.frag.spv");
+    if (!vert || !frag) {
+        log::error(TAG, "Failed to load triangle shaders");
+        if (vert) vkDestroyShaderModule(m_device, vert, nullptr);
+        if (frag) vkDestroyShaderModule(m_device, frag, nullptr);
+        return false;
+    }
+
+    // Shader stages
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName  = "main";
+
+    // Vertex input: position (vec3) + color (vec3)
+    VkVertexInputBindingDescription binding{};
+    binding.binding   = 0;
+    binding.stride    = sizeof(Vertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[2]{};
+    attrs[0].location = 0;
+    attrs[0].binding  = 0;
+    attrs[0].format   = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].offset   = offsetof(Vertex, position);
+    attrs[1].location = 1;
+    attrs[1].binding  = 0;
+    attrs[1].format   = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[1].offset   = offsetof(Vertex, color);
+
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount   = 1;
+    vertex_input.pVertexBindingDescriptions      = &binding;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions    = attrs;
+
+    // Input assembly
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    // Viewport + scissor (dynamic)
+    VkPipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount  = 1;
+
+    // Rasterizer
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode    = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace   = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.lineWidth   = 1.0f;
+
+    // Multisampling (off)
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // Color blend (no blending)
+    VkPipelineColorBlendAttachmentState blend_attachment{};
+    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments    = &blend_attachment;
+
+    // Dynamic state
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.dynamicStateCount = 2;
+    dynamic_state.pDynamicStates    = dynamic_states;
+
+    // Pipeline layout (empty — no push constants or descriptors yet)
+    VkPipelineLayoutCreateInfo layout_ci{};
+    layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    if (vkCreatePipelineLayout(m_device, &layout_ci, nullptr, &m_pipeline_layout) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create pipeline layout");
+        vkDestroyShaderModule(m_device, vert, nullptr);
+        vkDestroyShaderModule(m_device, frag, nullptr);
+        return false;
+    }
+
+    // Dynamic rendering format
+    VkPipelineRenderingCreateInfo rendering_ci{};
+    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering_ci.colorAttachmentCount    = 1;
+    rendering_ci.pColorAttachmentFormats = &m_swapchain_format;
+
+    // Graphics pipeline
+    VkGraphicsPipelineCreateInfo pipeline_ci{};
+    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.pNext               = &rendering_ci;
+    pipeline_ci.stageCount          = 2;
+    pipeline_ci.pStages             = stages;
+    pipeline_ci.pVertexInputState   = &vertex_input;
+    pipeline_ci.pInputAssemblyState = &input_assembly;
+    pipeline_ci.pViewportState      = &viewport_state;
+    pipeline_ci.pRasterizationState = &rasterizer;
+    pipeline_ci.pMultisampleState   = &multisample;
+    pipeline_ci.pColorBlendState    = &color_blend;
+    pipeline_ci.pDynamicState       = &dynamic_state;
+    pipeline_ci.layout              = m_pipeline_layout;
+
+    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_pipeline) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create graphics pipeline");
+        vkDestroyShaderModule(m_device, vert, nullptr);
+        vkDestroyShaderModule(m_device, frag, nullptr);
+        return false;
+    }
+
+    // Shader modules no longer needed after pipeline creation
+    vkDestroyShaderModule(m_device, vert, nullptr);
+    vkDestroyShaderModule(m_device, frag, nullptr);
+
+    // Create vertex buffer with a colored triangle
+    Vertex vertices[] = {
+        {{ 0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},  // top — red
+        {{ 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},  // bottom right — green
+        {{-0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}},  // bottom left — blue
+    };
+
+    VkBufferCreateInfo buf_ci{};
+    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buf_ci.size  = sizeof(vertices);
+    buf_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+
+    VmaAllocationCreateInfo alloc_ci{};
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    if (vmaCreateBuffer(m_allocator, &buf_ci, &alloc_ci, &m_vertex_buffer, &m_vertex_alloc, nullptr) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create vertex buffer");
+        return false;
+    }
+
+    // Upload vertex data
+    void* mapped = nullptr;
+    vmaMapMemory(m_allocator, m_vertex_alloc, &mapped);
+    memcpy(mapped, vertices, sizeof(vertices));
+    vmaUnmapMemory(m_allocator, m_vertex_alloc);
+
+    log::info(TAG, "Triangle pipeline and vertex buffer created");
+    return true;
+}
+
+void VulkanRhi::destroy_triangle_resources() {
+    if (m_vertex_buffer) { vmaDestroyBuffer(m_allocator, m_vertex_buffer, m_vertex_alloc); m_vertex_buffer = VK_NULL_HANDLE; }
+    if (m_pipeline)      { vkDestroyPipeline(m_device, m_pipeline, nullptr); m_pipeline = VK_NULL_HANDLE; }
+    if (m_pipeline_layout) { vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr); m_pipeline_layout = VK_NULL_HANDLE; }
+}
+
+// ---------------------------------------------------------------------------
+// Command recording
 // ---------------------------------------------------------------------------
 
 void VulkanRhi::record_command_buffer(VkCommandBuffer cmd, u32 image_index) {
@@ -558,14 +786,14 @@ void VulkanRhi::record_command_buffer(VkCommandBuffer cmd, u32 image_index) {
     dep.pImageMemoryBarriers     = &to_render;
     vkCmdPipelineBarrier2(cmd, &dep);
 
-    // Dynamic rendering — clear to cornflower blue
+    // Dynamic rendering — clear to dark gray
     VkRenderingAttachmentInfo color_attachment{};
     color_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     color_attachment.imageView   = m_swapchain_views[image_index];
     color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color_attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
-    color_attachment.clearValue  = {{{0.392f, 0.584f, 0.929f, 1.0f}}};
+    color_attachment.clearValue  = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
 
     VkRenderingInfo rendering{};
     rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -575,6 +803,26 @@ void VulkanRhi::record_command_buffer(VkCommandBuffer cmd, u32 image_index) {
     rendering.pColorAttachments    = &color_attachment;
 
     vkCmdBeginRendering(cmd, &rendering);
+
+    // Draw triangle
+    if (m_pipeline) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+
+        VkViewport viewport{};
+        viewport.width    = static_cast<float>(m_swapchain_extent.width);
+        viewport.height   = static_cast<float>(m_swapchain_extent.height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+        VkRect2D scissor{{0, 0}, m_swapchain_extent};
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_vertex_buffer, &offset);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
+
     vkCmdEndRendering(cmd);
 
     // Transition: COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC

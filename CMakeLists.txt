@@ -11,7 +11,26 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Vulkan SDK
-find_package(Vulkan REQUIRED)
+find_package(Vulkan REQUIRED COMPONENTS glslc)
+
+# Shader compilation: GLSL → SPIR-V
+function(compile_shaders TARGET SHADER_DIR OUTPUT_DIR)
+    file(GLOB SHADERS ${SHADER_DIR}/*.vert ${SHADER_DIR}/*.frag ${SHADER_DIR}/*.comp)
+    foreach(SHADER ${SHADERS})
+        get_filename_component(SHADER_NAME ${SHADER} NAME)
+        set(SPV_OUTPUT ${OUTPUT_DIR}/${SHADER_NAME}.spv)
+        add_custom_command(
+            OUTPUT ${SPV_OUTPUT}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${OUTPUT_DIR}
+            COMMAND Vulkan::glslc ${SHADER} -o ${SPV_OUTPUT}
+            DEPENDS ${SHADER}
+            COMMENT "Compiling shader ${SHADER_NAME}"
+        )
+        list(APPEND SPV_OUTPUTS ${SPV_OUTPUT})
+    endforeach()
+    add_custom_target(${TARGET}_shaders ALL DEPENDS ${SPV_OUTPUTS})
+    add_dependencies(${TARGET} ${TARGET}_shaders)
+endfunction()
 
 # Platform defines
 if(WIN32)

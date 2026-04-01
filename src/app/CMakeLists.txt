@@ -25,6 +25,12 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     endif()
 endif()
 
+# Compile shaders (GLSL → SPIR-V) into the output engine/shaders directory
+compile_shaders(uldum
+    ${CMAKE_SOURCE_DIR}/engine/shaders
+    ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine/shaders
+)
+
 # Copy engine assets to output directory after build
 add_custom_command(TARGET uldum POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
