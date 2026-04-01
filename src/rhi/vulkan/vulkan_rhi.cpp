@@ -443,6 +443,9 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
         }
     }
 
+    // Reset per-image fence tracking
+    m_image_in_flight.assign(image_count, VK_NULL_HANDLE);
+
     log::info(TAG, "Swapchain created: {}x{}, {} images", extent.width, extent.height, image_count);
     return true;
 }
@@ -568,6 +571,13 @@ VkCommandBuffer VulkanRhi::begin_frame() {
         create_swapchain(m_swapchain_extent.width, m_swapchain_extent.height);
         return VK_NULL_HANDLE;
     }
+
+    // Wait if a different frame-in-flight is still using this swapchain image
+    if (m_image_in_flight[m_current_image_index] != VK_NULL_HANDLE &&
+        m_image_in_flight[m_current_image_index] != m_in_flight[m_frame_index]) {
+        vkWaitForFences(m_device, 1, &m_image_in_flight[m_current_image_index], VK_TRUE, UINT64_MAX);
+    }
+    m_image_in_flight[m_current_image_index] = m_in_flight[m_frame_index];
 
     vkResetFences(m_device, 1, &m_in_flight[m_frame_index]);
 

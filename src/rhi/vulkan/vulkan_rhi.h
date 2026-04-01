@@ -116,6 +116,10 @@ private:
     bool m_swapchain_dirty = false;
     bool m_frame_active = false;
 
+    // Per-swapchain-image: which in-flight fence was last submitted with this image.
+    // Used to avoid writing to an image that a previous frame is still rendering to.
+    std::vector<VkFence> m_image_in_flight;
+
     // Triangle resources (Phase 5a)
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_pipeline        = VK_NULL_HANDLE;
