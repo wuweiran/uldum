@@ -3,6 +3,7 @@
 #include "map/terrain_data.h"
 #include "simulation/world.h"
 #include "simulation/components.h"
+#include "simulation/pathfinding.h"
 #include "asset/model.h"
 #include "core/log.h"
 
@@ -53,6 +54,25 @@ static std::vector<u8> generate_solid_texture(u32 size, u8 r, u8 g, u8 b) {
         pixels[i * 4 + 3] = 255;
     }
     return pixels;
+}
+
+// ── Terrain slope tilt helper ──────────────────────────────────────────────
+
+// Build a rotation matrix that tilts an entity to match the terrain slope.
+// terrain_normal is the surface normal at the entity position (Z-up).
+static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal) {
+    glm::vec3 up{0.0f, 0.0f, 1.0f};
+    glm::vec3 n = glm::normalize(terrain_normal);
+    f32 dot = glm::dot(up, n);
+    if (dot > 0.999f) return glm::mat4{1.0f};  // flat terrain, no tilt
+
+    glm::vec3 axis = glm::cross(up, n);
+    f32 axis_len = glm::length(axis);
+    if (axis_len < 0.001f) return glm::mat4{1.0f};
+    axis /= axis_len;
+
+    f32 angle = std::acos(std::clamp(dot, -1.0f, 1.0f));
+    return glm::rotate(glm::mat4{1.0f}, angle, axis);
 }
 
 // ── Init / Shutdown ────────────────────────────────────────────────────────
@@ -861,6 +881,10 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         if (!mesh.vertex_buffer) continue;
 
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+        if (m_pathfinder) {
+            glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+            model = model * slope_tilt_matrix(normal);
+        }
         model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});
         if (!mesh.native_z_up) {
@@ -964,6 +988,11 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         if (!mesh.vertex_buffer) continue;
 
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+        // Terrain slope tilt (visual only)
+        if (m_pathfinder) {
+            glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+            model = model * slope_tilt_matrix(normal);
+        }
         model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});
         if (!mesh.native_z_up) {

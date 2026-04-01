@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 6 complete. The engine loads self-contained map packages with types, terrain, and preplaced objects.
+Phase 7a complete. Units pathfind and move across terrain with slope tilt.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -30,6 +30,10 @@ Phase 6 complete. The engine loads self-contained map packages with types, terra
 - Generic state system (HP engine-built-in, mana/energy/etc. map-defined)
 - Generic attribute system (string-based: armor, attack_type, strength, etc. all map-defined)
 - String-based classifications, attack/armor types (map declares valid values in manifest)
+- A* pathfinding on tile grid with 8-directional movement
+- MovementSystem: path following, steering, turn rate, terrain height placement
+- Terrain slope tilt: entities visually align to terrain surface normal
+- Move orders from map placement data (objects.json `move_to` field)
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
 - Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias

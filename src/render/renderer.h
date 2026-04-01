@@ -17,7 +17,7 @@
 #include <unordered_map>
 
 namespace uldum::rhi { class VulkanRhi; }
-namespace uldum::simulation { struct World; }
+namespace uldum::simulation { struct World; class Pathfinder; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::map { struct TerrainData; }
 
@@ -33,6 +33,9 @@ public:
 
     // Build (or rebuild) the terrain GPU mesh and splatmap from terrain data.
     void set_terrain(const map::TerrainData& terrain);
+
+    // Set pathfinder for terrain normal sampling (used for entity slope tilt).
+    void set_pathfinder(const simulation::Pathfinder* pf) { m_pathfinder = pf; }
 
     // Record shadow depth pass (must be called before begin_rendering).
     void draw_shadows(VkCommandBuffer cmd, const simulation::World& world);
@@ -59,6 +62,7 @@ private:
     void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world);
 
     rhi::VulkanRhi* m_rhi = nullptr;
+    const simulation::Pathfinder* m_pathfinder = nullptr;
     Camera          m_camera;
 
     // Descriptor infrastructure

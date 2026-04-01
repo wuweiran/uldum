@@ -2,7 +2,10 @@
 #include "asset/asset.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
+#include "simulation/order.h"
 #include "core/log.h"
+
+#include <glm/vec3.hpp>
 
 namespace uldum::map {
 
@@ -199,6 +202,17 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 // Place on terrain surface
                 auto* t = world.transforms.get(unit.id);
                 if (t) t->position.z = sample_height(pu.x, pu.y);
+
+                // Issue initial move order if specified
+                if (u.contains("move_to")) {
+                    auto& mt = u["move_to"];
+                    f32 mx = mt.value("x", 0.0f);
+                    f32 my = mt.value("y", 0.0f);
+                    simulation::Order order;
+                    order.payload = simulation::orders::Move{glm::vec3{mx, my, 0.0f}};
+                    simulation::issue_order(world, unit, std::move(order));
+                }
+
                 unit_count++;
             }
         }

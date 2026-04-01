@@ -22,7 +22,7 @@ void Simulation::shutdown() {
 void Simulation::tick(float dt) {
     system_health(m_world, dt);
     system_state(m_world, dt);
-    system_movement(m_world, dt);
+    system_movement(m_world, dt, m_pathfinder);
     system_combat(m_world, dt);
     system_ability(m_world, dt);
     system_projectile(m_world, dt);

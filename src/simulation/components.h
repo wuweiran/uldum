@@ -70,10 +70,14 @@ struct Owner {
 
 struct Movement {
     f32       speed     = 0;
-    f32       turn_rate = 0;
+    f32       turn_rate = 0;  // radians per second
     MoveType  type      = MoveType::Ground;  // engine preset (pathfinding needs it)
     glm::vec3 target_pos{0.0f};
     bool      moving    = false;
+
+    // Current path (set by MovementSystem when processing Move orders)
+    std::vector<glm::vec3> path;
+    u32 path_index = 0;  // current waypoint index
 };
 
 struct Combat {

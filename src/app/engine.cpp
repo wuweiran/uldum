@@ -115,9 +115,11 @@ bool Engine::init() {
         return false;
     }
 
-    // Feed terrain data to renderer
+    // Feed terrain data to renderer and simulation
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
+        m_simulation.set_terrain(&m_map.terrain());
+        m_renderer.set_pathfinder(&m_simulation.pathfinder());
     }
 
     // Editor
@@ -135,6 +137,8 @@ void Engine::run() {
 
     auto previous_time = std::chrono::high_resolution_clock::now();
     float accumulator = 0.0f;
+    float game_speed = 1.0f;     // multiplier: 0 = paused, 1 = normal, 2 = fast
+    float game_time = 0.0f;      // in-game elapsed time (affected by game_speed)
     u32 frame_count = 0;
 
     while (m_platform->poll_events()) {
@@ -161,11 +165,12 @@ void Engine::run() {
         // Network: receive state / commands
         m_network.update();
 
-        // Fixed timestep simulation
-        accumulator += frame_dt;
+        // Fixed timestep simulation (scaled by game speed)
+        accumulator += frame_dt * game_speed;
         while (accumulator >= TICK_DT) {
             m_simulation.tick(TICK_DT);
             m_script.update(TICK_DT);
+            game_time += TICK_DT;
             accumulator -= TICK_DT;
         }
 

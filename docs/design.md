@@ -146,7 +146,10 @@ See [map-system.md](map-system.md) for the engine vs map boundary and map packag
 - ECS internally (sparse set per component type, cache-friendly iteration)
 - Unit-centric facade API externally (free functions operating on entity IDs)
 - Data-driven types: unit/ability definitions loaded from JSON
-- Fixed timestep simulation (16 ticks/sec = 62.5ms per tick)
+- Fixed timestep simulation (16 ticks/sec = 62.5ms per tick), deterministic
+- Game speed multiplier controls tick frequency (1.0 = normal, 2.0 = fast, 0 = paused)
+- In-game clock tracks game-time elapsed (affected by speed), used by scripts and timers
+- Camera, audio, and editor update at real frame rate (unaffected by game speed)
 - Render interpolates between sim states for smooth visuals
 
 ## 9. Scripting (Lua 5.4)
@@ -415,6 +418,7 @@ Now the unit model, renderer, map system, and gameplay systems are stable — Lu
 - **sol2 bindings**: expose unit facade, trigger API, game state queries to Lua
 - **Trigger system**: event → condition → action (WC3-style)
 - **Engine API**: CreateUnit, DamageTarget, SetUnitPosition, DisplayMessage, etc.
+- **Cleanup**: remove temporary `move_to` from map objects.json loader — initial orders come from Lua scripts
 
 ### Phase 9 — Editor (Terrain Editor v1)
 
