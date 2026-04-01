@@ -2,6 +2,7 @@ add_library(uldum_render STATIC
     renderer.cpp
     camera.cpp
     gpu_mesh.cpp
+    gpu_texture.cpp
     terrain.cpp
 )
 

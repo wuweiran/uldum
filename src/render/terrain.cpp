@@ -30,12 +30,10 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
             f32 z = td.heightmap[idx];
 
             vertices[idx].position = {x, y, z};
-            // Texcoord carries base color (R,G) until Phase 5d adds real textures.
-            // Height-based green→brown: low = green (0.3, 0.5), high = brown (0.5, 0.35)
-            f32 t = std::clamp(z / 5.0f, 0.0f, 1.0f);
+            // UV spans 0-1 across entire terrain (for splatmap sampling)
             vertices[idx].texcoord = {
-                0.3f + t * 0.2f,   // R: 0.3 (green) → 0.5 (brown)
-                0.5f - t * 0.15f   // G: 0.5 (green) → 0.35 (brown)
+                static_cast<f32>(ix) / static_cast<f32>(td.tiles_x),
+                static_cast<f32>(iy) / static_cast<f32>(td.tiles_y)
             };
         }
     }

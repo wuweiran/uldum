@@ -522,6 +522,40 @@ void VulkanRhi::handle_resize(u32 width, u32 height) {
     m_swapchain_dirty = true;
 }
 
+VkCommandBuffer VulkanRhi::begin_oneshot() {
+    VkCommandPool pool = m_command_pools[0];
+
+    VkCommandBufferAllocateInfo alloc_info{};
+    alloc_info.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool        = pool;
+    alloc_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1;
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(m_device, &alloc_info, &cmd);
+
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin_info);
+
+    return cmd;
+}
+
+void VulkanRhi::end_oneshot(VkCommandBuffer cmd) {
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submit{};
+    submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers    = &cmd;
+
+    vkQueueSubmit(m_graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(m_graphics_queue);
+
+    vkFreeCommandBuffers(m_device, m_command_pools[0], 1, &cmd);
+}
+
 VkCommandBuffer VulkanRhi::begin_frame() {
     vkWaitForFences(m_device, 1, &m_in_flight[m_frame_index], VK_TRUE, UINT64_MAX);
 

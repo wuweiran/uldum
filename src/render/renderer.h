@@ -2,7 +2,9 @@
 
 #include "render/camera.h"
 #include "render/gpu_mesh.h"
+#include "render/gpu_texture.h"
 #include "render/terrain.h"
+#include "render/material.h"
 #include "core/handle.h"
 #include "asset/model.h"
 
@@ -28,7 +30,7 @@ public:
     void update_camera(const platform::InputState& input, f32 dt);
     void handle_resize(f32 aspect);
 
-    // Build (or rebuild) the terrain GPU mesh from terrain data.
+    // Build (or rebuild) the terrain GPU mesh and splatmap from terrain data.
     void set_terrain(const map::TerrainData& terrain);
 
     // Record draw commands into the given command buffer.
@@ -38,15 +40,37 @@ public:
     Camera& camera() { return m_camera; }
 
 private:
+    bool create_descriptor_layouts();
     bool create_mesh_pipeline();
+    bool create_terrain_pipeline();
+    bool create_default_texture();
+    bool create_terrain_textures();
     GpuMesh& get_or_upload_mesh(const std::string& model_path);
+    VkDescriptorSet allocate_mesh_descriptor(const GpuTexture& diffuse);
+    VkDescriptorSet allocate_terrain_descriptor(const TerrainMaterial& mat);
 
     rhi::VulkanRhi* m_rhi = nullptr;
     Camera          m_camera;
 
-    // Mesh pipeline (3D with MVP push constants)
+    // Descriptor infrastructure
+    VkDescriptorSetLayout m_mesh_desc_layout    = VK_NULL_HANDLE;  // 1 diffuse sampler
+    VkDescriptorSetLayout m_terrain_desc_layout = VK_NULL_HANDLE;  // 4 layers + 1 splatmap
+    VkDescriptorPool      m_descriptor_pool     = VK_NULL_HANDLE;
+
+    // Mesh pipeline (3D with MVP push constants + 1 texture)
     VkPipelineLayout m_mesh_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_mesh_pipeline        = VK_NULL_HANDLE;
+
+    // Terrain pipeline (terrain shader with splatmap)
+    VkPipelineLayout m_terrain_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_terrain_pipeline        = VK_NULL_HANDLE;
+
+    // Default white texture for untextured meshes
+    GpuTexture      m_default_texture{};
+    MeshMaterial    m_default_material{};
+
+    // Terrain material (ground layer textures + splatmap)
+    TerrainMaterial m_terrain_material{};
 
     // Cached GPU meshes (model_path → GpuMesh)
     std::unordered_map<std::string, GpuMesh> m_mesh_cache;
@@ -54,7 +78,7 @@ private:
     // Placeholder mesh for models that fail to load
     GpuMesh m_placeholder_mesh{};
 
-    // Terrain
+    // Terrain mesh
     TerrainMesh m_terrain{};
 };
 

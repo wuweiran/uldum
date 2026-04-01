@@ -45,6 +45,7 @@ public:
 
     // Accessors for renderer
     VkDevice         device()    const { return m_device; }
+    VkPhysicalDevice physical_device() const { return m_physical_device; }
     VmaAllocator     allocator() const { return m_allocator; }
     VkExtent2D       extent()    const { return m_swapchain_extent; }
     VkFormat         swapchain_format() const { return m_swapchain_format; }
@@ -52,6 +53,13 @@ public:
     u32              current_image_index() const { return m_current_image_index; }
     VkImageView      current_image_view() const { return m_swapchain_views[m_current_image_index]; }
     VkImage          current_image()      const { return m_swapchain_images[m_current_image_index]; }
+    VkQueue          graphics_queue() const { return m_graphics_queue; }
+    u32              graphics_family() const { return m_graphics_family; }
+
+    // One-shot command buffer for immediate GPU work (texture uploads, etc.)
+    // Call begin, record commands, then end (submits and waits).
+    VkCommandBuffer begin_oneshot();
+    void            end_oneshot(VkCommandBuffer cmd);
 
 private:
     bool create_instance(const Config& config);

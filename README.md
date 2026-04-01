@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 5b complete. The engine renders 3D objects from ECS entities with a movable camera.
+Phase 5d complete. The engine renders textured terrain with splatmap blending and textured 3D entities.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -23,9 +23,13 @@ Phase 5b complete. The engine renders 3D objects from ECS entities with a movabl
 - Handle-based AssetManager with path caching
 - ECS simulation: sparse set storage, generational typed handles (Unit, Destructable, Item)
 - Data-driven unit types loaded from JSON (TypeRegistry)
-- 3D mesh pipeline with MVP push constants, camera with WASD+QE movement
-- Renderer iterates ECS World (Transform + Renderable) and draws entities
-- Game coordinates: X=right, Y=forward, Z=up
+- Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
+- Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
+- GPU texture upload with staging buffers, one-shot command buffer helpers
+- Depth buffer (D32_SFLOAT) with proper 3D sorting
+- Terrain system: TerrainData (heightmap + tile types + pathing) in map module, GPU mesh built from data
+- Directional lighting with world-space normals
+- Game coordinates: X=right, Y=forward, Z=up (documented in docs/coordinates.md)
 - Build output is self-contained (engine assets copied to output directory)
 
 ## Requirements
