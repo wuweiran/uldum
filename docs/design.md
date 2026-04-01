@@ -306,18 +306,16 @@ Prerequisite layer that all gameplay and rendering modules depend on.
   - JSON config loading (nlohmann/json)
 - **Third-party deps**: glm, stb, cgltf, nlohmann/json via CMake FetchContent
 
-### Phase 4 — Simulation (ECS + Unit Model)
+### Phase 4 — Simulation (ECS + Unit Model) ✓
 
-The heart of the engine — entity management and gameplay systems. Requires unit/object model design before implementation.
+ECS foundation and data-driven unit creation.
 
-- **ECS core**: entity creation/destruction, component storage (sparse set or archetype), system iteration
-- **Core components**: Transform, Health, Movement, Combat, Ability, Buff, Vision, Owner
-- **Unit facade**: unit-centric API wrapping ECS entities (CreateUnit, UnitAddAbility, etc.)
-- **Unit type definitions**: data-driven unit types loaded from JSON
-- **Ability/buff system**: cooldowns, effects, targeting, duration
-- **Order system**: move, attack, cast, patrol, hold position
-- **Pathfinding**: A* on tile grid, flow field for group movement
-- **Collision**: simple spatial grid for unit-unit and unit-terrain queries
+- **ECS core**: sparse set component storage, handle allocator, generational typed handles
+- **Core components**: Transform, Health, Movement, Combat, Ability, Buff, Vision, Owner, etc.
+- **Typed handles**: Unit, Destructable, Item — distinct types wrapping Handle base
+- **Unit facade**: create_unit, get_health, is_hero, is_building, issue_order, etc.
+- **Unit type definitions**: data-driven types loaded from JSON via TypeRegistry
+- **Systems**: health regen, cooldown ticking, buff duration — stubs for complex systems
 
 ### Phase 5 — Render Pipeline
 
@@ -342,16 +340,27 @@ Ties simulation + render together into loadable, playable content.
 - **Override system**: map-level unit/ability type overrides merging on top of engine defaults
 - **Map loading/unloading**: full lifecycle with cleanup
 
-### Phase 7 — Scripting (Lua 5.4)
+### Phase 7 — Gameplay Systems
 
-Now the unit model, renderer, and map system are stable — Lua binds against a tested API.
+Requires terrain data from Phase 6. Completes the simulation systems left incomplete in Phase 4.
+
+- **Pathfinding**: A* on tile grid, flow field for group movement
+- **Collision**: spatial grid for unit-unit and unit-terrain queries
+- **Order execution**: MovementSystem processes Move/Patrol, CombatSystem processes Attack, AbilitySystem processes Cast
+- **Combat logic**: target acquisition, range checking, damage calculation, attack animation timing
+- **Ability execution**: cast flow (validate → animate → fire effect), projectile spawning, aura scanning
+- **Buff application**: stat modifier stacking/recalculation, periodic effects, dispel
+
+### Phase 8 — Scripting (Lua 5.4)
+
+Now the unit model, renderer, map system, and gameplay systems are stable — Lua binds against a tested API.
 
 - **Lua VM**: Lua 5.4 integration, sandboxed per map
 - **sol2 bindings**: expose unit facade, trigger API, game state queries to Lua
 - **Trigger system**: event → condition → action (WC3-style)
 - **Engine API**: CreateUnit, DamageTarget, SetUnitPosition, DisplayMessage, etc.
 
-### Phase 8 — Editor (Terrain Editor v1)
+### Phase 9 — Editor (Terrain Editor v1)
 
 Needs render + map working first.
 
@@ -362,7 +371,7 @@ Needs render + map working first.
 - **Object placement**: place, move, delete units and doodads
 - **Save/Load**: serialize edited map to .uldmap package
 
-### Phase 9 — Audio
+### Phase 10 — Audio
 
 Independent module, can be developed in parallel with other phases.
 
@@ -371,7 +380,7 @@ Independent module, can be developed in parallel with other phases.
 - **Music streaming**: background music with crossfade
 - **SFX system**: fire-and-forget sound effects, pooled voices
 
-### Phase 10 — Networking
+### Phase 11 — Networking
 
 Last because it's the most complex and needs a working local game loop.
 
@@ -382,7 +391,7 @@ Last because it's the most complex and needs a working local game loop.
 - **Lobby system**: host/join, map selection, player slots, team assignment, ready check
 - **Desync detection**: periodic state checksums for debugging
 
-### Phase 11 — Packaging & Distribution
+### Phase 12 — Packaging & Distribution
 
 Cross-platform build output and asset protection.
 
