@@ -146,9 +146,10 @@ See [map-system.md](map-system.md) for the engine vs map boundary and map packag
 - ECS internally (sparse set per component type, cache-friendly iteration)
 - Unit-centric facade API externally (free functions operating on entity IDs)
 - Data-driven types: unit/ability definitions loaded from JSON
-- Fixed timestep simulation (16 ticks/sec = 62.5ms per tick), deterministic
-- Game speed multiplier controls tick frequency (1.0 = normal, 2.0 = fast, 0 = paused)
+- Fixed timestep simulation at 32 real-time ticks/sec (31.25ms per tick), always constant regardless of game speed
+- Game speed multiplier scales how much game time passes per tick (1.0x = 31.25ms game time/tick, 2.0x = 62.5ms game time/tick, 0 = paused)
 - In-game clock tracks game-time elapsed (affected by speed), used by scripts and timers
+- Tick count per real second never changes — game speed only affects game_dt, not CPU load
 - Camera, audio, and editor update at real frame rate (unaffected by game speed)
 - Render interpolates between sim states for smooth visuals
 

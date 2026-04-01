@@ -6,8 +6,8 @@
 namespace uldum {
 
 static constexpr const char* TAG = "Engine";
-static constexpr float TICK_RATE = 16.0f;  // ticks per second
-static constexpr float TICK_DT  = 1.0f / TICK_RATE;
+static constexpr float TICK_RATE = 32.0f;  // real-time ticks per second (always constant)
+static constexpr float TICK_DT  = 1.0f / TICK_RATE;  // real-time interval between ticks
 
 bool Engine::init() {
     log::info(TAG, "=== Initializing Uldum Engine ===");
@@ -165,12 +165,13 @@ void Engine::run() {
         // Network: receive state / commands
         m_network.update();
 
-        // Fixed timestep simulation (scaled by game speed)
-        accumulator += frame_dt * game_speed;
+        // Fixed timestep simulation (32 real-time ticks/sec, game speed scales game_dt)
+        float game_dt = TICK_DT * game_speed;  // how much game time passes per tick
+        accumulator += frame_dt;
         while (accumulator >= TICK_DT) {
-            m_simulation.tick(TICK_DT);
-            m_script.update(TICK_DT);
-            game_time += TICK_DT;
+            m_simulation.tick(game_dt);
+            m_script.update(game_dt);
+            game_time += game_dt;
             accumulator -= TICK_DT;
         }
 
