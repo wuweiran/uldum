@@ -38,3 +38,11 @@ add_custom_command(TARGET uldum POST_BUILD
         $<TARGET_FILE_DIR:uldum>/engine
     COMMENT "Copying engine assets to output directory"
 )
+
+# Copy maps to output directory after build
+add_custom_command(TARGET uldum POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/maps
+        $<TARGET_FILE_DIR:uldum>/maps
+    COMMENT "Copying maps to output directory"
+)

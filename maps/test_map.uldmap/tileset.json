@@ -1,0 +1,9 @@
+{
+    "name": "Default",
+    "layers": [
+        { "id": 0, "name": "grass",  "texture": "shared/assets/textures/terrain/grass.png" },
+        { "id": 1, "name": "dirt",   "texture": "shared/assets/textures/terrain/dirt.png" },
+        { "id": 2, "name": "stone",  "texture": "shared/assets/textures/terrain/stone.png" },
+        { "id": 3, "name": "sand",   "texture": "shared/assets/textures/terrain/sand.png" }
+    ]
+}

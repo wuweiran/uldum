@@ -14,24 +14,28 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 5e complete. The engine renders textured terrain with splatmap blending, directional shadow mapping with PCF, and textured 3D entities.
+Phase 6 complete. The engine loads self-contained map packages with types, terrain, and preplaced objects.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
 - VMA for GPU memory, GLSL shaders compiled to SPIR-V at build time
 - Asset pipeline: PNG textures (stb_image), glTF models (cgltf), JSON configs (nlohmann/json)
-- Handle-based AssetManager with path caching
+- Handle-based AssetManager with path caching + absolute path loading
 - ECS simulation: sparse set storage, generational typed handles (Unit, Destructable, Item)
-- Data-driven unit types loaded from JSON (TypeRegistry)
+- Map system: `.uldmap` packages with manifest, types, scenes, scripts, assets
+  - Manifest: metadata, players, teams, map-defined enumerations
+  - Type loading from map's `types/` directory (no engine gameplay data)
+  - Scene: terrain + object placements (units, destructables, items, regions, cameras)
+  - Units placed on terrain surface automatically
+- Generic state system (HP engine-built-in, mana/energy/etc. map-defined)
+- Generic attribute system (string-based: armor, attack_type, strength, etc. all map-defined)
+- String-based classifications, attack/armor types (map declares valid values in manifest)
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
 - Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias
-- GPU texture upload with staging buffers, one-shot command buffer helpers
-- Depth buffer (D32_SFLOAT) with proper 3D sorting
-- Terrain system: TerrainData (heightmap + tile types + pathing) in map module, GPU mesh built from data
 - Directional lighting with world-space normals and shadows
 - Game coordinates: X=right, Y=forward, Z=up (documented in docs/coordinates.md)
-- Build output is self-contained (engine assets copied to output directory)
+- Build output is self-contained (engine + maps copied to output directory)
 
 ## Requirements
 

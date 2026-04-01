@@ -6,14 +6,55 @@ namespace uldum::simulation {
 
 static constexpr const char* TAG = "TypeRegistry";
 
+// ── Public loaders (relative path) ────────────────────────────────────────
+
 bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view path) {
     auto handle = assets.load_config(path);
     auto* doc = assets.get(handle);
-    if (!doc) {
-        log::error(TAG, "Failed to load unit types from '{}'", path);
-        return false;
-    }
+    if (!doc) { log::error(TAG, "Failed to load unit types from '{}'", path); return false; }
+    return load_unit_types_from_doc(doc, path);
+}
 
+bool TypeRegistry::load_destructable_types(asset::AssetManager& assets, std::string_view path) {
+    auto handle = assets.load_config(path);
+    auto* doc = assets.get(handle);
+    if (!doc) { log::error(TAG, "Failed to load destructable types from '{}'", path); return false; }
+    return load_destructable_types_from_doc(doc, path);
+}
+
+bool TypeRegistry::load_item_types(asset::AssetManager& assets, std::string_view path) {
+    auto handle = assets.load_config(path);
+    auto* doc = assets.get(handle);
+    if (!doc) { log::error(TAG, "Failed to load item types from '{}'", path); return false; }
+    return load_item_types_from_doc(doc, path);
+}
+
+// ── Public loaders (absolute path) ────────────────────────────────────────
+
+bool TypeRegistry::load_unit_types_absolute(asset::AssetManager& assets, std::string_view abs_path) {
+    auto handle = assets.load_config_absolute(abs_path);
+    auto* doc = assets.get(handle);
+    if (!doc) return false;
+    return load_unit_types_from_doc(doc, abs_path);
+}
+
+bool TypeRegistry::load_destructable_types_absolute(asset::AssetManager& assets, std::string_view abs_path) {
+    auto handle = assets.load_config_absolute(abs_path);
+    auto* doc = assets.get(handle);
+    if (!doc) return false;
+    return load_destructable_types_from_doc(doc, abs_path);
+}
+
+bool TypeRegistry::load_item_types_absolute(asset::AssetManager& assets, std::string_view abs_path) {
+    auto handle = assets.load_config_absolute(abs_path);
+    auto* doc = assets.get(handle);
+    if (!doc) return false;
+    return load_item_types_from_doc(doc, abs_path);
+}
+
+// ── Internal parsers ──────────────────────────────────────────────────────
+
+bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std::string_view source) {
     for (auto& [key, val] : doc->data.items()) {
         UnitTypeDef def;
         def.id = key;
@@ -52,7 +93,6 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             def.selection_priority = s.value("priority", 5);
         }
 
-        // Classifications — map-defined string flags
         if (val.contains("classifications")) {
             for (const auto& c : val["classifications"]) {
                 def.classifications.push_back(c.get<std::string>());
@@ -65,7 +105,6 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             }
         }
 
-        // Map-defined states beyond HP (e.g. mana)
         if (val.contains("states")) {
             for (auto& [sid, sval] : val["states"].items()) {
                 UnitTypeDef::StateDef sd;
@@ -75,7 +114,6 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             }
         }
 
-        // Map-defined attributes (numeric and string)
         if (val.contains("attributes")) {
             for (auto& [aid, aval] : val["attributes"].items()) {
                 if (aval.is_number()) {
@@ -86,7 +124,6 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             }
         }
 
-        // Hero data
         if (val.contains("hero")) {
             auto& h = val["hero"];
             def.hero_primary_attr = h.value("primary_attr", "");
@@ -95,7 +132,6 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
                     def.hero_attr_per_level[attr] = growth.get<f32>();
                 }
             }
-            // Base hero attributes come from the "attributes" block above
             for (auto& [attr, growth] : def.hero_attr_per_level) {
                 if (def.attributes_numeric.contains(attr)) {
                     def.hero_base_attrs[attr] = def.attributes_numeric[attr];
@@ -103,7 +139,6 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
             }
         }
 
-        // Building data
         if (val.contains("building")) {
             auto& b = val["building"];
             def.build_time = b.value("build_time", 60.0f);
@@ -114,18 +149,11 @@ bool TypeRegistry::load_unit_types(asset::AssetManager& assets, std::string_view
         m_unit_types[key] = std::move(def);
     }
 
-    log::info(TAG, "Loaded {} unit types from '{}'", m_unit_types.size(), path);
+    log::info(TAG, "Loaded {} unit types from '{}'", m_unit_types.size(), source);
     return true;
 }
 
-bool TypeRegistry::load_destructable_types(asset::AssetManager& assets, std::string_view path) {
-    auto handle = assets.load_config(path);
-    auto* doc = assets.get(handle);
-    if (!doc) {
-        log::error(TAG, "Failed to load destructable types from '{}'", path);
-        return false;
-    }
-
+bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* doc, std::string_view source) {
     for (auto& [key, val] : doc->data.items()) {
         DestructableTypeDef def;
         def.id = key;
@@ -151,18 +179,11 @@ bool TypeRegistry::load_destructable_types(asset::AssetManager& assets, std::str
         m_destructable_types[key] = std::move(def);
     }
 
-    log::info(TAG, "Loaded {} destructable types from '{}'", m_destructable_types.size(), path);
+    log::info(TAG, "Loaded {} destructable types from '{}'", m_destructable_types.size(), source);
     return true;
 }
 
-bool TypeRegistry::load_item_types(asset::AssetManager& assets, std::string_view path) {
-    auto handle = assets.load_config(path);
-    auto* doc = assets.get(handle);
-    if (!doc) {
-        log::error(TAG, "Failed to load item types from '{}'", path);
-        return false;
-    }
-
+bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std::string_view source) {
     for (auto& [key, val] : doc->data.items()) {
         ItemTypeDef def;
         def.id = key;
@@ -175,9 +196,11 @@ bool TypeRegistry::load_item_types(asset::AssetManager& assets, std::string_view
         m_item_types[key] = std::move(def);
     }
 
-    log::info(TAG, "Loaded {} item types from '{}'", m_item_types.size(), path);
+    log::info(TAG, "Loaded {} item types from '{}'", m_item_types.size(), source);
     return true;
 }
+
+// ── Lookups ───────────────────────────────────────────────────────────────
 
 const UnitTypeDef* TypeRegistry::get_unit_type(std::string_view id) const {
     auto it = m_unit_types.find(std::string(id));

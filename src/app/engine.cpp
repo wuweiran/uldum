@@ -1,7 +1,6 @@
 #include "app/engine.h"
 #include "core/log.h"
 
-#include <algorithm>
 #include <chrono>
 
 namespace uldum {
@@ -99,83 +98,26 @@ bool Engine::init() {
         return false;
     }
 
-    // Load test type definitions (temporary — Phase 6 map system will handle this)
-    m_simulation.types().load_unit_types(m_asset, "config/unit_types.json");
-    m_simulation.types().load_destructable_types(m_asset, "config/destructable_types.json");
-    m_simulation.types().load_item_types(m_asset, "config/item_types.json");
-
-    // Test units created below, after map terrain is available
-
     // Network
     if (!m_network.init(m_simulation)) {
         log::error(TAG, "NetworkManager init failed");
         return false;
     }
 
-    // Map
+    // Map — loads types, terrain, and preplaced objects
     if (!m_map.init()) {
         log::error(TAG, "MapManager init failed");
+        return false;
+    }
+
+    if (!m_map.load_map("maps/test_map.uldmap", m_asset, m_simulation)) {
+        log::error(TAG, "Failed to load test map");
         return false;
     }
 
     // Feed terrain data to renderer
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
-    }
-
-    // Create test units on the terrain surface
-    {
-        using namespace simulation;
-        auto& world = m_simulation.world();
-        auto& td = m_map.terrain();
-        Player p1{0};
-
-        // Helper: sample terrain height at world (x, y)
-        auto sample_height = [&](f32 x, f32 y) -> f32 {
-            if (!td.is_valid()) return 0.0f;
-            u32 ix = static_cast<u32>(x / td.tile_size);
-            u32 iy = static_cast<u32>(y / td.tile_size);
-            ix = std::min(ix, td.tiles_x);
-            iy = std::min(iy, td.tiles_y);
-            return td.height_at(ix, iy);
-        };
-
-        // Place units close together so they overlap from the camera angle (tests depth)
-        f32 x1 = 44.0f, y1 = 52.0f;
-        f32 x2 = 46.0f, y2 = 54.0f;
-        f32 x3 = 45.0f, y3 = 50.0f;
-
-        auto footman  = create_unit(world, "footman",  p1, x1, y1);
-        auto paladin  = create_unit(world, "paladin",  p1, x2, y2);
-        auto barracks = create_unit(world, "barracks", p1, x3, y3);
-
-        // Place on terrain surface
-        if (footman.is_valid())  set_position(world, footman,  x1, y1);
-        if (paladin.is_valid())  set_position(world, paladin,  x2, y2);
-        if (barracks.is_valid()) set_position(world, barracks, x3, y3);
-
-        // Set Z to terrain height
-        if (footman.is_valid()) {
-            auto* t = world.transforms.get(footman.id);
-            if (t) t->position.z = sample_height(x1, y1);
-        }
-        if (paladin.is_valid()) {
-            auto* t = world.transforms.get(paladin.id);
-            if (t) t->position.z = sample_height(x2, y2);
-        }
-        if (barracks.is_valid()) {
-            auto* t = world.transforms.get(barracks.id);
-            if (t) t->position.z = sample_height(x3, y3);
-        }
-
-        if (footman.is_valid() && paladin.is_valid() && barracks.is_valid()) {
-            log::info(TAG, "Test units created — footman(hp={}) paladin(hp={}, hero={}, lvl={}) barracks(hp={}, building={})",
-                      get_health(world, footman),
-                      get_health(world, paladin), is_hero(world, paladin), hero_get_level(world, paladin),
-                      get_health(world, barracks), is_building(world, barracks));
-        } else {
-            log::error(TAG, "Test unit creation FAILED");
-        }
     }
 
     // Editor

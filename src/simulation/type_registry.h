@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace uldum::asset { class AssetManager; }
+namespace uldum::asset { class AssetManager; struct JsonDocument; }
 
 namespace uldum::simulation {
 
@@ -83,9 +83,15 @@ struct ItemTypeDef {
 
 class TypeRegistry {
 public:
+    // Load types from a path relative to engine root.
     bool load_unit_types(asset::AssetManager& assets, std::string_view path);
     bool load_destructable_types(asset::AssetManager& assets, std::string_view path);
     bool load_item_types(asset::AssetManager& assets, std::string_view path);
+
+    // Load types from an absolute path (for map files).
+    bool load_unit_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
+    bool load_destructable_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
+    bool load_item_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
 
     const UnitTypeDef*          get_unit_type(std::string_view id) const;
     const DestructableTypeDef*  get_destructable_type(std::string_view id) const;
@@ -96,6 +102,10 @@ public:
     u32 item_type_count() const { return static_cast<u32>(m_item_types.size()); }
 
 private:
+    bool load_unit_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
+    bool load_destructable_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
+    bool load_item_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
+
     std::unordered_map<std::string, UnitTypeDef>          m_unit_types;
     std::unordered_map<std::string, DestructableTypeDef>  m_destructable_types;
     std::unordered_map<std::string, ItemTypeDef>          m_item_types;

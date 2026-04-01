@@ -1,0 +1,16 @@
+{
+    "units": [
+        { "type": "footman",  "x": 44.0, "y": 52.0, "facing": 0.0, "owner": 0 },
+        { "type": "paladin",  "x": 46.0, "y": 54.0, "facing": 0.0, "owner": 0 },
+        { "type": "barracks", "x": 45.0, "y": 50.0, "facing": 0.0, "owner": 0 }
+    ],
+    "destructables": [],
+    "items": [],
+    "doodads": [],
+    "regions": [
+        { "name": "spawn_area", "x": 40.0, "y": 48.0, "width": 12.0, "height": 12.0 }
+    ],
+    "cameras": [
+        { "name": "default", "x": 45.0, "y": 30.0, "z": 25.0, "pitch": -0.8, "yaw": 0.0 }
+    ]
+}

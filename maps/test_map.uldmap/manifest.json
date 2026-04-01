@@ -1,0 +1,27 @@
+{
+    "name": "Test Map",
+    "author": "Uldum Engine",
+    "description": "A test map for engine development and verification.",
+    "version": "1.0.0",
+    "engine_version": "0.1.0",
+    "game_mode": "test",
+    "suggested_players": "1",
+
+    "players": [
+        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" }
+    ],
+    "teams": [
+        { "id": 0, "name": "Players", "allied": true, "shared_vision": true }
+    ],
+
+    "tileset": "tileset.json",
+    "start_scene": "scene_01",
+
+    "classifications": ["ground", "air", "hero", "structure", "mechanical", "undead", "worker", "summoned"],
+    "attack_types": ["normal", "pierce", "siege", "magic", "chaos", "hero"],
+    "armor_types": ["unarmored", "light", "medium", "heavy", "fortified", "hero"],
+    "states": [
+        { "id": "mana", "has_max": true, "has_regen": true }
+    ],
+    "attributes": ["strength", "agility", "intelligence"]
+}

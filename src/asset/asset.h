@@ -17,9 +17,13 @@ public:
     void shutdown();
 
     // Load assets — returns existing handle if already loaded at that path.
+    // Paths are relative to engine root.
     Handle<TextureData>  load_texture(std::string_view path);
     Handle<ModelData>    load_model(std::string_view path);
     Handle<JsonDocument> load_config(std::string_view path);
+
+    // Load from absolute path (for map files outside engine root).
+    Handle<JsonDocument> load_config_absolute(std::string_view abs_path);
 
     // Get loaded data by handle (nullptr if invalid/released).
     TextureData*  get(Handle<TextureData> h)  { return m_textures.get(h); }

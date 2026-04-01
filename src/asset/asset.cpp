@@ -121,6 +121,27 @@ Handle<JsonDocument> AssetManager::load_config(std::string_view path) {
     return handle;
 }
 
+Handle<JsonDocument> AssetManager::load_config_absolute(std::string_view abs_path) {
+    std::string path_str(abs_path);
+
+    if (auto it = m_config_cache.find(path_str); it != m_config_cache.end()) {
+        if (m_configs.get(it->second)) return it->second;
+        m_config_cache.erase(it);
+    }
+
+    auto result = asset::load_config(path_str);
+    if (!result) {
+        log::error(TAG, "{}", result.error());
+        return {};
+    }
+
+    auto handle = m_configs.add(std::move(*result));
+    m_config_cache[path_str] = handle;
+
+    log::info(TAG, "Loaded config '{}'", abs_path);
+    return handle;
+}
+
 void AssetManager::release(Handle<JsonDocument> h) {
     m_configs.remove(h);
 }
