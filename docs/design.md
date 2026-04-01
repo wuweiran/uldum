@@ -378,13 +378,34 @@ Maps are self-contained gameplay packages. The engine provides mechanics; maps p
 
 Requires terrain data from Phase 6. Completes the simulation systems left incomplete in Phase 4.
 
-- **Pathfinding**: A* on tile grid, flow field for group movement
-- **Collision**: spatial grid for unit-unit and unit-terrain queries
-- **Order execution**: MovementSystem processes Move/Patrol, CombatSystem processes Attack, AbilitySystem processes Cast
-- **Combat logic**: target acquisition, range checking, attack animation timing (cast point, backswing), projectile launch
-- **Damage event**: engine fires event with raw damage + context, map Lua applies multipliers
-- **Ability execution**: cast flow (validate → cost check → animate → fire effect), projectile spawning, aura scanning
-- **Applied abilities**: tick durations, apply periodic effects, recalculate modifiers (all part of AbilitySystem)
+**7a — Pathfinding + movement**
+- Pathfinding subsystem: A* on tile grid. Stateless query — "find path from A to B." Respects terrain pathing flags and obstacles
+- MovementSystem: consumes pathfinding, moves units along paths each tick. Steering, turn rate, speed
+- Terrain height placement: update position.z from heightmap each tick
+- Terrain slope tilt: renderer aligns model to terrain normal (visual only, no sim data)
+- Verify: issue a Move order, unit walks to destination on terrain
+
+**7b — Collision + spatial queries**
+- Spatial grid for unit-unit proximity queries
+- `units_in_range()`, `units_in_rect()` query API
+- Unit-unit collision avoidance (separation steering)
+- Verify: units don't stack on top of each other
+
+**7c — Combat + projectiles**
+- CombatSystem: target acquisition, range checking, attack timing (cast point, backswing)
+- Normal attack flow: melee hit, ranged projectile launch
+- ProjectileSystem: flight, homing, hit detection, impact event
+- Damage event: engine fires `on_damage` with raw damage + context, map Lua can modify (stubbed until Phase 8)
+- Death event: engine fires `on_death` when HP reaches 0, entity cleanup
+- Verify: unit attacks another, HP decreases, target dies
+
+**7d — Abilities**
+- AbilitySystem: cast flow (validate → cost check → animate → fire effect)
+- Ability forms: instant, target_unit, target_point, passive, toggle, channel
+- Aura scanning: apply/remove abilities to nearby units
+- Applied ability duration ticking + removal
+- Modifier stacking and recalculation (base + all active modifiers = effective value)
+- Verify: cast Holy Light (heals target), Devotion Aura (nearby units gain armor)
 
 ### Phase 8 — Scripting (Lua 5.4)
 
