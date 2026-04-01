@@ -45,21 +45,38 @@ Phase 7b complete. Units pathfind around buildings with collision avoidance.
 - Game coordinates: X=right, Y=forward, Z=up (documented in docs/coordinates.md)
 - Build output is self-contained (engine + maps copied to output directory)
 
-## Requirements
+## Prerequisites
 
-- **C++23 compiler** — MSVC 19.50+ (Visual Studio 2026) or Clang 18+
-- **Vulkan SDK** — 1.3.x ([LunarG](https://vulkan.lunarg.com/))
-- **CMake** — 3.28+
+Install these before building:
+
+1. **Visual Studio 2022 or later** (Community edition is free)
+   - During installation, select the **"Desktop development with C++"** workload
+   - This provides the MSVC compiler, Windows SDK, and CMake integration
+   - Download: https://visualstudio.microsoft.com/
+
+2. **Vulkan SDK 1.3.x**
+   - Download and install from https://vulkan.lunarg.com/sdk/home
+   - The installer sets `VULKAN_SDK` environment variable automatically
+   - Verify: open a terminal and run `vulkaninfo` — it should print your GPU info
+
+3. **CMake 3.28+**
+   - Usually included with Visual Studio, but can be installed separately
+   - Download: https://cmake.org/download/
+   - Verify: `cmake --version`
+
+4. **GPU with Vulkan 1.3 support**
+   - Most GPUs from 2018+ support Vulkan 1.3
+   - Update your GPU drivers to the latest version
 
 ## Build (Windows)
 
-From a **Developer Command Prompt** or using the build script:
+Using the build script (auto-detects Visual Studio installation):
 
 ```cmd
 scripts\build.bat
 ```
 
-Or manually:
+Or manually from a **Developer Command Prompt for VS**:
 
 ```cmd
 cmake -S . -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Debug
@@ -67,6 +84,29 @@ cmake --build build
 ```
 
 Output: `build/bin/uldum.exe`
+
+## Run
+
+After building, run the engine from the build output directory:
+
+```cmd
+cd build\bin
+uldum.exe
+```
+
+The engine loads the test map from `maps/test_map.uldmap/` automatically. You should see a terrain with units moving on it.
+
+**Controls:**
+- **WASD** — move camera on the ground plane
+- **Q/E** — lower/raise camera height
+- **Escape** — quit
+
+## Troubleshooting
+
+- **"Failed to create Vulkan instance"** — Vulkan SDK not installed, or GPU drivers too old. Run `vulkaninfo` to check.
+- **"No Vulkan-capable GPU found"** — GPU doesn't support Vulkan 1.3. Update drivers.
+- **build.bat says "No Visual Studio installation found"** — Install VS with the C++ workload. The script uses `vswhere.exe` to find VS automatically.
+- **CMake errors about missing packages** — Delete the `build/` directory and rebuild. Third-party dependencies are fetched via CMake FetchContent on first configure.
 
 ## Project Structure
 
