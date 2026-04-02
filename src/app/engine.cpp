@@ -109,6 +109,30 @@ bool Engine::init() {
         return false;
     }
 
+    // Initialize alliances from manifest teams
+    {
+        auto& manifest = m_map.manifest();
+        m_simulation.init_alliances(static_cast<u32>(manifest.players.size()));
+        // Players on the same team with allied=true are allies
+        for (auto& pa : manifest.players) {
+            for (auto& pb : manifest.players) {
+                if (pa.slot == pb.slot) continue;
+                if (pa.team == pb.team) {
+                    // Find the team def to check if it's allied
+                    for (auto& team : manifest.teams) {
+                        if (team.id == pa.team && team.allied) {
+                            m_simulation.set_alliance(
+                                simulation::Player{pa.slot},
+                                simulation::Player{pb.slot},
+                                true);
+                        }
+                    }
+                }
+            }
+        }
+        log::info(TAG, "Alliances initialized — {} players", manifest.players.size());
+    }
+
     // Feed terrain data to renderer and simulation
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());

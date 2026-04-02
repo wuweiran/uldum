@@ -1,4 +1,5 @@
 #include "simulation/spatial_query.h"
+#include "simulation/simulation.h"
 #include "simulation/world.h"
 #include "core/log.h"
 
@@ -9,10 +10,11 @@
 
 namespace uldum::simulation {
 
-void SpatialGrid::init(f32 world_width, f32 world_height, f32 cell_size) {
+void SpatialGrid::init(f32 world_width, f32 world_height, f32 cell_size, const Simulation* sim) {
     m_world_width  = world_width;
     m_world_height = world_height;
     m_cell_size    = cell_size;
+    m_sim          = sim;
     m_cells_x      = static_cast<u32>(std::ceil(world_width / cell_size));
     m_cells_y      = static_cast<u32>(std::ceil(world_height / cell_size));
     m_cells.resize(m_cells_x * m_cells_y);
@@ -72,10 +74,16 @@ bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter&
         if (!o || !(o->player == filter.owner)) return false;
     }
 
-    // Enemy check
+    // Enemy check: exclude allies (uses alliance system if available, falls back to same-player check)
     if (filter.enemy_of.is_valid()) {
         auto* o = world.owners.get(unit.id);
-        if (o && o->player == filter.enemy_of) return false;
+        if (o) {
+            if (m_sim) {
+                if (m_sim->is_allied(filter.enemy_of, o->player)) return false;
+            } else {
+                if (o->player == filter.enemy_of) return false;
+            }
+        }
     }
 
     // Classification check

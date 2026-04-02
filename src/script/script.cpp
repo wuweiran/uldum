@@ -438,6 +438,20 @@ void ScriptEngine::bind_api() {
 
     lua["GetPlayer"] = [](u32 slot) -> simulation::Player { return simulation::Player{slot}; };
 
+    // ── Alliance API ─────────────────────────────────────────────────
+
+    lua["SetAlliance"] = [&](simulation::Player a, simulation::Player b, bool allied, sol::optional<bool> passive) {
+        sim.set_alliance(a, b, allied, passive.value_or(false));
+    };
+
+    lua["IsPlayerAlly"] = [&](simulation::Player a, simulation::Player b) -> bool {
+        return sim.is_allied(a, b);
+    };
+
+    lua["IsPlayerEnemy"] = [&](simulation::Player a, simulation::Player b) -> bool {
+        return sim.is_enemy(a, b);
+    };
+
     // ── Utility API ───────────────────────────────────────────────────
 
     lua["Log"] = [](const std::string& msg) { log::info("Lua", "{}", msg); };

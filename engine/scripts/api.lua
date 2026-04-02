@@ -443,11 +443,22 @@ function GetPlayer(slot) end
 --- @return string
 function GetPlayerName(player) end
 
+--- Set alliance from player_a toward player_b (asymmetric).
+--- If allied, units won't auto-attack and are excluded from enemy_of queries.
+--- If passive, units won't retaliate when attacked.
+--- @param player_a player
+--- @param player_b player
+--- @param allied boolean
+--- @param passive? boolean   default false
+function SetAlliance(player_a, player_b, allied, passive) end
+
+--- Does player1 consider player2 an ally?
 --- @param player1 player
 --- @param player2 player
 --- @return boolean
 function IsPlayerAlly(player1, player2) end
 
+--- Does player1 consider player2 an enemy? (not allied and not same player)
 --- @param player1 player
 --- @param player2 player
 --- @return boolean

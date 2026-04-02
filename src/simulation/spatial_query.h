@@ -12,6 +12,7 @@
 namespace uldum::simulation {
 
 struct World;
+class Simulation;
 
 // Filter for spatial queries. All conditions are AND-ed.
 // Empty/default fields are ignored (match everything).
@@ -29,7 +30,7 @@ struct UnitFilter {
 // Uniform grid for fast spatial lookups.
 class SpatialGrid {
 public:
-    void init(f32 world_width, f32 world_height, f32 cell_size);
+    void init(f32 world_width, f32 world_height, f32 cell_size, const Simulation* sim = nullptr);
 
     // Rebuild grid from current world state. Call once per tick.
     void update(const World& world);
@@ -57,6 +58,7 @@ private:
     u32 m_cells_y     = 0;
     f32 m_world_width = 0;
     f32 m_world_height = 0;
+    const Simulation* m_sim = nullptr;
 };
 
 } // namespace uldum::simulation
