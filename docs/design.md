@@ -419,7 +419,25 @@ Now the unit model, renderer, map system, and gameplay systems are stable — Lu
 - **sol2 bindings**: expose unit facade, trigger API, game state queries to Lua
 - **Trigger system**: event → condition → action (WC3-style)
 - **Engine API**: CreateUnit, DamageTarget, SetUnitPosition, DisplayMessage, etc.
-- **Cleanup**: remove temporary `move_to` from map objects.json loader — initial orders come from Lua scripts
+- **Cleanup**: remove temporary `move_to` and `attack_target_index` from map objects.json loader — initial orders come from Lua scripts
+
+**Unified event system** — one `RegisterEvent(event_name, fn)` for everything (see docs/ability-system.md):
+- `on_ability_added`, `on_ability_removed` — any ability add/remove (covers buffs, stacking)
+- `on_ability_cast_filter`, `on_ability_target_filter` — custom validation (return bool)
+- `on_ability_effect` — active ability effect fires
+- `on_ability_cast` — full cast cycle complete
+- `on_toggle_activate/deactivate` — toggle state changes
+- `on_channel_start`, `on_channel_end` — channel lifecycle (ticks via `CreateTimer`, no engine tick event)
+- `on_damage`, `on_death`, `on_attack` — combat events
+- No engine passive tick — map scripts use timers via `on_ability_added` + `CreateTimer`
+- Stacking API: `GetAbilityStackCount`, `RefreshAbilityDuration`
+
+**Ability API exposed to Lua:**
+- `AddAbility(unit, ability_id)` — give unit an ability
+- `RemoveAbility(unit, ability_id)` — remove ability, revert modifiers
+- `ApplyPassiveAbility(target, ability_id, source, duration)` — apply a buff
+- `HasAbility(unit, ability_id)`, `GetAbilityLevel`, `SetAbilityLevel`
+- `GetAbilityStackCount(unit, ability_id)` — for stacking buff queries
 
 ### Phase 9 — Editor (Terrain Editor v1)
 

@@ -378,6 +378,14 @@ Heroes additionally get: item-related orders.
 
 ## 5. Ability System
 
+See [ability-system.md](ability-system.md) for the full ability system design, including:
+- Ability forms (passive, aura, instant, target_unit, target_point, toggle, channel)
+- AbilityDef (template) vs Ability (runtime instance) terminology
+- Cast flow, state costs, modifier system
+- Aura scanning, applied passives (buffs), duration/stacking
+- Lua script callbacks and engine events
+- API: `AddAbility`, `RemoveAbility`, `ApplyPassiveAbility`
+
 ### Design Principle
 
 **Ability = Form + Effect**
