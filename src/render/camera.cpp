@@ -34,7 +34,7 @@ void Camera::update(const platform::InputState& input, f32 dt) {
     if (input.key_e) { m_position.z += m_height_speed * dt; m_dirty = true; }
     if (input.key_q) { m_position.z -= m_height_speed * dt; m_dirty = true; }
 
-    if (m_position.z < 2.0f) m_position.z = 2.0f;
+    if (m_position.z < 128.0f) m_position.z = 128.0f;
 }
 
 void Camera::recalculate() {

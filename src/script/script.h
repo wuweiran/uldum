@@ -65,6 +65,8 @@ public:
     void set_context_damage_target(u32 id) { m_ctx_damage_target = id; }
     void set_context_damage_amount(f32 v)  { m_ctx_damage_amount = v; }
     f32  get_context_damage_amount() const { return m_ctx_damage_amount; }
+    void set_context_damage_type(std::string_view t) { m_ctx_damage_type = t; }
+    const std::string& get_context_damage_type() const { return m_ctx_damage_type; }
     void set_context_killer(u32 id)   { m_ctx_killer = id; }
     void set_context_spell_target_unit(u32 id) { m_ctx_spell_target_unit = id; }
     void set_context_spell_target_x(f32 x) { m_ctx_spell_target_x = x; }
@@ -104,6 +106,7 @@ private:
     u32  m_ctx_damage_source     = UINT32_MAX;
     u32  m_ctx_damage_target     = UINT32_MAX;
     f32  m_ctx_damage_amount     = 0;
+    std::string m_ctx_damage_type;
     u32  m_ctx_killer            = UINT32_MAX;
     u32  m_ctx_spell_target_unit = UINT32_MAX;
     f32  m_ctx_spell_target_x    = 0;

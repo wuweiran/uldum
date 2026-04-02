@@ -27,16 +27,16 @@ private:
     void recalculate();
 
     // Game coordinates: X=right, Y=forward, Z=up
-    glm::vec3 m_position{45.0f, 30.0f, 25.0f};
+    glm::vec3 m_position{2880.0f, 1920.0f, 1600.0f};
     f32 m_pitch = -0.8f;   // radians, negative = looking down
     f32 m_yaw   = 0.0f;    // 0 = looking toward +Y (forward)
 
-    f32 m_move_speed   = 20.0f;
-    f32 m_height_speed = 10.0f;
+    f32 m_move_speed   = 1280.0f;
+    f32 m_height_speed = 640.0f;
     f32 m_fov    = 0.785f;  // ~45 degrees
     f32 m_aspect = 16.0f / 9.0f;
-    f32 m_near   = 0.1f;
-    f32 m_far    = 1000.0f;
+    f32 m_near   = 1.0f;
+    f32 m_far    = 64000.0f;
 
     bool m_dirty = true;
     mutable glm::mat4 m_view{1.0f};

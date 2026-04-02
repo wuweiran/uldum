@@ -109,6 +109,10 @@ function GetDamageAmount() end
 --- @param amount number
 function SetDamageAmount(amount) end
 
+--- The damage type of the current damage event (map-defined, e.g. "attack", "spell", "cleave").
+--- @return string
+function GetDamageType() end
+
 --- The unit that killed the current dying unit.
 --- @return unit
 function GetKillingUnit() end
@@ -308,6 +312,11 @@ function RemoveClassification(unit, flag) end
 --- @param unit unit
 --- @param order_type string   "move", "attack", "stop", "hold", "cast", "patrol"
 --- @param ...                 Order-specific arguments
+--- Cast usage:
+---   IssueOrder(unit, "cast", ability_id)                 -- instant, no target
+---   IssueOrder(unit, "cast", ability_id, target_unit)    -- target_unit ability
+---   IssueOrder(unit, "cast", ability_id, x, y)           -- target_point ability
+--- The unit will move into range, turn, play cast_point, fire on_ability_effect, then backswing.
 function IssueOrder(unit, order_type, ...) end
 
 --------------------------------------------------------------------------------
@@ -387,7 +396,8 @@ function ResetAbilityCooldown(unit, ability_id) end
 --- @param source unit
 --- @param target unit
 --- @param amount number
-function DamageUnit(source, target, amount) end
+--- @param damage_type? string  -- map-defined type (default: "spell"). Combat uses "attack".
+function DamageUnit(source, target, amount, damage_type) end
 
 --- Heal a unit. Does not exceed max HP.
 --- @param source unit

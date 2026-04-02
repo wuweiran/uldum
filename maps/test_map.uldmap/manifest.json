@@ -8,18 +8,21 @@
     "suggested_players": "1",
 
     "players": [
-        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" }
+        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" },
+        { "slot": 1, "type": "computer", "team": 1, "name": "Creeps", "color": "green" }
     ],
     "teams": [
-        { "id": 0, "name": "Players", "allied": true, "shared_vision": true }
+        { "id": 0, "name": "Players", "allied": true, "shared_vision": true },
+        { "id": 1, "name": "Hostile", "allied": false, "shared_vision": false }
     ],
 
     "tileset": "tileset.json",
-    "start_scene": "scene_01",
+    "start_scene": "scene_02",
 
     "classifications": ["ground", "air", "hero", "structure", "mechanical", "undead", "worker", "summoned"],
     "attack_types": ["normal", "pierce", "siege", "magic", "chaos", "hero"],
     "armor_types": ["unarmored", "light", "medium", "heavy", "fortified", "hero"],
+    "damage_types": ["attack", "spell", "ability", "cleave"],
     "states": [
         { "id": "mana", "has_max": true, "has_regen": true }
     ],

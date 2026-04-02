@@ -66,16 +66,47 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map) {
     // Register usertypes
     lua.new_usertype<simulation::Unit>("Unit",
         "id", &simulation::Unit::id,
-        "is_valid", &simulation::Unit::is_valid
+        "is_valid", &simulation::Unit::is_valid,
+        sol::meta_function::equal_to, [](const simulation::Unit& a, const simulation::Unit& b) { return a == b; }
     );
     lua.new_usertype<simulation::Player>("Player",
         "id", &simulation::Player::id,
-        "is_valid", &simulation::Player::is_valid
+        "is_valid", &simulation::Player::is_valid,
+        sol::meta_function::equal_to, [](const simulation::Player& a, const simulation::Player& b) { return a == b; }
     );
 
     bind_api();
     bind_trigger_api();
     bind_timer_api();
+
+    // Hook the world's damage callback so all damage (combat + script) fires on_damage events
+    sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target, f32& amount, std::string_view damage_type) {
+        set_context_unit(target.id);
+        set_context_damage_source(source.id);
+        set_context_damage_target(target.id);
+        set_context_damage_amount(amount);
+        set_context_damage_type(damage_type);
+        fire_event("on_damage", target.id);
+        amount = get_context_damage_amount();
+    };
+
+    // Hook death callback so system_death fires on_death events
+    sim.world().on_death = [this](simulation::Unit dying, simulation::Unit killer) {
+        set_context_unit(dying.id);
+        set_context_killer(killer.is_valid() ? killer.id : UINT32_MAX);
+        fire_event("on_death", dying.id);
+    };
+
+    // Hook ability effect callback — fires on_ability_effect when a cast reaches cast_point
+    sim.world().on_ability_effect = [this, &sim](simulation::Unit caster, std::string_view ability_id,
+                                                  simulation::Unit target_unit, glm::vec3 target_pos) {
+        set_context_unit(caster.id);
+        set_context_ability(std::string(ability_id));
+        set_context_spell_target_unit(target_unit.is_valid() ? target_unit.id : UINT32_MAX);
+        set_context_spell_target_x(target_pos.x);
+        set_context_spell_target_y(target_pos.y);
+        fire_event("on_ability_effect", caster.id, ability_id);
+    };
 
     log::info(TAG, "ScriptEngine initialized — Lua 5.4 + sol2");
     return true;
@@ -306,6 +337,18 @@ void ScriptEngine::bind_api() {
             order.payload = simulation::orders::Stop{};
         } else if (order_type == "hold") {
             order.payload = simulation::orders::HoldPosition{};
+        } else if (order_type == "cast" && va.size() >= 1) {
+            simulation::orders::Cast cast;
+            cast.ability_id = va[0].as<std::string>();
+            if (va.size() >= 2) {
+                // Second arg: target unit or target point (x, y)
+                if (va[1].is<simulation::Unit>()) {
+                    cast.target_unit = va[1].as<simulation::Unit>();
+                } else if (va[1].is<f32>() && va.size() >= 3) {
+                    cast.target_pos = glm::vec3{va[1].as<f32>(), va[2].as<f32>(), 0};
+                }
+            }
+            order.payload = std::move(cast);
         } else {
             return;
         }
@@ -346,22 +389,8 @@ void ScriptEngine::bind_api() {
 
     // ── Damage API ────────────────────────────────────────────────────
 
-    lua["DamageUnit"] = [&](simulation::Unit source, simulation::Unit target, f32 amount) {
-        auto& world = sim.world();
-        auto* hp = world.healths.get(target.id);
-        if (!hp || hp->current <= 0) return;
-
-        set_context_damage_source(source.id);
-        set_context_damage_target(target.id);
-        set_context_damage_amount(amount);
-        fire_event("on_damage", target.id);
-        amount = get_context_damage_amount();
-
-        hp->current -= amount;
-        if (hp->current < 0) hp->current = 0;
-
-        auto* pulse = world.scale_pulses.get(source.id);
-        if (pulse) { pulse->current_scale = 1.3f; pulse->timer = 0.15f; }
+    lua["DamageUnit"] = [&](simulation::Unit source, simulation::Unit target, f32 amount, sol::optional<std::string> damage_type) {
+        simulation::deal_damage(sim.world(), source, target, amount, damage_type.value_or("spell"));
     };
 
     lua["HealUnit"] = [&](simulation::Unit source, simulation::Unit target, f32 amount) {
@@ -606,6 +635,10 @@ void ScriptEngine::bind_trigger_api() {
     lua["SetDamageAmount"] = [&, warn_wrong_event](f32 v) {
         if (warn_wrong_event("SetDamageAmount", {"on_damage"})) return;
         m_ctx_damage_amount = v;
+    };
+    lua["GetDamageType"] = [&, warn_wrong_event]() -> std::string {
+        warn_wrong_event("GetDamageType", {"on_damage"});
+        return m_ctx_damage_type;
     };
     lua["GetKillingUnit"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
         warn_wrong_event("GetKillingUnit", {"on_death"});

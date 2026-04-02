@@ -5,9 +5,9 @@
         "max_level": 3,
         "target_filter": { "ally": true, "self": true },
         "levels": [
-            { "aura_radius": 15.0, "aura_ability": "devotion_aura_buff" },
-            { "aura_radius": 15.0, "aura_ability": "devotion_aura_buff" },
-            { "aura_radius": 15.0, "aura_ability": "devotion_aura_buff" }
+            { "aura_radius": 900, "aura_ability": "devotion_aura_buff" },
+            { "aura_radius": 900, "aura_ability": "devotion_aura_buff" },
+            { "aura_radius": 900, "aura_ability": "devotion_aura_buff" }
         ]
     },
     "devotion_aura_buff": {
@@ -26,6 +26,25 @@
         "stackable": true,
         "levels": [
             { "modifiers": { "armor_flat": 5 } }
+        ]
+    },
+    "holy_light": {
+        "name": "Holy Light",
+        "form": "target_unit",
+        "max_level": 3,
+        "target_filter": { "ally": true, "self": true },
+        "levels": [
+            { "heal": 200, "cooldown": 10.0, "range": 1280, "cost": { "mana": 65 }, "cast_point": 0.5 },
+            { "heal": 400, "cooldown": 10.0, "range": 1280, "cost": { "mana": 65 }, "cast_point": 0.5 },
+            { "heal": 600, "cooldown": 10.0, "range": 1280, "cost": { "mana": 65 }, "cast_point": 0.5 }
+        ]
+    },
+    "consecration": {
+        "name": "Consecration",
+        "form": "passive",
+        "max_level": 1,
+        "levels": [
+            { "damage": 15 }
         ]
     }
 }

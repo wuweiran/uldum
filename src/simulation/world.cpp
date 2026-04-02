@@ -87,6 +87,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         combat.backswing        = def->backswing;
         combat.is_ranged        = def->is_ranged;
         combat.projectile_speed = def->projectile_speed;
+        combat.acquire_range    = def->acquire_range;
         world.combats.add(id, std::move(combat));
     }
     world.scale_pulses.add(id, ScalePulse{});
@@ -197,6 +198,28 @@ void destroy(World& world, Destructable d)    { destroy_handle(world, d); }
 void destroy(World& world, Item item)         { destroy_handle(world, item); }
 
 // ── Unit API ───────────────────────────────────────────────────────────────
+
+void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string_view damage_type) {
+    auto* hp = world.healths.get(target.id);
+    if (!hp || hp->current <= 0) return;
+
+    // Let script engine intercept (fire on_damage event, may modify amount)
+    if (world.on_damage) {
+        world.on_damage(source, target, amount, damage_type);
+    }
+
+    if (amount <= 0) return;
+
+    hp->current -= amount;
+    if (hp->current < 0) hp->current = 0;
+
+    // Scale pulse on attacker (visual feedback)
+    auto* pulse = world.scale_pulses.get(source.id);
+    if (pulse) {
+        pulse->current_scale = 1.3f;
+        pulse->timer = 0.15f;
+    }
+}
 
 void issue_order(World& world, Unit unit, Order order) {
     if (!world.validate(unit)) return;

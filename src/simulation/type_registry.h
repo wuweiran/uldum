@@ -34,6 +34,7 @@ struct UnitTypeDef {
     f32 backswing = 0.3f;
     bool is_ranged = false;
     f32 projectile_speed = 20.0f;
+    f32 acquire_range = 10.0f;
 
     // Vision
     f32 sight_range_day = 1400;

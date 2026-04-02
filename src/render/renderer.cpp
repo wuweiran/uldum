@@ -94,8 +94,8 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     // Create a placeholder box mesh for entities without a real model.
     // Defined directly in Z-up game coordinates: base at Z=0, top at Z=2.
     asset::MeshData placeholder;
-    const float s = 1.0f;
-    const float h = 2.0f;
+    const float s = 16.0f;   // half-width (~32 game units, WC3 collision size)
+    const float h = 64.0f;  // height
     // UVs map to the default texture (white with warm tint from texture)
     placeholder.vertices = {
         // Top face (Z+)
@@ -132,8 +132,8 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     // Create a small projectile mesh (elongated diamond shape in Z-up game coords)
     {
         asset::MeshData proj;
-        const float r = 0.15f;  // radius
-        const float l = 0.5f;   // half-length along Y (forward)
+        const float r = 8.0f;   // radius
+        const float l = 24.0f;  // half-length along Y (forward)
         proj.vertices = {
             // Tip (front, +Y)
             {{0, l, 0},  {0, 1, 0}, {0.5f, 0}},
@@ -848,8 +848,8 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
     if (!m_shadow_pipeline) return;
 
     glm::vec3 light_dir{0.3f, -0.5f, 0.8f};
-    glm::vec3 scene_center{64.0f, 64.0f, 2.5f};
-    f32 scene_radius = 80.0f;
+    glm::vec3 scene_center{4096.0f, 4096.0f, 160.0f};
+    f32 scene_radius = 5120.0f;
     glm::mat4 light_vp = compute_light_vp(light_dir, scene_center, scene_radius);
 
     ShadowUBO ubo{light_vp};

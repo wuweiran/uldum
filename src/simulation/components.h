@@ -90,6 +90,7 @@ struct Combat {
     f32         backswing       = 0.3f;    // recovery time after cast_point
     bool        is_ranged       = false;
     f32         projectile_speed = 20.0f;  // for ranged attacks
+    f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range
     // Runtime state
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;
@@ -134,10 +135,19 @@ struct AbilityInstance {
     std::map<std::string, f32> active_modifiers;
 };
 
+enum class CastState : u8 { None, MovingToTarget, TurningToFace, CastPoint, Backswing };
+
 struct AbilitySet {
     std::vector<AbilityInstance> abilities;
     // All ability types live here: active, passive, auras, and applied abilities
     // (what WC3 calls "buffs"). No separate component for any of these.
+
+    // Cast state machine — active while processing a Cast order
+    CastState   cast_state    = CastState::None;
+    f32         cast_timer    = 0;
+    std::string casting_id;       // ability being cast
+    Unit        cast_target_unit;
+    glm::vec3   cast_target_pos{0};
 };
 
 // Map-defined classification flags (e.g., "ground", "air", "hero", "structure").

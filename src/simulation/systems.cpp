@@ -49,8 +49,8 @@ static f32 angle_diff(f32 from, f32 to) {
 // ── Movement system ───────────────────────────────────────────────────────
 
 void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
-    static constexpr f32 SEPARATION_RADIUS = 2.5f;
-    static constexpr f32 SEPARATION_FORCE  = 4.0f;
+    static constexpr f32 SEPARATION_RADIUS = 64.0f;   // ~half a tile
+    static constexpr f32 SEPARATION_FORCE  = 256.0f;
 
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
@@ -104,7 +104,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         to_wp.z = 0;
         f32 dist = glm::length(to_wp);
 
-        if (dist < 0.3f) {
+        if (dist < 16.0f) {
             mov.path_index++;
             continue;
         }
@@ -166,28 +166,20 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
     }
 }
 
-// ── Helper: deal damage to a target ───────────────────────────────────────
+// ── Helper: deal attack damage ────────────────────────────────────────────
+// Uses the unified deal_damage() from world.cpp which fires the on_damage callback.
 
-static void deal_damage(World& world, Unit source, Unit target, f32 amount) {
-    auto* hp = world.healths.get(target.id);
-    if (!hp || hp->current <= 0) return;
-
-    hp->current -= amount;
-    if (hp->current < 0) hp->current = 0;
-
-    // Scale pulse on attacker (visual feedback)
-    auto* pulse = world.scale_pulses.get(source.id);
-    if (pulse) {
-        pulse->current_scale = 1.3f;
-        pulse->timer = 0.15f;
-    }
-
+static void deal_attack_damage(World& world, Unit source, Unit target, f32 amount) {
     auto* src_info = world.handle_infos.get(source.id);
     auto* tgt_info = world.handle_infos.get(target.id);
+
+    deal_damage(world, source, target, amount, "attack");
+
+    auto* hp = world.healths.get(target.id);
     log::trace("Combat", "{} deals {:.0f} damage to {} (HP: {:.0f}/{:.0f})",
                src_info ? src_info->type_id : "?", amount,
                tgt_info ? tgt_info->type_id : "?",
-               hp->current, hp->max);
+               hp ? hp->current : 0, hp ? hp->max : 0);
 }
 
 // ── Helper: spawn projectile ──────────────────────────────────────────────
@@ -207,7 +199,7 @@ static void spawn_projectile(World& world, Unit source, Unit target, f32 damage,
 
 // ── Combat system ─────────────────────────────────────────────────────────
 
-void system_combat(World& world, float dt, const Pathfinder& pathfinder) {
+void system_combat(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
     for (u32 i = 0; i < world.combats.count(); ++i) {
         u32 id = world.combats.ids()[i];
         auto& combat = world.combats.data()[i];
@@ -216,19 +208,51 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder) {
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
-        // Check for Attack order
-        if (!oq->current) {
-            combat.attack_state = AttackState::Idle;
-            continue;
-        }
-
-        auto* attack_order = std::get_if<orders::Attack>(&oq->current->payload);
-        if (!attack_order) {
+        // Check for Attack order — if none, try to acquire a nearby enemy
+        // Don't auto-acquire if the unit is casting (has a Cast order)
+        if (!oq->current || !std::get_if<orders::Attack>(&oq->current->payload)) {
             if (combat.attack_state != AttackState::Idle) {
                 combat.attack_state = AttackState::Idle;
             }
-            continue;
+
+            // Don't auto-acquire while executing a Cast order
+            bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
+
+            // Auto-acquire: scan for enemies within acquire_range
+            if (!is_casting && combat.acquire_range > 0 && combat.damage > 0) {
+                auto* owner = world.owners.get(id);
+                if (owner) {
+                    UnitFilter filter;
+                    filter.enemy_of = owner->player;
+                    filter.alive_only = true;
+                    auto enemies = grid.units_in_range(world, transform->position, combat.acquire_range, filter);
+                    if (!enemies.empty()) {
+                        // Pick closest enemy
+                        Unit best;
+                        f32 best_dist = combat.acquire_range + 1;
+                        for (auto& e : enemies) {
+                            auto* et = world.transforms.get(e.id);
+                            if (!et) continue;
+                            f32 d = glm::length(et->position - transform->position);
+                            if (d < best_dist) { best = e; best_dist = d; }
+                        }
+                        if (best.is_valid()) {
+                            Order order;
+                            order.payload = orders::Attack{best};
+                            oq->current = std::move(order);
+                            // Fall through to process the new attack order below
+                        }
+                    }
+                }
+            }
+
+            // Re-check after acquire attempt
+            if (!oq->current || !std::get_if<orders::Attack>(&oq->current->payload)) {
+                continue;
+            }
         }
+
+        auto* attack_order = std::get_if<orders::Attack>(&oq->current->payload);
 
 
         Unit target = attack_order->target;
@@ -322,7 +346,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder) {
                 if (combat.is_ranged) {
                     spawn_projectile(world, self, target, combat.damage, combat.projectile_speed);
                 } else {
-                    deal_damage(world, self, target, combat.damage);
+                    deal_attack_damage(world, self, target, combat.damage);
                 }
                 combat.attack_state = AttackState::Backswing;
                 combat.attack_timer = combat.backswing;
@@ -382,8 +406,136 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             recalculate_modifiers(world, id);
         }
 
+        // ── Cast order processing ────────────────────────────────────────
+        auto* oq = world.order_queues.get(id);
+        auto* transform = world.transforms.get(id);
+        if (oq && transform && oq->current) {
+            auto* cast_order = std::get_if<orders::Cast>(&oq->current->payload);
+            if (cast_order && aset.cast_state == CastState::None) {
+                // Start a new cast
+                const auto* def = abilities.get(cast_order->ability_id);
+                if (def) {
+                    // Find the ability instance to check cooldown and level
+                    AbilityInstance* inst = nullptr;
+                    for (auto& a : aset.abilities) {
+                        if (a.ability_id == cast_order->ability_id) { inst = &a; break; }
+                    }
+                    if (inst && inst->cooldown_remaining <= 0) {
+                        aset.casting_id       = cast_order->ability_id;
+                        aset.cast_target_unit = cast_order->target_unit;
+                        aset.cast_target_pos  = cast_order->target_pos;
+
+                        auto& lvl = def->level_data(inst->level);
+                        bool needs_range = (def->form == AbilityForm::TargetUnit ||
+                                           def->form == AbilityForm::TargetPoint);
+                        if (needs_range && lvl.range > 0) {
+                            aset.cast_state = CastState::MovingToTarget;
+                        } else {
+                            aset.cast_state = CastState::TurningToFace;
+                        }
+                    } else {
+                        oq->current.reset();  // ability not available or on cooldown
+                    }
+                } else {
+                    oq->current.reset();  // unknown ability
+                }
+            }
+
+            if (aset.cast_state != CastState::None) {
+                const auto* def = abilities.get(aset.casting_id);
+                AbilityInstance* inst = nullptr;
+                for (auto& a : aset.abilities) {
+                    if (a.ability_id == aset.casting_id) { inst = &a; break; }
+                }
+                if (!def || !inst) {
+                    aset.cast_state = CastState::None;
+                    oq->current.reset();
+                } else {
+                    auto& lvl = def->level_data(inst->level);
+
+                    // Resolve target position
+                    glm::vec3 target_pos = aset.cast_target_pos;
+                    if (def->form == AbilityForm::TargetUnit && world.validate(aset.cast_target_unit)) {
+                        auto* tt = world.transforms.get(aset.cast_target_unit.id);
+                        if (tt) target_pos = tt->position;
+                    }
+
+                    glm::vec3 to_target = target_pos - transform->position;
+                    to_target.z = 0;
+                    f32 dist = glm::length(to_target);
+
+                    switch (aset.cast_state) {
+                    case CastState::MovingToTarget: {
+                        if (dist <= lvl.range) {
+                            aset.cast_state = CastState::TurningToFace;
+                        } else {
+                            // Move toward target (simple steering)
+                            auto* mov = world.movements.get(id);
+                            if (mov && mov->speed > 0) {
+                                glm::vec3 dir = glm::normalize(to_target);
+                                f32 step = mov->speed * dt;
+                                transform->position.x += dir.x * step;
+                                transform->position.y += dir.y * step;
+                            }
+                        }
+                        break;
+                    }
+                    case CastState::TurningToFace: {
+                        if (dist > 0.1f) {
+                            f32 desired = std::atan2(-to_target.x, to_target.y);
+                            f32 diff = angle_diff(transform->facing, desired);
+                            auto* mov = world.movements.get(id);
+                            f32 turn_rate = mov ? mov->turn_rate : 3.0f;
+                            f32 max_turn = turn_rate * dt;
+                            if (std::abs(diff) > max_turn) {
+                                transform->facing += (diff > 0 ? max_turn : -max_turn);
+                                transform->facing = normalize_angle(transform->facing);
+                                break;
+                            }
+                            transform->facing = desired;
+                        }
+                        aset.cast_state = CastState::CastPoint;
+                        aset.cast_timer = lvl.cast_point;
+                        break;
+                    }
+                    case CastState::CastPoint:
+                        aset.cast_timer -= dt;
+                        if (aset.cast_timer <= 0) {
+                            // FIRE — ability effect
+                            inst->cooldown_remaining = lvl.cooldown;
+                            if (world.on_ability_effect) {
+                                Unit caster;
+                                caster.id = id;
+                                auto* info = world.handle_infos.get(id);
+                                caster.generation = info ? info->generation : 0;
+                                world.on_ability_effect(caster, aset.casting_id,
+                                                       aset.cast_target_unit, target_pos);
+                            }
+                            aset.cast_state = CastState::Backswing;
+                            aset.cast_timer = lvl.backswing;
+                        }
+                        break;
+                    case CastState::Backswing:
+                        aset.cast_timer -= dt;
+                        if (aset.cast_timer <= 0) {
+                            aset.cast_state = CastState::None;
+                            aset.casting_id.clear();
+                            oq->current.reset();
+                        }
+                        break;
+                    default: break;
+                    }
+                }
+            }
+        }
+
         // Aura scanning (only on scan ticks)
+        // Defer applications to avoid iterator invalidation (push_back on self's abilities
+        // vector while iterating it would crash).
         if (aura_scan_tick) {
+            struct AuraApp { Unit target; std::string ability_id; Unit source; f32 duration; };
+            std::vector<AuraApp> deferred;
+
             auto* transform = world.transforms.get(id);
             auto* owner = world.owners.get(id);
             if (!transform || !owner) continue;
@@ -395,7 +547,6 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 auto& lvl = def->level_data(ability.level);
                 if (lvl.aura_radius <= 0 || lvl.aura_ability.empty()) continue;
 
-                // Find units in aura radius
                 UnitFilter filter;
                 if (def->target_filter.ally)  filter.owner = owner->player;
                 if (def->target_filter.enemy) filter.enemy_of = owner->player;
@@ -406,12 +557,16 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 auto* info = world.handle_infos.get(id);
                 source_unit.generation = info ? info->generation : 0;
 
-                // Apply the aura's passive ability to each nearby unit
-                f32 aura_duration = (AURA_SCAN_INTERVAL + 2) * (1.0f / 32.0f);  // slightly longer than scan interval
+                f32 aura_duration = (AURA_SCAN_INTERVAL + 2) * (1.0f / 32.0f);
                 for (auto& target : nearby) {
                     if (target.id == id && !def->target_filter.self_) continue;
-                    apply_passive_ability(world, abilities, target, lvl.aura_ability, source_unit, aura_duration);
+                    deferred.push_back({target, std::string(lvl.aura_ability), source_unit, aura_duration});
                 }
+            }
+
+            // Apply after iteration is complete
+            for (auto& app : deferred) {
+                apply_passive_ability(world, abilities, app.target, app.ability_id, app.source, app.duration);
             }
         }
     }
@@ -435,7 +590,7 @@ void system_projectile(World& world, float dt, const Pathfinder& pathfinder) {
             auto* target_t = world.transforms.get(proj.target.id);
             if (target_t) {
                 target_pos = target_t->position;
-                target_pos.z += 1.0f;  // aim at center of unit, not feet
+                target_pos.z += 32.0f;  // aim at center of unit, not feet
             } else {
                 to_destroy.push_back(id);
                 continue;
@@ -447,10 +602,10 @@ void system_projectile(World& world, float dt, const Pathfinder& pathfinder) {
         glm::vec3 to_target = target_pos - transform->position;
         f32 dist = glm::length(to_target);
 
-        if (dist < 0.5f) {
+        if (dist < 32.0f) {
             // Hit — deal damage
             if (world.validate(proj.target)) {
-                deal_damage(world, proj.source, proj.target, proj.damage);
+                deal_attack_damage(world, proj.source, proj.target, proj.damage);
             }
             to_destroy.push_back(id);
             continue;
@@ -525,6 +680,15 @@ void system_death(World& world) {
             if (info->category == Category::Item) continue;
 
             log::info("Combat", "{} has died (id={})", info->type_id, id);
+
+            // Fire death callback for script engine
+            if (world.on_death) {
+                Unit dying;
+                dying.id = id;
+                dying.generation = info->generation;
+                // TODO: track actual killer from last damage source
+                world.on_death(dying, Unit{});
+            }
 
             // Become a corpse: stop all gameplay activity
             world.movements.remove(id);

@@ -7,6 +7,8 @@
 #include "simulation/order.h"
 
 #include <glm/vec3.hpp>
+#include <functional>
+#include <string_view>
 
 namespace uldum::simulation {
 
@@ -46,6 +48,23 @@ struct World {
     // Type registry (not owned — set during init)
     const TypeRegistry* types = nullptr;
 
+    // Damage callback — set by script engine to intercept damage events.
+    // Parameters: source, target, amount (mutable), damage_type.
+    // The callback may modify amount (e.g. to reduce or amplify damage).
+    using DamageCallback = std::function<void(Unit source, Unit target, f32& amount, std::string_view damage_type)>;
+    DamageCallback on_damage;
+
+    // Death callback — set by script engine to fire on_death events.
+    // Parameters: dying unit, killer (may be invalid if no killer).
+    using DeathCallback = std::function<void(Unit dying, Unit killer)>;
+    DeathCallback on_death;
+
+    // Ability effect callback — fired when a cast reaches its cast_point.
+    // The script engine handles the actual effect (damage, heal, etc.).
+    using AbilityEffectCallback = std::function<void(Unit caster, std::string_view ability_id,
+                                                      Unit target_unit, glm::vec3 target_pos)>;
+    AbilityEffectCallback on_ability_effect;
+
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
 };
@@ -65,6 +84,9 @@ void          destroy(World& world, Item item);
 // ── Unit API ───────────────────────────────────────────────────────────────
 
 void     issue_order(World& world, Unit unit, Order order);
+
+// Deal damage with type. Fires on_damage callback if set.
+void     deal_damage(World& world, Unit source, Unit target, f32 amount, std::string_view damage_type = "attack");
 
 // ── Ability API ───────────────────────────────────────────────────────────
 

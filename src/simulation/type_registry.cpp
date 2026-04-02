@@ -83,6 +83,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.backswing        = c.value("backswing", 0.3f);
             def.is_ranged        = c.value("ranged", false);
             def.projectile_speed = c.value("projectile_speed", 20.0f);
+            def.acquire_range    = c.value("acquire_range", 10.0f);
         }
 
         if (val.contains("vision")) {

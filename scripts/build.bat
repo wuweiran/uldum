@@ -30,6 +30,6 @@ if not defined VS_PATH (
 :: Set up MSVC environment
 call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" x64
 
-:: Configure and build
-cmake -S "%ROOT%" -B "%ROOT%\build" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Debug
+:: Configure and build (Ninja for parallel compilation)
+cmake -S "%ROOT%" -B "%ROOT%\build" -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
 cmake --build "%ROOT%\build"

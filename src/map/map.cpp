@@ -151,7 +151,7 @@ bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& as
 
     // Terrain: for now, generate procedural terrain since we don't have binary terrain format yet.
     // Phase 6+ will load terrain.bin from scene_dir.
-    m_scene.terrain = create_procedural_terrain(64, 64, 2.0f);
+    m_scene.terrain = create_procedural_terrain(64, 64, 128.0f);
     log::info(TAG, "Scene '{}': procedural terrain {}x{} (binary terrain loading pending)",
               scene_name, m_scene.terrain.tiles_x, m_scene.terrain.tiles_y);
 
