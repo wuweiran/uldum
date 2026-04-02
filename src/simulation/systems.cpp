@@ -60,6 +60,33 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
+        // Separation: always push apart from nearby units, even when idle/attacking
+        {
+            UnitFilter sep_filter;
+            sep_filter.exclude_buildings = true;
+            auto nearby = grid.units_in_range(world, transform->position, SEPARATION_RADIUS, sep_filter);
+
+            glm::vec3 separation{0.0f};
+            for (auto& other : nearby) {
+                if (other.id == id) continue;
+                auto* other_t = world.transforms.get(other.id);
+                if (!other_t) continue;
+
+                glm::vec3 away = transform->position - other_t->position;
+                away.z = 0;
+                f32 d = glm::length(away);
+                if (d > 0.01f && d < SEPARATION_RADIUS) {
+                    separation += (away / d) * (1.0f - d / SEPARATION_RADIUS);
+                }
+            }
+
+            if (glm::length(separation) > 0.01f) {
+                separation = glm::normalize(separation) * SEPARATION_FORCE * dt;
+                transform->position.x += separation.x;
+                transform->position.y += separation.y;
+            }
+        }
+
         // Only process Move orders (Attack movement is handled by CombatSystem)
         if (!oq->current) {
             mov.moving = false;
@@ -129,35 +156,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             glm::vec3 dir = glm::normalize(to_wp);
             transform->position.x += dir.x * step;
             transform->position.y += dir.y * step;
-        }
-
-        // Collision avoidance: push away from nearby units
-        Unit self;
-        self.id = id;
-        self.generation = world.handle_infos.get(id)->generation;
-
-        UnitFilter filter;
-        filter.exclude_buildings = true;
-        auto nearby = grid.units_in_range(world, transform->position, SEPARATION_RADIUS, filter);
-
-        glm::vec3 separation{0.0f};
-        for (auto& other : nearby) {
-            if (other.id == id) continue;
-            auto* other_t = world.transforms.get(other.id);
-            if (!other_t) continue;
-
-            glm::vec3 away = transform->position - other_t->position;
-            away.z = 0;
-            f32 d = glm::length(away);
-            if (d > 0.01f && d < SEPARATION_RADIUS) {
-                separation += (away / d) * (1.0f - d / SEPARATION_RADIUS);
-            }
-        }
-
-        if (glm::length(separation) > 0.01f) {
-            separation = glm::normalize(separation) * SEPARATION_FORCE * dt;
-            transform->position.x += separation.x;
-            transform->position.y += separation.y;
         }
 
         // Update Z from terrain height
