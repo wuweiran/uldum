@@ -2,6 +2,7 @@
 
 #include "simulation/world.h"
 #include "simulation/type_registry.h"
+#include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
 
@@ -25,6 +26,9 @@ public:
     TypeRegistry&       types()       { return m_types; }
     const TypeRegistry& types() const { return m_types; }
 
+    AbilityRegistry&       abilities()       { return m_abilities; }
+    const AbilityRegistry& abilities() const { return m_abilities; }
+
     Pathfinder&       pathfinder()       { return m_pathfinder; }
     const Pathfinder& pathfinder() const { return m_pathfinder; }
 
@@ -32,10 +36,11 @@ public:
     const SpatialGrid& spatial_grid() const { return m_spatial_grid; }
 
 private:
-    World        m_world;
-    TypeRegistry m_types;
-    Pathfinder   m_pathfinder;
-    SpatialGrid  m_spatial_grid;
+    World           m_world;
+    TypeRegistry    m_types;
+    AbilityRegistry m_abilities;
+    Pathfinder      m_pathfinder;
+    SpatialGrid     m_spatial_grid;
 };
 
 } // namespace uldum::simulation

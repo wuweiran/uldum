@@ -130,6 +130,8 @@ struct AbilityInstance {
     Unit        source;                      // unit that applied this (null if self/innate)
     f32         remaining_duration = -1.0f;  // -1 = permanent (innate), >= 0 = timed
     f32         tick_timer         = 0;
+    // Active modifiers from this ability's current level
+    std::map<std::string, f32> active_modifiers;
 };
 
 struct AbilitySet {

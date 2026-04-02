@@ -2,6 +2,7 @@ add_library(uldum_simulation STATIC
     simulation.cpp
     world.cpp
     type_registry.cpp
+    ability_def.cpp
     systems.cpp
     pathfinding.cpp
     spatial_query.cpp

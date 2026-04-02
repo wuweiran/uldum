@@ -1,5 +1,6 @@
 #include "simulation/systems.h"
 #include "simulation/world.h"
+#include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
 #include "core/log.h"
@@ -347,19 +348,72 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder) {
     }
 }
 
-void system_ability(World& world, float dt) {
+// ── Aura scan counter (uniform interval for all auras) ────────────────────
+static u32 s_aura_tick_counter = 0;
+static constexpr u32 AURA_SCAN_INTERVAL = 8;  // every 8 ticks = 0.25s at 32Hz
+
+void system_ability(World& world, float dt, const AbilityRegistry& abilities, const SpatialGrid& grid) {
+    bool aura_scan_tick = (++s_aura_tick_counter % AURA_SCAN_INTERVAL == 0);
+
     for (u32 i = 0; i < world.ability_sets.count(); ++i) {
+        u32 id = world.ability_sets.ids()[i];
         auto& aset = world.ability_sets.data()[i];
+
+        // Tick cooldowns
         for (auto& ability : aset.abilities) {
             if (ability.cooldown_remaining > 0) {
                 ability.cooldown_remaining = std::max(0.0f, ability.cooldown_remaining - dt);
             }
         }
-        std::erase_if(aset.abilities, [dt](AbilityInstance& a) {
-            if (a.remaining_duration < 0) return false;
+
+        // Tick durations — remove expired applied abilities
+        bool modifiers_changed = false;
+        std::erase_if(aset.abilities, [dt, &modifiers_changed](AbilityInstance& a) {
+            if (a.remaining_duration < 0) return false;  // permanent
             a.remaining_duration -= dt;
-            return a.remaining_duration <= 0;
+            if (a.remaining_duration <= 0) {
+                modifiers_changed = true;
+                return true;
+            }
+            return false;
         });
+
+        if (modifiers_changed) {
+            recalculate_modifiers(world, id);
+        }
+
+        // Aura scanning (only on scan ticks)
+        if (aura_scan_tick) {
+            auto* transform = world.transforms.get(id);
+            auto* owner = world.owners.get(id);
+            if (!transform || !owner) continue;
+
+            for (auto& ability : aset.abilities) {
+                const auto* def = abilities.get(ability.ability_id);
+                if (!def || def->form != AbilityForm::Aura) continue;
+
+                auto& lvl = def->level_data(ability.level);
+                if (lvl.aura_radius <= 0 || lvl.aura_ability.empty()) continue;
+
+                // Find units in aura radius
+                UnitFilter filter;
+                if (def->target_filter.ally)  filter.owner = owner->player;
+                if (def->target_filter.enemy) filter.enemy_of = owner->player;
+                auto nearby = grid.units_in_range(world, transform->position, lvl.aura_radius, filter);
+
+                Unit source_unit;
+                source_unit.id = id;
+                auto* info = world.handle_infos.get(id);
+                source_unit.generation = info ? info->generation : 0;
+
+                // Apply the aura's passive ability to each nearby unit
+                f32 aura_duration = (AURA_SCAN_INTERVAL + 2) * (1.0f / 32.0f);  // slightly longer than scan interval
+                for (auto& target : nearby) {
+                    if (target.id == id && !def->target_filter.self_) continue;
+                    apply_passive_ability(world, abilities, target, lvl.aura_ability, source_unit, aura_duration);
+                }
+            }
+        }
     }
 }
 

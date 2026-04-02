@@ -2,6 +2,7 @@
 #include "asset/asset.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
+#include "simulation/ability_def.h"
 #include "simulation/order.h"
 #include "core/log.h"
 
@@ -138,6 +139,10 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
     types.load_destructable_types_absolute(assets, dest_path);
     types.load_item_types_absolute(assets, item_path);
 
+    // Load ability definitions
+    std::string ability_path = types_dir + "ability_types.json";
+    sim.abilities().load(assets, ability_path);  // ok if file doesn't exist
+
     log::info(TAG, "Types loaded — {} units, {} destructables, {} items",
               types.unit_type_count(), types.destructable_type_count(), types.item_type_count());
     return true;
@@ -248,6 +253,13 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                     simulation::Order order;
                     order.payload = simulation::orders::Attack{created_units[ti]};
                     simulation::issue_order(world, unit, std::move(order));
+                }
+            }
+
+            // Grant abilities listed in placement (temporary until Lua handles this)
+            if (u.contains("grant_abilities")) {
+                for (auto& aid : u["grant_abilities"]) {
+                    simulation::add_ability(world, sim.abilities(), unit, aid.get<std::string>());
                 }
             }
         }

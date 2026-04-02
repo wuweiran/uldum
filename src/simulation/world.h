@@ -65,6 +65,23 @@ void          destroy(World& world, Item item);
 // ── Unit API ───────────────────────────────────────────────────────────────
 
 void     issue_order(World& world, Unit unit, Order order);
+
+// ── Ability API ───────────────────────────────────────────────────────────
+
+class AbilityRegistry;
+
+// Add an innate ability. Returns false if non-stackable and already present.
+bool     add_ability(World& world, const AbilityRegistry& reg, Unit unit, std::string_view ability_id, u32 level = 1);
+// Remove ability (reverts modifiers). Returns false if not found.
+bool     remove_ability(World& world, Unit unit, std::string_view ability_id);
+// Apply a passive ability from a source unit with a duration. Respects stackable flag.
+bool     apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target, std::string_view ability_id, Unit source, f32 duration);
+bool     has_ability(const World& world, Unit unit, std::string_view ability_id);
+u32      get_ability_stack_count(const World& world, Unit unit, std::string_view ability_id);
+u32      get_ability_level(const World& world, Unit unit, std::string_view ability_id);
+
+// Recalculate effective attributes from base + all active modifiers.
+void     recalculate_modifiers(World& world, u32 id);
 f32      get_health(const World& world, Unit unit);
 void     set_health(World& world, Unit unit, f32 health);
 glm::vec3 get_position(const World& world, Unit unit);

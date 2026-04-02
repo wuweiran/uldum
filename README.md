@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 7c complete. Units attack, deal damage, and die.
+Phase 7d complete. Ability system with passives, auras, modifiers, and cast flow infrastructure.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -41,7 +41,14 @@ Phase 7c complete. Units attack, deal damage, and die.
 - Combat system: attack state machine (chase, turn, wind-up, fire, backswing, cooldown)
 - Damage + death: HP decreases on hit, entity destroyed at 0 HP
 - Projectile system: flight, homing, hit detection, impact damage
-- Visual feedback: scale pulse on attack, units shrink as HP decreases
+- Visual feedback: scale pulse on attack, units shrink as HP decreases, corpse turns dark gray
+- Ability system: AbilityDef (JSON templates) + Ability instances on units
+  - Forms: passive, aura, instant, target_unit, target_point, toggle, channel
+  - AddAbility, RemoveAbility, ApplyPassiveAbility API
+  - Aura scanning at uniform 0.25s interval, applies passive buffs to nearby allies
+  - Modifier system: abilities apply attribute modifiers, recalculated on add/remove
+  - Stackable flag on ability defs (items stack, buffs refresh)
+  - Cast flow skeleton for active abilities (validation, cost, timing — effects via Lua in Phase 8)
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
 - Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias

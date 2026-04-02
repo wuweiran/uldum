@@ -1,5 +1,6 @@
 #include "simulation/world.h"
 #include "simulation/type_registry.h"
+#include "simulation/ability_def.h"
 #include "core/log.h"
 
 namespace uldum::simulation {
@@ -314,6 +315,142 @@ void set_charges(World& world, Item item, i32 charges) {
     if (!world.validate(item)) return;
     auto* info = world.item_infos.get(item.id);
     if (info) info->charges = charges;
+}
+
+// ── Ability API ───────────────────────────────────────────────────────────
+
+bool add_ability(World& world, const AbilityRegistry& reg, Unit unit, std::string_view ability_id, u32 level) {
+    if (!world.validate(unit)) return false;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return false;
+
+    const auto* def = reg.get(ability_id);
+
+    // Non-stackable: check if already present
+    if (def && !def->stackable) {
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == ability_id) {
+                return false;  // already has it
+            }
+        }
+    }
+
+    AbilityInstance inst;
+    inst.ability_id = std::string(ability_id);
+    inst.level = level;
+    inst.remaining_duration = -1.0f;  // permanent (innate)
+
+    // Apply modifiers from def
+    if (def) {
+        auto& lvl = def->level_data(level);
+        inst.active_modifiers = lvl.modifiers;
+    }
+
+    aset->abilities.push_back(std::move(inst));
+    recalculate_modifiers(world, unit.id);
+
+    log::trace(TAG, "AddAbility: unit {} + '{}' (level {})", unit.id, ability_id, level);
+    return true;
+}
+
+bool remove_ability(World& world, Unit unit, std::string_view ability_id) {
+    if (!world.validate(unit)) return false;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return false;
+
+    auto it = std::find_if(aset->abilities.begin(), aset->abilities.end(),
+        [&](const AbilityInstance& a) { return a.ability_id == ability_id; });
+
+    if (it == aset->abilities.end()) return false;
+
+    aset->abilities.erase(it);
+    recalculate_modifiers(world, unit.id);
+
+    log::trace(TAG, "RemoveAbility: unit {} - '{}'", unit.id, ability_id);
+    return true;
+}
+
+bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target,
+                           std::string_view ability_id, Unit source, f32 duration) {
+    if (!world.validate(target)) return false;
+    auto* aset = world.ability_sets.get(target.id);
+    if (!aset) return false;
+
+    const auto* def = reg.get(ability_id);
+
+    // Non-stackable: refresh duration if already present
+    if (def && !def->stackable) {
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == ability_id) {
+                a.remaining_duration = duration;
+                a.source = source;
+                return true;  // refreshed
+            }
+        }
+    }
+
+    AbilityInstance inst;
+    inst.ability_id = std::string(ability_id);
+    inst.level = 1;
+    inst.source = source;
+    inst.remaining_duration = duration;
+
+    if (def) {
+        auto& lvl = def->level_data(1);
+        inst.active_modifiers = lvl.modifiers;
+    }
+
+    aset->abilities.push_back(std::move(inst));
+    recalculate_modifiers(world, target.id);
+
+    log::trace(TAG, "ApplyPassiveAbility: '{}' on unit {} (duration={:.1f}s)", ability_id, target.id, duration);
+    return true;
+}
+
+bool has_ability(const World& world, Unit unit, std::string_view ability_id) {
+    if (!world.validate(unit)) return false;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return false;
+    for (auto& a : aset->abilities) {
+        if (a.ability_id == ability_id) return true;
+    }
+    return false;
+}
+
+u32 get_ability_stack_count(const World& world, Unit unit, std::string_view ability_id) {
+    if (!world.validate(unit)) return 0;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return 0;
+    u32 count = 0;
+    for (auto& a : aset->abilities) {
+        if (a.ability_id == ability_id) count++;
+    }
+    return count;
+}
+
+u32 get_ability_level(const World& world, Unit unit, std::string_view ability_id) {
+    if (!world.validate(unit)) return 0;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return 0;
+    for (auto& a : aset->abilities) {
+        if (a.ability_id == ability_id) return a.level;
+    }
+    return 0;
+}
+
+void recalculate_modifiers(World& world, u32 id) {
+    auto* aset = world.ability_sets.get(id);
+    auto* attrs = world.attribute_blocks.get(id);
+    if (!aset || !attrs) return;
+
+    // Note: we only recalculate modifier-affected attributes here.
+    // Base attributes are set at entity creation; modifiers are additive.
+    // For now, we store the sum of all modifiers in a separate map
+    // that systems can query. Full base+modifier calculation happens
+    // when systems read effective values.
+
+    // This is a placeholder — the full modifier system will be needed
+    // when Lua scripts start applying buffs with modifiers.
 }
 
 } // namespace uldum::simulation

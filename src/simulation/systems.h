@@ -11,7 +11,7 @@ void system_health(World& world, float dt);
 void system_state(World& world, float dt);
 void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid);
 void system_combat(World& world, float dt, const Pathfinder& pathfinder);
-void system_ability(World& world, float dt);
+void system_ability(World& world, float dt, const class AbilityRegistry& abilities, const SpatialGrid& grid);
 void system_projectile(World& world, float dt, const Pathfinder& pathfinder);
 void system_death(World& world);
 void system_scale_pulse(World& world, float dt);

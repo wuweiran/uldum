@@ -1,0 +1,31 @@
+{
+    "devotion_aura": {
+        "name": "Devotion Aura",
+        "form": "aura",
+        "max_level": 3,
+        "target_filter": { "ally": true, "self": true },
+        "levels": [
+            { "aura_radius": 15.0, "aura_ability": "devotion_aura_buff" },
+            { "aura_radius": 15.0, "aura_ability": "devotion_aura_buff" },
+            { "aura_radius": 15.0, "aura_ability": "devotion_aura_buff" }
+        ]
+    },
+    "devotion_aura_buff": {
+        "name": "Devotion Aura",
+        "form": "passive",
+        "max_level": 3,
+        "levels": [
+            { "modifiers": { "armor_flat": 1.5 } },
+            { "modifiers": { "armor_flat": 3.0 } },
+            { "modifiers": { "armor_flat": 4.5 } }
+        ]
+    },
+    "item_armor_bonus": {
+        "name": "Armor Bonus",
+        "form": "passive",
+        "stackable": true,
+        "levels": [
+            { "modifiers": { "armor_flat": 5 } }
+        ]
+    }
+}

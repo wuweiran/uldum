@@ -33,7 +33,7 @@ void Simulation::tick(float dt) {
     system_state(m_world, dt);
     system_movement(m_world, dt, m_pathfinder, m_spatial_grid);
     system_combat(m_world, dt, m_pathfinder);
-    system_ability(m_world, dt);
+    system_ability(m_world, dt, m_abilities, m_spatial_grid);
     system_projectile(m_world, dt, m_pathfinder);
     system_death(m_world);
     system_scale_pulse(m_world, dt);
