@@ -50,6 +50,31 @@ if(MSVC)
     target_compile_options(cgltf PRIVATE /W0)
 endif()
 
+# ── Lua 5.4 (scripting runtime) ────────────────────────────────────────────
+FetchContent_Declare(lua
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG        v5.4.7
+    GIT_SHALLOW    TRUE
+)
+FetchContent_Populate(lua)
+
+# Build Lua as a static library from its source files
+file(GLOB LUA_SOURCES ${lua_SOURCE_DIR}/*.c)
+list(REMOVE_ITEM LUA_SOURCES ${lua_SOURCE_DIR}/lua.c ${lua_SOURCE_DIR}/luac.c ${lua_SOURCE_DIR}/onelua.c)
+add_library(lua54 STATIC ${LUA_SOURCES})
+target_include_directories(lua54 SYSTEM PUBLIC ${lua_SOURCE_DIR})
+if(MSVC)
+    target_compile_options(lua54 PRIVATE /W0)
+endif()
+
+# ── sol2 (C++ ↔ Lua binding, header-only) ─────────────────────────────────
+FetchContent_Declare(sol2
+    GIT_REPOSITORY https://github.com/ThePhD/sol2.git
+    GIT_TAG        v3.3.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(sol2)
+
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
 FetchContent_Declare(vma
     GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git

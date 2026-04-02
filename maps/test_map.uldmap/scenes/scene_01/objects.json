@@ -1,8 +1,8 @@
 {
     "units": [
-        { "type": "footman",  "x": 40.0, "y": 52.0, "facing": 0.0, "owner": 0, "attack_target_index": 1 },
-        { "type": "paladin",  "x": 52.0, "y": 64.0, "facing": 0.0, "owner": 0, "grant_abilities": ["devotion_aura"] },
-        { "type": "archer",   "x": 62.0, "y": 52.0, "facing": 0.0, "owner": 0, "attack_target_index": 3 },
+        { "type": "footman",  "x": 40.0, "y": 52.0, "facing": 0.0, "owner": 0 },
+        { "type": "paladin",  "x": 52.0, "y": 64.0, "facing": 0.0, "owner": 0 },
+        { "type": "archer",   "x": 62.0, "y": 52.0, "facing": 0.0, "owner": 0 },
         { "type": "grunt",    "x": 72.0, "y": 64.0, "facing": 0.0, "owner": 0 },
         { "type": "barracks", "x": 44.0, "y": 64.0, "facing": 0.0, "owner": 0 }
     ],
@@ -10,9 +10,9 @@
     "items": [],
     "doodads": [],
     "regions": [
-        { "name": "spawn_area", "x": 40.0, "y": 48.0, "width": 36.0, "height": 20.0 }
+        { "name": "spawn_area", "x": 38.0, "y": 48.0, "width": 40.0, "height": 24.0 }
     ],
     "cameras": [
-        { "name": "default", "x": 58.0, "y": 40.0, "z": 30.0, "pitch": -0.8, "yaw": 0.0 }
+        { "name": "default", "x": 55.0, "y": 40.0, "z": 30.0, "pitch": -0.8, "yaw": 0.0 }
     ]
 }

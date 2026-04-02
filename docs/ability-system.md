@@ -353,55 +353,42 @@ RegisterEvent(event_name, handler_fn)
 Using the trigger system (see docs/scripting.md for full trigger API):
 
 ```lua
--- Holy Light: heal on effect (scoped to specific ability)
+-- Holy Light: heal on effect (scoped to specific unit + ability)
 function SetupHolyLight(hero)
     local trig = CreateTrigger()
-    TriggerBindToAbility(trig, hero, "holy_light")
     TriggerRegisterUnitAbilityEvent(trig, hero, "holy_light", "on_ability_effect")
     TriggerAddAction(trig, function()
         local target = GetSpellTargetUnit()
         local heal = 200 * GetAbilityLevel(hero, "holy_light")
         HealUnit(hero, target, heal)
     end)
+    return trig  -- caller manages lifecycle
 end
 
--- Custom cast filter: Holy Light only at night
-function SetupHolyLightFilter(hero)
-    local trig = CreateTrigger()
-    TriggerBindToAbility(trig, hero, "holy_light")
-    TriggerRegisterUnitAbilityEvent(trig, hero, "holy_light", "on_ability_cast_filter")
-    TriggerAddCondition(trig, function()
-        return IsNight()
-    end)
-end
+-- Periodic damage: poison sting via timer
+-- Clean up when ability is removed via on_ability_removed event
+local poison_triggers = {}
 
--- Periodic damage: poison sting via timer, bound to ability lifecycle
-RegisterEvent("on_ability_added", function(unit, ability_id, source)
+RegisterEvent("on_ability_added", function()
+    local unit = GetTriggerUnit()
+    local ability_id = GetTriggerAbilityId()
     if ability_id == "poison_sting" then
+        local source = GetAbilitySource(unit, "poison_sting")
         local trig = CreateTrigger()
-        TriggerBindToAbility(trig, unit, "poison_sting")
         TriggerRegisterTimerEvent(trig, 1.0, true)
         TriggerAddAction(trig, function()
             DamageUnit(source, unit, 4)
         end)
-        -- auto-destroyed when poison_sting is removed from unit
+        poison_triggers[unit] = trig
     end
 end)
 
--- Channel: Blizzard ticks via trigger-owned timer
-RegisterEvent("on_channel_start", function(caster, ability_id)
-    if ability_id == "blizzard" then
-        local trig = CreateTrigger()
-        TriggerBindToUnit(trig, caster)
-        local point_x, point_y = GetSpellTargetPoint()
-        TriggerRegisterTimerEvent(trig, 1.0, true)
-        TriggerAddAction(trig, function()
-            if IsChanneling(caster, "blizzard") then
-                CreateAOEDamage(caster, point_x, point_y, 8.0, 50)
-            else
-                DestroyTrigger(trig)
-            end
-        end)
+RegisterEvent("on_ability_removed", function()
+    local unit = GetTriggerUnit()
+    local ability_id = GetTriggerAbilityId()
+    if ability_id == "poison_sting" and poison_triggers[unit] then
+        DestroyTrigger(poison_triggers[unit])
+        poison_triggers[unit] = nil
     end
 end)
 ```

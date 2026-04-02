@@ -10,14 +10,14 @@ using Lua instead of a custom language.
 
 | File | Purpose |
 |------|---------|
-| `engine/scripts/common.lua` | Engine API function declarations — the "common.j" equivalent. Loaded before any map script. Defines all engine functions available to map scripts. |
-| `engine/scripts/blizzard.lua` | Optional convenience library — helper functions built on top of the engine API (like WC3's Blizzard.j). |
+| `engine/scripts/api.lua` | Engine API function declarations. Loaded before any map script. Defines all engine functions available to map scripts. |
+| `engine/scripts/helpers.lua` | Optional convenience library — helper functions built on top of the engine API. |
 | Map's `shared/scripts/main.lua` | Map entry point — runs after common.lua. Registers events, sets up gameplay. |
 
 ### Execution Order
 
 1. Engine initializes Lua VM (sandboxed — no os, io, require from filesystem)
-2. Engine loads and executes `engine/scripts/common.lua` (defines API)
+2. Engine loads and executes `engine/scripts/api.lua` (defines API)
 3. Engine loads and executes map's `shared/scripts/main.lua`
 4. Map's main.lua registers event handlers, creates initial game state
 5. Game loop begins — events fire, Lua handlers run synchronously within simulation ticks
@@ -102,18 +102,19 @@ TriggerAddAction(trig, function()
 end)
 ```
 
-### Lifecycle Binding
+### Trigger Lifecycle
 
-Triggers can be bound to a unit or ability — auto-destroyed when the unit/ability is removed.
+Triggers are destroyed manually via `DestroyTrigger`. If you want cleanup on unit death
+or ability removal, register an event and destroy the trigger in the handler:
 
 ```lua
--- Auto-destroyed when my_hero is removed from the game
 local trig = CreateTrigger()
-TriggerBindToUnit(trig, my_hero)
-
--- Auto-destroyed when "rampage" is removed from my_hero
-local trig = CreateTrigger()
-TriggerBindToAbility(trig, my_hero, "rampage")
+TriggerRegisterUnitEvent(trig, my_hero, "on_death")
+TriggerAddAction(trig, function()
+    -- hero died, clean up related triggers
+    DestroyTrigger(buff_trigger)
+    DestroyTrigger(trig)  -- can destroy self
+end)
 ```
 
 ### Context Functions

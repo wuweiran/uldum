@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
--- common.lua — Uldum Engine API Declarations
+-- api.lua — Uldum Engine API Declarations
 --
 -- This file is loaded by the engine before any map script. It declares all
 -- engine functions available to map scripts. The actual implementations are
@@ -64,16 +64,6 @@ function TriggerAddCondition(trig, condition) end
 --- @param action function
 function TriggerAddAction(trig, action) end
 
---- Bind trigger lifecycle to a unit. Auto-destroyed when unit is removed.
---- @param trig trigger
---- @param unit unit
-function TriggerBindToUnit(trig, unit) end
-
---- Bind trigger lifecycle to an ability on a unit. Auto-destroyed when ability removed.
---- @param trig trigger
---- @param unit unit
---- @param ability_id string
-function TriggerBindToAbility(trig, unit, ability_id) end
 
 --------------------------------------------------------------------------------
 -- Trigger Context (call inside trigger actions to read event data)

@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 7d complete. Ability system with passives, auras, modifiers, and cast flow infrastructure.
+Phase 8 complete. Lua scripting with triggers, timers, and full engine API bindings.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -48,7 +48,15 @@ Phase 7d complete. Ability system with passives, auras, modifiers, and cast flow
   - Aura scanning at uniform 0.25s interval, applies passive buffs to nearby allies
   - Modifier system: abilities apply attribute modifiers, recalculated on add/remove
   - Stackable flag on ability defs (items stack, buffs refresh)
-  - Cast flow skeleton for active abilities (validation, cost, timing — effects via Lua in Phase 8)
+  - Cast flow skeleton for active abilities (validation, cost, timing)
+- Lua 5.4 scripting with sol2 bindings
+  - Sandboxed VM (no filesystem access)
+  - Trigger system: CreateTrigger, scoped events (unit/ability/player), conditions, actions
+  - Timer system: CreateTimer with repeating/one-shot support
+  - Full engine API: unit CRUD, orders, abilities, damage, spatial queries, hero, player
+  - Proper Unit/Player usertypes (not raw integers), nil for invalid handles
+  - Context functions with wrong-event warnings (GetDamageSource outside on_damage, etc.)
+  - Map scripts issue all orders and grant abilities (no hardcoded test data in engine)
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
 - Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias

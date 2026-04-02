@@ -2,11 +2,7 @@
 #include "asset/asset.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
-#include "simulation/ability_def.h"
-#include "simulation/order.h"
 #include "core/log.h"
-
-#include <glm/vec3.hpp>
 
 namespace uldum::map {
 
@@ -234,35 +230,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             }
         }
 
-        // Second pass: issue orders (needs all units created first for attack_target_index)
-        u32 idx = 0;
-        for (auto& u : j["units"]) {
-            auto unit = created_units[idx++];
-            if (!unit.is_valid()) continue;
-
-            if (u.contains("move_to")) {
-                auto& mt = u["move_to"];
-                simulation::Order order;
-                order.payload = simulation::orders::Move{glm::vec3{mt.value("x", 0.0f), mt.value("y", 0.0f), 0.0f}};
-                simulation::issue_order(world, unit, std::move(order));
-            }
-
-            if (u.contains("attack_target_index")) {
-                u32 ti = u["attack_target_index"].get<u32>();
-                if (ti < created_units.size() && created_units[ti].is_valid()) {
-                    simulation::Order order;
-                    order.payload = simulation::orders::Attack{created_units[ti]};
-                    simulation::issue_order(world, unit, std::move(order));
-                }
-            }
-
-            // Grant abilities listed in placement (temporary until Lua handles this)
-            if (u.contains("grant_abilities")) {
-                for (auto& aid : u["grant_abilities"]) {
-                    simulation::add_ability(world, sim.abilities(), unit, aid.get<std::string>());
-                }
-            }
-        }
+        // Orders and abilities are now issued by map Lua scripts (main.lua)
     }
 
     // Destructables

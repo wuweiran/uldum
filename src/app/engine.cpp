@@ -86,12 +86,6 @@ bool Engine::init() {
         return false;
     }
 
-    // Scripting
-    if (!m_script.init()) {
-        log::error(TAG, "ScriptEngine init failed");
-        return false;
-    }
-
     // Simulation
     if (!m_simulation.init(m_asset)) {
         log::error(TAG, "Simulation init failed");
@@ -120,6 +114,22 @@ bool Engine::init() {
         m_renderer.set_terrain(m_map.terrain());
         m_simulation.set_terrain(&m_map.terrain());
         m_renderer.set_pathfinder(&m_simulation.pathfinder());
+    }
+
+    // Scripting — init after map so we can load map scripts
+    if (!m_script.init(m_simulation, m_map)) {
+        log::error(TAG, "ScriptEngine init failed");
+        return false;
+    }
+
+    // Initialize spatial grid before scripts run (so GetUnitsInRange works in main())
+    m_simulation.spatial_grid().update(m_simulation.world());
+
+    // Load and run map scripts
+    {
+        std::string main_script = m_map.map_root() + "/shared/scripts/main.lua";
+        m_script.load_script(main_script);
+        m_script.call_function("main");
     }
 
     // Editor
