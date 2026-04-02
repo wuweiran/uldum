@@ -26,9 +26,18 @@ struct Timer {
     std::function<void()> callback;
 };
 
+// Fixed priority levels — higher fires first. Used as bucket index.
+enum class TriggerPriority : u8 {
+    Low    = 0,
+    Normal = 1,
+    High   = 2,
+    Count  = 3,
+};
+
 struct Trigger {
-    u32  id = 0;
-    bool alive = true;
+    u32             id = 0;
+    TriggerPriority priority = TriggerPriority::Normal;
+    bool            alive = true;
 
     struct EventBinding {
         std::string event_name;
@@ -41,7 +50,6 @@ struct Trigger {
     std::vector<std::function<bool()>>   conditions;
     std::vector<std::function<void()>>   actions;
     std::vector<u32>                     owned_timers;
-
 };
 
 class ScriptEngine {

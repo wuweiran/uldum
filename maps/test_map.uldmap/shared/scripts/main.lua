@@ -32,6 +32,27 @@ function main()
     AddAbility(paladin, "holy_light")
 
     ---------------------------------------------------------------------------
+    -- Armor damage reduction: WC3 formula, applies to normal attacks only.
+    -- Runs at HIGH priority so cleave sees the reduced amount.
+    -- Formula: reduction = armor * 0.06 / (1 + armor * 0.06)
+    ---------------------------------------------------------------------------
+    local armor_trig = CreateTrigger(TRIGGER_PRIORITY_HIGH)
+    TriggerRegisterEvent(armor_trig, "on_damage")
+    TriggerAddCondition(armor_trig, function()
+        return GetDamageType() == "attack"
+    end)
+    TriggerAddAction(armor_trig, function()
+        local target = GetDamageTarget()
+        local armor = GetUnitAttribute(target, "armor")
+        if armor > 0 then
+            local reduction = armor * 0.06 / (1 + armor * 0.06)
+            local dmg = GetDamageAmount() * (1 - reduction)
+            SetDamageAmount(dmg)
+        end
+    end)
+    Log("[Scene02] Armor damage reduction active (WC3 formula)")
+
+    ---------------------------------------------------------------------------
     -- Cleave: when footman deals damage, deal 30% to nearby enemy ground units
     ---------------------------------------------------------------------------
     local cleave_trig = CreateTrigger()

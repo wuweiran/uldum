@@ -16,9 +16,16 @@
 -- Triggers
 --------------------------------------------------------------------------------
 
+--- Trigger priority constants (higher fires first).
+--- @type number
+TRIGGER_PRIORITY_LOW    = 0
+TRIGGER_PRIORITY_NORMAL = 1   -- default
+TRIGGER_PRIORITY_HIGH   = 2
+
 --- Create a trigger — a lifecycle scope for events, conditions, actions, and data.
+--- @param priority? number   TRIGGER_PRIORITY_* constant. Default: TRIGGER_PRIORITY_NORMAL.
 --- @return trigger
-function CreateTrigger() end
+function CreateTrigger(priority) end
 
 --- Destroy a trigger. All events unregistered, timers stopped, data cleaned up.
 --- @param trig trigger

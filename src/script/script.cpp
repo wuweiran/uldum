@@ -188,34 +188,33 @@ void ScriptEngine::fire_event(std::string_view event_name, u32 unit_id,
                                std::string_view ability_id, u32 player_id) {
     m_ctx_event = std::string(event_name);
 
-    for (auto& [trig_id, trig] : m_triggers) {
-        if (!trig.alive) continue;
-
-        bool matched = false;
+    auto matches = [&](const Trigger& trig) -> bool {
         for (auto& eb : trig.events) {
             if (eb.event_name != event_name) continue;
-            // Check unit scope
             if (eb.unit_id != UINT32_MAX && eb.unit_id != unit_id) continue;
-            // Check ability scope
             if (!eb.ability_id.empty() && eb.ability_id != ability_id) continue;
-            // Check player scope
             if (eb.player_id != UINT32_MAX && eb.player_id != player_id) continue;
-            matched = true;
-            break;
+            return true;
         }
+        return false;
+    };
 
-        if (!matched) continue;
+    // Iterate from highest priority to lowest — no sorting needed
+    for (i32 p = static_cast<i32>(TriggerPriority::Count) - 1; p >= 0; --p) {
+        auto prio = static_cast<TriggerPriority>(p);
+        for (auto& [trig_id, trig] : m_triggers) {
+            if (!trig.alive || trig.priority != prio) continue;
+            if (!matches(trig)) continue;
 
-        // Check conditions
-        bool pass = true;
-        for (auto& cond : trig.conditions) {
-            if (!cond()) { pass = false; break; }
-        }
-        if (!pass) continue;
+            bool pass = true;
+            for (auto& cond : trig.conditions) {
+                if (!cond()) { pass = false; break; }
+            }
+            if (!pass) continue;
 
-        // Run actions
-        for (auto& action : trig.actions) {
-            action();
+            for (auto& action : trig.actions) {
+                action();
+            }
         }
     }
 }
@@ -308,6 +307,26 @@ void ScriptEngine::bind_api() {
     };
     lua["SetUnitHealth"] = [&](simulation::Unit u, f32 hp) {
         simulation::set_health(sim.world(), u, hp);
+    };
+
+    // Attributes
+    lua["GetUnitAttribute"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        auto* ab = sim.world().attribute_blocks.get(u.id);
+        if (!ab) return 0;
+        auto it = ab->numeric.find(name);
+        return it != ab->numeric.end() ? it->second : 0;
+    };
+
+    lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
+        auto* ab = sim.world().attribute_blocks.get(u.id);
+        if (ab) ab->numeric[name] = value;
+    };
+
+    lua["GetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name) -> std::string {
+        auto* ab = sim.world().attribute_blocks.get(u.id);
+        if (!ab) return "";
+        auto it = ab->string_attrs.find(name);
+        return it != ab->string_attrs.end() ? it->second : "";
     };
 
     // Classification
@@ -475,10 +494,18 @@ void ScriptEngine::bind_api() {
 void ScriptEngine::bind_trigger_api() {
     auto& lua = *m_lua;
 
-    lua["CreateTrigger"] = [&]() -> sol::table {
+    // Expose priority constants
+    lua["TRIGGER_PRIORITY_LOW"]    = static_cast<i32>(TriggerPriority::Low);
+    lua["TRIGGER_PRIORITY_NORMAL"] = static_cast<i32>(TriggerPriority::Normal);
+    lua["TRIGGER_PRIORITY_HIGH"]   = static_cast<i32>(TriggerPriority::High);
+
+    lua["CreateTrigger"] = [&](sol::optional<i32> priority) -> sol::table {
         u32 id = next_trigger_id();
         Trigger trig;
         trig.id = id;
+        i32 p = priority.value_or(static_cast<i32>(TriggerPriority::Normal));
+        p = std::clamp(p, 0, static_cast<i32>(TriggerPriority::Count) - 1);
+        trig.priority = static_cast<TriggerPriority>(p);
         m_triggers[id] = std::move(trig);
 
         sol::table t = lua.create_table();
