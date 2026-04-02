@@ -350,58 +350,61 @@ RegisterEvent(event_name, handler_fn)
 
 ### Examples
 
+Using the trigger system (see docs/scripting.md for full trigger API):
+
 ```lua
--- Holy Light: heal on effect
-RegisterEvent("on_ability_effect", function(caster, ability_id, target)
-    if ability_id == "holy_light" then
-        local heal = 200 * GetAbilityLevel(caster, "holy_light")
-        HealUnit(caster, target, heal)
-    end
-end)
+-- Holy Light: heal on effect (scoped to specific ability)
+function SetupHolyLight(hero)
+    local trig = CreateTrigger()
+    TriggerBindToAbility(trig, hero, "holy_light")
+    TriggerRegisterUnitAbilityEvent(trig, hero, "holy_light", "on_ability_effect")
+    TriggerAddAction(trig, function()
+        local target = GetSpellTargetUnit()
+        local heal = 200 * GetAbilityLevel(hero, "holy_light")
+        HealUnit(hero, target, heal)
+    end)
+end
 
 -- Custom cast filter: Holy Light only at night
-RegisterEvent("on_ability_cast_filter", function(caster, ability_id, target)
-    if ability_id == "holy_light" then
+function SetupHolyLightFilter(hero)
+    local trig = CreateTrigger()
+    TriggerBindToAbility(trig, hero, "holy_light")
+    TriggerRegisterUnitAbilityEvent(trig, hero, "holy_light", "on_ability_cast_filter")
+    TriggerAddCondition(trig, function()
         return IsNight()
-    end
-    return true  -- allow all others
-end)
+    end)
+end
 
--- Buff stacking: frost_slow doesn't stack, refresh duration instead
-RegisterEvent("on_ability_added", function(unit, ability_id, source)
-    if ability_id == "frost_slow" then
-        if GetAbilityStackCount(unit, "frost_slow") > 1 then
-            RemoveAbility(unit, "frost_slow")  -- remove older instance
-        end
-    end
-end)
-
--- Periodic damage: poison sting via timer (no engine passive tick needed)
+-- Periodic damage: poison sting via timer, bound to ability lifecycle
 RegisterEvent("on_ability_added", function(unit, ability_id, source)
     if ability_id == "poison_sting" then
-        CreateTimer(1.0, true, function()
-            if HasAbility(unit, "poison_sting") then
-                DamageUnit(source, unit, 4)
-            else
-                DestroyCurrentTimer()
-            end
+        local trig = CreateTrigger()
+        TriggerBindToAbility(trig, unit, "poison_sting")
+        TriggerRegisterTimerEvent(trig, 1.0, true)
+        TriggerAddAction(trig, function()
+            DamageUnit(source, unit, 4)
         end)
+        -- auto-destroyed when poison_sting is removed from unit
     end
 end)
 
--- Channel: Blizzard ticks via timer
+-- Channel: Blizzard ticks via trigger-owned timer
 RegisterEvent("on_channel_start", function(caster, ability_id)
     if ability_id == "blizzard" then
-        local point = GetChannelTargetPoint(caster, "blizzard")
-        CreateTimer(1.0, true, function()
+        local trig = CreateTrigger()
+        TriggerBindToUnit(trig, caster)
+        local point_x, point_y = GetSpellTargetPoint()
+        TriggerRegisterTimerEvent(trig, 1.0, true)
+        TriggerAddAction(trig, function()
             if IsChanneling(caster, "blizzard") then
-                CreateAOEDamage(caster, point, 8.0, 50)
+                CreateAOEDamage(caster, point_x, point_y, 8.0, 50)
             else
-                DestroyCurrentTimer()
+                DestroyTrigger(trig)
             end
         end)
     end
 end)
+```
 ```
 
 ### Stacking API
