@@ -420,7 +420,6 @@ Now the unit model, renderer, map system, and gameplay systems are stable — Lu
 - **Unified event system**: `RegisterEvent(event_name, fn)` — one system for everything (abilities, combat, lifecycle)
 - **Timer system**: `CreateTimer(delay, repeating, fn)` — for periodic effects, delayed actions
 - **Engine API bindings**: unit CRUD, orders, abilities, damage, spatial queries, hero, player, regions
-- **Cleanup**: remove temporary `move_to`, `attack_target_index`, `grant_abilities` from objects.json loader
 
 ### Phase 9 — Editor (Terrain Editor v1)
 
@@ -462,4 +461,9 @@ Cross-platform build output and asset protection.
 - **Build output**: self-contained distribution folder per platform (exe + engine.pak + any platform-specific files)
 - **Windows packaging**: output folder or installer
 - **Android packaging**: APK/AAB with assets bundled
-- **Asset baking pipeline**: optional offline step — pre-compile shaders to SPIR-V, compress textures to GPU formats (KTX2), bake JSON configs to binary if needed
+- **Asset baking pipeline**: offline build step that converts dev-friendly source assets into optimized shipping formats:
+  - **Textures**: PNG (dev) → **KTX2** with BC7 (desktop) / ASTC (Android) GPU compression + mipmaps
+  - **Audio**: OGG Opus for music/voice streaming, WAV for short SFX (no decompression latency)
+  - **Shaders**: GLSL (dev) → pre-compiled SPIR-V
+  - **Configs**: JSON (dev) → FlatBuffers binary (optional, for load speed)
+  - **Models**: glTF stays as-is (already efficient), or bake to engine-native binary mesh format
