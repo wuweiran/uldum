@@ -60,8 +60,11 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
-        // Separation: always push apart from nearby units, even when idle/attacking
+        // Separation steering: moving units get full force, idle units get a gentle nudge
+        // from nearby moving units only (so they slide out of the way but don't drift).
         {
+            bool self_active = oq->current.has_value();
+
             UnitFilter sep_filter;
             sep_filter.exclude_buildings = true;
             auto nearby = grid.units_in_range(world, transform->position, SEPARATION_RADIUS, sep_filter);
@@ -72,6 +75,12 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
                 auto* other_t = world.transforms.get(other.id);
                 if (!other_t) continue;
 
+                // If we're idle, only get pushed by active (moving) units
+                if (!self_active) {
+                    auto* other_oq = world.order_queues.get(other.id);
+                    if (!other_oq || !other_oq->current.has_value()) continue;
+                }
+
                 glm::vec3 away = transform->position - other_t->position;
                 away.z = 0;
                 f32 d = glm::length(away);
@@ -81,7 +90,9 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             }
 
             if (glm::length(separation) > 0.01f) {
-                separation = glm::normalize(separation) * SEPARATION_FORCE * dt;
+                // Idle units get 10% of the push — just enough to slide out of the way
+                f32 force = self_active ? SEPARATION_FORCE : SEPARATION_FORCE * 0.1f;
+                separation = glm::normalize(separation) * force * dt;
                 transform->position.x += separation.x;
                 transform->position.y += separation.y;
             }
