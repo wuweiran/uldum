@@ -27,8 +27,9 @@ function main()
 
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
-    -- Give paladin devotion aura (armor buff to nearby allies)
+    -- Give paladin abilities
     AddAbility(paladin, "devotion_aura")
+    AddAbility(paladin, "holy_light")
 
     ---------------------------------------------------------------------------
     -- Cleave: when footman deals damage, deal 30% to nearby enemy ground units
@@ -106,7 +107,7 @@ function main()
             IssueOrder(paladin, "cast", "holy_light", footman)
         end
     end)
-    Log("[Scene02] Holy Light auto-cast active on Paladin (via cast order)")
+    Log("[Scene02] Holy Light auto-cast active on Paladin")
 
     ---------------------------------------------------------------------------
     -- Creep spawning: waves from edges, attack toward center heroes

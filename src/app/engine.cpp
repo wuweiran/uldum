@@ -194,9 +194,9 @@ void Engine::run() {
         // Editor
         m_editor.update();
 
-        // Render
+        // Render (skip if window is minimized — extent would be zero)
         VkCommandBuffer cmd = m_rhi.begin_frame();
-        if (cmd) {
+        if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
             m_renderer.draw_shadows(cmd, m_simulation.world());
             m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());

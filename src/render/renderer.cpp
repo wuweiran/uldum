@@ -969,6 +969,8 @@ void Renderer::draw_shadows(VkCommandBuffer cmd, const simulation::World& world)
 }
 
 void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world) {
+    if (extent.width == 0 || extent.height == 0) return;
+
     VkViewport viewport{};
     viewport.width    = static_cast<float>(extent.width);
     viewport.height   = static_cast<float>(extent.height);

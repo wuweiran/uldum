@@ -31,18 +31,15 @@ compile_shaders(uldum
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine/shaders
 )
 
-# Copy engine assets to output directory after build
-add_custom_command(TARGET uldum POST_BUILD
+# Always copy engine assets and maps to output directory.
+# Uses a custom target (not POST_BUILD) so it runs even when no C++ changed.
+add_custom_target(copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/engine
-        $<TARGET_FILE_DIR:uldum>/engine
-    COMMENT "Copying engine assets to output directory"
-)
-
-# Copy maps to output directory after build
-add_custom_command(TARGET uldum POST_BUILD
+        ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/maps
-        $<TARGET_FILE_DIR:uldum>/maps
-    COMMENT "Copying maps to output directory"
+        ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/maps
+    COMMENT "Syncing engine assets and maps to output directory"
 )
+add_dependencies(uldum copy_assets)
