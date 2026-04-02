@@ -116,6 +116,16 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             continue;
         }
 
+        // If AttackMove and combat has an active target, pause path-following
+        // (combat system handles the chase). Resume when target is cleared.
+        auto* combat = world.combats.get(id);
+        if (combat && combat->target.is_valid()) {
+            if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
+                // Keep path alive but don't advance — combat is in control
+                continue;
+            }
+        }
+
         glm::vec3 move_target;
         bool has_move = false;
         if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
@@ -291,19 +301,45 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
-        // Check for Attack order — if none, try to acquire a nearby enemy
-        // Don't auto-acquire if the unit is casting (has a Cast order)
-        if (!oq->current || !std::get_if<orders::Attack>(&oq->current->payload)) {
+        // Determine attack target: explicit Attack order, or auto-acquired during AttackMove/idle
+        auto* attack_order = oq->current ? std::get_if<orders::Attack>(&oq->current->payload) : nullptr;
+        bool is_attack_move = oq->current && std::get_if<orders::AttackMove>(&oq->current->payload);
+        bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
+        bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
+
+        // Get current target: from Attack order, or from combat.target (auto-acquired)
+        Unit target;
+        if (attack_order) {
+            target = attack_order->target;
+        } else {
+            target = combat.target;
+        }
+
+        // Validate target is alive
+        bool target_valid = target.is_valid() && world.validate(target);
+        if (target_valid) {
+            auto* target_hp = world.healths.get(target.id);
+            if (!target_hp || target_hp->current <= 0) target_valid = false;
+        }
+
+        if (!target_valid) {
+            // Target dead or gone — clear combat state
+            combat.target = Unit{};
             if (combat.attack_state != AttackState::Idle) {
                 combat.attack_state = AttackState::Idle;
             }
 
-            // Don't auto-acquire while casting or executing a plain Move order
-            bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
-            bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
+            if (attack_order) {
+                // Explicit Attack order finished — advance queue
+                oq->current.reset();
+                if (!oq->queued.empty()) {
+                    oq->current = std::move(oq->queued.front());
+                    oq->queued.pop_front();
+                }
+            }
+            // If AttackMove: order stays, unit resumes marching (movement system handles it)
 
-            // Auto-acquire: scan for enemies within acquire_range
-            // Allowed when idle, during AttackMove, or in combat — but not during Move or Cast
+            // Auto-acquire: scan for nearby enemies
             if (!is_casting && !is_moving && combat.acquire_range > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
@@ -311,48 +347,37 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     filter.enemy_of = owner->player;
                     filter.alive_only = true;
                     auto enemies = grid.units_in_range(world, transform->position, combat.acquire_range, filter);
-                    if (!enemies.empty()) {
-                        // Pick closest enemy
-                        Unit best;
-                        f32 best_dist = combat.acquire_range + 1;
-                        for (auto& e : enemies) {
-                            auto* et = world.transforms.get(e.id);
-                            if (!et) continue;
-                            f32 d = glm::length(et->position - transform->position);
-                            if (d < best_dist) { best = e; best_dist = d; }
-                        }
-                        if (best.is_valid()) {
+                    Unit best;
+                    f32 best_dist = combat.acquire_range + 1;
+                    for (auto& e : enemies) {
+                        auto* et = world.transforms.get(e.id);
+                        if (!et) continue;
+                        f32 d = glm::length(et->position - transform->position);
+                        if (d < best_dist) { best = e; best_dist = d; }
+                    }
+                    if (best.is_valid()) {
+                        if (is_attack_move) {
+                            // Keep AttackMove order, store target on combat component
+                            combat.target = best;
+                            target = best;
+                            target_valid = true;
+                        } else {
+                            // Idle: create an Attack order
                             Order order;
                             order.payload = orders::Attack{best};
                             oq->current = std::move(order);
-                            // Fall through to process the new attack order below
+                            combat.target = best;
+                            target = best;
+                            target_valid = true;
                         }
                     }
                 }
             }
 
-            // Re-check after acquire attempt
-            if (!oq->current || !std::get_if<orders::Attack>(&oq->current->payload)) {
-                continue;
-            }
+            if (!target_valid) continue;
         }
 
-        auto* attack_order = std::get_if<orders::Attack>(&oq->current->payload);
-
-
-        Unit target = attack_order->target;
-
-        // Validate target is alive
-        auto* target_hp = world.healths.get(target.id);
-        if (!world.validate(target) || !target_hp || target_hp->current <= 0) {
-            oq->current.reset();
-            combat.attack_state = AttackState::Idle;
-            if (!oq->queued.empty()) {
-                oq->current = std::move(oq->queued.front());
-                oq->queued.pop_front();
-            }
-            continue;
-        }
+        combat.target = target;
 
         auto* target_t = world.transforms.get(target.id);
         if (!target_t) continue;
