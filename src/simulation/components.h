@@ -80,12 +80,34 @@ struct Movement {
     u32 path_index = 0;  // current waypoint index
 };
 
+enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };
+
 struct Combat {
     f32         damage          = 0;
     f32         range           = 1.0f;
-    f32         attack_cooldown = 1.0f;
-    f32         cooldown_remaining = 0;
+    f32         attack_cooldown = 1.0f;    // total time between attacks
+    f32         cast_point      = 0.3f;    // time into attack when damage fires
+    f32         backswing       = 0.3f;    // recovery time after cast_point
+    bool        is_ranged       = false;
+    f32         projectile_speed = 20.0f;  // for ranged attacks
+    // Runtime state
+    AttackState attack_state    = AttackState::Idle;
+    f32         attack_timer    = 0;
     Unit        target;
+};
+
+// Visual feedback: scale pulse on attack hit, decays back to 1.0
+struct ScalePulse {
+    f32 current_scale = 1.0f;
+    f32 timer         = 0;
+};
+
+// Dead unit state — unit becomes a corpse, then eventually gets cleaned up.
+struct DeadState {
+    f32 corpse_timer   = 0;     // time since death
+    f32 corpse_duration = 8.0f; // seconds corpse remains visible
+    f32 cleanup_delay  = 30.0f; // seconds before entity is fully destroyed
+    bool corpse_visible = true;  // false after corpse_duration expires
 };
 
 struct Vision {

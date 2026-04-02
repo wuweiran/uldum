@@ -76,9 +76,13 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
 
         if (val.contains("combat")) {
             auto& c = val["combat"];
-            def.damage          = c.value("damage", 10.0f);
-            def.attack_range    = c.value("range", 1.0f);
-            def.attack_cooldown = c.value("cooldown", 1.0f);
+            def.damage           = c.value("damage", 10.0f);
+            def.attack_range     = c.value("range", 1.0f);
+            def.attack_cooldown  = c.value("cooldown", 1.0f);
+            def.cast_point       = c.value("cast_point", 0.3f);
+            def.backswing        = c.value("backswing", 0.3f);
+            def.is_ranged        = c.value("ranged", false);
+            def.projectile_speed = c.value("projectile_speed", 20.0f);
         }
 
         if (val.contains("vision")) {

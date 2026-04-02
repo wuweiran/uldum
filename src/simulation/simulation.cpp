@@ -27,15 +27,16 @@ void Simulation::set_terrain(const map::TerrainData* terrain) {
 }
 
 void Simulation::tick(float dt) {
-    // Update spatial grid for proximity queries this tick
     m_spatial_grid.update(m_world);
 
     system_health(m_world, dt);
     system_state(m_world, dt);
     system_movement(m_world, dt, m_pathfinder, m_spatial_grid);
-    system_combat(m_world, dt);
+    system_combat(m_world, dt, m_pathfinder);
     system_ability(m_world, dt);
-    system_projectile(m_world, dt);
+    system_projectile(m_world, dt, m_pathfinder);
+    system_death(m_world);
+    system_scale_pulse(m_world, dt);
 }
 
 } // namespace uldum::simulation

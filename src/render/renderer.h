@@ -92,6 +92,10 @@ private:
     GpuTexture      m_default_texture{};
     MeshMaterial    m_default_material{};
 
+    // Corpse material (dark gray)
+    GpuTexture      m_corpse_texture{};
+    MeshMaterial    m_corpse_material{};
+
     // Terrain material (ground layer textures + splatmap)
     TerrainMaterial m_terrain_material{};
 
@@ -100,6 +104,9 @@ private:
 
     // Placeholder mesh for models that fail to load
     GpuMesh m_placeholder_mesh{};
+
+    // Small projectile mesh
+    GpuMesh m_projectile_mesh{};
 
     // Terrain mesh
     TerrainMesh m_terrain{};

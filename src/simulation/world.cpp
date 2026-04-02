@@ -31,6 +31,8 @@ static void remove_all_components(World& world, u32 id) {
     world.item_infos.remove(id);
     world.carriables.remove(id);
     world.projectiles.remove(id);
+    world.scale_pulses.remove(id);
+    world.dead_states.remove(id);
     world.renderables.remove(id);
 }
 
@@ -75,7 +77,18 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     // Unit
     world.owners.add(id, Owner{owner});
     world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->move_type, {}, false});
-    world.combats.add(id, Combat{def->damage, def->attack_range, def->attack_cooldown, 0, {}});
+    {
+        Combat combat;
+        combat.damage           = def->damage;
+        combat.range            = def->attack_range;
+        combat.attack_cooldown  = def->attack_cooldown;
+        combat.cast_point       = def->cast_point;
+        combat.backswing        = def->backswing;
+        combat.is_ranged        = def->is_ranged;
+        combat.projectile_speed = def->projectile_speed;
+        world.combats.add(id, std::move(combat));
+    }
+    world.scale_pulses.add(id, ScalePulse{});
     world.visions.add(id, Vision{def->sight_range_day, def->sight_range_night});
     world.order_queues.add(id, OrderQueue{});
     world.ability_sets.add(id, AbilitySet{});
@@ -231,6 +244,10 @@ bool is_alive(const World& world, Unit unit) {
     if (!world.validate(unit)) return false;
     auto* h = world.healths.get(unit.id);
     return h && h->current > 0;
+}
+
+bool is_dead(const World& world, Unit unit) {
+    return world.validate(unit) && world.dead_states.has(unit.id);
 }
 
 bool is_hero(const World& world, Unit unit) {

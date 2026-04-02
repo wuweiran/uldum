@@ -129,6 +129,33 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     m_placeholder_mesh = upload_mesh(m_rhi->allocator(), placeholder);
     m_placeholder_mesh.native_z_up = true;
 
+    // Create a small projectile mesh (elongated diamond shape in Z-up game coords)
+    {
+        asset::MeshData proj;
+        const float r = 0.15f;  // radius
+        const float l = 0.5f;   // half-length along Y (forward)
+        proj.vertices = {
+            // Tip (front, +Y)
+            {{0, l, 0},  {0, 1, 0}, {0.5f, 0}},
+            // Tail (back, -Y)
+            {{0, -l, 0}, {0,-1, 0}, {0.5f, 1}},
+            // Right (+X)
+            {{r, 0, 0},  {1, 0, 0}, {1, 0.5f}},
+            // Left (-X)
+            {{-r, 0, 0}, {-1,0, 0}, {0, 0.5f}},
+            // Top (+Z)
+            {{0, 0, r},  {0, 0, 1}, {0.5f, 0.5f}},
+            // Bottom (-Z)
+            {{0, 0, -r}, {0, 0,-1}, {0.5f, 0.5f}},
+        };
+        proj.indices = {
+            0,2,4,  0,4,3,  0,3,5,  0,5,2,  // front 4 faces
+            1,4,2,  1,3,4,  1,5,3,  1,2,5,  // back 4 faces
+        };
+        m_projectile_mesh = upload_mesh(m_rhi->allocator(), proj);
+        m_projectile_mesh.native_z_up = true;
+    }
+
     log::info(TAG, "Renderer initialized — textured mesh + terrain pipelines ready");
     return true;
 }
@@ -141,6 +168,7 @@ void Renderer::shutdown() {
     vkDeviceWaitIdle(device);
 
     destroy_terrain_mesh(alloc, m_terrain);
+    destroy_mesh(alloc, m_projectile_mesh);
     destroy_mesh(alloc, m_placeholder_mesh);
     for (auto& [path, mesh] : m_mesh_cache) {
         destroy_mesh(alloc, mesh);
@@ -148,6 +176,7 @@ void Renderer::shutdown() {
     m_mesh_cache.clear();
 
     // Destroy textures
+    destroy_texture(*m_rhi, m_corpse_texture);
     destroy_texture(*m_rhi, m_default_texture);
     for (u32 i = 0; i < m_terrain_material.layer_count; ++i) {
         destroy_texture(*m_rhi, m_terrain_material.layers[i]);
@@ -397,7 +426,15 @@ bool Renderer::create_default_texture() {
 
     m_default_material.diffuse = m_default_texture;
     m_default_material.descriptor_set = allocate_mesh_descriptor(m_default_texture);
-    log::info(TAG, "Default texture created");
+
+    // Corpse texture (dark gray)
+    auto corpse_pixels = generate_solid_texture(4, 50, 50, 50);
+    m_corpse_texture = upload_texture_rgba(*m_rhi, corpse_pixels.data(), 4, 4);
+    if (!m_corpse_texture.image) return false;
+    m_corpse_material.diffuse = m_corpse_texture;
+    m_corpse_material.descriptor_set = allocate_mesh_descriptor(m_corpse_texture);
+
+    log::info(TAG, "Default + corpse textures created");
     return true;
 }
 
@@ -665,8 +702,12 @@ GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
     auto it = m_mesh_cache.find(model_path);
     if (it != m_mesh_cache.end()) return it->second;
 
-    log::trace(TAG, "Using placeholder mesh for '{}'", model_path);
-    m_mesh_cache[model_path] = m_placeholder_mesh;
+    if (model_path == "projectile") {
+        m_mesh_cache[model_path] = m_projectile_mesh;
+    } else {
+        log::trace(TAG, "Using placeholder mesh for '{}'", model_path);
+        m_mesh_cache[model_path] = m_placeholder_mesh;
+    }
     return m_mesh_cache[model_path];
 }
 
@@ -966,13 +1007,6 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Bind material (set 0) + shadow (set 1)
-    if (m_default_material.descriptor_set && m_shadow_desc_set) {
-        VkDescriptorSet mesh_sets[] = {m_default_material.descriptor_set, m_shadow_desc_set};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_mesh_pipeline_layout, 0, 2, mesh_sets, 0, nullptr);
-    }
-
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
 
@@ -983,6 +1017,15 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
         const auto* transform = transforms.get(id);
         if (!transform) continue;
+
+        // Select material: corpse (dark gray) or default (orange)
+        bool is_corpse = world.dead_states.has(id);
+        auto& mat = is_corpse ? m_corpse_material : m_default_material;
+        if (mat.descriptor_set && m_shadow_desc_set) {
+            VkDescriptorSet mesh_sets[] = {mat.descriptor_set, m_shadow_desc_set};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    m_mesh_pipeline_layout, 0, 2, mesh_sets, 0, nullptr);
+        }
 
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
         if (!mesh.vertex_buffer) continue;

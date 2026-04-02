@@ -14,7 +14,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 7b complete. Units pathfind around buildings with collision avoidance.
+Phase 7c complete. Units attack, deal damage, and die.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -38,6 +38,10 @@ Phase 7b complete. Units pathfind around buildings with collision avoidance.
 - UnitFilter for query filtering (owner, enemy_of, classifications, alive_only, etc.)
 - Unit-unit collision avoidance (separation steering)
 - Buildings block pathing tiles (units pathfind around them)
+- Combat system: attack state machine (chase, turn, wind-up, fire, backswing, cooldown)
+- Damage + death: HP decreases on hit, entity destroyed at 0 HP
+- Projectile system: flight, homing, hit detection, impact damage
+- Visual feedback: scale pulse on attack, units shrink as HP decreases
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile via RGBA splatmap
 - Shadow mapping: 2048x2048 depth pass from light perspective, 3x3 PCF filtering, depth bias

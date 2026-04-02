@@ -30,6 +30,10 @@ struct UnitTypeDef {
     f32 damage = 10;
     f32 attack_range = 1.0f;
     f32 attack_cooldown = 1.0f;
+    f32 cast_point = 0.3f;
+    f32 backswing = 0.3f;
+    bool is_ranged = false;
+    f32 projectile_speed = 20.0f;
 
     // Vision
     f32 sight_range_day = 1400;

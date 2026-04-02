@@ -183,7 +183,8 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
         return td.height_at(ix, iy);
     };
 
-    // Units
+    // Units — first pass: create all units
+    std::vector<simulation::Unit> created_units;
     u32 unit_count = 0;
     if (j.contains("units")) {
         for (auto& u : j["units"]) {
@@ -195,11 +196,10 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             pu.owner  = u.value("owner", 0u);
             m_scene.units.push_back(pu);
 
-            // Create the entity in the world
             simulation::Player owner{pu.owner};
             auto unit = simulation::create_unit(world, pu.type, owner, pu.x, pu.y, pu.facing);
+            created_units.push_back(unit);
             if (unit.is_valid()) {
-                // Place on terrain surface
                 auto* t = world.transforms.get(unit.id);
                 if (t) t->position.z = sample_height(pu.x, pu.y);
 
@@ -208,7 +208,6 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 if (cls && simulation::has_classification(cls->flags, "structure")) {
                     auto& td = m_scene.terrain;
                     if (td.is_valid()) {
-                        // Block a 2x2 area of tiles around the building position
                         i32 cx = static_cast<i32>(pu.x / td.tile_size);
                         i32 cy = static_cast<i32>(pu.y / td.tile_size);
                         for (i32 dy = -1; dy <= 1; ++dy) {
@@ -226,17 +225,30 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                     }
                 }
 
-                // Issue initial move order if specified
-                if (u.contains("move_to")) {
-                    auto& mt = u["move_to"];
-                    f32 mx = mt.value("x", 0.0f);
-                    f32 my = mt.value("y", 0.0f);
+                unit_count++;
+            }
+        }
+
+        // Second pass: issue orders (needs all units created first for attack_target_index)
+        u32 idx = 0;
+        for (auto& u : j["units"]) {
+            auto unit = created_units[idx++];
+            if (!unit.is_valid()) continue;
+
+            if (u.contains("move_to")) {
+                auto& mt = u["move_to"];
+                simulation::Order order;
+                order.payload = simulation::orders::Move{glm::vec3{mt.value("x", 0.0f), mt.value("y", 0.0f), 0.0f}};
+                simulation::issue_order(world, unit, std::move(order));
+            }
+
+            if (u.contains("attack_target_index")) {
+                u32 ti = u["attack_target_index"].get<u32>();
+                if (ti < created_units.size() && created_units[ti].is_valid()) {
                     simulation::Order order;
-                    order.payload = simulation::orders::Move{glm::vec3{mx, my, 0.0f}};
+                    order.payload = simulation::orders::Attack{created_units[ti]};
                     simulation::issue_order(world, unit, std::move(order));
                 }
-
-                unit_count++;
             }
         }
     }

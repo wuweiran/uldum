@@ -1,16 +1,18 @@
 {
     "units": [
-        { "type": "footman",  "x": 44.0, "y": 52.0, "facing": 0.0, "owner": 0, "move_to": { "x": 44.0, "y": 80.0 } },
-        { "type": "paladin",  "x": 46.0, "y": 54.0, "facing": 0.0, "owner": 0, "move_to": { "x": 80.0, "y": 60.0 } },
+        { "type": "footman",  "x": 40.0, "y": 52.0, "facing": 0.0, "owner": 0, "attack_target_index": 1 },
+        { "type": "paladin",  "x": 52.0, "y": 64.0, "facing": 0.0, "owner": 0 },
+        { "type": "archer",   "x": 62.0, "y": 52.0, "facing": 0.0, "owner": 0, "attack_target_index": 3 },
+        { "type": "grunt",    "x": 72.0, "y": 64.0, "facing": 0.0, "owner": 0 },
         { "type": "barracks", "x": 44.0, "y": 64.0, "facing": 0.0, "owner": 0 }
     ],
     "destructables": [],
     "items": [],
     "doodads": [],
     "regions": [
-        { "name": "spawn_area", "x": 40.0, "y": 48.0, "width": 12.0, "height": 12.0 }
+        { "name": "spawn_area", "x": 40.0, "y": 48.0, "width": 36.0, "height": 20.0 }
     ],
     "cameras": [
-        { "name": "default", "x": 45.0, "y": 30.0, "z": 25.0, "pitch": -0.8, "yaw": 0.0 }
+        { "name": "default", "x": 58.0, "y": 40.0, "z": 30.0, "pitch": -0.8, "yaw": 0.0 }
     ]
 }

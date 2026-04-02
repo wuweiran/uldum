@@ -36,6 +36,8 @@ struct World {
     SparseSet<ItemInfo>             item_infos;
     SparseSet<Carriable>            carriables;
     SparseSet<ProjectileComp>      projectiles;
+    SparseSet<ScalePulse>          scale_pulses;
+    SparseSet<DeadState>           dead_states;
     SparseSet<Renderable>           renderables;
 
     // Handle allocator
@@ -69,6 +71,7 @@ glm::vec3 get_position(const World& world, Unit unit);
 void     set_position(World& world, Unit unit, f32 x, f32 y);
 Player   get_owner(const World& world, Unit unit);
 bool     is_alive(const World& world, Unit unit);
+bool     is_dead(const World& world, Unit unit);
 bool     is_hero(const World& world, Unit unit);
 bool     is_building(const World& world, Unit unit);
 
