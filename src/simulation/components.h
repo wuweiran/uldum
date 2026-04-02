@@ -78,6 +78,11 @@ struct Movement {
     // Current path (set by MovementSystem when processing Move orders)
     std::vector<glm::vec3> path;
     u32 path_index = 0;  // current waypoint index
+
+    // Avoidance state: committed side to steer around a blocker
+    u32 avoid_id    = UINT32_MAX;  // unit being avoided (UINT32_MAX = none)
+    i8  avoid_side  = 0;           // -1 = steer left, +1 = steer right
+    f32 avoid_lock  = 0;           // seconds remaining before side can change
 };
 
 enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };

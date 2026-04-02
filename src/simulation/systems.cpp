@@ -48,9 +48,57 @@ static f32 angle_diff(f32 from, f32 to) {
 
 // ── Movement system ───────────────────────────────────────────────────────
 
+static constexpr f32 COLLISION_RADIUS = 20.0f;  // per-unit; two units collide at 2x this
+
+// Helper: find the closest unit blocking the path ahead.
+// Returns the blocker's id (UINT32_MAX if clear).
+static u32 find_blocker_id(World& world, const SpatialGrid& grid, u32 self_id,
+                            glm::vec3 pos, glm::vec3 dir, f32 look_ahead) {
+    f32 check_radius = COLLISION_RADIUS * 2.0f + look_ahead;
+    UnitFilter filter;
+    filter.exclude_buildings = true;
+    auto nearby = grid.units_in_range(world, pos, check_radius, filter);
+
+    u32 best_id = UINT32_MAX;
+    f32 best_dist = check_radius;
+
+    for (auto& other : nearby) {
+        if (other.id == self_id) continue;
+        if (world.dead_states.has(other.id)) continue;
+
+        auto* ot = world.transforms.get(other.id);
+        if (!ot) continue;
+
+        glm::vec3 to_other = ot->position - pos;
+        to_other.z = 0;
+        f32 d = glm::length(to_other);
+        if (d < 0.01f || d > check_radius) continue;
+
+        // Is it ahead of us?
+        f32 dot = glm::dot(to_other / d, dir);
+        if (dot < 0.3f) continue;
+
+        // Is it close enough laterally to block?
+        f32 forward_dist = d * dot;
+        f32 lateral = std::sqrt(std::max(0.0f, d * d - forward_dist * forward_dist));
+        if (lateral < COLLISION_RADIUS * 2.0f && d < best_dist) {
+            best_id = other.id;
+            best_dist = d;
+        }
+    }
+    return best_id;
+}
+
+// Helper: compute avoidance direction — steer to the committed side of the blocker.
+static glm::vec3 compute_avoidance_dir(glm::vec3 pos, glm::vec3 forward, Transform* blocker_t, i8 side) {
+    // Perpendicular to forward direction
+    glm::vec3 perp = (side > 0) ? glm::vec3{forward.y, -forward.x, 0}
+                                 : glm::vec3{-forward.y, forward.x, 0};
+    // Blend: mostly sideways, some forward to keep progressing
+    return glm::normalize(perp * 0.6f + forward * 0.4f);
+}
+
 void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
-    static constexpr f32 SEPARATION_RADIUS = 40.0f;
-    static constexpr f32 SEPARATION_FORCE  = 30.0f;
 
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
@@ -60,53 +108,14 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
-        // Separation steering: moving units get full force, idle units get a gentle nudge
-        // from nearby moving units only (so they slide out of the way but don't drift).
-        {
-            bool self_active = oq->current.has_value();
-
-            UnitFilter sep_filter;
-            sep_filter.exclude_buildings = true;
-            auto nearby = grid.units_in_range(world, transform->position, SEPARATION_RADIUS, sep_filter);
-
-            glm::vec3 separation{0.0f};
-            for (auto& other : nearby) {
-                if (other.id == id) continue;
-                if (world.dead_states.has(other.id)) continue;  // corpses have no collision
-                auto* other_t = world.transforms.get(other.id);
-                if (!other_t) continue;
-
-                // If we're idle, only get pushed by active (moving) units
-                if (!self_active) {
-                    auto* other_oq = world.order_queues.get(other.id);
-                    if (!other_oq || !other_oq->current.has_value()) continue;
-                }
-
-                glm::vec3 away = transform->position - other_t->position;
-                away.z = 0;
-                f32 d = glm::length(away);
-                if (d > 0.01f && d < SEPARATION_RADIUS) {
-                    separation += (away / d) * (1.0f - d / SEPARATION_RADIUS);
-                }
-            }
-
-            if (glm::length(separation) > 0.01f) {
-                // Idle units get 10% of the push — just enough to slide out of the way
-                f32 force = self_active ? SEPARATION_FORCE : SEPARATION_FORCE * 0.1f;
-                separation = glm::normalize(separation) * force * dt;
-                transform->position.x += separation.x;
-                transform->position.y += separation.y;
-            }
-        }
-
-        // Only process Move orders (Attack movement is handled by CombatSystem)
+        // Only process Move / AttackMove orders
         if (!oq->current) {
             mov.moving = false;
+            mov.avoid_id = UINT32_MAX;
+            mov.avoid_side = 0;
             continue;
         }
 
-        // Move and AttackMove both use the movement system for pathfinding.
-        // AttackMove gets interrupted by combat auto-acquire (handled in system_combat).
         glm::vec3 move_target;
         bool has_move = false;
         if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
@@ -114,10 +123,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
             move_target = am->target; has_move = true;
         }
-        if (!has_move) {
-            // Don't clear moving flag — CombatSystem may be controlling this unit
-            continue;
-        }
+        if (!has_move) continue;
 
         // Compute path if we don't have one yet
         if (mov.path.empty()) {
@@ -137,6 +143,8 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             mov.path.clear();
             mov.path_index = 0;
             mov.moving = false;
+            mov.avoid_id = UINT32_MAX;
+            mov.avoid_side = 0;
             oq->current.reset();
             if (!oq->queued.empty()) {
                 oq->current = std::move(oq->queued.front());
@@ -156,24 +164,81 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             continue;
         }
 
-        // Turn toward waypoint
-        f32 desired_facing = std::atan2(-to_wp.x, to_wp.y);
-        f32 diff = angle_diff(transform->facing, desired_facing);
+        glm::vec3 forward = glm::normalize(to_wp);
+
+        // ── Avoidance: detect blocker, commit to a side, steer until clear ──
+        glm::vec3 dir = forward;
+
+        // Tick avoidance lock
+        if (mov.avoid_lock > 0) mov.avoid_lock -= dt;
+
+        // Check if we're currently avoiding someone
+        if (mov.avoid_id != UINT32_MAX) {
+            auto* blocker_t = world.transforms.get(mov.avoid_id);
+            if (blocker_t && !world.dead_states.has(mov.avoid_id)) {
+                glm::vec3 to_blocker = blocker_t->position - transform->position;
+                to_blocker.z = 0;
+                f32 bd = glm::length(to_blocker);
+                f32 dot = (bd > 0.01f) ? glm::dot(to_blocker / bd, forward) : 0;
+
+                if (dot > 0.1f && bd < COLLISION_RADIUS * 4.0f) {
+                    // Still blocking — keep steering around
+                    dir = compute_avoidance_dir(transform->position, forward, blocker_t, mov.avoid_side);
+                } else {
+                    // Cleared the blocker
+                    mov.avoid_id = UINT32_MAX;
+                    // Keep avoid_side and lock — reuse same side for next blocker
+                }
+            } else {
+                mov.avoid_id = UINT32_MAX;
+            }
+        }
+
+        // If not currently avoiding, check for new blockers
+        if (mov.avoid_id == UINT32_MAX) {
+            f32 look_ahead = mov.speed * 0.4f;
+            u32 blocker_id = find_blocker_id(world, grid, id, transform->position, forward, look_ahead);
+            if (blocker_id != UINT32_MAX) {
+                mov.avoid_id = blocker_id;
+
+                // If lock is active, reuse the same side. Otherwise pick a new one.
+                if (mov.avoid_lock <= 0) {
+                    auto* blocker_t = world.transforms.get(blocker_id);
+                    if (blocker_t) {
+                        glm::vec3 to_blocker = blocker_t->position - transform->position;
+                        to_blocker.z = 0;
+                        glm::vec3 left{-forward.y, forward.x, 0};
+                        f32 side_dot = glm::dot(to_blocker, left);
+                        mov.avoid_side = (side_dot > 0) ? 1 : -1;
+                    }
+                }
+                mov.avoid_lock = 0.5f;  // lock this side for 0.5 seconds
+                dir = compute_avoidance_dir(transform->position, forward,
+                    world.transforms.get(blocker_id), mov.avoid_side);
+            } else {
+                // No blocker — clear side once lock expires
+                if (mov.avoid_lock <= 0) {
+                    mov.avoid_side = 0;
+                }
+            }
+        }
+
+        // Turn toward movement direction
+        f32 desired_facing = std::atan2(-dir.x, dir.y);
+        f32 face_diff = angle_diff(transform->facing, desired_facing);
         f32 max_turn = mov.turn_rate * dt;
 
-        if (std::abs(diff) > max_turn) {
-            transform->facing += (diff > 0 ? max_turn : -max_turn);
+        if (std::abs(face_diff) > max_turn) {
+            transform->facing += (face_diff > 0 ? max_turn : -max_turn);
         } else {
             transform->facing = desired_facing;
         }
         transform->facing = normalize_angle(transform->facing);
 
-        // Move forward (only if roughly facing the target)
-        if (std::abs(diff) < glm::half_pi<f32>()) {
+        // Step forward
+        if (std::abs(face_diff) < glm::half_pi<f32>()) {
             f32 step = mov.speed * dt;
             if (step > dist) step = dist;
-
-            glm::vec3 dir = glm::normalize(to_wp);
             transform->position.x += dir.x * step;
             transform->position.y += dir.y * step;
         }
@@ -300,12 +365,55 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
         case AttackState::Idle:
         case AttackState::MovingToTarget: {
             if (dist > combat.range) {
-                // Chase target directly (simple steering, no pathfinding)
+                // Chase target, steering around other units
                 combat.attack_state = AttackState::MovingToTarget;
                 auto* mov = world.movements.get(id);
                 if (mov && mov->speed > 0) {
-                    // Turn toward target
-                    f32 desired = std::atan2(-to_target.x, to_target.y);
+                    glm::vec3 forward = glm::normalize(to_target);
+                    glm::vec3 dir = forward;
+
+                    // Committed avoidance (same logic as movement system)
+                    if (mov->avoid_lock > 0) mov->avoid_lock -= dt;
+
+                    if (mov->avoid_id != UINT32_MAX) {
+                        auto* bt = world.transforms.get(mov->avoid_id);
+                        if (bt && !world.dead_states.has(mov->avoid_id) && mov->avoid_id != target.id) {
+                            glm::vec3 tb = bt->position - transform->position;
+                            tb.z = 0;
+                            f32 bd = glm::length(tb);
+                            f32 dot = (bd > 0.01f) ? glm::dot(tb / bd, forward) : 0;
+                            if (dot > 0.1f && bd < COLLISION_RADIUS * 4.0f) {
+                                dir = compute_avoidance_dir(transform->position, forward, bt, mov->avoid_side);
+                            } else {
+                                mov->avoid_id = UINT32_MAX;
+                            }
+                        } else {
+                            mov->avoid_id = UINT32_MAX;
+                        }
+                    }
+                    if (mov->avoid_id == UINT32_MAX) {
+                        u32 blocker = find_blocker_id(world, grid, id, transform->position, forward, mov->speed * 0.4f);
+                        if (blocker != UINT32_MAX && blocker != target.id) {
+                            mov->avoid_id = blocker;
+                            if (mov->avoid_lock <= 0) {
+                                auto* bt = world.transforms.get(blocker);
+                                if (bt) {
+                                    glm::vec3 tb = bt->position - transform->position;
+                                    tb.z = 0;
+                                    glm::vec3 left{-forward.y, forward.x, 0};
+                                    mov->avoid_side = (glm::dot(tb, left) > 0) ? 1 : -1;
+                                }
+                            }
+                            mov->avoid_lock = 0.5f;
+                            dir = compute_avoidance_dir(transform->position, forward,
+                                world.transforms.get(blocker), mov->avoid_side);
+                        } else if (mov->avoid_lock <= 0) {
+                            mov->avoid_side = 0;
+                        }
+                    }
+
+                    // Turn toward actual movement direction (not always the target)
+                    f32 desired = std::atan2(-dir.x, dir.y);
                     f32 diff = angle_diff(transform->facing, desired);
                     f32 max_turn = mov->turn_rate * dt;
                     if (std::abs(diff) > max_turn) {
@@ -315,11 +423,10 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     }
                     transform->facing = normalize_angle(transform->facing);
 
-                    // Move toward target
+                    // Step forward
                     if (std::abs(diff) < glm::half_pi<f32>()) {
                         f32 step = mov->speed * dt;
                         if (step > dist) step = dist;
-                        glm::vec3 dir = glm::normalize(to_target);
                         transform->position.x += dir.x * step;
                         transform->position.y += dir.y * step;
                         transform->position.z = pathfinder.sample_height(
@@ -684,6 +791,53 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.renderables.remove(h.id);
     world.handles.free(h);
 }
+
+// ── Collision system ──────────────────────────────────────────────────────
+// Prevents all overlaps. Each overlapping pair is separated to the boundary.
+
+void system_collision(World& world, const SpatialGrid& grid) {
+    f32 min_dist = COLLISION_RADIUS * 2.0f;
+
+    for (u32 i = 0; i < world.movements.count(); ++i) {
+        u32 id = world.movements.ids()[i];
+        if (world.dead_states.has(id)) continue;
+
+        auto* transform = world.transforms.get(id);
+        if (!transform) continue;
+
+        UnitFilter filter;
+        filter.exclude_buildings = true;
+        auto nearby = grid.units_in_range(world, transform->position, min_dist, filter);
+
+        for (auto& other : nearby) {
+            if (other.id <= id) continue;
+            if (world.dead_states.has(other.id)) continue;
+
+            auto* other_t = world.transforms.get(other.id);
+            if (!other_t) continue;
+
+            glm::vec3 diff = transform->position - other_t->position;
+            diff.z = 0;
+            f32 d = glm::length(diff);
+
+            if (d < min_dist) {
+                if (d > 0.01f) {
+                    glm::vec3 n = diff / d;
+                    f32 half = (min_dist - d) * 0.5f;
+                    transform->position.x += n.x * half;
+                    transform->position.y += n.y * half;
+                    other_t->position.x -= n.x * half;
+                    other_t->position.y -= n.y * half;
+                } else {
+                    transform->position.x += COLLISION_RADIUS;
+                    other_t->position.x -= COLLISION_RADIUS;
+                }
+            }
+        }
+    }
+}
+
+// ── Death system ─────────────────────────────────────────────────────────
 
 void system_death(World& world) {
     // Phase 1: transition newly dead units to corpse state
