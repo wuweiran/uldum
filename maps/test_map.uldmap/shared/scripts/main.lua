@@ -152,20 +152,7 @@ function main()
 
             local creep = CreateUnit("creep", player2, x, y, 0)
             if creep then
-                local target = nil
-                if IsUnitAlive(footman) and IsUnitAlive(paladin) then
-                    local df = GetDistanceBetween(creep, footman)
-                    local dp = GetDistanceBetween(creep, paladin)
-                    target = (df <= dp) and footman or paladin
-                elseif IsUnitAlive(footman) then
-                    target = footman
-                elseif IsUnitAlive(paladin) then
-                    target = paladin
-                end
-
-                if target then
-                    IssueOrder(creep, "attack", target)
-                end
+                IssueOrder(creep, "attack", 4096, 4096)
             end
         end
         Log("[Wave " .. wave .. "] Spawned " .. count .. " creeps")

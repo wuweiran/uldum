@@ -351,7 +351,14 @@ void ScriptEngine::bind_api() {
         if (order_type == "move" && va.size() >= 2) {
             order.payload = simulation::orders::Move{glm::vec3{va[0].as<f32>(), va[1].as<f32>(), 0}};
         } else if (order_type == "attack" && va.size() >= 1) {
-            order.payload = simulation::orders::Attack{va[0].as<simulation::Unit>()};
+            // attack(unit) = attack target, attack(x, y) = attack-move to point
+            if (va[0].is<simulation::Unit>()) {
+                order.payload = simulation::orders::Attack{va[0].as<simulation::Unit>()};
+            } else if (va[0].is<f32>() && va.size() >= 2) {
+                order.payload = simulation::orders::AttackMove{glm::vec3{va[0].as<f32>(), va[1].as<f32>(), 0}};
+            } else {
+                return;
+            }
         } else if (order_type == "stop") {
             order.payload = simulation::orders::Stop{};
         } else if (order_type == "hold") {

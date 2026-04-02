@@ -105,15 +105,23 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             continue;
         }
 
-        auto* move_order = std::get_if<orders::Move>(&oq->current->payload);
-        if (!move_order) {
+        // Move and AttackMove both use the movement system for pathfinding.
+        // AttackMove gets interrupted by combat auto-acquire (handled in system_combat).
+        glm::vec3 move_target;
+        bool has_move = false;
+        if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
+            move_target = m->target; has_move = true;
+        } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
+            move_target = am->target; has_move = true;
+        }
+        if (!has_move) {
             // Don't clear moving flag — CombatSystem may be controlling this unit
             continue;
         }
 
         // Compute path if we don't have one yet
         if (mov.path.empty()) {
-            auto result = pathfinder.find_path(transform->position, move_order->target, mov.type);
+            auto result = pathfinder.find_path(transform->position, move_target, mov.type);
             if (result.valid && result.waypoints.size() > 1) {
                 mov.path = std::move(result.waypoints);
                 mov.path_index = 1;
@@ -225,11 +233,13 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                 combat.attack_state = AttackState::Idle;
             }
 
-            // Don't auto-acquire while executing a Cast order
+            // Don't auto-acquire while casting or executing a plain Move order
             bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
+            bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
 
             // Auto-acquire: scan for enemies within acquire_range
-            if (!is_casting && combat.acquire_range > 0 && combat.damage > 0) {
+            // Allowed when idle, during AttackMove, or in combat — but not during Move or Cast
+            if (!is_casting && !is_moving && combat.acquire_range > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;
