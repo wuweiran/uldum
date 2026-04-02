@@ -110,8 +110,10 @@ private:
     VkCommandPool   m_command_pools[MAX_FRAMES_IN_FLIGHT]   = {};
     VkCommandBuffer m_command_buffers[MAX_FRAMES_IN_FLIGHT] = {};
     VkSemaphore     m_image_available[MAX_FRAMES_IN_FLIGHT] = {};
-    VkSemaphore     m_render_finished[MAX_FRAMES_IN_FLIGHT] = {};
     VkFence         m_in_flight[MAX_FRAMES_IN_FLIGHT]       = {};
+
+    // Per-swapchain-image semaphore for present — avoids reuse while present engine holds it
+    std::vector<VkSemaphore> m_render_finished;
 
     u32  m_frame_index = 0;
     u32  m_current_image_index = 0;

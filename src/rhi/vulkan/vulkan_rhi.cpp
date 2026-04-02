@@ -78,9 +78,13 @@ void VulkanRhi::shutdown() {
 
     destroy_triangle_resources();
 
+    for (auto& sem : m_render_finished) {
+        if (sem) vkDestroySemaphore(m_device, sem, nullptr);
+    }
+    m_render_finished.clear();
+
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         if (m_in_flight[i])       vkDestroyFence(m_device, m_in_flight[i], nullptr);
-        if (m_render_finished[i]) vkDestroySemaphore(m_device, m_render_finished[i], nullptr);
         if (m_image_available[i]) vkDestroySemaphore(m_device, m_image_available[i], nullptr);
         if (m_command_pools[i])   vkDestroyCommandPool(m_device, m_command_pools[i], nullptr);
     }
@@ -506,13 +510,22 @@ bool VulkanRhi::create_sync_objects() {
 
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         if (vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_image_available[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_render_finished[i]) != VK_SUCCESS ||
             vkCreateFence(m_device, &fence_ci, nullptr, &m_in_flight[i]) != VK_SUCCESS)
         {
             log::error(TAG, "Failed to create sync objects");
             return false;
         }
     }
+
+    // Per-swapchain-image render_finished semaphores — avoids reuse while present holds one
+    m_render_finished.resize(m_swapchain_images.size());
+    for (auto& sem : m_render_finished) {
+        if (vkCreateSemaphore(m_device, &sem_ci, nullptr, &sem) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create render_finished semaphore");
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -692,7 +705,7 @@ void VulkanRhi::end_frame() {
     submit.commandBufferCount   = 1;
     submit.pCommandBuffers      = &cmd;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores    = &m_render_finished[m_frame_index];
+    submit.pSignalSemaphores    = &m_render_finished[m_current_image_index];
 
     vkQueueSubmit(m_graphics_queue, 1, &submit, m_in_flight[m_frame_index]);
 
@@ -700,7 +713,7 @@ void VulkanRhi::end_frame() {
     VkPresentInfoKHR present{};
     present.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores    = &m_render_finished[m_frame_index];
+    present.pWaitSemaphores    = &m_render_finished[m_current_image_index];
     present.swapchainCount     = 1;
     present.pSwapchains        = &m_swapchain;
     present.pImageIndices      = &m_current_image_index;
