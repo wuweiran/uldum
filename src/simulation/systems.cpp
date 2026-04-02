@@ -49,8 +49,8 @@ static f32 angle_diff(f32 from, f32 to) {
 // ── Movement system ───────────────────────────────────────────────────────
 
 void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
-    static constexpr f32 SEPARATION_RADIUS = 64.0f;   // ~half a tile
-    static constexpr f32 SEPARATION_FORCE  = 256.0f;
+    static constexpr f32 SEPARATION_RADIUS = 40.0f;
+    static constexpr f32 SEPARATION_FORCE  = 30.0f;
 
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
@@ -72,6 +72,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             glm::vec3 separation{0.0f};
             for (auto& other : nearby) {
                 if (other.id == id) continue;
+                if (world.dead_states.has(other.id)) continue;  // corpses have no collision
                 auto* other_t = world.transforms.get(other.id);
                 if (!other_t) continue;
 
