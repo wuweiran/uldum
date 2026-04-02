@@ -15,18 +15,15 @@ FetchContent_MakeAvailable(glm)
 
 # ── nlohmann/json (JSON parser) ────────────────────────────────────────────
 FetchContent_Declare(json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG        v3.11.3
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    URL_HASH MD5=c23a33f04786d85c29fda8d16b5f0efd
 )
 set(JSON_BuildTests OFF CACHE BOOL "")
 FetchContent_MakeAvailable(json)
 
 # ── stb (stb_image, stb_vorbis) — header-only, no CMakeLists ──────────────
 FetchContent_Declare(stb
-    GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/nothings/stb/archive/refs/heads/master.tar.gz
 )
 FetchContent_Populate(stb)
 
@@ -38,9 +35,7 @@ endif()
 
 # ── cgltf (glTF 2.0 loader) — header-only ─────────────────────────────────
 FetchContent_Declare(cgltf
-    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
-    GIT_TAG        v1.14
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.14.tar.gz
 )
 FetchContent_Populate(cgltf)
 
@@ -52,9 +47,7 @@ endif()
 
 # ── Lua 5.4 (scripting runtime) ────────────────────────────────────────────
 FetchContent_Declare(lua
-    GIT_REPOSITORY https://github.com/lua/lua.git
-    GIT_TAG        v5.4.7
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/lua/lua/archive/refs/tags/v5.4.7.tar.gz
 )
 FetchContent_Populate(lua)
 
@@ -69,17 +62,13 @@ endif()
 
 # ── sol2 (C++ ↔ Lua binding, header-only) ─────────────────────────────────
 FetchContent_Declare(sol2
-    GIT_REPOSITORY https://github.com/ThePhD/sol2.git
-    GIT_TAG        v3.3.0
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/ThePhD/sol2/archive/refs/tags/v3.3.0.tar.gz
 )
 FetchContent_MakeAvailable(sol2)
 
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
 FetchContent_Declare(vma
-    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-    GIT_TAG        v3.1.0
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.1.0.tar.gz
 )
 FetchContent_Populate(vma)
 
