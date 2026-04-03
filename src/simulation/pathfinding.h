@@ -20,18 +20,23 @@ struct Path {
 };
 
 // Stateless pathfinding service. Queries terrain pathing data.
+// Pathing is per-vertex: each vertex at (ix, iy) acts as a pathing cell.
 class Pathfinder {
 public:
     void set_terrain(const map::TerrainData* terrain) { m_terrain = terrain; }
 
     // Find a path from start to goal. Returns empty path if unreachable.
-    // move_type determines which tiles are traversable (ground checks walkable, air checks flyable).
+    // move_type determines which vertices are traversable.
     Path find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) const;
 
-    // Check if a tile is walkable for a given move type.
-    bool is_tile_passable(u32 tx, u32 ty, MoveType move_type) const;
+    // Check if a vertex is passable for a given move type.
+    bool is_passable(u32 vx, u32 vy, MoveType move_type) const;
+
+    // Check if movement between two adjacent vertices is allowed (cliff level check).
+    bool can_traverse(u32 ax, u32 ay, u32 bx, u32 by, MoveType move_type) const;
 
     // Sample terrain height at world position (bilinear interpolation).
+    // Returns final height: cliff_level * layer_height + heightmap.
     f32 sample_height(f32 x, f32 y) const;
 
     // Sample terrain normal at world position.

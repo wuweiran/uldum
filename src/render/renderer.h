@@ -100,6 +100,8 @@ private:
     // Shadow depth pass pipeline (push constant = light MVP, depth-only)
     VkPipelineLayout m_shadow_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_shadow_pipeline        = VK_NULL_HANDLE;
+    VkPipelineLayout m_terrain_shadow_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_terrain_shadow_pipeline        = VK_NULL_HANDLE;
 
     // Shadow map resources
     ShadowMap       m_shadow_map{};

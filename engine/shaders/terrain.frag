@@ -1,11 +1,10 @@
 #version 450
 
-// Set 0: terrain material textures
+// Set 0: terrain material textures (4 ground layers)
 layout(set = 0, binding = 0) uniform sampler2D layer0_tex;
 layout(set = 0, binding = 1) uniform sampler2D layer1_tex;
 layout(set = 0, binding = 2) uniform sampler2D layer2_tex;
 layout(set = 0, binding = 3) uniform sampler2D layer3_tex;
-layout(set = 0, binding = 4) uniform sampler2D splatmap_tex;
 
 // Set 1: shadow data
 layout(set = 1, binding = 0) uniform ShadowData {
@@ -17,6 +16,7 @@ layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
 layout(location = 2) in vec2 frag_tile_uv;
 layout(location = 3) in vec3 frag_world_pos;
+layout(location = 4) in vec4 frag_splat_weights;
 
 layout(location = 0) out vec4 out_color;
 
@@ -35,12 +35,16 @@ float shadow_pcf(vec3 light_ndc) {
 void main() {
     vec3 normal = normalize(frag_world_normal);
 
-    vec4 splat = texture(splatmap_tex, frag_texcoord);
+    // Blend ground textures using per-vertex splatmap weights
+    vec4 w = frag_splat_weights;
+    float total = w.r + w.g + w.b + w.a;
+    if (total > 0.0) w /= total;  // normalize
+
     vec3 c0 = texture(layer0_tex, frag_tile_uv).rgb;
     vec3 c1 = texture(layer1_tex, frag_tile_uv).rgb;
     vec3 c2 = texture(layer2_tex, frag_tile_uv).rgb;
     vec3 c3 = texture(layer3_tex, frag_tile_uv).rgb;
-    vec3 albedo = c0 * splat.r + c1 * splat.g + c2 * splat.b + c3 * splat.a;
+    vec3 albedo = c0 * w.r + c1 * w.g + c2 * w.b + c3 * w.a;
 
     // Directional sun light (game coords: X=right, Y=forward, Z=up)
     vec3 light_dir = normalize(vec3(0.3, -0.5, 0.8));

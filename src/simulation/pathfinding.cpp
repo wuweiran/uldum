@@ -13,20 +13,41 @@
 
 namespace uldum::simulation {
 
-// ── Tile passability ──────────────────────────────────────────────────────
+// ── Vertex passability ───────────────────────────────────────────────────
 
-bool Pathfinder::is_tile_passable(u32 tx, u32 ty, MoveType move_type) const {
-    if (!m_terrain || tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return false;
-    u8 flags = m_terrain->pathing_at(tx, ty);
+bool Pathfinder::is_passable(u32 vx, u32 vy, MoveType move_type) const {
+    if (!m_terrain || vx >= m_terrain->verts_x() || vy >= m_terrain->verts_y()) return false;
+    u8 flags = m_terrain->pathing_at(vx, vy);
     switch (move_type) {
         case MoveType::Ground:     return (flags & map::PATHING_WALKABLE) != 0;
         case MoveType::Air:        return (flags & map::PATHING_FLYABLE) != 0;
-        case MoveType::Amphibious: return (flags & (map::PATHING_WALKABLE | map::PATHING_FLYABLE)) != 0;
+        case MoveType::Amphibious: return (flags & (map::PATHING_WALKABLE | map::PATHING_WATER)) != 0;
     }
     return false;
 }
 
-// ── Terrain sampling ──────────────────────────────────────────────────────
+bool Pathfinder::can_traverse(u32 ax, u32 ay, u32 bx, u32 by, MoveType move_type) const {
+    if (!m_terrain) return false;
+    // Air units ignore cliffs
+    if (move_type == MoveType::Air) return true;
+
+    u8 cliff_a = m_terrain->cliff_at(ax, ay);
+    u8 cliff_b = m_terrain->cliff_at(bx, by);
+
+    if (cliff_a == cliff_b) return true;  // same level, always ok
+
+    // Different cliff levels: only allowed if both vertices have RAMP flag
+    // and the level difference is exactly 1
+    if (std::abs(static_cast<i32>(cliff_a) - static_cast<i32>(cliff_b)) == 1) {
+        u8 flags_a = m_terrain->pathing_at(ax, ay);
+        u8 flags_b = m_terrain->pathing_at(bx, by);
+        return (flags_a & map::PATHING_RAMP) && (flags_b & map::PATHING_RAMP);
+    }
+
+    return false;  // cliff difference > 1 is never traversable on ground
+}
+
+// ── Terrain sampling ─────────────────────────────────────────────────────
 
 f32 Pathfinder::sample_height(f32 x, f32 y) const {
     if (!m_terrain || !m_terrain->is_valid()) return 0.0f;
@@ -42,11 +63,11 @@ f32 Pathfinder::sample_height(f32 x, f32 y) const {
     f32 tx = fx - static_cast<f32>(ix);
     f32 ty = fy - static_cast<f32>(iy);
 
-    // Bilinear interpolation
-    f32 h00 = td.height_at(ix, iy);
-    f32 h10 = td.height_at(ix + 1, iy);
-    f32 h01 = td.height_at(ix, iy + 1);
-    f32 h11 = td.height_at(ix + 1, iy + 1);
+    // Bilinear interpolation using world_z_at (cliff + heightmap)
+    f32 h00 = td.world_z_at(ix, iy);
+    f32 h10 = td.world_z_at(ix + 1, iy);
+    f32 h01 = td.world_z_at(ix, iy + 1);
+    f32 h11 = td.world_z_at(ix + 1, iy + 1);
 
     f32 h0 = h00 + tx * (h10 - h00);
     f32 h1 = h01 + tx * (h11 - h01);
@@ -69,10 +90,10 @@ glm::vec3 Pathfinder::sample_normal(f32 x, f32 y) const {
     return glm::normalize(glm::cross(dx, dy));
 }
 
-// ── A* pathfinding ────────────────────────────────────────────────────────
+// ── A* pathfinding ───────────────────────────────────────────────────────
 
 struct AStarNode {
-    u32 tx, ty;
+    u32 vx, vy;    // vertex coordinates
     f32 g_cost;     // cost from start
     f32 f_cost;     // g + heuristic
     u32 parent_idx; // index into closed list
@@ -84,8 +105,8 @@ struct NodeCompare {
     }
 };
 
-static u64 tile_key(u32 tx, u32 ty) {
-    return (static_cast<u64>(ty) << 32) | tx;
+static u64 vert_key(u32 vx, u32 vy) {
+    return (static_cast<u64>(vy) << 32) | vx;
 }
 
 Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) const {
@@ -93,26 +114,27 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
     if (!m_terrain || !m_terrain->is_valid()) return result;
     auto& td = *m_terrain;
 
-    // Convert world positions to tile coordinates
-    u32 sx = static_cast<u32>(std::clamp(start.x / td.tile_size, 0.0f, static_cast<f32>(td.tiles_x - 1)));
-    u32 sy = static_cast<u32>(std::clamp(start.y / td.tile_size, 0.0f, static_cast<f32>(td.tiles_y - 1)));
-    u32 gx = static_cast<u32>(std::clamp(goal.x / td.tile_size, 0.0f, static_cast<f32>(td.tiles_x - 1)));
-    u32 gy = static_cast<u32>(std::clamp(goal.y / td.tile_size, 0.0f, static_cast<f32>(td.tiles_y - 1)));
+    // Convert world positions to vertex coordinates
+    u32 max_vx = td.verts_x() - 1;
+    u32 max_vy = td.verts_y() - 1;
+    u32 sx = static_cast<u32>(std::clamp(start.x / td.tile_size, 0.0f, static_cast<f32>(max_vx)));
+    u32 sy = static_cast<u32>(std::clamp(start.y / td.tile_size, 0.0f, static_cast<f32>(max_vy)));
+    u32 gx = static_cast<u32>(std::clamp(goal.x / td.tile_size, 0.0f, static_cast<f32>(max_vx)));
+    u32 gy = static_cast<u32>(std::clamp(goal.y / td.tile_size, 0.0f, static_cast<f32>(max_vy)));
 
-    if (!is_tile_passable(gx, gy, move_type)) {
-        // Goal is blocked — find nearest passable tile (simple fallback)
+    if (!is_passable(gx, gy, move_type)) {
         return result;
     }
 
-    // A* with 8-directional movement
+    // A* with 8-directional movement on vertex grid
     std::priority_queue<AStarNode, std::vector<AStarNode>, NodeCompare> open;
     std::unordered_set<u64> closed;
     std::vector<AStarNode> all_nodes;
     all_nodes.reserve(256);
 
-    auto heuristic = [gx, gy](u32 tx, u32 ty) -> f32 {
-        f32 dx = static_cast<f32>(tx) - static_cast<f32>(gx);
-        f32 dy = static_cast<f32>(ty) - static_cast<f32>(gy);
+    auto heuristic = [gx, gy](u32 vx, u32 vy) -> f32 {
+        f32 dx = static_cast<f32>(vx) - static_cast<f32>(gx);
+        f32 dy = static_cast<f32>(vy) - static_cast<f32>(gy);
         return std::sqrt(dx * dx + dy * dy);
     };
 
@@ -123,14 +145,14 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
     static constexpr i32 dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     static constexpr f32 cost[] = {1.414f, 1.0f, 1.414f, 1.0f, 1.0f, 1.414f, 1.0f, 1.414f};
 
-    u32 max_iterations = td.tiles_x * td.tiles_y;  // safety limit
+    u32 max_iterations = td.verts_x() * td.verts_y();  // safety limit
     u32 iterations = 0;
 
     while (!open.empty() && iterations++ < max_iterations) {
         AStarNode current = open.top();
         open.pop();
 
-        u64 key = tile_key(current.tx, current.ty);
+        u64 key = vert_key(current.vx, current.vy);
         if (closed.contains(key)) continue;
         closed.insert(key);
 
@@ -138,14 +160,13 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
         all_nodes.push_back(current);
 
         // Goal reached
-        if (current.tx == gx && current.ty == gy) {
-            // Reconstruct path
+        if (current.vx == gx && current.vy == gy) {
             std::vector<glm::vec3> waypoints;
             u32 idx = current_idx;
             while (idx != UINT32_MAX) {
                 auto& n = all_nodes[idx];
-                f32 wx = (static_cast<f32>(n.tx) + 0.5f) * td.tile_size;
-                f32 wy = (static_cast<f32>(n.ty) + 0.5f) * td.tile_size;
+                f32 wx = static_cast<f32>(n.vx) * td.tile_size;
+                f32 wy = static_cast<f32>(n.vy) * td.tile_size;
                 waypoints.push_back({wx, wy, 0.0f});
                 idx = n.parent_idx;
             }
@@ -164,28 +185,37 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
 
         // Expand neighbors
         for (u32 i = 0; i < 8; ++i) {
-            i32 nx = static_cast<i32>(current.tx) + dx[i];
-            i32 ny = static_cast<i32>(current.ty) + dy[i];
+            i32 nx = static_cast<i32>(current.vx) + dx[i];
+            i32 ny = static_cast<i32>(current.vy) + dy[i];
 
-            if (nx < 0 || ny < 0 || static_cast<u32>(nx) >= td.tiles_x || static_cast<u32>(ny) >= td.tiles_y)
+            if (nx < 0 || ny < 0 || static_cast<u32>(nx) > max_vx || static_cast<u32>(ny) > max_vy)
                 continue;
 
-            u32 ntx = static_cast<u32>(nx);
-            u32 nty = static_cast<u32>(ny);
+            u32 nvx = static_cast<u32>(nx);
+            u32 nvy = static_cast<u32>(ny);
 
-            if (closed.contains(tile_key(ntx, nty))) continue;
-            if (!is_tile_passable(ntx, nty, move_type)) continue;
+            if (closed.contains(vert_key(nvx, nvy))) continue;
+            if (!is_passable(nvx, nvy, move_type)) continue;
 
-            // For diagonal movement, check that both cardinal neighbors are passable
+            // Cliff traversal check
+            if (!can_traverse(current.vx, current.vy, nvx, nvy, move_type)) continue;
+
+            // For diagonal movement, check that both cardinal neighbors are passable and traversable
             if (dx[i] != 0 && dy[i] != 0) {
-                if (!is_tile_passable(current.tx + dx[i], current.ty, move_type) ||
-                    !is_tile_passable(current.tx, current.ty + dy[i], move_type))
+                u32 cx = static_cast<u32>(static_cast<i32>(current.vx) + dx[i]);
+                u32 cy = current.vy;
+                u32 rx = current.vx;
+                u32 ry = static_cast<u32>(static_cast<i32>(current.vy) + dy[i]);
+                if (!is_passable(cx, cy, move_type) || !is_passable(rx, ry, move_type))
+                    continue;
+                if (!can_traverse(current.vx, current.vy, cx, cy, move_type) ||
+                    !can_traverse(current.vx, current.vy, rx, ry, move_type))
                     continue;
             }
 
             f32 new_g = current.g_cost + cost[i];
-            f32 new_f = new_g + heuristic(ntx, nty);
-            open.push({ntx, nty, new_g, new_f, current_idx});
+            f32 new_f = new_g + heuristic(nvx, nvy);
+            open.push({nvx, nvy, new_g, new_f, current_idx});
         }
     }
 

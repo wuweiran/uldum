@@ -216,7 +216,6 @@ void Renderer::shutdown() {
     for (u32 i = 0; i < m_terrain_material.layer_count; ++i) {
         destroy_texture(*m_rhi, m_terrain_material.layers[i]);
     }
-    destroy_texture(*m_rhi, m_terrain_material.splatmap);
 
     // Destroy shadow resources
     destroy_shadow_map(*m_rhi, m_shadow_map);
@@ -229,6 +228,8 @@ void Renderer::shutdown() {
     if (m_skinned_shadow_pipeline_layout) vkDestroyPipelineLayout(device, m_skinned_shadow_pipeline_layout, nullptr);
     if (m_skinned_mesh_pipeline)          vkDestroyPipeline(device, m_skinned_mesh_pipeline, nullptr);
     if (m_skinned_mesh_pipeline_layout)   vkDestroyPipelineLayout(device, m_skinned_mesh_pipeline_layout, nullptr);
+    if (m_terrain_shadow_pipeline)  vkDestroyPipeline(device, m_terrain_shadow_pipeline, nullptr);
+    // m_terrain_shadow_pipeline_layout is shared with m_shadow_pipeline_layout, don't destroy twice
     if (m_shadow_pipeline)         vkDestroyPipeline(device, m_shadow_pipeline, nullptr);
     if (m_shadow_pipeline_layout)  vkDestroyPipelineLayout(device, m_shadow_pipeline_layout, nullptr);
     if (m_terrain_pipeline)        vkDestroyPipeline(device, m_terrain_pipeline, nullptr);
@@ -380,25 +381,10 @@ void Renderer::set_terrain(const map::TerrainData& terrain) {
     destroy_terrain_mesh(alloc, m_terrain);
     m_terrain = build_terrain_mesh(alloc, terrain);
 
-    // Generate splatmap from tile_type data
-    if (terrain.is_valid() && !terrain.tile_type.empty()) {
-        destroy_texture(*m_rhi, m_terrain_material.splatmap);
-
-        // Build RGBA splatmap: each pixel = blend weights for one tile
-        u32 w = terrain.tiles_x;
-        u32 h = terrain.tiles_y;
-        std::vector<u8> splat_pixels(w * h * 4, 0);
-        for (u32 i = 0; i < w * h; ++i) {
-            u8 type = terrain.tile_type[i];
-            // Set the channel corresponding to the tile type to 255
-            u32 channel = std::min(static_cast<u32>(type), 3u);
-            splat_pixels[i * 4 + channel] = 255;
-        }
-        m_terrain_material.splatmap = upload_texture_rgba(*m_rhi, splat_pixels.data(), w, h);
-
-        // Re-allocate terrain descriptor set with new splatmap
+    // Splatmap weights are baked into terrain vertex attributes — no splatmap texture needed.
+    // Re-allocate terrain descriptor set (layer textures only).
+    if (terrain.is_valid()) {
         m_terrain_material.descriptor_set = allocate_terrain_descriptor(m_terrain_material);
-        log::info(TAG, "Terrain splatmap generated: {}x{}", w, h);
     }
 }
 
@@ -426,10 +412,10 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Terrain descriptor set layout: 5 combined image samplers (4 layers + 1 splatmap)
+    // Terrain descriptor set layout: 4 combined image samplers (ground texture layers)
     {
-        VkDescriptorSetLayoutBinding bindings[5]{};
-        for (u32 i = 0; i < 5; ++i) {
+        VkDescriptorSetLayoutBinding bindings[4]{};
+        for (u32 i = 0; i < 4; ++i) {
             bindings[i].binding         = i;
             bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[i].descriptorCount = 1;
@@ -438,7 +424,7 @@ bool Renderer::create_descriptor_layouts() {
 
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 5;
+        ci.bindingCount = 4;
         ci.pBindings    = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_terrain_desc_layout) != VK_SUCCESS) {
@@ -579,8 +565,8 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
-    VkDescriptorImageInfo img_infos[5]{};
-    VkWriteDescriptorSet writes[5]{};
+    VkDescriptorImageInfo img_infos[4]{};
+    VkWriteDescriptorSet writes[4]{};
 
     // Layer textures (bindings 0-3)
     for (u32 i = 0; i < 4; ++i) {
@@ -597,20 +583,7 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         writes[i].pImageInfo      = &img_infos[i];
     }
 
-    // Splatmap (binding 4)
-    const GpuTexture& splat = mat.splatmap.image ? mat.splatmap : m_default_texture;
-    img_infos[4].sampler     = splat.sampler;
-    img_infos[4].imageView   = splat.view;
-    img_infos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet          = set;
-    writes[4].dstBinding      = 4;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].pImageInfo      = &img_infos[4];
-
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
     return set;
 }
 
@@ -658,7 +631,6 @@ bool Renderer::create_terrain_textures() {
 
     m_terrain_material.layer_count = 4;
 
-    // Splatmap will be generated in set_terrain() from TerrainData::tile_type
     log::info(TAG, "Terrain textures created (4 layers)");
     return true;
 }
@@ -679,7 +651,7 @@ struct PipelineStateConfig {
     VkPipelineDynamicStateCreateInfo dynamic_state;
     VkDynamicState dynamic_states[2];
     VkVertexInputBindingDescription binding;
-    VkVertexInputAttributeDescription attrs[3];
+    VkVertexInputAttributeDescription attrs[5];
 };
 
 static PipelineStateConfig make_common_pipeline_state() {
@@ -1120,7 +1092,23 @@ bool Renderer::create_terrain_pipeline() {
         return false;
     }
 
+    // TerrainVertex input: 4 attributes, 48-byte stride
+    VkVertexInputBindingDescription terrain_binding{};
+    terrain_binding.binding   = 0;
+    terrain_binding.stride    = sizeof(TerrainVertex);
+    terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription terrain_attrs[4]{};
+    terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, position)};
+    terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, normal)};
+    terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(TerrainVertex, texcoord)};
+    terrain_attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(TerrainVertex, splat_weights)};
+
     auto cfg = make_common_pipeline_state();
+    // Override vertex input with terrain format
+    cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
+    cfg.vertex_input.vertexAttributeDescriptionCount  = 4;
+    cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
 
     cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1277,7 +1265,65 @@ bool Renderer::create_shadow_pipeline() {
 
     vkDestroyShaderModule(device, vert, nullptr);
     vkDestroyShaderModule(device, frag, nullptr);
-    log::info(TAG, "Shadow pipeline created (depth-only)");
+
+    // Terrain shadow pipeline: same as above but with TerrainVertex layout (48-byte stride)
+    VkShaderModule terrain_vert = load_shader(device, "engine/shaders/terrain_shadow.vert.spv");
+    if (terrain_vert) {
+        VkVertexInputBindingDescription terrain_binding{};
+        terrain_binding.binding   = 0;
+        terrain_binding.stride    = sizeof(TerrainVertex);
+        terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        VkVertexInputAttributeDescription terrain_attrs[4]{};
+        terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, position)};
+        terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, normal)};
+        terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(TerrainVertex, texcoord)};
+        terrain_attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(TerrainVertex, splat_weights)};
+
+        auto tcfg = make_common_pipeline_state();
+        tcfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
+        tcfg.vertex_input.vertexAttributeDescriptionCount  = 4;
+        tcfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
+
+        tcfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        tcfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        tcfg.stages[0].module = terrain_vert;
+        tcfg.stages[0].pName  = "main";
+        tcfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        tcfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        tcfg.stages[1].module = load_shader(device, "engine/shaders/shadow.frag.spv");
+        tcfg.stages[1].pName  = "main";
+
+        tcfg.rasterizer.depthBiasEnable         = VK_TRUE;
+        tcfg.rasterizer.depthBiasConstantFactor = 2.0f;
+        tcfg.rasterizer.depthBiasSlopeFactor    = 1.5f;
+        tcfg.color_blend.attachmentCount = 0;
+        tcfg.color_blend.pAttachments    = nullptr;
+
+        // Reuse shadow pipeline layout (same push constant)
+        m_terrain_shadow_pipeline_layout = m_shadow_pipeline_layout;
+
+        VkGraphicsPipelineCreateInfo tpci{};
+        tpci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        tpci.pNext               = &rendering_ci;
+        tpci.stageCount          = 2;
+        tpci.pStages             = tcfg.stages;
+        tpci.pVertexInputState   = &tcfg.vertex_input;
+        tpci.pInputAssemblyState = &tcfg.input_assembly;
+        tpci.pViewportState      = &tcfg.viewport_state;
+        tpci.pRasterizationState = &tcfg.rasterizer;
+        tpci.pMultisampleState   = &tcfg.multisample;
+        tpci.pDepthStencilState  = &tcfg.depth_stencil;
+        tpci.pColorBlendState    = &tcfg.color_blend;
+        tpci.pDynamicState       = &tcfg.dynamic_state;
+        tpci.layout              = m_terrain_shadow_pipeline_layout;
+
+        vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &tpci, nullptr, &m_terrain_shadow_pipeline);
+        if (tcfg.stages[1].module) vkDestroyShaderModule(device, tcfg.stages[1].module, nullptr);
+        vkDestroyShaderModule(device, terrain_vert, nullptr);
+    }
+
+    log::info(TAG, "Shadow pipelines created (depth-only)");
     return true;
 }
 
@@ -1424,10 +1470,14 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
     VkRect2D scissor{{0, 0}, {m_shadow_map.size, m_shadow_map.size}};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Terrain
-    if (m_terrain.gpu_mesh.vertex_buffer) {
+    // Terrain shadow (uses terrain shadow pipeline with TerrainVertex stride)
+    if (m_terrain_shadow_pipeline && m_terrain.gpu_mesh.vertex_buffer) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_terrain_shadow_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
         glm::mat4 light_mvp = light_vp;
-        vkCmdPushConstants(cmd, m_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &light_mvp);
+        vkCmdPushConstants(cmd, m_terrain_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &light_mvp);
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
         vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);

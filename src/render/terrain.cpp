@@ -1,11 +1,14 @@
 #include "render/terrain.h"
+#include "render/gpu_mesh.h"
 #include "map/terrain_data.h"
-#include "asset/model.h"
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
+#include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace uldum::render {
@@ -19,22 +22,28 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
     u32 vx = td.verts_x();
     u32 vy = td.verts_y();
 
-    std::vector<asset::Vertex> vertices(vx * vy);
+    std::vector<TerrainVertex> vertices(vx * vy);
 
-    // Fill positions and texcoords from heightmap
+    // Fill positions, texcoords, and splatmap weights
     for (u32 iy = 0; iy < vy; ++iy) {
         for (u32 ix = 0; ix < vx; ++ix) {
             u32 idx = iy * vx + ix;
             f32 x = static_cast<f32>(ix) * td.tile_size;
             f32 y = static_cast<f32>(iy) * td.tile_size;
-            f32 z = td.heightmap[idx];
+            f32 z = td.world_z_at(ix, iy);
 
             vertices[idx].position = {x, y, z};
-            // UV spans 0-1 across entire terrain (for splatmap sampling)
             vertices[idx].texcoord = {
                 static_cast<f32>(ix) / static_cast<f32>(td.tiles_x),
                 static_cast<f32>(iy) / static_cast<f32>(td.tiles_y)
             };
+
+            // Splatmap weights: convert u8 (0-255) to float (0-1)
+            f32 w0 = static_cast<f32>(td.splatmap[0][idx]) / 255.0f;
+            f32 w1 = static_cast<f32>(td.splatmap[1][idx]) / 255.0f;
+            f32 w2 = static_cast<f32>(td.splatmap[2][idx]) / 255.0f;
+            f32 w3 = static_cast<f32>(td.splatmap[3][idx]) / 255.0f;
+            vertices[idx].splat_weights = {w0, w1, w2, w3};
         }
     }
 
@@ -75,15 +84,40 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         }
     }
 
-    asset::MeshData mesh_data;
-    mesh_data.vertices = std::move(vertices);
-    mesh_data.indices  = std::move(indices);
-
+    // Upload as raw vertex data (TerrainVertex layout, not asset::Vertex)
     TerrainMesh result;
-    result.gpu_mesh = upload_mesh(allocator, mesh_data);
+    auto& mesh = result.gpu_mesh;
+
+    VkDeviceSize vb_size = vertices.size() * sizeof(TerrainVertex);
+    VkDeviceSize ib_size = indices.size() * sizeof(u32);
+
+    VkBufferCreateInfo buf_ci{};
+    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buf_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    buf_ci.size  = vb_size;
+
+    VmaAllocationCreateInfo alloc_ci{};
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &mesh.vertex_buffer, &mesh.vertex_alloc, nullptr);
+    void* mapped = nullptr;
+    vmaMapMemory(allocator, mesh.vertex_alloc, &mapped);
+    std::memcpy(mapped, vertices.data(), vb_size);
+    vmaUnmapMemory(allocator, mesh.vertex_alloc);
+
+    buf_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    buf_ci.size  = ib_size;
+    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &mesh.index_buffer, &mesh.index_alloc, nullptr);
+    vmaMapMemory(allocator, mesh.index_alloc, &mapped);
+    std::memcpy(mapped, indices.data(), ib_size);
+    vmaUnmapMemory(allocator, mesh.index_alloc);
+
+    mesh.index_count  = static_cast<u32>(indices.size());
+    mesh.vertex_count = static_cast<u32>(vertices.size());
 
     log::info("Terrain", "Built terrain mesh: {}x{} tiles, {} vertices, {} indices",
-              td.tiles_x, td.tiles_y, vx * vy, static_cast<u32>(mesh_data.indices.size()));
+              td.tiles_x, td.tiles_y, mesh.vertex_count, mesh.index_count);
 
     return result;
 }

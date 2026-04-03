@@ -149,10 +149,15 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
 bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
     std::string scene_dir = m_map_root + "/scenes/" + std::string(scene_name);
 
-    // Terrain: for now, generate procedural terrain since we don't have binary terrain format yet.
-    // Phase 6+ will load terrain.bin from scene_dir.
-    m_scene.terrain = create_procedural_terrain(64, 64, 128.0f);
-    log::info(TAG, "Scene '{}': procedural terrain {}x{} (binary terrain loading pending)",
+    // Load terrain from binary file, create default flat terrain if not found
+    std::string terrain_path = scene_dir + "/terrain.bin";
+    m_scene.terrain = load_terrain(terrain_path);
+    if (!m_scene.terrain.is_valid()) {
+        log::warn(TAG, "Scene '{}': no terrain.bin, creating default flat terrain", scene_name);
+        m_scene.terrain = create_flat_terrain(64, 64, 128.0f);
+        save_terrain(m_scene.terrain, terrain_path);
+    }
+    log::info(TAG, "Scene '{}': terrain {}x{} tiles",
               scene_name, m_scene.terrain.tiles_x, m_scene.terrain.tiles_y);
 
     // Load object placements
@@ -175,13 +180,13 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
     auto& j = doc->data;
     auto& world = sim.world();
 
-    // Helper: sample terrain height
+    // Helper: sample terrain height (bilinear, using world_z_at)
     auto sample_height = [&](f32 x, f32 y) -> f32 {
         auto& td = m_scene.terrain;
         if (!td.is_valid()) return 0.0f;
         u32 ix = std::min(static_cast<u32>(x / td.tile_size), td.tiles_x);
         u32 iy = std::min(static_cast<u32>(y / td.tile_size), td.tiles_y);
-        return td.height_at(ix, iy);
+        return td.world_z_at(ix, iy);
     };
 
     // Units — first pass: create all units
@@ -204,21 +209,21 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 auto* t = world.transforms.get(unit.id);
                 if (t) t->position.z = sample_height(pu.x, pu.y);
 
-                // Buildings block pathing tiles
+                // Buildings block pathing vertices around their position
                 auto* cls = world.classifications.get(unit.id);
                 if (cls && simulation::has_classification(cls->flags, "structure")) {
                     auto& td = m_scene.terrain;
                     if (td.is_valid()) {
                         i32 cx = static_cast<i32>(pu.x / td.tile_size);
                         i32 cy = static_cast<i32>(pu.y / td.tile_size);
-                        for (i32 dy = -1; dy <= 1; ++dy) {
-                            for (i32 dx = -1; dx <= 1; ++dx) {
-                                i32 tx = cx + dx;
-                                i32 ty = cy + dy;
-                                if (tx >= 0 && ty >= 0 &&
-                                    static_cast<u32>(tx) < td.tiles_x &&
-                                    static_cast<u32>(ty) < td.tiles_y) {
-                                    td.pathing_at(static_cast<u32>(tx), static_cast<u32>(ty)) &=
+                        for (i32 dy = -1; dy <= 2; ++dy) {
+                            for (i32 dx = -1; dx <= 2; ++dx) {
+                                i32 vx = cx + dx;
+                                i32 vy = cy + dy;
+                                if (vx >= 0 && vy >= 0 &&
+                                    static_cast<u32>(vx) < td.verts_x() &&
+                                    static_cast<u32>(vy) < td.verts_y()) {
+                                    td.pathing_at(static_cast<u32>(vx), static_cast<u32>(vy)) &=
                                         ~map::PATHING_WALKABLE;
                                 }
                             }
