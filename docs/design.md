@@ -474,8 +474,9 @@ Last because it's the most complex and needs a working local game loop.
 
 ### Phase 13 — Packaging & Distribution
 
-Cross-platform build output and asset protection.
+Build targets, cross-platform packaging, and asset baking. See [build-targets.md](build-targets.md) for the full target design.
 
+- **Build targets**: `uldum_game` (shipped product), `game.json` configuration, renamed executable per product
 - **PAK archive format**: pack engine assets and map assets into single archive files (engine.pak, map.pak)
 - **Encryption**: encrypt map PAK files to protect gameplay logic from reverse engineering; optionally encrypt engine assets too
 - **Build output**: self-contained distribution folder per platform (exe + engine.pak + any platform-specific files)

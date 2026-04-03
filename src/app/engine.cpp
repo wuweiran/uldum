@@ -156,11 +156,6 @@ bool Engine::init() {
         m_script.call_function("main");
     }
 
-    // Editor
-    if (!m_editor.init()) {
-        log::error(TAG, "Editor init failed");
-        return false;
-    }
 
     log::info(TAG, "=== All modules initialized ===");
     return true;
@@ -215,16 +210,12 @@ void Engine::run() {
         // Audio
         m_audio.update();
 
-        // Editor
-        m_editor.update();
-
         // Render (skip if window is minimized — extent would be zero)
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
             m_renderer.draw_shadows(cmd, m_simulation.world());
             m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
-            m_editor.render();
             m_rhi.end_frame();
         }
 
@@ -241,7 +232,6 @@ void Engine::shutdown() {
     log::info(TAG, "=== Shutting down Uldum Engine ===");
 
     // Shutdown in reverse init order
-    m_editor.shutdown();
     m_map.shutdown();
     m_network.shutdown();
     m_simulation.shutdown();

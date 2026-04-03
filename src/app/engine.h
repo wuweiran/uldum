@@ -9,7 +9,6 @@
 #include "simulation/simulation.h"
 #include "network/network.h"
 #include "map/map.h"
-#include "editor/editor.h"
 
 #include <memory>
 
@@ -35,7 +34,6 @@ private:
     simulation::Simulation   m_simulation;
     network::NetworkManager  m_network;
     map::MapManager          m_map;
-    editor::Editor           m_editor;
 };
 
 } // namespace uldum

@@ -103,13 +103,13 @@ scripts\build.bat
 
 First build fetches third-party dependencies via CMake FetchContent (takes ~1 min). Subsequent builds are incremental.
 
-Output: `build/bin/uldum.exe`
+Output: `build/bin/uldum_dev.exe` (developer runtime), `build/bin/uldum_editor.exe` (map editor), `build/bin/uldum_game.exe` (shipped game), `build/bin/uldum_server.exe` (dedicated server). See [docs/build-targets.md](docs/build-targets.md) for details.
 
 ## Run
 
 ```cmd
 cd build\bin
-uldum.exe
+uldum_dev.exe
 ```
 
 The engine loads the test map from `maps/test_map.uldmap/` automatically. The test scene spawns creep waves attacking two hero units with abilities (cleave, consecration, holy light).
@@ -140,8 +140,8 @@ src/
 ├── simulation/     ECS, units, abilities, pathfinding, combat, AI
 ├── network/        Server-authoritative multiplayer (ENet) [stub]
 ├── map/            Map format, terrain data, overrides
-├── editor/         In-engine terrain editor (ImGui) [stub]
-└── app/            Entry point, engine main loop
+├── editor/         Map editor executable — terrain tools, object placement [stub]
+└── app/            Engine core + entry points (dev, game, server)
 ```
 
 ## Documentation

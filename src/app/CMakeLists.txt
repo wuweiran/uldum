@@ -1,10 +1,5 @@
-add_executable(uldum
-    main.cpp
-    engine.cpp
-)
-
-target_include_directories(uldum PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(uldum PRIVATE
+# Shared engine libraries used by all game targets
+set(ULDUM_ENGINE_LIBS
     uldum_core
     uldum_platform
     uldum_rhi
@@ -15,24 +10,23 @@ target_link_libraries(uldum PRIVATE
     uldum_simulation
     uldum_network
     uldum_map
-    uldum_editor
 )
 
-# Console app in debug (to see logs), GUI app in release
-if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(WIN32)
-        set_target_properties(uldum PROPERTIES WIN32_EXECUTABLE TRUE)
-    endif()
-endif()
+# ── uldum_dev — Developer testing runtime (current default) ───────────────
 
-# Compile shaders (GLSL → SPIR-V) into the output engine/shaders directory
-compile_shaders(uldum
+add_executable(uldum_dev
+    dev_main.cpp
+    engine.cpp
+)
+target_include_directories(uldum_dev PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(uldum_dev PRIVATE ${ULDUM_ENGINE_LIBS})
+
+compile_shaders(uldum_dev
     ${CMAKE_SOURCE_DIR}/engine/shaders
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine/shaders
 )
 
 # Always copy engine assets and maps to output directory.
-# Uses a custom target (not POST_BUILD) so it runs even when no C++ changed.
 add_custom_target(copy_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/engine
@@ -42,4 +36,8 @@ add_custom_target(copy_assets ALL
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/maps
     COMMENT "Syncing engine assets and maps to output directory"
 )
-add_dependencies(uldum copy_assets)
+add_dependencies(uldum_dev copy_assets)
+
+# uldum_game (Phase 13) and uldum_server (Phase 12) entry points exist in
+# game_main.cpp and server_main.cpp but are not built yet. They will be
+# added as targets when their respective phases are implemented.
