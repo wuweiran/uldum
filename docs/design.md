@@ -474,7 +474,18 @@ Last because it's the most complex and needs a working local game loop.
 - **Lobby system**: host/join, map selection, player slots, team assignment, ready check
 - **Desync detection**: periodic state checksums for debugging
 
-### Phase 13 — Packaging & Distribution
+### Phase 13 — GPU-Driven Rendering
+
+Replace per-entity draw calls with a single indirect draw. Enables thousands of entities without CPU bottleneck.
+
+- **Indirect draw buffer**: one `vkCmdDrawIndexedIndirect` per pipeline instead of per-entity draw calls
+- **Compute frustum culling**: GPU compute pass writes visible instances to indirect buffer
+- **Instance buffer**: per-entity transforms (model matrix) in a GPU SSBO, indexed by instance ID
+- **Bindless descriptors**: all textures in one descriptor array (`VK_EXT_descriptor_indexing`), material index per instance
+- **Mesh merging**: combine meshes with same pipeline into shared vertex/index buffers with draw offsets
+- **Occlusion culling** (optional): hierarchical Z-buffer or GPU-driven occlusion queries
+
+### Phase 14 — Packaging & Distribution
 
 Build targets, cross-platform packaging, and asset baking. See [build-targets.md](build-targets.md) for the full target design.
 
