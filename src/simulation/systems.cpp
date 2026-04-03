@@ -938,41 +938,8 @@ void system_death(World& world) {
 
 // ── Scale pulse system (visual feedback) ──────────────────────────────────
 
-void system_scale_pulse(World& world, float dt) {
-    for (u32 i = 0; i < world.scale_pulses.count(); ++i) {
-        u32 id = world.scale_pulses.ids()[i];
-        auto& pulse = world.scale_pulses.data()[i];
-
-        if (pulse.timer > 0) {
-            pulse.timer -= dt;
-            if (pulse.timer <= 0) {
-                pulse.current_scale = 1.0f;
-            }
-        }
-
-        // Apply scale to transform
-        auto* transform = world.transforms.get(id);
-        if (transform && pulse.current_scale != 1.0f) {
-            // Lerp back toward 1.0
-            pulse.current_scale += (1.0f - pulse.current_scale) * dt * 10.0f;
-            if (std::abs(pulse.current_scale - 1.0f) < 0.01f) {
-                pulse.current_scale = 1.0f;
-            }
-        }
-
-        // Shrink unit based on HP, or flatten if dead (corpse)
-        auto* hp = world.healths.get(id);
-        if (hp && hp->max > 0 && transform) {
-            if (world.dead_states.has(id)) {
-                // Corpse: flatten to 0.3 scale
-                transform->scale = 0.3f;
-            } else {
-                f32 hp_fraction = hp->current / hp->max;
-                f32 hp_scale = 0.5f + 0.5f * hp_fraction;
-                transform->scale = hp_scale * pulse.current_scale;
-            }
-        }
-    }
+// Scale pulse removed — replaced by skeletal animation (attack, death states).
+void system_scale_pulse(World& /*world*/, float /*dt*/) {
 }
 
 } // namespace uldum::simulation

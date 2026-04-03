@@ -90,7 +90,6 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         combat.acquire_range    = def->acquire_range;
         world.combats.add(id, std::move(combat));
     }
-    world.scale_pulses.add(id, ScalePulse{});
     world.visions.add(id, Vision{def->sight_range_day, def->sight_range_night});
     world.order_queues.add(id, OrderQueue{});
     world.ability_sets.add(id, AbilitySet{});
@@ -212,13 +211,6 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
 
     hp->current -= amount;
     if (hp->current < 0) hp->current = 0;
-
-    // Scale pulse on attacker (visual feedback)
-    auto* pulse = world.scale_pulses.get(source.id);
-    if (pulse) {
-        pulse->current_scale = 1.3f;
-        pulse->timer = 0.15f;
-    }
 }
 
 void issue_order(World& world, Unit unit, Order order) {

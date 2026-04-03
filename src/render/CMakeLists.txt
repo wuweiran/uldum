@@ -5,6 +5,10 @@ add_library(uldum_render STATIC
     gpu_texture.cpp
     shadow.cpp
     terrain.cpp
+    animation.cpp
+    procedural_skeleton.cpp
+    particles.cpp
+    effect.cpp
 )
 
 target_include_directories(uldum_render PUBLIC ${CMAKE_SOURCE_DIR}/src)

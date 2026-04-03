@@ -14,6 +14,7 @@ namespace sol { class state; }
 
 namespace uldum::simulation { class Simulation; struct World; class AbilityRegistry; }
 namespace uldum::map { class MapManager; }
+namespace uldum::render { class EffectRegistry; class EffectManager; }
 
 namespace uldum::script {
 
@@ -57,7 +58,9 @@ public:
     ScriptEngine();
     ~ScriptEngine();  // defined in .cpp where sol::state is complete
 
-    bool init(simulation::Simulation& sim, map::MapManager& map);
+    bool init(simulation::Simulation& sim, map::MapManager& map,
+              render::EffectRegistry* effects = nullptr,
+              render::EffectManager* effect_mgr = nullptr);
     void shutdown();
     void update(float dt);
 
@@ -97,6 +100,8 @@ private:
     std::unique_ptr<sol::state> m_lua;
     simulation::Simulation*     m_sim = nullptr;
     map::MapManager*            m_map = nullptr;
+    render::EffectRegistry*  m_effects    = nullptr;
+    render::EffectManager*   m_effect_mgr = nullptr;
 
     // Triggers
     std::unordered_map<u32, Trigger> m_triggers;

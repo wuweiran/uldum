@@ -6,6 +6,9 @@
 #include "render/terrain.h"
 #include "render/material.h"
 #include "render/shadow.h"
+#include "render/animation.h"
+#include "render/particles.h"
+#include "render/effect.h"
 #include "core/handle.h"
 #include "asset/model.h"
 
@@ -45,10 +48,15 @@ public:
     void draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world);
 
     Camera& camera() { return m_camera; }
+    ParticleSystem& particles() { return m_particles; }
+    EffectRegistry& effect_registry() { return m_effect_registry; }
+    EffectManager&  effect_manager()  { return m_effect_manager; }
 
 private:
     bool create_descriptor_layouts();
     bool create_mesh_pipeline();
+    bool create_skinned_mesh_pipeline();
+    bool create_particle_pipeline();
     bool create_terrain_pipeline();
     bool create_shadow_pipeline();
     bool create_shadow_resources();
@@ -58,6 +66,7 @@ private:
     VkDescriptorSet allocate_mesh_descriptor(const GpuTexture& diffuse);
     VkDescriptorSet allocate_terrain_descriptor(const TerrainMaterial& mat);
     VkDescriptorSet allocate_shadow_descriptor();
+    VkDescriptorSet allocate_bone_descriptor(VkBuffer bone_buffer, usize size);
 
     void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world);
 
@@ -69,7 +78,9 @@ private:
     VkDescriptorSetLayout m_mesh_desc_layout    = VK_NULL_HANDLE;  // set 0: 1 diffuse sampler
     VkDescriptorSetLayout m_terrain_desc_layout = VK_NULL_HANDLE;  // set 0: 4 layers + 1 splatmap
     VkDescriptorSetLayout m_shadow_desc_layout  = VK_NULL_HANDLE;  // set 1: UBO + shadow map
-    VkDescriptorPool      m_descriptor_pool     = VK_NULL_HANDLE;
+    // Growable descriptor pool — allocates new pools on demand
+    std::vector<VkDescriptorPool> m_descriptor_pools;
+    VkDescriptorPool allocate_or_grow_pool();
 
     // Mesh pipeline (set 0 = material, set 1 = shadow)
     VkPipelineLayout m_mesh_pipeline_layout = VK_NULL_HANDLE;
@@ -78,6 +89,13 @@ private:
     // Terrain pipeline (set 0 = terrain material, set 1 = shadow)
     VkPipelineLayout m_terrain_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_terrain_pipeline        = VK_NULL_HANDLE;
+
+    // Skinned mesh pipeline (set 0 = material, set 1 = shadow, set 2 = bones SSBO)
+    VkDescriptorSetLayout m_bone_desc_layout          = VK_NULL_HANDLE;  // set 2: 1 SSBO
+    VkPipelineLayout m_skinned_mesh_pipeline_layout   = VK_NULL_HANDLE;
+    VkPipeline       m_skinned_mesh_pipeline          = VK_NULL_HANDLE;
+    VkPipelineLayout m_skinned_shadow_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_skinned_shadow_pipeline        = VK_NULL_HANDLE;
 
     // Shadow depth pass pipeline (push constant = light MVP, depth-only)
     VkPipelineLayout m_shadow_pipeline_layout = VK_NULL_HANDLE;
@@ -108,8 +126,27 @@ private:
     // Small projectile mesh
     GpuMesh m_projectile_mesh{};
 
+    // Particle pipeline (alpha-blended, depth test on, depth write off)
+    VkPipelineLayout m_particle_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_particle_pipeline        = VK_NULL_HANDLE;
+
     // Terrain mesh
     TerrainMesh m_terrain{};
+
+    // Procedural test model (used for all units until real glTF models are loaded)
+    asset::ModelData m_test_model;
+    GpuMesh          m_test_skinned_mesh{};
+
+    // Per-entity animation instances (entity id → AnimationInstance)
+    std::unordered_map<u32, AnimationInstance> m_anim_instances;
+
+    // Particle system + effect system
+    ParticleSystem  m_particles;
+    EffectRegistry  m_effect_registry;
+    EffectManager   m_effect_manager;
+
+    // Get or create animation instance for an entity
+    AnimationInstance& get_or_create_anim(u32 entity_id);
 };
 
 } // namespace uldum::render

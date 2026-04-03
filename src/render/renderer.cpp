@@ -1,4 +1,5 @@
 #include "render/renderer.h"
+#include "render/procedural_skeleton.h"
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "map/terrain_data.h"
 #include "simulation/world.h"
@@ -9,6 +10,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -88,8 +90,14 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     if (!create_default_texture()) return false;
     if (!create_terrain_textures()) return false;
     if (!create_mesh_pipeline()) return false;
+    if (!create_skinned_mesh_pipeline()) return false;
+    if (!create_particle_pipeline()) return false;
     if (!create_terrain_pipeline()) return false;
     if (!create_shadow_pipeline()) return false;
+    if (!m_particles.init(rhi)) return false;
+    m_effect_registry.register_defaults();
+    m_effect_manager.set_particles(&m_particles);
+    m_effect_manager.set_registry(&m_effect_registry);
 
     // Create a placeholder box mesh for entities without a real model.
     // Defined directly in Z-up game coordinates: base at Z=0, top at Z=2.
@@ -156,7 +164,27 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
         m_projectile_mesh.native_z_up = true;
     }
 
-    log::info(TAG, "Renderer initialized — textured mesh + terrain pipelines ready");
+    // Create procedural skinned test model for all units
+    {
+        m_test_model = create_procedural_test_model();
+        if (!m_test_model.skinned_meshes.empty()) {
+            u32 bone_count = static_cast<u32>(m_test_model.skeleton.bones.size());
+            m_test_skinned_mesh = upload_skinned_mesh(m_rhi->allocator(),
+                m_test_model.skinned_meshes[0], bone_count);
+            m_test_skinned_mesh.native_z_up = true;
+
+            // Allocate bone descriptor set
+            if (m_test_skinned_mesh.bone_buffer) {
+                m_test_skinned_mesh.bone_descriptor = allocate_bone_descriptor(
+                    m_test_skinned_mesh.bone_buffer,
+                    bone_count * sizeof(glm::mat4));
+            }
+            log::info(TAG, "Procedural test skeleton: {} bones, {} verts",
+                      bone_count, m_test_skinned_mesh.vertex_count);
+        }
+    }
+
+    log::info(TAG, "Renderer initialized — textured mesh + skinned + terrain pipelines ready");
     return true;
 }
 
@@ -167,7 +195,14 @@ void Renderer::shutdown() {
 
     vkDeviceWaitIdle(device);
 
+    m_particles.shutdown();
     destroy_terrain_mesh(alloc, m_terrain);
+    for (auto& [eid, anim] : m_anim_instances) {
+        // Descriptor sets freed implicitly when pools are destroyed below
+        if (anim.bone_buffer) vmaDestroyBuffer(alloc, anim.bone_buffer, anim.bone_alloc);
+    }
+    m_anim_instances.clear();
+    destroy_mesh(alloc, m_test_skinned_mesh);
     destroy_mesh(alloc, m_projectile_mesh);
     destroy_mesh(alloc, m_placeholder_mesh);
     for (auto& [path, mesh] : m_mesh_cache) {
@@ -188,6 +223,12 @@ void Renderer::shutdown() {
     destroy_shadow_buffer(*m_rhi, m_shadow_ubo);
 
     // Destroy pipelines
+    if (m_particle_pipeline)              vkDestroyPipeline(device, m_particle_pipeline, nullptr);
+    if (m_particle_pipeline_layout)       vkDestroyPipelineLayout(device, m_particle_pipeline_layout, nullptr);
+    if (m_skinned_shadow_pipeline)        vkDestroyPipeline(device, m_skinned_shadow_pipeline, nullptr);
+    if (m_skinned_shadow_pipeline_layout) vkDestroyPipelineLayout(device, m_skinned_shadow_pipeline_layout, nullptr);
+    if (m_skinned_mesh_pipeline)          vkDestroyPipeline(device, m_skinned_mesh_pipeline, nullptr);
+    if (m_skinned_mesh_pipeline_layout)   vkDestroyPipelineLayout(device, m_skinned_mesh_pipeline_layout, nullptr);
     if (m_shadow_pipeline)         vkDestroyPipeline(device, m_shadow_pipeline, nullptr);
     if (m_shadow_pipeline_layout)  vkDestroyPipelineLayout(device, m_shadow_pipeline_layout, nullptr);
     if (m_terrain_pipeline)        vkDestroyPipeline(device, m_terrain_pipeline, nullptr);
@@ -196,7 +237,11 @@ void Renderer::shutdown() {
     if (m_mesh_pipeline_layout)    vkDestroyPipelineLayout(device, m_mesh_pipeline_layout, nullptr);
 
     // Destroy descriptor infrastructure
-    if (m_descriptor_pool)      vkDestroyDescriptorPool(device, m_descriptor_pool, nullptr);
+    for (auto pool : m_descriptor_pools) {
+        if (pool) vkDestroyDescriptorPool(device, pool, nullptr);
+    }
+    m_descriptor_pools.clear();
+    if (m_bone_desc_layout)     vkDestroyDescriptorSetLayout(device, m_bone_desc_layout, nullptr);
     if (m_shadow_desc_layout)   vkDestroyDescriptorSetLayout(device, m_shadow_desc_layout, nullptr);
     if (m_terrain_desc_layout)  vkDestroyDescriptorSetLayout(device, m_terrain_desc_layout, nullptr);
     if (m_mesh_desc_layout)     vkDestroyDescriptorSetLayout(device, m_mesh_desc_layout, nullptr);
@@ -213,6 +258,121 @@ void Renderer::update_camera(const platform::InputState& input, f32 dt) {
 
 void Renderer::handle_resize(f32 aspect) {
     m_camera.set_aspect(aspect);
+}
+
+// Look up a clip index by name in a model's animations. Returns -1 if not found.
+static i32 find_clip_by_name(const asset::ModelData& model, std::string_view name) {
+    for (i32 i = 0; i < static_cast<i32>(model.animations.size()); ++i) {
+        if (model.animations[i].name == name) return i;
+    }
+    return -1;
+}
+
+AnimationInstance& Renderer::get_or_create_anim(u32 entity_id) {
+    auto it = m_anim_instances.find(entity_id);
+    if (it != m_anim_instances.end()) return it->second;
+
+    AnimationInstance inst;
+    inst.model = &m_test_model;
+
+    // Bind animation states to clips by name (like WC3 model animations)
+    inst.state_to_clip[static_cast<u8>(AnimState::Idle)]   = find_clip_by_name(m_test_model, "idle");
+    inst.state_to_clip[static_cast<u8>(AnimState::Walk)]   = find_clip_by_name(m_test_model, "walk");
+    inst.state_to_clip[static_cast<u8>(AnimState::Attack)] = find_clip_by_name(m_test_model, "attack");
+    inst.state_to_clip[static_cast<u8>(AnimState::Spell)]  = find_clip_by_name(m_test_model, "spell");
+    inst.state_to_clip[static_cast<u8>(AnimState::Death)]  = find_clip_by_name(m_test_model, "death");
+
+    // Allocate per-entity bone buffer (persistently mapped)
+    u32 bone_count = static_cast<u32>(m_test_model.skeleton.bones.size());
+    if (bone_count > 0) {
+        VkBufferCreateInfo buf_ci{};
+        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buf_ci.size  = bone_count * sizeof(glm::mat4);
+        buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo info{};
+        vmaCreateBuffer(m_rhi->allocator(), &buf_ci, &alloc_ci,
+                        &inst.bone_buffer, &inst.bone_alloc, &info);
+        inst.bone_mapped = info.pMappedData;
+
+        // Initialize to identity
+        auto* bones = static_cast<glm::mat4*>(inst.bone_mapped);
+        for (u32 i = 0; i < bone_count; ++i) bones[i] = glm::mat4{1.0f};
+
+        // Allocate descriptor set
+        inst.bone_descriptor = allocate_bone_descriptor(inst.bone_buffer, bone_count * sizeof(glm::mat4));
+    }
+
+    auto [inserted, _] = m_anim_instances.emplace(entity_id, std::move(inst));
+    return inserted->second;
+}
+
+// Derive animation state and gameplay duration from simulation components.
+struct AnimStateInfo {
+    AnimState state;
+    f32       duration;       // 0 = use default clip speed
+    bool      force_restart;  // true = restart animation (new attack swing)
+};
+
+static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
+                                        AnimationInstance& anim) {
+    if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
+
+    // Spell casting (ability system)
+    auto* aset = world.ability_sets.get(id);
+    if (aset && aset->cast_state != simulation::CastState::None) {
+        auto* ability_def_ptr = aset->casting_id.empty() ? nullptr : &aset->casting_id;
+        // Use spell animation during the cast
+        return {AnimState::Spell, 0, false};
+    }
+
+    auto* combat = world.combats.get(id);
+    if (combat) {
+        using simulation::AttackState;
+        // Attack animation covers: TurningToFace, WindUp, Backswing, Cooldown
+        // (the full attack cycle, not just the damage frames)
+        if (combat->attack_state == AttackState::TurningToFace ||
+            combat->attack_state == AttackState::WindUp ||
+            combat->attack_state == AttackState::Backswing ||
+            combat->attack_state == AttackState::Cooldown) {
+
+            f32 attack_dur = combat->attack_cooldown;  // full attack cycle duration
+            if (attack_dur <= 0) attack_dur = combat->cast_point + combat->backswing;
+
+            // Detect new attack swing: WindUp with a fresh timer means a new swing started
+            bool new_swing = false;
+            if (combat->attack_state == AttackState::WindUp) {
+                // Approximate: if timer is near cast_point, it just started
+                if (combat->attack_timer > combat->cast_point * 0.8f) {
+                    // Check if this is a different swing than last time
+                    u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);  // rough ID
+                    if (swing_id != anim.attack_swing_id) {
+                        anim.attack_swing_id = swing_id;
+                        new_swing = true;
+                    }
+                }
+            }
+
+            return {AnimState::Attack, attack_dur, new_swing};
+        }
+
+        if (combat->attack_state == AttackState::MovingToTarget) {
+            return {AnimState::Walk, 0, false};
+        }
+    }
+
+    auto* mov = world.movements.get(id);
+    if (mov && mov->moving) {
+        f32 walk_cycle = (mov->speed > 0) ? 0.8f * (270.0f / mov->speed) : 0.8f;
+        return {AnimState::Walk, walk_cycle, false};
+    }
+
+    return {AnimState::Idle, 0, false};
 }
 
 void Renderer::set_terrain(const map::TerrainData& terrain) {
@@ -311,21 +471,27 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Descriptor pool: enough for mesh materials + terrain + shadow
-    VkDescriptorPoolSize pool_sizes[2]{};
-    pool_sizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    pool_sizes[0].descriptorCount = 64;
-    pool_sizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    pool_sizes[1].descriptorCount = 4;
+    // Bone SSBO descriptor set layout (set 2 for skinned mesh, set 0 for skinned shadow)
+    {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
 
-    VkDescriptorPoolCreateInfo pool_ci{};
-    pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pool_ci.maxSets       = 32;
-    pool_ci.poolSizeCount = 2;
-    pool_ci.pPoolSizes    = pool_sizes;
+        VkDescriptorSetLayoutCreateInfo ci{};
+        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        ci.bindingCount = 1;
+        ci.pBindings    = &binding;
 
-    if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &m_descriptor_pool) != VK_SUCCESS) {
+        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_bone_desc_layout) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create bone descriptor set layout");
+            return false;
+        }
+    }
+
+    // Create initial descriptor pool
+    if (!allocate_or_grow_pool()) {
         log::error(TAG, "Failed to create descriptor pool");
         return false;
     }
@@ -334,19 +500,50 @@ bool Renderer::create_descriptor_layouts() {
     return true;
 }
 
+VkDescriptorPool Renderer::allocate_or_grow_pool() {
+    VkDevice device = m_rhi->device();
+
+    VkDescriptorPoolSize pool_sizes[3]{};
+    pool_sizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    pool_sizes[0].descriptorCount = 64;
+    pool_sizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_sizes[1].descriptorCount = 8;
+    pool_sizes[2].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pool_sizes[2].descriptorCount = 256;
+
+    VkDescriptorPoolCreateInfo pool_ci{};
+    pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_ci.maxSets       = 300;
+    pool_ci.poolSizeCount = 3;
+    pool_ci.pPoolSizes    = pool_sizes;
+
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &pool) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create descriptor pool");
+        return VK_NULL_HANDLE;
+    }
+
+    m_descriptor_pools.push_back(pool);
+    log::info(TAG, "Descriptor pool #{} created (300 sets)", m_descriptor_pools.size());
+    return pool;
+}
+
 VkDescriptorSet Renderer::allocate_mesh_descriptor(const GpuTexture& diffuse) {
     VkDevice device = m_rhi->device();
 
     VkDescriptorSetAllocateInfo alloc_info{};
     alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pool;
+    alloc_info.descriptorPool     = m_descriptor_pools.back();
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts        = &m_mesh_desc_layout;
 
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        log::error(TAG, "Failed to allocate mesh descriptor set");
-        return VK_NULL_HANDLE;
+        // Pool full — grow and retry
+        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
+        alloc_info.descriptorPool = m_descriptor_pools.back();
+        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
     VkDescriptorImageInfo img_info{};
@@ -371,14 +568,15 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
 
     VkDescriptorSetAllocateInfo alloc_info{};
     alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pool;
+    alloc_info.descriptorPool     = m_descriptor_pools.back();
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts        = &m_terrain_desc_layout;
 
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        log::error(TAG, "Failed to allocate terrain descriptor set");
-        return VK_NULL_HANDLE;
+        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
+        alloc_info.descriptorPool = m_descriptor_pools.back();
+        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
     VkDescriptorImageInfo img_infos[5]{};
@@ -617,6 +815,299 @@ bool Renderer::create_mesh_pipeline() {
     return true;
 }
 
+bool Renderer::create_skinned_mesh_pipeline() {
+    VkDevice device = m_rhi->device();
+
+    VkShaderModule vert = load_shader(device, "engine/shaders/skinned_mesh.vert.spv");
+    VkShaderModule frag = load_shader(device, "engine/shaders/mesh.frag.spv");  // reuse mesh frag
+    if (!vert || !frag) {
+        log::error(TAG, "Failed to load skinned mesh shaders");
+        if (vert) vkDestroyShaderModule(device, vert, nullptr);
+        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    // Skinned vertex input: 5 attributes, 64-byte stride
+    VkVertexInputBindingDescription binding{};
+    binding.binding   = 0;
+    binding.stride    = sizeof(asset::SkinnedVertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[5]{};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(asset::SkinnedVertex, position)};
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(asset::SkinnedVertex, normal)};
+    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(asset::SkinnedVertex, texcoord)};
+    attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_UINT,   offsetof(asset::SkinnedVertex, bone_indices)};
+    attrs[4] = {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(asset::SkinnedVertex, bone_weights)};
+
+    auto cfg = make_common_pipeline_state();
+    // Override vertex input with skinned format
+    cfg.vertex_input.pVertexBindingDescriptions    = &binding;
+    cfg.vertex_input.vertexAttributeDescriptionCount = 5;
+    cfg.vertex_input.pVertexAttributeDescriptions  = attrs;
+
+    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    cfg.stages[0].module = vert;
+    cfg.stages[0].pName  = "main";
+    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    cfg.stages[1].module = frag;
+    cfg.stages[1].pName  = "main";
+
+    // Layout: set 0 = material, set 1 = shadow, set 2 = bones SSBO
+    VkPushConstantRange push_range{};
+    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_range.offset     = 0;
+    push_range.size       = 2 * sizeof(glm::mat4);
+
+    VkDescriptorSetLayout layouts[] = {m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout};
+    VkPipelineLayoutCreateInfo layout_ci{};
+    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_ci.setLayoutCount         = 3;
+    layout_ci.pSetLayouts            = layouts;
+    layout_ci.pushConstantRangeCount = 1;
+    layout_ci.pPushConstantRanges    = &push_range;
+
+    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_skinned_mesh_pipeline_layout) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create skinned mesh pipeline layout");
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    VkFormat color_format = m_rhi->swapchain_format();
+    VkFormat depth_format = m_rhi->depth_format();
+    VkPipelineRenderingCreateInfo rendering_ci{};
+    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering_ci.colorAttachmentCount    = 1;
+    rendering_ci.pColorAttachmentFormats = &color_format;
+    rendering_ci.depthAttachmentFormat   = depth_format;
+
+    VkGraphicsPipelineCreateInfo pipeline_ci{};
+    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.pNext               = &rendering_ci;
+    pipeline_ci.stageCount          = 2;
+    pipeline_ci.pStages             = cfg.stages;
+    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
+    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
+    pipeline_ci.pViewportState      = &cfg.viewport_state;
+    pipeline_ci.pRasterizationState = &cfg.rasterizer;
+    pipeline_ci.pMultisampleState   = &cfg.multisample;
+    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
+    pipeline_ci.pColorBlendState    = &cfg.color_blend;
+    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
+    pipeline_ci.layout              = m_skinned_mesh_pipeline_layout;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_skinned_mesh_pipeline) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create skinned mesh pipeline");
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    vkDestroyShaderModule(device, vert, nullptr);
+    vkDestroyShaderModule(device, frag, nullptr);
+
+    // Skinned shadow pipeline
+    VkShaderModule shadow_vert = load_shader(device, "engine/shaders/skinned_shadow.vert.spv");
+    if (shadow_vert) {
+        // Shadow layout: set 0 = bones SSBO, push constant = light_mvp
+        VkPushConstantRange shadow_push{};
+        shadow_push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        shadow_push.size       = sizeof(glm::mat4);
+
+        VkPipelineLayoutCreateInfo shadow_layout_ci{};
+        shadow_layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        shadow_layout_ci.setLayoutCount         = 1;
+        shadow_layout_ci.pSetLayouts            = &m_bone_desc_layout;
+        shadow_layout_ci.pushConstantRangeCount = 1;
+        shadow_layout_ci.pPushConstantRanges    = &shadow_push;
+
+        vkCreatePipelineLayout(device, &shadow_layout_ci, nullptr, &m_skinned_shadow_pipeline_layout);
+
+        VkPipelineShaderStageCreateInfo shadow_stage{};
+        shadow_stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        shadow_stage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        shadow_stage.module = shadow_vert;
+        shadow_stage.pName  = "main";
+
+        // Shadow: depth-only, no color
+        VkPipelineRenderingCreateInfo shadow_rendering{};
+        shadow_rendering.sType                = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        shadow_rendering.depthAttachmentFormat = m_rhi->depth_format();
+
+        cfg.vertex_input.pVertexBindingDescriptions    = &binding;
+        cfg.vertex_input.vertexAttributeDescriptionCount = 5;
+        cfg.vertex_input.pVertexAttributeDescriptions  = attrs;
+        cfg.rasterizer.depthBiasEnable    = VK_TRUE;
+        cfg.rasterizer.depthBiasConstantFactor = 1.25f;
+        cfg.rasterizer.depthBiasSlopeFactor    = 1.75f;
+        cfg.color_blend.attachmentCount = 0;
+
+        VkGraphicsPipelineCreateInfo shadow_ci{};
+        shadow_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        shadow_ci.pNext               = &shadow_rendering;
+        shadow_ci.stageCount          = 1;
+        shadow_ci.pStages             = &shadow_stage;
+        shadow_ci.pVertexInputState   = &cfg.vertex_input;
+        shadow_ci.pInputAssemblyState = &cfg.input_assembly;
+        shadow_ci.pViewportState      = &cfg.viewport_state;
+        shadow_ci.pRasterizationState = &cfg.rasterizer;
+        shadow_ci.pMultisampleState   = &cfg.multisample;
+        shadow_ci.pDepthStencilState  = &cfg.depth_stencil;
+        shadow_ci.pColorBlendState    = &cfg.color_blend;
+        shadow_ci.pDynamicState       = &cfg.dynamic_state;
+        shadow_ci.layout              = m_skinned_shadow_pipeline_layout;
+
+        vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &shadow_ci, nullptr, &m_skinned_shadow_pipeline);
+        vkDestroyShaderModule(device, shadow_vert, nullptr);
+    }
+
+    log::info(TAG, "Skinned mesh pipeline created (textured + shadow + bone SSBO)");
+    return true;
+}
+
+bool Renderer::create_particle_pipeline() {
+    VkDevice device = m_rhi->device();
+
+    VkShaderModule vert = load_shader(device, "engine/shaders/particle.vert.spv");
+    VkShaderModule frag = load_shader(device, "engine/shaders/particle.frag.spv");
+    if (!vert || !frag) {
+        log::error(TAG, "Failed to load particle shaders");
+        if (vert) vkDestroyShaderModule(device, vert, nullptr);
+        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    // Vertex input: position(vec3) + color(vec4) + texcoord(vec2)
+    VkVertexInputBindingDescription binding{};
+    binding.binding   = 0;
+    binding.stride    = sizeof(ParticleVertex);
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attrs[3]{};
+    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(ParticleVertex, position)};
+    attrs[1] = {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,  offsetof(ParticleVertex, color)};
+    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,        offsetof(ParticleVertex, texcoord)};
+
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount   = 1;
+    vertex_input.pVertexBindingDescriptions      = &binding;
+    vertex_input.vertexAttributeDescriptionCount = 3;
+    vertex_input.pVertexAttributeDescriptions    = attrs;
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount  = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode    = VK_CULL_MODE_NONE;  // particles are double-sided
+    rasterizer.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.lineWidth   = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil.depthTestEnable  = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_FALSE;  // don't write depth — particles are transparent
+    depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+    // Alpha blending: src_alpha * src + (1 - src_alpha) * dst
+    VkPipelineColorBlendAttachmentState blend_att{};
+    blend_att.blendEnable         = VK_TRUE;
+    blend_att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend_att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_att.colorBlendOp        = VK_BLEND_OP_ADD;
+    blend_att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_att.alphaBlendOp        = VK_BLEND_OP_ADD;
+    blend_att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments    = &blend_att;
+
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.dynamicStateCount = 2;
+    dynamic_state.pDynamicStates    = dynamic_states;
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName  = "main";
+    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName  = "main";
+
+    // Push constant: just the VP matrix
+    VkPushConstantRange push_range{};
+    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_range.size       = sizeof(glm::mat4);
+
+    VkPipelineLayoutCreateInfo layout_ci{};
+    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_ci.pushConstantRangeCount = 1;
+    layout_ci.pPushConstantRanges    = &push_range;
+
+    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_particle_pipeline_layout) != VK_SUCCESS) {
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    VkFormat color_format = m_rhi->swapchain_format();
+    VkFormat depth_format = m_rhi->depth_format();
+    VkPipelineRenderingCreateInfo rendering_ci{};
+    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering_ci.colorAttachmentCount    = 1;
+    rendering_ci.pColorAttachmentFormats = &color_format;
+    rendering_ci.depthAttachmentFormat   = depth_format;
+
+    VkGraphicsPipelineCreateInfo pipeline_ci{};
+    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.pNext               = &rendering_ci;
+    pipeline_ci.stageCount          = 2;
+    pipeline_ci.pStages             = stages;
+    pipeline_ci.pVertexInputState   = &vertex_input;
+    pipeline_ci.pInputAssemblyState = &input_assembly;
+    pipeline_ci.pViewportState      = &viewport_state;
+    pipeline_ci.pRasterizationState = &rasterizer;
+    pipeline_ci.pMultisampleState   = &multisample;
+    pipeline_ci.pDepthStencilState  = &depth_stencil;
+    pipeline_ci.pColorBlendState    = &color_blend;
+    pipeline_ci.pDynamicState       = &dynamic_state;
+    pipeline_ci.layout              = m_particle_pipeline_layout;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_particle_pipeline) != VK_SUCCESS) {
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    vkDestroyShaderModule(device, vert, nullptr);
+    vkDestroyShaderModule(device, frag, nullptr);
+    log::info(TAG, "Particle pipeline created (alpha-blended)");
+    return true;
+}
+
 bool Renderer::create_terrain_pipeline() {
     VkDevice device = m_rhi->device();
 
@@ -802,14 +1293,15 @@ VkDescriptorSet Renderer::allocate_shadow_descriptor() {
 
     VkDescriptorSetAllocateInfo alloc_info{};
     alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pool;
+    alloc_info.descriptorPool     = m_descriptor_pools.back();
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts        = &m_shadow_desc_layout;
 
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        log::error(TAG, "Failed to allocate shadow descriptor set");
-        return VK_NULL_HANDLE;
+        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
+        alloc_info.descriptorPool = m_descriptor_pools.back();
+        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
     VkDescriptorBufferInfo buf_info{};
@@ -839,6 +1331,39 @@ VkDescriptorSet Renderer::allocate_shadow_descriptor() {
 
     vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
     log::info(TAG, "Shadow descriptor set allocated");
+    return set;
+}
+
+VkDescriptorSet Renderer::allocate_bone_descriptor(VkBuffer bone_buffer, usize size) {
+    VkDevice device = m_rhi->device();
+
+    VkDescriptorSetAllocateInfo alloc_info{};
+    alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool     = m_descriptor_pools.back();
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts        = &m_bone_desc_layout;
+
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
+        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
+        alloc_info.descriptorPool = m_descriptor_pools.back();
+        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
+    }
+
+    VkDescriptorBufferInfo buf_info{};
+    buf_info.buffer = bone_buffer;
+    buf_info.offset = 0;
+    buf_info.range  = size;
+
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = set;
+    write.dstBinding      = 0;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo     = &buf_info;
+
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     return set;
 }
 
@@ -909,13 +1434,74 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
     }
 
-    // Entities
+    // Entities — skinned units use skinned shadow pipeline, others use regular
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
+    auto& handle_infos = world.handle_infos;
+
+    bool has_skinned_shadow = m_skinned_shadow_pipeline && m_test_skinned_mesh.vertex_buffer;
+
+    // Pass A: skinned units
+    if (has_skinned_shadow) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skinned_shadow_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        for (u32 i = 0; i < renderables.count(); ++i) {
+            u32 id = renderables.ids()[i];
+            const auto& renderable = renderables.data()[i];
+            if (!renderable.visible) continue;
+            auto* info = handle_infos.get(id);
+            if (!info || info->category != simulation::Category::Unit) continue;
+
+            const auto* transform = transforms.get(id);
+            if (!transform) continue;
+
+            auto it = m_anim_instances.find(id);
+            if (it == m_anim_instances.end() || !it->second.bone_descriptor) continue;
+
+            // Upload bones (animation already evaluated in draw())
+            auto& anim = it->second;
+            if (!anim.bone_matrices.empty() && anim.bone_mapped) {
+                std::memcpy(anim.bone_mapped, anim.bone_matrices.data(),
+                            anim.bone_matrices.size() * sizeof(glm::mat4));
+            }
+
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    m_skinned_shadow_pipeline_layout, 0, 1,
+                                    &anim.bone_descriptor, 0, nullptr);
+
+            glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+            if (m_pathfinder) {
+                glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+                model = model * slope_tilt_matrix(normal);
+            }
+            model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::scale(model, glm::vec3{transform->scale});
+
+            glm::mat4 light_mvp = light_vp * model;
+            vkCmdPushConstants(cmd, m_skinned_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(glm::mat4), &light_mvp);
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m_test_skinned_mesh.vertex_buffer, &offset);
+            vkCmdBindIndexBuffer(cmd, m_test_skinned_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, m_test_skinned_mesh.index_count, 1, 0, 0, 0);
+        }
+    }
+
+    // Pass B: non-unit entities (projectiles, etc.)
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
     for (u32 i = 0; i < renderables.count(); ++i) {
         u32 id = renderables.ids()[i];
         const auto& renderable = renderables.data()[i];
         if (!renderable.visible) continue;
+
+        auto* info = handle_infos.get(id);
+        if (has_skinned_shadow && info && info->category == simulation::Category::Unit) continue;
+
         const auto* transform = transforms.get(id);
         if (!transform) continue;
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
@@ -1002,25 +1588,133 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
     }
 
-    // ── Draw entities with mesh pipeline ─────────────────────────────────
+    // ── Draw entities ────────────────────────────────────────────────────
     if (!m_mesh_pipeline) return;
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
+    auto& handle_infos = world.handle_infos;
+
+    // Determine frame dt for animation (approximate from last frame)
+    static auto last_time = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    f32 frame_dt = std::chrono::duration<f32>(now - last_time).count();
+    frame_dt = std::min(frame_dt, 0.1f);  // clamp to avoid huge jumps
+    last_time = now;
+
+    // Update all animation instances and upload bone matrices
+    bool skinned_available = m_skinned_mesh_pipeline && m_test_skinned_mesh.vertex_buffer &&
+                             m_test_skinned_mesh.bone_descriptor;
+
+    // Clean up animation instances for entities that no longer exist in the world
+    {
+        std::vector<u32> stale;
+        for (auto& [eid, anim] : m_anim_instances) {
+            if (!world.handle_infos.has(eid)) {
+                stale.push_back(eid);
+            }
+        }
+        for (u32 eid : stale) {
+            auto it = m_anim_instances.find(eid);
+            if (it != m_anim_instances.end()) {
+                // Descriptor set is lightweight — freed when its pool is destroyed at shutdown.
+                // Buffer is the real GPU resource that must be freed now.
+                if (it->second.bone_buffer) {
+                    vmaDestroyBuffer(m_rhi->allocator(), it->second.bone_buffer, it->second.bone_alloc);
+                }
+                m_anim_instances.erase(it);
+            }
+        }
+    }
+
+    if (skinned_available) {
+        for (u32 i = 0; i < renderables.count(); ++i) {
+            u32 id = renderables.ids()[i];
+            auto* info = handle_infos.get(id);
+            if (!info || info->category != simulation::Category::Unit) continue;
+
+            auto& anim = get_or_create_anim(id);
+            auto [desired, duration, restart] = derive_anim_state(world, id, anim);
+            set_anim_state(anim, desired, duration, restart);
+            update_animation(anim, frame_dt);
+            evaluate_animation(anim);
+        }
+    }
+
+    // Pass 1: Draw skinned units with skinned pipeline
+    if (skinned_available) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skinned_mesh_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        for (u32 i = 0; i < renderables.count(); ++i) {
+            u32 id = renderables.ids()[i];
+            const auto& renderable = renderables.data()[i];
+            if (!renderable.visible) continue;
+
+            auto* info = handle_infos.get(id);
+            if (!info || info->category != simulation::Category::Unit) continue;
+
+            const auto* transform = transforms.get(id);
+            if (!transform) continue;
+
+            auto it = m_anim_instances.find(id);
+            if (it == m_anim_instances.end()) continue;
+            auto& anim = it->second;
+            if (!anim.bone_descriptor) continue;
+
+            // Upload this entity's bone matrices to its own SSBO
+            if (!anim.bone_matrices.empty() && anim.bone_mapped) {
+                std::memcpy(anim.bone_mapped, anim.bone_matrices.data(),
+                            anim.bone_matrices.size() * sizeof(glm::mat4));
+            }
+
+            bool is_corpse = world.dead_states.has(id);
+            auto& mat = is_corpse ? m_corpse_material : m_default_material;
+            if (mat.descriptor_set && m_shadow_desc_set) {
+                VkDescriptorSet sets[] = {mat.descriptor_set, m_shadow_desc_set,
+                                          anim.bone_descriptor};
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        m_skinned_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
+            }
+
+            glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+            if (m_pathfinder) {
+                glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+                model = model * slope_tilt_matrix(normal);
+            }
+            model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::scale(model, glm::vec3{transform->scale});
+
+            glm::mat4 mvp = vp * model;
+            struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
+            vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(push), &push);
+
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m_test_skinned_mesh.vertex_buffer, &offset);
+            vkCmdBindIndexBuffer(cmd, m_test_skinned_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, m_test_skinned_mesh.index_count, 1, 0, 0, 0);
+        }
+    }
+
+    // Pass 2: Draw non-unit entities (projectiles, etc.) with regular mesh pipeline
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     for (u32 i = 0; i < renderables.count(); ++i) {
         u32 id = renderables.ids()[i];
         const auto& renderable = renderables.data()[i];
         if (!renderable.visible) continue;
 
+        auto* info = handle_infos.get(id);
+        // Skip units (already drawn with skinned pipeline)
+        if (skinned_available && info && info->category == simulation::Category::Unit) continue;
+
         const auto* transform = transforms.get(id);
         if (!transform) continue;
 
-        // Select material: corpse (dark gray) or default (orange)
         bool is_corpse = world.dead_states.has(id);
         auto& mat = is_corpse ? m_corpse_material : m_default_material;
         if (mat.descriptor_set && m_shadow_desc_set) {
@@ -1033,7 +1727,6 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         if (!mesh.vertex_buffer) continue;
 
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
-        // Terrain slope tilt (visual only)
         if (m_pathfinder) {
             glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
             model = model * slope_tilt_matrix(normal);
@@ -1058,6 +1751,34 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         } else {
             vkCmdDraw(cmd, mesh.vertex_count, 1, 0, 0);
         }
+    }
+
+    // ── Pass 3: Particles (alpha-blended, drawn last) ────────────────────
+    if (m_particle_pipeline) {
+        // Compute camera right/up from view matrix for billboarding
+        glm::mat4 view = m_camera.view_matrix();
+        glm::vec3 cam_right{view[0][0], view[1][0], view[2][0]};
+        glm::vec3 cam_up{view[0][1], view[1][1], view[2][1]};
+
+        // Update effect instances (follow units, continuous emission, expiry)
+        m_effect_manager.update(frame_dt, [](simulation::Unit u, void* ctx) -> glm::vec3 {
+            auto* w = static_cast<const simulation::World*>(ctx);
+            auto* t = w->transforms.get(u.id);
+            return t ? t->position : glm::vec3{0};
+        }, const_cast<void*>(static_cast<const void*>(&world)));
+
+        m_particles.update(frame_dt);
+        m_particles.upload(cam_right, cam_up);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_particle_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        glm::mat4 particle_vp = vp;
+        vkCmdPushConstants(cmd, m_particle_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(glm::mat4), &particle_vp);
+
+        m_particles.draw(cmd);
     }
 }
 

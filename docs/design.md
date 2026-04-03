@@ -113,8 +113,10 @@ Thin abstraction over Vulkan. Not a generic RHI — Vulkan-specific, but organiz
 ### Units
 
 - Skeletal animation with GPU skinning
-- Animation state machine
+- Animation state machine (clips bound by name: `idle`, `walk`, `attack`, `spell`, `death`)
 - Selection circles, health bars (billboarded)
+
+See `docs/model-format.md` for full model, animation, and art pipeline specification.
 
 ### Particles
 

@@ -160,13 +160,29 @@ function main()
     Log("[Scene02] Creep spawner active (every " .. SPAWN_INTERVAL .. "s)")
 
     ---------------------------------------------------------------------------
-    -- Death logging
+    -- VFX: hit sparks on attack damage (uses engine-defined "hit_spark" effect)
+    ---------------------------------------------------------------------------
+    local hit_vfx = CreateTrigger(TRIGGER_PRIORITY_LOW)
+    TriggerRegisterEvent(hit_vfx, "on_damage")
+    TriggerAddCondition(hit_vfx, function()
+        return GetDamageType() == "attack" and GetDamageAmount() > 0
+    end)
+    TriggerAddAction(hit_vfx, function()
+        local target = GetDamageTarget()
+        if target then
+            PlayEffectOnUnit("hit_spark", target)
+        end
+    end)
+
+    ---------------------------------------------------------------------------
+    -- Death logging + VFX (uses engine-defined "death_burst" effect)
     ---------------------------------------------------------------------------
     local death_trig = CreateTrigger()
     TriggerRegisterEvent(death_trig, "on_death")
     TriggerAddAction(death_trig, function()
         local unit = GetTriggerUnit()
         if unit then
+            PlayEffectOnUnit("death_burst", unit)
             Log("[Death] " .. GetUnitTypeId(unit) .. " has died")
         end
     end)

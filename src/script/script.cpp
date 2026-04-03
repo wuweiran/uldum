@@ -5,6 +5,7 @@
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
 #include "map/map.h"
+#include "render/effect.h"
 #include "core/log.h"
 
 #define SOL_ALL_SAFETIES_ON 1
@@ -35,9 +36,13 @@ ScriptEngine::~ScriptEngine() = default;
 
 // ── Init / Shutdown ───────────────────────────────────────────────────────
 
-bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map) {
+bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
+                         render::EffectRegistry* effects,
+                         render::EffectManager* effect_mgr) {
     m_sim = &sim;
     m_map = &map;
+    m_effects = effects;
+    m_effect_mgr = effect_mgr;
 
     m_lua = std::make_unique<sol::state>();
     auto& lua = *m_lua;
@@ -494,6 +499,56 @@ void ScriptEngine::bind_api() {
 
     lua["RandomInt"] = [](i32 min, i32 max) -> i32 { return min + (std::rand() % (max - min + 1)); };
     lua["RandomFloat"] = [](f32 min, f32 max) -> f32 { return min + static_cast<f32>(std::rand()) / RAND_MAX * (max - min); };
+
+    // ── Effect API ─────────────────────────────────────────────────────
+
+    lua["DefineEffect"] = [&](const std::string& name, sol::table def) {
+        if (!m_effects) return;
+        render::EffectDef edef;
+        edef.name      = name;
+        edef.count     = def.get_or("count", 10u);
+        edef.speed     = def.get_or("speed", 100.0f);
+        edef.life      = def.get_or("life", 0.5f);
+        edef.size      = def.get_or("size", 8.0f);
+        edef.gravity   = def.get_or("gravity", -200.0f);
+        edef.emit_rate = def.get_or("emit_rate", 0.0f);
+        if (def["start_color"].valid()) {
+            auto c = def["start_color"].get<sol::table>();
+            edef.start_color = {c.get_or(1, 1.0f), c.get_or(2, 1.0f), c.get_or(3, 1.0f), c.get_or(4, 1.0f)};
+        }
+        if (def["end_color"].valid()) {
+            auto c = def["end_color"].get<sol::table>();
+            edef.end_color = {c.get_or(1, 1.0f), c.get_or(2, 1.0f), c.get_or(3, 1.0f), c.get_or(4, 0.0f)};
+        }
+        m_effects->define(name, edef);
+    };
+
+    lua["CreateEffect"] = [&](const std::string& name, f32 x, f32 y, f32 z) -> u32 {
+        if (!m_effect_mgr) return 0;
+        return m_effect_mgr->create(name, {x, y, z});
+    };
+
+    lua["CreateEffectOnUnit"] = [&](const std::string& name, simulation::Unit unit) -> u32 {
+        if (!m_effect_mgr) return 0;
+        auto* t = sim.world().transforms.get(unit.id);
+        if (!t) return 0;
+        return m_effect_mgr->create_on_unit(name, unit, t->position);
+    };
+
+    lua["DestroyEffect"] = [&](u32 id) {
+        if (m_effect_mgr) m_effect_mgr->destroy(id);
+    };
+
+    lua["PlayEffect"] = [&](const std::string& name, f32 x, f32 y, f32 z) {
+        if (m_effect_mgr) m_effect_mgr->play(name, {x, y, z});
+    };
+
+    lua["PlayEffectOnUnit"] = [&](const std::string& name, simulation::Unit unit) {
+        if (!m_effect_mgr) return;
+        auto* t = sim.world().transforms.get(unit.id);
+        if (!t) return;
+        m_effect_mgr->play_on_unit(name, unit, t->position);
+    };
 }
 
 // ── Trigger API Bindings ──────────────────────────────────────────────────

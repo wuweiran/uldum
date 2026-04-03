@@ -472,6 +472,53 @@ function IsPlayerAlly(player1, player2) end
 function IsPlayerEnemy(player1, player2) end
 
 --------------------------------------------------------------------------------
+-- Effects
+--------------------------------------------------------------------------------
+
+--- Define a named effect (map can override engine defaults).
+--- @param name string
+--- @param def table   { count, speed, life, size, gravity, emit_rate, start_color={r,g,b,a}, end_color={r,g,b,a} }
+function DefineEffect(name, def) end
+
+--- Create a persistent effect at a world position. Returns handle.
+--- @param name string
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return number   effect handle (0 on failure)
+function CreateEffect(name, x, y, z) end
+
+--- Create a persistent effect attached to a unit. Follows the unit. Returns handle.
+--- @param name string
+--- @param unit unit
+--- @return number   effect handle (0 on failure)
+function CreateEffectOnUnit(name, unit) end
+
+--- Destroy a persistent effect by handle.
+--- @param handle number
+function DestroyEffect(handle) end
+
+--- Play a fire-and-forget effect at a world position (auto-destroys when done).
+--- @param name string
+--- @param x number
+--- @param y number
+--- @param z number
+function PlayEffect(name, x, y, z) end
+
+--- Play a fire-and-forget effect at a unit's position.
+--- @param name string
+--- @param unit unit
+function PlayEffectOnUnit(name, unit) end
+
+--- Engine-defined effects:
+---   "hit_spark"    — orange sparks on attack hit
+---   "death_burst"  — red burst on unit death
+---   "heal_glow"    — green upward glow on healing
+---   "spell_cast"   — blue burst on ability cast
+---   "blood_splat"  — dark red on heavy damage
+---   "aura_glow"    — continuous blue glow (use with CreateEffectOnUnit)
+
+--------------------------------------------------------------------------------
 -- Spatial Queries
 --------------------------------------------------------------------------------
 

@@ -17,10 +17,21 @@ struct GpuMesh {
     u32           index_count   = 0;
     u32           vertex_count  = 0;
     bool          native_z_up   = false; // true = already in Z-up game coords, skip glTF rotation
+    bool          is_skinned    = false;
+    u32           bone_count    = 0;
+
+    // Per-instance bone SSBO (only valid if is_skinned)
+    VkBuffer      bone_buffer   = VK_NULL_HANDLE;
+    VmaAllocation bone_alloc    = VK_NULL_HANDLE;
+    void*         bone_mapped   = nullptr; // persistently mapped for CPU updates
+    VkDescriptorSet bone_descriptor = VK_NULL_HANDLE;
 };
 
 // Upload CPU-side MeshData to GPU buffers via VMA.
 GpuMesh upload_mesh(VmaAllocator allocator, const asset::MeshData& mesh);
+
+// Upload skinned mesh with bone buffer.
+GpuMesh upload_skinned_mesh(VmaAllocator allocator, const asset::SkinnedMeshData& mesh, u32 bone_count);
 
 // Destroy GPU mesh buffers.
 void destroy_mesh(VmaAllocator allocator, GpuMesh& mesh);

@@ -141,7 +141,7 @@ bool Engine::init() {
     }
 
     // Scripting — init after map so we can load map scripts
-    if (!m_script.init(m_simulation, m_map)) {
+    if (!m_script.init(m_simulation, m_map, &m_renderer.effect_registry(), &m_renderer.effect_manager())) {
         log::error(TAG, "ScriptEngine init failed");
         return false;
     }
