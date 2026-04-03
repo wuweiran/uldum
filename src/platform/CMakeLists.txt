@@ -12,5 +12,5 @@ target_include_directories(uldum_platform PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(uldum_platform PUBLIC uldum_core)
 
 if(WIN32)
-    target_link_libraries(uldum_platform PRIVATE user32 gdi32)
+    target_link_libraries(uldum_platform PRIVATE user32 gdi32 shcore)
 endif()

@@ -577,6 +577,18 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     if (result == VK_ERROR_OUT_OF_DATE_KHR || m_swapchain_dirty) {
         m_swapchain_dirty = false;
         vkDeviceWaitIdle(m_device);
+
+        // The acquire may have signaled the semaphore even on failure (driver-dependent).
+        // Recreate it to guarantee it starts unsignaled.
+        if (result != VK_ERROR_OUT_OF_DATE_KHR) {
+            // Suboptimal or dirty — acquire succeeded, semaphore is signaled.
+            // We must wait on it to reset it (submit a dummy wait).
+        }
+        vkDestroySemaphore(m_device, m_image_available[m_frame_index], nullptr);
+        VkSemaphoreCreateInfo sem_ci{};
+        sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_image_available[m_frame_index]);
+
         create_swapchain(m_swapchain_extent.width, m_swapchain_extent.height);
         return VK_NULL_HANDLE;
     }

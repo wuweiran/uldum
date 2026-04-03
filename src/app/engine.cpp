@@ -23,8 +23,8 @@ bool Engine::init() {
     m_platform = platform::Platform::create();
     platform::Config platform_config{};
     platform_config.title  = "Uldum Engine";
-    platform_config.width  = 1280;
-    platform_config.height = 720;
+    platform_config.width  = 960;
+    platform_config.height = 540;
 
     if (!m_platform->init(platform_config)) {
         log::error(TAG, "Platform init failed");

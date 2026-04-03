@@ -16,6 +16,9 @@ Win32Platform::~Win32Platform() {
 bool Win32Platform::init(const Config& config) {
     m_hinstance = GetModuleHandle(nullptr);
 
+    // Enable per-monitor DPI awareness (Windows 10 1703+)
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(WNDCLASSEXW);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -29,9 +32,18 @@ bool Win32Platform::init(const Config& config) {
         return false;
     }
 
-    // Adjust window rect so the client area matches the requested size
-    RECT rect = {0, 0, static_cast<LONG>(config.width), static_cast<LONG>(config.height)};
-    AdjustWindowRectEx(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    // Scale requested size by monitor DPI
+    HMONITOR monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    UINT dpi_x = 96, dpi_y = 96;
+    GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+    f32 scale = static_cast<f32>(dpi_x) / 96.0f;
+
+    LONG scaled_w = static_cast<LONG>(config.width * scale);
+    LONG scaled_h = static_cast<LONG>(config.height * scale);
+
+    // Adjust window rect so the client area matches the scaled size
+    RECT rect = {0, 0, scaled_w, scaled_h};
+    AdjustWindowRectExForDpi(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi_x);
 
     int window_width  = rect.right - rect.left;
     int window_height = rect.bottom - rect.top;
@@ -58,13 +70,16 @@ bool Win32Platform::init(const Config& config) {
         return false;
     }
 
-    m_width  = config.width;
-    m_height = config.height;
+    // Store actual pixel dimensions (what Vulkan uses)
+    RECT client;
+    GetClientRect(m_hwnd, &client);
+    m_width  = static_cast<u32>(client.right);
+    m_height = static_cast<u32>(client.bottom);
 
     ShowWindow(m_hwnd, SW_SHOW);
     UpdateWindow(m_hwnd);
 
-    log::info(TAG, "Window created: {}x{}", m_width, m_height);
+    log::info(TAG, "Window created: {}x{} (DPI scale {:.0f}%)", m_width, m_height, scale * 100.0f);
     return true;
 }
 
