@@ -165,22 +165,45 @@ void ScriptEngine::call_function(std::string_view name) {
 // ── Timer tick ────────────────────────────────────────────────────────────
 
 void ScriptEngine::update(float dt) {
-    // Tick timers
-    std::vector<u32> expired;
+    // Advance all timer clocks
     for (auto& [id, timer] : m_timers) {
-        if (!timer.alive) continue;
-        timer.remaining -= dt;
-        if (timer.remaining <= 0) {
-            if (timer.callback) {
-                timer.callback();
-            }
-            if (timer.repeating && timer.alive) {
-                timer.remaining += timer.interval;
-            } else {
-                timer.alive = false;
-                expired.push_back(id);
+        if (timer.alive) timer.remaining -= dt;
+    }
+
+    // Fire expired timers in chronological order (interleaved).
+    // A 0.005s timer and a 0.005s timer alternate rather than one batch then the other.
+    for (;;) {
+        // Find the timer with the earliest (most negative) remaining time
+        u32 best_id = 0;
+        f32 best_remaining = 1.0f; // anything > 0 means "none found"
+        for (auto& [id, timer] : m_timers) {
+            if (!timer.alive || timer.remaining > 0) continue;
+            if (timer.remaining < best_remaining || best_remaining > 0) {
+                best_remaining = timer.remaining;
+                best_id = id;
             }
         }
+        if (best_remaining > 0) break; // no more expired timers
+
+        auto it = m_timers.find(best_id);
+        if (it == m_timers.end()) break;
+        auto& timer = it->second;
+
+        if (timer.callback) {
+            timer.callback();
+        }
+        // Re-check alive — callback may have destroyed this timer
+        if (timer.repeating && timer.alive) {
+            timer.remaining += timer.interval;
+        } else {
+            timer.alive = false;
+        }
+    }
+
+    // Clean up dead timers
+    std::vector<u32> expired;
+    for (auto& [id, timer] : m_timers) {
+        if (!timer.alive) expired.push_back(id);
     }
     for (u32 id : expired) {
         m_timers.erase(id);
