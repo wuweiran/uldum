@@ -9,7 +9,6 @@
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
-#include <string_view>
 #include <vector>
 
 namespace uldum::platform { class Platform; }
@@ -20,12 +19,6 @@ static constexpr u32 MAX_FRAMES_IN_FLIGHT = 2;
 
 struct Config {
     bool enable_validation = true;
-};
-
-// Simple vertex format for Phase 5a
-struct Vertex {
-    float position[3];
-    float color[3];
 };
 
 class VulkanRhi {
@@ -73,12 +66,6 @@ private:
     void destroy_swapchain();
     bool create_command_resources();
     bool create_sync_objects();
-    bool create_triangle_resources();
-    void destroy_triangle_resources();
-
-    VkShaderModule load_shader(std::string_view path);
-
-    void record_command_buffer(VkCommandBuffer cmd, u32 image_index);
 
     // Instance
     VkInstance       m_instance        = VK_NULL_HANDLE;
@@ -123,12 +110,6 @@ private:
     // Per-swapchain-image: which in-flight fence was last submitted with this image.
     // Used to avoid writing to an image that a previous frame is still rendering to.
     std::vector<VkFence> m_image_in_flight;
-
-    // Triangle resources (Phase 5a)
-    VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_pipeline        = VK_NULL_HANDLE;
-    VkBuffer         m_vertex_buffer   = VK_NULL_HANDLE;
-    VmaAllocation    m_vertex_alloc    = VK_NULL_HANDLE;
 
     // Debug
     VkDebugUtilsMessengerEXT m_debug_messenger = VK_NULL_HANDLE;

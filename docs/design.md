@@ -85,22 +85,24 @@ public:
 
 Thin abstraction over Vulkan. Not a generic RHI — Vulkan-specific, but organized cleanly.
 
-### Phase 1 (minimal)
+### Current
 
-- Vulkan instance + validation layers (debug)
+- Vulkan 1.3 instance + validation layers (debug)
 - Physical device selection (prefer discrete GPU)
 - Logical device + graphics/present queue
-- Swapchain (FIFO present mode)
-- Per-frame command buffer, semaphores, fences
-- Frame loop: acquire → record (clear) → submit → present
+- Swapchain with per-swapchain-image semaphores
+- Per-frame command buffers, fences
+- VMA for GPU memory management
+- One-shot command buffers for immediate GPU work (texture uploads)
+- Dynamic rendering (no render passes)
+- Synchronization2 barriers
+- Shader compilation: GLSL → SPIR-V at build time via glslc
 
 ### Future
 
 - Render graph with automatic barriers and transient resources
-- GPU-driven rendering (indirect draw, compute culling)
-- Bindless resources via descriptor indexing
-- VMA integration for memory management
-- Shader compilation pipeline (shaderc)
+- GPU-driven rendering (indirect draw, compute culling, instance buffer)
+- Bindless resources via descriptor indexing (VK_EXT_descriptor_indexing)
 
 ## 7. Rendering
 
