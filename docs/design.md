@@ -359,11 +359,6 @@ Visual feedback — draw entities and terrain. Built progressively in stages.
 - PCF (percentage-closer filtering) for soft shadow edges
 - Verify: directional shadows cast by units onto terrain
 
-**5f — Animation + particles (can defer)**
-- Skeletal animation: GPU skinning, animation state machine
-- Compute-based particle system
-- Render graph refactor: automatic barriers, transient resources, pass ordering
-
 ### Phase 6 — Map System
 
 Maps are self-contained gameplay packages. The engine provides mechanics; maps provide all content and rules. See `docs/map-system.md` for full design.
@@ -421,7 +416,30 @@ Now the unit model, renderer, map system, and gameplay systems are stable — Lu
 - **Timer system**: `CreateTimer(delay, repeating, fn)` — for periodic effects, delayed actions
 - **Engine API bindings**: unit CRUD, orders, abilities, damage, spatial queries, hero, player, regions
 
-### Phase 9 — Editor (Terrain Editor v1)
+### Phase 9 — Animation & Particles
+
+Visual feedback for gameplay systems. Validates that rendering, simulation, and scripting work together.
+
+- **Skeletal animation**:
+  - Extend vertex format with bone indices/weights (SkinnedVertex, 64 bytes)
+  - Extract skeleton and animation data from glTF (cgltf: skins, joints, animations)
+  - GPU skinning via vertex shader + bone SSBO (per-entity, descriptor set 2)
+  - Separate skinned mesh pipeline (coexists with existing non-skinned pipeline)
+  - Procedural test skeleton for validation without real models
+- **Animation state machine**:
+  - CPU-side, runs at render framerate (reads simulation state, drives playback)
+  - States: Idle, Walk, Attack, Death — derived from Combat, Movement, DeadState components
+  - Crossfade blending between states
+  - Per-bone local TRS interpolation → hierarchy walk → final skinning matrices
+- **Particle system** (CPU-driven):
+  - Emitter types: point, sphere, cone
+  - Per-particle: position, velocity, color, lifetime, size
+  - Billboard quad generation on CPU, uploaded to dynamic vertex buffer
+  - Alpha-blended pipeline (depth test on, depth write off)
+  - Spawn on events: attack hit, death, projectile trail
+- **Render graph refactor** (optional): automatic barriers, transient resources
+
+### Phase 10 — Editor (Terrain Editor v1)
 
 Needs render + map working first.
 
@@ -432,7 +450,7 @@ Needs render + map working first.
 - **Object placement**: place, move, delete units and doodads
 - **Save/Load**: serialize edited map to .uldmap package
 
-### Phase 10 — Audio
+### Phase 11 — Audio
 
 Independent module, can be developed in parallel with other phases.
 
@@ -441,7 +459,7 @@ Independent module, can be developed in parallel with other phases.
 - **Music streaming**: background music with crossfade
 - **SFX system**: fire-and-forget sound effects, pooled voices
 
-### Phase 11 — Networking
+### Phase 12 — Networking
 
 Last because it's the most complex and needs a working local game loop.
 
@@ -452,7 +470,7 @@ Last because it's the most complex and needs a working local game loop.
 - **Lobby system**: host/join, map selection, player slots, team assignment, ready check
 - **Desync detection**: periodic state checksums for debugging
 
-### Phase 12 — Packaging & Distribution
+### Phase 13 — Packaging & Distribution
 
 Cross-platform build output and asset protection.
 
