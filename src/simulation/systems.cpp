@@ -126,7 +126,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             }
         }
 
-        glm::vec3 move_target;
+        glm::vec3 move_target{0.0f};
         bool has_move = false;
         if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
             move_target = m->target; has_move = true;
@@ -688,9 +688,9 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             struct AuraApp { Unit target; std::string ability_id; Unit source; f32 duration; };
             std::vector<AuraApp> deferred;
 
-            auto* transform = world.transforms.get(id);
+            auto* aura_transform = world.transforms.get(id);
             auto* owner = world.owners.get(id);
-            if (!transform || !owner) continue;
+            if (!aura_transform || !owner) continue;
 
             for (auto& ability : aset.abilities) {
                 const auto* def = abilities.get(ability.ability_id);
@@ -702,7 +702,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 UnitFilter filter;
                 if (def->target_filter.ally)  filter.owner = owner->player;
                 if (def->target_filter.enemy) filter.enemy_of = owner->player;
-                auto nearby = grid.units_in_range(world, transform->position, lvl.aura_radius, filter);
+                auto nearby = grid.units_in_range(world, aura_transform->position, lvl.aura_radius, filter);
 
                 Unit source_unit;
                 source_unit.id = id;
