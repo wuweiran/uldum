@@ -4,6 +4,8 @@
 #include "simulation/world.h"
 #include "core/log.h"
 
+#include <filesystem>
+
 namespace uldum::map {
 
 static constexpr const char* TAG = "Map";
@@ -20,6 +22,7 @@ void MapManager::shutdown() {
 
 bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim) {
     unload_map();
+    sim.world().clear_entities();
     m_map_root = std::string(path);
 
     // Temporarily point the asset manager at the map root for map-relative paths
@@ -42,6 +45,29 @@ void MapManager::unload_map() {
     m_manifest = {};
     m_scene = {};
     m_map_root.clear();
+}
+
+std::vector<std::string> MapManager::list_scenes() const {
+    std::vector<std::string> scenes;
+    if (m_map_root.empty()) return scenes;
+
+    std::string scenes_dir = m_map_root + "/scenes";
+    std::error_code ec;
+    for (auto& entry : std::filesystem::directory_iterator(scenes_dir, ec)) {
+        if (entry.is_directory()) {
+            scenes.push_back(entry.path().filename().string());
+        }
+    }
+    std::sort(scenes.begin(), scenes.end());
+    return scenes;
+}
+
+bool MapManager::switch_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
+    sim.world().clear_entities();
+    m_scene = {};
+    if (!load_scene(scene_name, assets, sim)) return false;
+    log::info(TAG, "Switched to scene '{}'", scene_name);
+    return true;
 }
 
 // ── Manifest ──────────────────────────────────────────────────────────────
@@ -149,13 +175,12 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
 bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
     std::string scene_dir = m_map_root + "/scenes/" + std::string(scene_name);
 
-    // Load terrain from binary file, create default flat terrain if not found
+    // Load terrain from binary file
     std::string terrain_path = scene_dir + "/terrain.bin";
     m_scene.terrain = load_terrain(terrain_path);
     if (!m_scene.terrain.is_valid()) {
-        log::warn(TAG, "Scene '{}': no terrain.bin, creating default flat terrain", scene_name);
-        m_scene.terrain = create_flat_terrain(64, 64, 128.0f);
-        save_terrain(m_scene.terrain, terrain_path);
+        log::error(TAG, "Scene '{}': missing terrain.bin — every scene must have terrain data", scene_name);
+        return false;
     }
     log::info(TAG, "Scene '{}': terrain {}x{} tiles",
               scene_name, m_scene.terrain.tiles_x, m_scene.terrain.tiles_y);

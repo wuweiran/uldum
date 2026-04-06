@@ -109,17 +109,14 @@ The editor's paint brush modifies splatmap weights at nearby vertices:
 
 ## Water
 
-Per-tile water height. A tile has water when `water_height >= 0`. The water surface renders as a translucent plane at the specified height.
+Water is a tile type, not a separate data layer. Splatmap layer 3 (`WATER_LAYER`) is the water texture. The engine checks if a vertex's dominant splatmap layer is the water layer to determine water behavior.
 
-### Water Properties
+### Water as a Tile Type
 
-- **Depth**: `water_height - terrain_z` at any point. Determines shallow vs deep rendering.
-- **Pathing**: The engine auto-sets `PATHING_WATER` on vertices of tiles that have water. Ground units cannot traverse water vertices unless they have a "swim" or "amphibious" classification. Air units ignore water.
-- **Rendering**: Translucent plane with simple animation (vertex wave, alpha by depth). No reflections in v1.
-
-### Water and Cliff Interaction
-
-Water respects cliff levels — a lake on cliff level 0 does not flood up to cliff level 1. Water height is absolute (world Z), so it naturally pools in low areas.
+- **Painting**: Use the editor's Paint tool with layer 3 (Water) to place water tiles, just like painting any other ground texture.
+- **Pathing**: Ground units cannot traverse vertices where the dominant splatmap layer is water. Amphibious units can. Air units ignore water.
+- **Rendering**: Currently renders as an opaque blue tile (same as other ground textures). Translucent water rendering with waves is planned for Phase 13 (GPU-Driven Rendering).
+- **Cliff interaction**: Water can only be placed on flat tiles (same cliff level on all 4 corners). No water on cliffs or ramps.
 
 ## Pathing
 
@@ -131,7 +128,6 @@ Per-vertex bitfield controlling movement. This is higher resolution than per-til
 bit 0: WALKABLE   — ground units can traverse
 bit 1: FLYABLE    — air units can traverse
 bit 2: RAMP       — allows ground movement between adjacent cliff levels
-bit 3: WATER      — auto-set by engine from water_height, swim-only
 ```
 
 Default: all vertices are `WALKABLE | FLYABLE` (0x03).
@@ -140,27 +136,27 @@ Default: all vertices are `WALKABLE | FLYABLE` (0x03).
 
 | Condition | Ground unit | Air unit |
 |-----------|------------|----------|
-| WALKABLE, no water | Can walk | Can fly |
-| WALKABLE + WATER | Only if amphibious | Can fly |
+| WALKABLE, not water | Can walk | Can fly |
+| Water tile (splatmap layer 3 dominant) | Blocked (amphibious can walk) | Can fly |
 | Not WALKABLE | Blocked | Can fly (if FLYABLE) |
 | Adjacent cliff levels differ | Blocked | Can fly |
 | Adjacent cliff levels differ + RAMP | Can walk (slope) | Can fly |
 
 ### Auto-Pathing
 
-The engine automatically updates pathing based on terrain state:
-- Cliff edges: clear WALKABLE between vertices with different cliff levels (unless RAMP)
-- Water tiles: set WATER flag on affected vertices
-- The editor can manually override pathing (e.g., mark a flat area as unwalkable for gameplay)
+The engine checks pathing based on terrain state:
+- Cliff edges: movement blocked between vertices with different cliff levels (unless RAMP)
+- Water: checked via splatmap dominant layer, not a separate flag
+- The editor can manually toggle WALKABLE per vertex
 
 ## Module Ownership
 
 | Module       | Responsibility                                               |
 |--------------|--------------------------------------------------------------|
 | `map`        | Owns `TerrainData`. Loads/saves from map file                |
-| `render`     | Reads `TerrainData`, builds GPU mesh, draws terrain + water  |
-| `simulation` | Reads heightmap for unit Z, pathing for movement/collision   |
-| `editor`     | Writes to `TerrainData` (sculpt, paint, cliff, water, path)  |
+| `render`     | Reads `TerrainData`, builds GPU mesh, draws terrain           |
+| `simulation` | Reads heightmap for unit Z, pathing + splatmap for movement   |
+| `editor`     | Writes to `TerrainData` (sculpt, paint, cliff, ramp, pathing) |
 
 ## Rendering
 
@@ -201,22 +197,22 @@ Terrain receives shadows from the shadow map. Cliff walls and water also receive
 
 ## Serialization
 
-Terrain data is stored in the `.uldmap` package as binary:
+Terrain data is stored in the `.uldmap` package as binary (format v2):
 
 ```
 terrain.bin
-├── Header: tiles_x, tiles_y, tile_size, layer_height
+├── Header: version(u32), tiles_x(u32), tiles_y(u32), tile_size(f32), layer_height(f32)
 ├── heightmap:    f32[vertex_count]
 ├── cliff_level:  u8[vertex_count]
 ├── splatmap[0]:  u8[vertex_count]
 ├── splatmap[1]:  u8[vertex_count]
 ├── splatmap[2]:  u8[vertex_count]
 ├── splatmap[3]:  u8[vertex_count]
-├── pathing:      u8[vertex_count]
-└── water_height: f32[tile_count]
+└── pathing:      u8[vertex_count]
 ```
 
-Straightforward flat arrays, no compression in v1. A 64x64 tile map:
+Straightforward flat arrays, no compression. A 64x64 tile map:
 - vertex_count = 65 * 65 = 4225
-- tile_count = 64 * 64 = 4096
-- Total: ~37 KB (heightmap 16.9K + cliff 4.2K + splatmap 16.9K + pathing 4.2K + water 16K)
+- Total: ~21 KB (header 20B + heightmap 16.9K + cliff 4.2K + splatmap 16.9K + pathing 4.2K)
+
+v1 (legacy) files without version header and with trailing `water_height: f32[tile_count]` are still supported for loading.

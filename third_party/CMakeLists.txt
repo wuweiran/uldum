@@ -66,6 +66,27 @@ FetchContent_Declare(sol2
 )
 FetchContent_MakeAvailable(sol2)
 
+# ── Dear ImGui (editor UI) ────────────────────────────────────────────────
+FetchContent_Declare(imgui
+    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.91.8.tar.gz
+)
+FetchContent_Populate(imgui)
+
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+)
+target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+if(MSVC)
+    target_compile_options(imgui PRIVATE /W0)
+endif()
+
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
 FetchContent_Declare(vma
     URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.1.0.tar.gz

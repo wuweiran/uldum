@@ -67,6 +67,19 @@ struct World {
 
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
+
+    // Clear all entities (keeps type registry and callbacks)
+    void clear_entities() {
+        transforms.clear(); handle_infos.clear(); healths.clear();
+        state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
+        owners.clear(); movements.clear(); combats.clear(); visions.clear();
+        order_queues.clear(); ability_sets.clear(); classifications.clear();
+        heroes.clear(); inventories.clear(); buildings.clear();
+        constructions.clear(); destructables.clear(); pathing_blockers.clear();
+        item_infos.clear(); carriables.clear(); projectiles.clear();
+        scale_pulses.clear(); dead_states.clear(); renderables.clear();
+        handles = HandleAllocator{};
+    }
 };
 
 // ── Creation ───────────────────────────────────────────────────────────────

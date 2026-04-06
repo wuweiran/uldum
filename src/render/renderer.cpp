@@ -625,8 +625,8 @@ bool Renderer::create_terrain_textures() {
     auto stone = generate_solid_texture(TEX_SIZE, 130, 130, 120);
     m_terrain_material.layers[2] = upload_texture_rgba(*m_rhi, stone.data(), TEX_SIZE, TEX_SIZE);
 
-    // Layer 3: sand (tan) — unused for now but available
-    auto sand = generate_solid_texture(TEX_SIZE, 200, 180, 120);
+    // Layer 3: water (blue) — also used for water surface quads
+    auto sand = generate_solid_texture(TEX_SIZE, 30, 70, 150);
     m_terrain_material.layers[3] = upload_texture_rgba(*m_rhi, sand.data(), TEX_SIZE, TEX_SIZE);
 
     m_terrain_material.layer_count = 4;

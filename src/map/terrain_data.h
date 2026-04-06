@@ -12,16 +12,20 @@ enum PathingFlag : u8 {
     PATHING_WALKABLE = 1 << 0,   // ground units can traverse
     PATHING_FLYABLE  = 1 << 1,   // air units can traverse
     PATHING_RAMP     = 1 << 2,   // allows walk between adjacent cliff levels
-    PATHING_WATER    = 1 << 3,   // auto-set from water_height, swim-only
 };
 
 static constexpr u8 PATHING_DEFAULT = PATHING_WALKABLE | PATHING_FLYABLE;
 
-// Terrain data: heightmap + cliff levels + splatmap + pathing + water.
+// Splatmap layer indices. Water is a tile type, not a separate data layer.
+// The engine checks if the dominant splatmap layer at a vertex is WATER_LAYER
+// to determine water pathfinding and rendering behavior.
+static constexpr u32 WATER_LAYER = 3;
+
+
+// Terrain data: heightmap + cliff levels + splatmap + pathing.
 // Owned by MapManager, read by renderer and simulation.
 //
 // Per-vertex arrays: (tiles_x+1) * (tiles_y+1) entries.
-// Per-tile arrays:   tiles_x * tiles_y entries.
 //
 // Final vertex height = cliff_level * layer_height + heightmap
 struct TerrainData {
@@ -35,9 +39,6 @@ struct TerrainData {
     std::vector<u8>  cliff_level;    // discrete elevation layer (0-15)
     std::vector<u8>  splatmap[4];    // blend weight per texture layer (0-255)
     std::vector<u8>  pathing;        // PathingFlag bitfield
-
-    // Per-tile data — indexed by iy * tiles_x + ix
-    std::vector<f32> water_height;   // water surface height (< 0 = no water)
 
     // ── Helpers ────────────────────────────────────────────────────────
 
@@ -65,9 +66,16 @@ struct TerrainData {
         return static_cast<f32>(cliff_level[idx]) * layer_height + heightmap[idx];
     }
 
-    // Per-tile accessors
-    f32& water_at(u32 ix, u32 iy) { return water_height[iy * tiles_x + ix]; }
-    f32  water_at(u32 ix, u32 iy) const { return water_height[iy * tiles_x + ix]; }
+    // Check if a vertex is water (dominant splatmap layer == WATER_LAYER)
+    bool is_water(u32 ix, u32 iy) const {
+        u32 idx = iy * verts_x() + ix;
+        u8 max_w = 0;
+        u32 max_l = 0;
+        for (u32 l = 0; l < 4; ++l) {
+            if (splatmap[l][idx] > max_w) { max_w = splatmap[l][idx]; max_l = l; }
+        }
+        return max_l == WATER_LAYER;
+    }
 
     bool is_valid() const { return tiles_x > 0 && tiles_y > 0 && !heightmap.empty(); }
 };
@@ -78,10 +86,7 @@ TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 128.0f
 // Create a procedural terrain with value-noise hills (placeholder for testing).
 TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 128.0f);
 
-// Save terrain to binary file (terrain.bin format).
 bool save_terrain(const TerrainData& td, std::string_view path);
-
-// Load terrain from binary file. Returns empty TerrainData on failure.
 TerrainData load_terrain(std::string_view path);
 
 } // namespace uldum::map

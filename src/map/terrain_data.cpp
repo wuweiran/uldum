@@ -16,14 +16,12 @@ TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size, f32 bas
     td.tile_size   = tile_size;
 
     u32 vc = td.vertex_count();
-    u32 tc = td.tile_count();
 
     td.heightmap.assign(vc, base_height);
     td.cliff_level.assign(vc, 0);
     for (auto& layer : td.splatmap) layer.assign(vc, 0);
     td.splatmap[0].assign(vc, 255);  // default: full weight on layer 0
     td.pathing.assign(vc, PATHING_DEFAULT);
-    td.water_height.assign(tc, -1.0f);  // no water
 
     log::info(TAG, "Created flat terrain: {}x{} tiles, tile_size={}", tiles_x, tiles_y, tile_size);
     return td;
@@ -62,13 +60,11 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
     td.tile_size   = tile_size;
 
     u32 vc = td.vertex_count();
-    u32 tc = td.tile_count();
 
     td.heightmap.resize(vc);
     td.cliff_level.assign(vc, 0);   // all on level 0
     for (auto& layer : td.splatmap) layer.assign(vc, 0);
     td.pathing.assign(vc, PATHING_DEFAULT);
-    td.water_height.assign(tc, -1.0f);
 
     // Generate heights: two octaves of value noise
     for (u32 iy = 0; iy < td.verts_y(); ++iy) {
@@ -114,7 +110,6 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
 //   splatmap[2]:  u8[vertex_count]
 //   splatmap[3]:  u8[vertex_count]
 //   pathing:      u8[vertex_count]
-//   water_height: f32[tile_count]
 
 bool save_terrain(const TerrainData& td, std::string_view path) {
     std::ofstream file(std::string(path), std::ios::binary);
@@ -131,14 +126,11 @@ bool save_terrain(const TerrainData& td, std::string_view path) {
     write(&td.layer_height, sizeof(f32));
 
     u32 vc = td.vertex_count();
-    u32 tc = td.tile_count();
-
     write(td.heightmap.data(),   vc * sizeof(f32));
     write(td.cliff_level.data(), vc * sizeof(u8));
     for (u32 i = 0; i < 4; ++i)
         write(td.splatmap[i].data(), vc * sizeof(u8));
     write(td.pathing.data(),     vc * sizeof(u8));
-    write(td.water_height.data(), tc * sizeof(f32));
 
     log::info(TAG, "Saved terrain: {}x{} tiles to {}", td.tiles_x, td.tiles_y, path);
     return file.good();
@@ -165,28 +157,24 @@ TerrainData load_terrain(std::string_view path) {
     }
 
     u32 vc = td.vertex_count();
-    u32 tc = td.tile_count();
-
     td.heightmap.resize(vc);
     td.cliff_level.resize(vc);
     for (auto& layer : td.splatmap) layer.resize(vc);
     td.pathing.resize(vc);
-    td.water_height.resize(tc);
 
     read(td.heightmap.data(),   vc * sizeof(f32));
     read(td.cliff_level.data(), vc * sizeof(u8));
     for (u32 i = 0; i < 4; ++i)
         read(td.splatmap[i].data(), vc * sizeof(u8));
     read(td.pathing.data(),     vc * sizeof(u8));
-    read(td.water_height.data(), tc * sizeof(f32));
 
     if (!file.good()) {
         log::error(TAG, "Failed to read terrain data from {}", path);
         return {};
     }
 
-    log::info(TAG, "Loaded terrain: {}x{} tiles, tile_size={}, {} vertices from {}",
-              td.tiles_x, td.tiles_y, td.tile_size, vc, path);
+    log::info(TAG, "Loaded terrain: {}x{} tiles, {} vertices from {}",
+              td.tiles_x, td.tiles_y, vc, path);
     return td;
 }
 

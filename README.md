@@ -16,7 +16,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 9 complete. Skeletal animation and particle effects.
+Phase 10 complete. Terrain editor.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -73,6 +73,18 @@ Phase 9 complete. Skeletal animation and particle effects.
 - Shadow mapping: 2048x2048 depth pass, 3x3 PCF filtering, depth bias
 - Directional lighting with world-space normals and shadows
 - Game coordinates: X=right, Y=forward, Z=up
+- Terrain editor (Phase 10):
+  - Separate `uldum_editor.exe` build target with ImGui (Dear ImGui + Vulkan + Win32)
+  - Heightmap sculpting: raise, lower, smooth, flatten brushes
+  - Texture painting: splatmap with 4 ground layers
+  - Cliff level editing: sheer terraces with smoothed diagonal edges
+  - Ramp placement: slopes between adjacent cliff levels
+  - Water placement: per-tile water height
+  - Pathing editing: toggle walkable flag per vertex
+  - Tile-based brush with vertex indicator and grid overlay
+  - Save/load terrain.bin (binary format)
+  - Open Map folder picker, scene switching
+  - DPI-aware UI scaling
 - Ninja build system for parallel compilation
 
 ## Prerequisites

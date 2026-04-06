@@ -18,10 +18,11 @@ namespace uldum::simulation {
 bool Pathfinder::is_passable(u32 vx, u32 vy, MoveType move_type) const {
     if (!m_terrain || vx >= m_terrain->verts_x() || vy >= m_terrain->verts_y()) return false;
     u8 flags = m_terrain->pathing_at(vx, vy);
+    bool is_water = m_terrain->is_water(vx, vy);
     switch (move_type) {
-        case MoveType::Ground:     return (flags & map::PATHING_WALKABLE) != 0;
+        case MoveType::Ground:     return (flags & map::PATHING_WALKABLE) && !is_water;
         case MoveType::Air:        return (flags & map::PATHING_FLYABLE) != 0;
-        case MoveType::Amphibious: return (flags & (map::PATHING_WALKABLE | map::PATHING_WATER)) != 0;
+        case MoveType::Amphibious: return (flags & map::PATHING_WALKABLE) != 0;  // can walk on water
     }
     return false;
 }

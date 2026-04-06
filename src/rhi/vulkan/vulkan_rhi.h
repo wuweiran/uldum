@@ -39,6 +39,7 @@ public:
     void handle_resize(u32 width, u32 height);
 
     // Accessors for renderer
+    VkInstance       instance()  const { return m_instance; }
     VkDevice         device()    const { return m_device; }
     VkPhysicalDevice physical_device() const { return m_physical_device; }
     VmaAllocator     allocator() const { return m_allocator; }

@@ -48,6 +48,7 @@ public:
     void draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world);
 
     Camera& camera() { return m_camera; }
+    const Camera& camera() const { return m_camera; }
     ParticleSystem& particles() { return m_particles; }
     EffectRegistry& effect_registry() { return m_effect_registry; }
     EffectManager&  effect_manager()  { return m_effect_manager; }

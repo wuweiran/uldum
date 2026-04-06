@@ -3,6 +3,7 @@
 #include "platform/platform.h"
 
 #include <Windows.h>
+#include <windowsx.h>
 #include <shellscalingapi.h>
 
 namespace uldum::platform {

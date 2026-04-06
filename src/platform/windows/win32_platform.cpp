@@ -95,6 +95,11 @@ void Win32Platform::shutdown() {
 }
 
 bool Win32Platform::poll_events() {
+    // Clear per-frame deltas
+    m_input.mouse_dx = 0;
+    m_input.mouse_dy = 0;
+    m_input.scroll_delta = 0;
+
     MSG msg{};
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
@@ -128,6 +133,13 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
 
+    // Forward to message hook (e.g. ImGui input handling)
+    if (self->m_message_hook) {
+        if (self->m_message_hook(hwnd, msg, wparam, lparam)) {
+            return 0;
+        }
+    }
+
     switch (msg) {
     case WM_CLOSE:
         PostQuitMessage(0);
@@ -158,6 +170,27 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         }
         return 0;
     }
+
+    case WM_MOUSEMOVE: {
+        f32 nx = static_cast<f32>(GET_X_LPARAM(lparam));
+        f32 ny = static_cast<f32>(GET_Y_LPARAM(lparam));
+        self->m_input.mouse_dx = nx - self->m_input.mouse_x;
+        self->m_input.mouse_dy = ny - self->m_input.mouse_y;
+        self->m_input.mouse_x = nx;
+        self->m_input.mouse_y = ny;
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN: self->m_input.mouse_left = true;  return 0;
+    case WM_LBUTTONUP:   self->m_input.mouse_left = false; return 0;
+    case WM_RBUTTONDOWN: self->m_input.mouse_right = true;  return 0;
+    case WM_RBUTTONUP:   self->m_input.mouse_right = false; return 0;
+    case WM_MBUTTONDOWN: self->m_input.mouse_middle = true;  return 0;
+    case WM_MBUTTONUP:   self->m_input.mouse_middle = false; return 0;
+
+    case WM_MOUSEWHEEL:
+        self->m_input.scroll_delta = static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / 120.0f;
+        return 0;
 
     default:
         break;

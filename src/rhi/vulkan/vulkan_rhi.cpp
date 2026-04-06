@@ -349,7 +349,20 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
     ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ci.preTransform     = caps.currentTransform;
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    ci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+    // Prefer MAILBOX (uncapped, low latency) if available, fall back to FIFO (vsync)
+    ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    {
+        u32 mode_count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(m_physical_device, m_surface, &mode_count, nullptr);
+        std::vector<VkPresentModeKHR> modes(mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(m_physical_device, m_surface, &mode_count, modes.data());
+        for (auto mode : modes) {
+            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+                ci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                break;
+            }
+        }
+    }
     ci.clipped          = VK_TRUE;
     ci.oldSwapchain     = m_swapchain;
 

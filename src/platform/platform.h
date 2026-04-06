@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -21,6 +22,16 @@ struct InputState {
     bool key_d = false;
     bool key_q = false;  // down
     bool key_e = false;  // up
+
+    // Mouse
+    f32  mouse_x = 0;    // pixel position
+    f32  mouse_y = 0;
+    f32  mouse_dx = 0;   // delta since last frame
+    f32  mouse_dy = 0;
+    f32  scroll_delta = 0;
+    bool mouse_left = false;
+    bool mouse_right = false;
+    bool mouse_middle = false;
 };
 
 class Platform {
@@ -43,7 +54,16 @@ public:
     virtual void* native_window_handle() const = 0;
     virtual void* native_instance_handle() const = 0;
 
+    // Optional message hook — called before default processing.
+    // Return true to consume the message (skip default handling).
+    // Args: native_window, msg, wparam, lparam
+    using MessageHook = std::function<bool(void*, u32, uintptr_t, intptr_t)>;
+    void set_message_hook(MessageHook hook) { m_message_hook = std::move(hook); }
+
     static std::unique_ptr<Platform> create();
+
+protected:
+    MessageHook m_message_hook;
 };
 
 } // namespace uldum::platform

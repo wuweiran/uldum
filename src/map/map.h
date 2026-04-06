@@ -101,6 +101,12 @@ public:
 
     const std::string& map_root() const { return m_map_root; }
 
+    // List scene directories found under the map root.
+    std::vector<std::string> list_scenes() const;
+
+    // Switch to a different scene (reloads terrain + placements).
+    bool switch_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
+
 private:
     bool load_manifest(asset::AssetManager& assets);
     bool load_types(asset::AssetManager& assets, simulation::Simulation& sim);
