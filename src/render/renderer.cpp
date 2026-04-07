@@ -58,6 +58,22 @@ static std::vector<u8> generate_solid_texture(u32 size, u8 r, u8 g, u8 b) {
     return pixels;
 }
 
+// ── Render interpolation helper ────────────────────────────────────────────
+
+// Interpolate between previous and current transform for smooth rendering.
+static glm::vec3 lerp_position(const simulation::Transform& t, f32 alpha) {
+    return glm::mix(t.prev_position, t.position, alpha);
+}
+
+static f32 lerp_facing(const simulation::Transform& t, f32 alpha) {
+    // Shortest-path angle interpolation
+    f32 diff = t.facing - t.prev_facing;
+    // Normalize to [-π, π]
+    while (diff > glm::pi<f32>()) diff -= glm::two_pi<f32>();
+    while (diff < -glm::pi<f32>()) diff += glm::two_pi<f32>();
+    return t.prev_facing + diff * alpha;
+}
+
 // ── Terrain slope tilt helper ──────────────────────────────────────────────
 
 // Build a rotation matrix that tilts an entity to match the terrain slope.
@@ -1512,7 +1528,7 @@ VkDescriptorSet Renderer::allocate_bone_descriptor(VkBuffer bone_buffer, usize s
 
 // ── Shadow depth pass ─────────────────────────────────────────────────────
 
-void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world) {
+void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world, f32 alpha) {
     if (!m_shadow_pipeline) return;
 
     glm::vec3 light_dir{0.3f, -0.5f, 0.8f};
@@ -1621,12 +1637,14 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
                                     m_skinned_shadow_pipeline_layout, 0, 1,
                                     &anim.bone_descriptor, 0, nullptr);
 
-            glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+            glm::vec3 vis_pos = lerp_position(*transform, alpha);
+            f32 vis_facing = lerp_facing(*transform, alpha);
+            glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
             if (m_pathfinder) {
-                glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+                glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
                 model = model * slope_tilt_matrix(normal);
             }
-            model = glm::rotate(model, transform->facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::rotate(model, vis_facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
             model = glm::scale(model, glm::vec3{transform->scale});
             // glTF Y-up → game Z-up
             model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
@@ -1663,12 +1681,14 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
         if (!mesh.vertex_buffer) continue;
 
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+        glm::vec3 vis_pos = lerp_position(*transform, alpha);
+        f32 vis_facing = lerp_facing(*transform, alpha);
+        glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
         if (m_pathfinder) {
-            glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+            glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
             model = model * slope_tilt_matrix(normal);
         }
-        f32 facing = transform->facing;
+        f32 facing = vis_facing;
         if (!mesh.native_z_up) facing += glm::half_pi<f32>();
         model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});
@@ -1709,11 +1729,11 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
 
 // ── Draw ───────────────────────────────────────────────────────────────────
 
-void Renderer::draw_shadows(VkCommandBuffer cmd, const simulation::World& world) {
-    draw_shadow_pass(cmd, world);
+void Renderer::draw_shadows(VkCommandBuffer cmd, const simulation::World& world, f32 alpha) {
+    draw_shadow_pass(cmd, world, alpha);
 }
 
-void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world) {
+void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world, f32 alpha) {
     if (extent.width == 0 || extent.height == 0) return;
 
     VkViewport viewport{};
@@ -1843,12 +1863,14 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
                                         m_skinned_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
             }
 
-            glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+            glm::vec3 vis_pos = lerp_position(*transform, alpha);
+            f32 vis_facing = lerp_facing(*transform, alpha);
+            glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
             if (m_pathfinder) {
-                glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+                glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
                 model = model * slope_tilt_matrix(normal);
             }
-            model = glm::rotate(model, transform->facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::rotate(model, vis_facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
             model = glm::scale(model, glm::vec3{transform->scale});
             // glTF Y-up → game Z-up
             model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
@@ -1901,12 +1923,14 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
         if (!mesh.vertex_buffer) continue;
 
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, transform->position);
+        glm::vec3 vis_pos = lerp_position(*transform, alpha);
+        f32 vis_facing = lerp_facing(*transform, alpha);
+        glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
         if (m_pathfinder) {
-            glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
+            glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
             model = model * slope_tilt_matrix(normal);
         }
-        f32 facing = transform->facing;
+        f32 facing = vis_facing;
         if (!mesh.native_z_up) facing += glm::half_pi<f32>();
         model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});

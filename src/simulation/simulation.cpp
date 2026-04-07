@@ -58,6 +58,13 @@ bool Simulation::is_enemy(Player a, Player b) const {
 }
 
 void Simulation::tick(float dt) {
+    // Snapshot transforms for render interpolation
+    for (u32 i = 0; i < m_world.transforms.count(); ++i) {
+        auto& t = m_world.transforms.data()[i];
+        t.prev_position = t.position;
+        t.prev_facing   = t.facing;
+    }
+
     m_spatial_grid.update(m_world);
 
     system_health(m_world, dt);

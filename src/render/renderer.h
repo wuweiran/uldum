@@ -54,11 +54,13 @@ public:
     void set_pathfinder(const simulation::Pathfinder* pf) { m_pathfinder = pf; }
 
     // Record shadow depth pass (must be called before begin_rendering).
-    void draw_shadows(VkCommandBuffer cmd, const simulation::World& world);
+    // alpha: interpolation factor between previous and current tick (0..1).
+    void draw_shadows(VkCommandBuffer cmd, const simulation::World& world, f32 alpha = 1.0f);
 
     // Record main pass draw commands into the given command buffer.
     // Reads Transform + Renderable components from the world.
-    void draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world);
+    // alpha: interpolation factor between previous and current tick (0..1).
+    void draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world, f32 alpha = 1.0f);
 
     Camera& camera() { return m_camera; }
     const Camera& camera() const { return m_camera; }
@@ -83,7 +85,7 @@ private:
     VkDescriptorSet allocate_shadow_descriptor();
     VkDescriptorSet allocate_bone_descriptor(VkBuffer bone_buffer, usize size);
 
-    void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world);
+    void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world, f32 alpha);
 
     rhi::VulkanRhi* m_rhi = nullptr;
     const simulation::Pathfinder* m_pathfinder = nullptr;

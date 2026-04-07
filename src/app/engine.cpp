@@ -205,11 +205,12 @@ void Engine::run() {
         m_audio.update();
 
         // Render (skip if window is minimized — extent would be zero)
+        f32 alpha = accumulator / TICK_DT;  // interpolation factor (0..1)
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-            m_renderer.draw_shadows(cmd, m_simulation.world());
+            m_renderer.draw_shadows(cmd, m_simulation.world(), alpha);
             m_rhi.begin_rendering();
-            m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
+            m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world(), alpha);
             m_rhi.end_frame();
         }
 

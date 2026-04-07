@@ -51,7 +51,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     u32 id = h.id;
 
     // All game objects
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit, h.generation});
 
     // Widget — HP is engine built-in
@@ -133,7 +133,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     Handle h = world.handles.allocate();
     u32 id = h.id;
 
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f, {x, y, 0.0f}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
     world.healths.add(id, Health{def->max_health, def->max_health, 0});
     world.selectables.add(id, Selectable{1.0f, 1});
@@ -169,7 +169,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     Handle h = world.handles.allocate();
     u32 id = h.id;
 
-    world.transforms.add(id, Transform{{x, y, 0.0f}, 0, 1.0f});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, 0, 1.0f, {x, y, 0.0f}, 0});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item, h.generation});
     world.healths.add(id, Health{1, 1, 0});
     world.selectables.add(id, Selectable{0.5f, 1});

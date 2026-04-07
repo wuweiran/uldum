@@ -22,6 +22,9 @@ struct Transform {
     glm::vec3 position{0.0f};
     f32       facing = 0.0f;   // radians around Z axis (up). 0 = facing +X (WC3 convention)
     f32       scale  = 1.0f;
+    // Previous tick state for render interpolation
+    glm::vec3 prev_position{0.0f};
+    f32       prev_facing = 0.0f;
 };
 
 struct HandleInfo {
