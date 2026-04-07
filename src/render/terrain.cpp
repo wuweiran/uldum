@@ -89,6 +89,32 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
              + splat_at(ix, iy+1) * (1-lx)*ly + splat_at(ix+1, iy+1) * lx*ly;
     };
 
+    // Check if the neighboring tile across an edge is a ramp.
+    // edge: 0=top(y-1), 1=bottom(y+1), 2=left(x-1), 3=right(x+1)
+    auto neighbor_is_ramp = [&](u32 tx, u32 ty, u32 edge) -> bool {
+        i32 nx = static_cast<i32>(tx), ny = static_cast<i32>(ty);
+        switch (edge) {
+            case 0: ny -= 1; break;  // top neighbor
+            case 1: ny += 1; break;  // bottom neighbor
+            case 2: nx -= 1; break;  // left neighbor
+            default: nx += 1; break; // right neighbor
+        }
+        if (nx < 0 || ny < 0 || nx >= static_cast<i32>(td.tiles_x) || ny >= static_cast<i32>(td.tiles_y))
+            return false;
+        u32 ux = static_cast<u32>(nx), uy = static_cast<u32>(ny);
+        u8 nc[4] = {
+            td.cliff_at(ux, uy), td.cliff_at(ux+1, uy),
+            td.cliff_at(ux, uy+1), td.cliff_at(ux+1, uy+1)
+        };
+        u8 nmin = std::min({nc[0], nc[1], nc[2], nc[3]});
+        u8 nmax = std::max({nc[0], nc[1], nc[2], nc[3]});
+        return (nmin != nmax) && (nmax - nmin == 1) &&
+            (td.pathing_at(ux, uy) & map::PATHING_RAMP) &&
+            (td.pathing_at(ux+1, uy) & map::PATHING_RAMP) &&
+            (td.pathing_at(ux, uy+1) & map::PATHING_RAMP) &&
+            (td.pathing_at(ux+1, uy+1) & map::PATHING_RAMP);
+    };
+
     for (u32 ty = 0; ty < td.tiles_y; ++ty) {
         for (u32 tx = 0; tx < td.tiles_x; ++tx) {
             // Corner indices: TL=0, TR=1, BL=2, BR=3
@@ -169,13 +195,9 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 add_tri(v1, v3, v2);
             } else if (high_count == 1) {
                 // 1 high corner: small triangle at high, rest at low.
-                // Find the high corner.
                 u32 hi = 0;
                 for (u32 i = 0; i < 4; ++i) { if (c[i] == cmax) { hi = i; break; } }
 
-                // Two edges touching the high corner
-                // TL=0: edges top(0), left(2). TR=1: edges top(0), right(3).
-                // BL=2: edges bottom(1), left(2). BR=3: edges bottom(1), right(3).
                 u32 edge_a, edge_b;
                 switch (hi) {
                     case 0: edge_a = 0; edge_b = 2; break;
@@ -184,58 +206,78 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     default: edge_a = 1; edge_b = 3; break;
                 }
 
-                // High triangle: high corner + 2 midpoints at high_z
-                u32 vh = corner_v(hi, high_z);
-                u32 vma_h = mid_v(edge_a, high_z);
-                u32 vmb_h = mid_v(edge_b, high_z);
-                add_tri(vh, vma_h, vmb_h);
+                bool ramp_a = neighbor_is_ramp(tx, ty, edge_a);
+                bool ramp_b = neighbor_is_ramp(tx, ty, edge_b);
 
-                // Wall: midpoint A to midpoint B, from high_z to low_z
-                u32 vma_l = mid_v(edge_a, low_z);
-                u32 vmb_l = mid_v(edge_b, low_z);
-                // Normal toward the low side (center of tile away from high corner)
-                glm::vec3 wall_n = glm::normalize(glm::vec3{
-                    xm - vertices[vh].position.x,
-                    ym - vertices[vh].position.y, 0.0f});
-                vertices[vma_h].normal = vertices[vmb_h].normal = wall_n;
-                vertices[vma_l].normal = vertices[vmb_l].normal = wall_n;
-
-                // Wall quad
-                glm::vec3 cross = glm::cross(
-                    vertices[vmb_h].position - vertices[vma_h].position,
-                    vertices[vma_l].position - vertices[vma_h].position);
-                if (glm::dot(cross, wall_n) >= 0) {
-                    indices.push_back(vma_h); indices.push_back(vmb_h); indices.push_back(vma_l);
-                    indices.push_back(vmb_h); indices.push_back(vmb_l); indices.push_back(vma_l);
-                } else {
-                    indices.push_back(vma_h); indices.push_back(vma_l); indices.push_back(vmb_h);
-                    indices.push_back(vmb_h); indices.push_back(vma_l); indices.push_back(vmb_l);
+                // Adjacent low corner on each edge
+                u32 adj_a, adj_b;
+                switch (hi) {
+                    case 0: adj_a = 1; adj_b = 2; break; // TL: top→TR, left→BL
+                    case 1: adj_a = 0; adj_b = 3; break; // TR: top→TL, right→BR
+                    case 2: adj_a = 3; adj_b = 0; break; // BL: bottom→BR, left→TL
+                    default: adj_a = 2; adj_b = 1; break; // BR: bottom→BL, right→TR
                 }
 
-                // Low surface: the rest of the tile (5 vertices: 3 low corners + 2 midpoints)
+                // Wall endpoints per-edge (midpoint or corner if ramp)
+                u32 wa_h, wa_l, wb_h, wb_l;
+                if (ramp_a) {
+                    wa_h = corner_v(hi, high_z);
+                    wa_l = corner_v(adj_a, low_z);
+                } else {
+                    wa_h = mid_v(edge_a, high_z);
+                    wa_l = mid_v(edge_a, low_z);
+                }
+                if (ramp_b) {
+                    wb_h = corner_v(hi, high_z);
+                    wb_l = corner_v(adj_b, low_z);
+                } else {
+                    wb_h = mid_v(edge_b, high_z);
+                    wb_l = mid_v(edge_b, low_z);
+                }
+
+                // High triangle (may be degenerate if ramp replaces endpoint with hi corner)
+                u32 vh = corner_v(hi, high_z);
+                if (!ramp_a || !ramp_b) {
+                    add_tri(vh, wa_h, wb_h);
+                }
+
+                // Wall quad
+                if (!ramp_a || !ramp_b) {
+                    glm::vec3 wall_n = glm::normalize(glm::vec3{
+                        xm - vertices[vh].position.x,
+                        ym - vertices[vh].position.y, 0.0f});
+                    if (!ramp_a) { vertices[wa_h].normal = wall_n; vertices[wa_l].normal = wall_n; }
+                    if (!ramp_b) { vertices[wb_h].normal = wall_n; vertices[wb_l].normal = wall_n; }
+
+                    glm::vec3 cross = glm::cross(
+                        vertices[wb_h].position - vertices[wa_h].position,
+                        vertices[wa_l].position - vertices[wa_h].position);
+                    if (glm::dot(cross, wall_n) >= 0) {
+                        indices.push_back(wa_h); indices.push_back(wb_h); indices.push_back(wa_l);
+                        indices.push_back(wb_h); indices.push_back(wb_l); indices.push_back(wa_l);
+                    } else {
+                        indices.push_back(wa_h); indices.push_back(wa_l); indices.push_back(wb_h);
+                        indices.push_back(wb_h); indices.push_back(wa_l); indices.push_back(wb_l);
+                    }
+                }
+
+                // Low surface: substitute midpoints with wall endpoints
                 u32 vl[4];
                 for (u32 i = 0; i < 4; ++i) vl[i] = corner_v(i, low_z);
-                // Low region: pentagon (3 low corners + 2 midpoints). Fan triangulation.
-                // Triangulate as a fan from the opposite corner.
-                // Order around the pentagon depends on which corner is high.
-                // Let's list vertices CCW around the low region for each case:
                 u32 fan[5];
                 switch (hi) {
-                    case 0: // TL high. Low region: TR, BR, BL, mid_left, mid_top
+                    case 0: // TL high. edge_a=top(0), edge_b=left(2)
                         fan[0] = vl[1]; fan[1] = vl[3]; fan[2] = vl[2];
-                        fan[3] = mid_v(2, low_z); fan[4] = mid_v(0, low_z); break;
-                    case 1: // TR high. Low region: TL, mid_top, mid_right, BR, BL
-                        fan[0] = vl[0]; fan[1] = mid_v(0, low_z); fan[2] = mid_v(3, low_z);
+                        fan[3] = wb_l; fan[4] = wa_l; break;
+                    case 1: // TR high. edge_a=top(0), edge_b=right(3)
+                        fan[0] = vl[0]; fan[1] = wa_l; fan[2] = wb_l;
                         fan[3] = vl[3]; fan[4] = vl[2]; break;
-                    case 2: // BL high. Low region: TL, TR, BR, mid_right... wait
-                        // BL high, edges: bottom(1), left(2)
-                        // Low region: TL, TR, BR, mid_bottom, mid_left
+                    case 2: // BL high. edge_a=bottom(1), edge_b=left(2)
                         fan[0] = vl[0]; fan[1] = vl[1]; fan[2] = vl[3];
-                        fan[3] = mid_v(1, low_z); fan[4] = mid_v(2, low_z); break;
-                    default: // BR high, edges: bottom(1), right(3)
-                        // Low region: TL, TR, mid_right, mid_bottom, BL
-                        fan[0] = vl[0]; fan[1] = vl[1]; fan[2] = mid_v(3, low_z);
-                        fan[3] = mid_v(1, low_z); fan[4] = vl[2]; break;
+                        fan[3] = wa_l; fan[4] = wb_l; break;
+                    default: // BR high. edge_a=bottom(1), edge_b=right(3)
+                        fan[0] = vl[0]; fan[1] = vl[1]; fan[2] = wb_l;
+                        fan[3] = wa_l; fan[4] = vl[2]; break;
                 }
                 for (u32 i = 1; i + 1 < 5; ++i) {
                     add_tri(fan[0], fan[i], fan[i+1]);
@@ -260,65 +302,108 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     continue;
                 }
 
-                // Wall runs between midpoints of the two edges perpendicular to the high edge.
-                // If top is high (edge 0), wall runs from mid-left to mid-right at y=ym.
                 u32 wall_edge_a, wall_edge_b;
                 if (edge_hi == 0 || edge_hi == 1) { wall_edge_a = 2; wall_edge_b = 3; }
                 else { wall_edge_a = 0; wall_edge_b = 1; }
 
-                // High half: 2 high corners + 2 midpoints
+                bool ramp_a = neighbor_is_ramp(tx, ty, wall_edge_a);
+                bool ramp_b = neighbor_is_ramp(tx, ty, wall_edge_b);
+
+                // Find hi/lo corners on each wall edge
+                // Each wall edge has one high corner and one low corner
+                auto edge_hi_lo = [&](u32 edge) -> std::pair<u32, u32> {
+                    u32 c0, c1;
+                    switch (edge) {
+                        case 0: c0 = 0; c1 = 1; break; // top: TL, TR
+                        case 1: c0 = 2; c1 = 3; break; // bottom: BL, BR
+                        case 2: c0 = 0; c1 = 2; break; // left: TL, BL
+                        default: c0 = 1; c1 = 3; break; // right: TR, BR
+                    }
+                    return (c[c0] == cmax) ? std::pair{c0, c1} : std::pair{c1, c0};
+                };
+
+                auto [a_hi_ci, a_lo_ci] = edge_hi_lo(wall_edge_a);
+                auto [b_hi_ci, b_lo_ci] = edge_hi_lo(wall_edge_b);
+
+                // Wall endpoint vertices: midpoint (normal) or corner (ramp neighbor)
+                u32 wa_h, wa_l, wb_h, wb_l;
+                if (ramp_a) {
+                    wa_h = corner_v(a_hi_ci, high_z);
+                    wa_l = corner_v(a_lo_ci, low_z);
+                } else {
+                    wa_h = mid_v(wall_edge_a, high_z);
+                    wa_l = mid_v(wall_edge_a, low_z);
+                }
+                if (ramp_b) {
+                    wb_h = corner_v(b_hi_ci, high_z);
+                    wb_l = corner_v(b_lo_ci, low_z);
+                } else {
+                    wb_h = mid_v(wall_edge_b, high_z);
+                    wb_l = mid_v(wall_edge_b, low_z);
+                }
+
+                // High surface
                 u32 hi_corners[2];
                 u32 n_hi = 0;
                 for (u32 i = 0; i < 4; ++i) { if (c[i] == cmax) hi_corners[n_hi++] = i; }
-
                 u32 vh0 = corner_v(hi_corners[0], high_z);
                 u32 vh1 = corner_v(hi_corners[1], high_z);
-                u32 vma_h = mid_v(wall_edge_a, high_z);
-                u32 vmb_h = mid_v(wall_edge_b, high_z);
-                add_tri(vh0, vh1, vma_h);
-                add_tri(vh1, vmb_h, vma_h);
 
-                // Low half: 2 low corners + 2 midpoints
+                if (ramp_a && ramp_b) {
+                    // Both ramps: high surface is just the two high corners (slope handles rest)
+                    // Wall quad IS the full tile slope
+                } else if (ramp_a) {
+                    // wa_h coincides with one hi corner → triangle
+                    add_tri(vh0, vh1, wb_h);
+                } else if (ramp_b) {
+                    add_tri(vh0, vh1, wa_h);
+                } else {
+                    add_tri(vh0, vh1, wa_h);
+                    add_tri(vh1, wb_h, wa_h);
+                }
+
+                // Low surface
                 u32 lo_corners[2];
                 u32 n_lo = 0;
                 for (u32 i = 0; i < 4; ++i) { if (c[i] != cmax) lo_corners[n_lo++] = i; }
-
                 u32 vl0 = corner_v(lo_corners[0], low_z);
                 u32 vl1 = corner_v(lo_corners[1], low_z);
-                u32 vma_l = mid_v(wall_edge_a, low_z);
-                u32 vmb_l = mid_v(wall_edge_b, low_z);
-                add_tri(vl0, vl1, vma_l);
-                add_tri(vl1, vmb_l, vma_l);
 
-                // Wall quad
-                vma_h = mid_v(wall_edge_a, high_z);
-                vmb_h = mid_v(wall_edge_b, high_z);
-                vma_l = mid_v(wall_edge_a, low_z);
-                vmb_l = mid_v(wall_edge_b, low_z);
+                if (ramp_a && ramp_b) {
+                    // Both ramps: low surface is just the two low corners
+                } else if (ramp_a) {
+                    add_tri(vl0, vl1, wb_l);
+                } else if (ramp_b) {
+                    add_tri(vl0, vl1, wa_l);
+                } else {
+                    add_tri(vl0, vl1, wa_l);
+                    add_tri(vl1, wb_l, wa_l);
+                }
 
-                glm::vec3 wall_center = (vertices[vma_h].position + vertices[vmb_h].position) * 0.5f;
-                glm::vec3 high_center{0, 0, 0};
+                // Wall/slope quad connecting high side to low side
+                glm::vec3 wall_center = (vertices[wa_h].position + vertices[wb_h].position) * 0.5f;
+                glm::vec3 low_center{0, 0, 0};
                 for (u32 i = 0; i < 4; ++i) { if (c[i] != cmax) {
-                    high_center = glm::vec3{static_cast<f32>((i & 1) ? tx+1 : tx) * td.tile_size,
-                                            static_cast<f32>((i & 2) ? ty+1 : ty) * td.tile_size, 0};
+                    low_center = glm::vec3{static_cast<f32>((i & 1) ? tx+1 : tx) * td.tile_size,
+                                           static_cast<f32>((i & 2) ? ty+1 : ty) * td.tile_size, 0};
                     break;
                 }}
                 glm::vec3 wall_n = glm::normalize(glm::vec3{
-                    high_center.x - wall_center.x,
-                    high_center.y - wall_center.y, 0.0f});
+                    low_center.x - wall_center.x,
+                    low_center.y - wall_center.y, 0.0f});
 
-                vertices[vma_h].normal = vertices[vmb_h].normal = wall_n;
-                vertices[vma_l].normal = vertices[vmb_l].normal = wall_n;
+                if (!ramp_a) { vertices[wa_h].normal = wall_n; vertices[wa_l].normal = wall_n; }
+                if (!ramp_b) { vertices[wb_h].normal = wall_n; vertices[wb_l].normal = wall_n; }
 
                 glm::vec3 cross = glm::cross(
-                    vertices[vmb_h].position - vertices[vma_h].position,
-                    vertices[vma_l].position - vertices[vma_h].position);
+                    vertices[wb_h].position - vertices[wa_h].position,
+                    vertices[wa_l].position - vertices[wa_h].position);
                 if (glm::dot(cross, wall_n) >= 0) {
-                    indices.push_back(vma_h); indices.push_back(vmb_h); indices.push_back(vma_l);
-                    indices.push_back(vmb_h); indices.push_back(vmb_l); indices.push_back(vma_l);
+                    indices.push_back(wa_h); indices.push_back(wb_h); indices.push_back(wa_l);
+                    indices.push_back(wb_h); indices.push_back(wb_l); indices.push_back(wa_l);
                 } else {
-                    indices.push_back(vma_h); indices.push_back(vma_l); indices.push_back(vmb_h);
-                    indices.push_back(vmb_h); indices.push_back(vma_l); indices.push_back(vmb_l);
+                    indices.push_back(wa_h); indices.push_back(wa_l); indices.push_back(wb_h);
+                    indices.push_back(wb_h); indices.push_back(wa_l); indices.push_back(wb_l);
                 }
 
             } else if (high_count == 3) {
@@ -334,49 +419,78 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     default: edge_a = 1; edge_b = 3; break;
                 }
 
-                // Low triangle
-                u32 vlo = corner_v(lo, low_z);
-                u32 vma_l = mid_v(edge_a, low_z);
-                u32 vmb_l = mid_v(edge_b, low_z);
-                add_tri(vlo, vma_l, vmb_l);
+                bool ramp_a = neighbor_is_ramp(tx, ty, edge_a);
+                bool ramp_b = neighbor_is_ramp(tx, ty, edge_b);
 
-                // Wall
-                u32 vma_h = mid_v(edge_a, high_z);
-                u32 vmb_h = mid_v(edge_b, high_z);
-                glm::vec3 wall_n = glm::normalize(glm::vec3{
-                    vertices[vlo].position.x - xm,
-                    vertices[vlo].position.y - ym, 0.0f});
-                vertices[vma_h].normal = vertices[vmb_h].normal = wall_n;
-                vertices[vma_l].normal = vertices[vmb_l].normal = wall_n;
-
-                glm::vec3 cross = glm::cross(
-                    vertices[vmb_h].position - vertices[vma_h].position,
-                    vertices[vma_l].position - vertices[vma_h].position);
-                if (glm::dot(cross, wall_n) >= 0) {
-                    indices.push_back(vma_h); indices.push_back(vmb_h); indices.push_back(vma_l);
-                    indices.push_back(vmb_h); indices.push_back(vmb_l); indices.push_back(vma_l);
-                } else {
-                    indices.push_back(vma_h); indices.push_back(vma_l); indices.push_back(vmb_h);
-                    indices.push_back(vmb_h); indices.push_back(vma_l); indices.push_back(vmb_l);
+                // Adjacent high corner on each edge (the other corner besides lo)
+                u32 adj_a, adj_b;
+                switch (lo) {
+                    case 0: adj_a = 1; adj_b = 2; break; // TL: top→TR, left→BL
+                    case 1: adj_a = 0; adj_b = 3; break; // TR: top→TL, right→BR
+                    case 2: adj_a = 3; adj_b = 0; break; // BL: bottom→BR, left→TL
+                    default: adj_a = 2; adj_b = 1; break; // BR: bottom→BL, right→TR
                 }
 
-                // High surface: pentagon (5 vertices: 3 high corners + 2 midpoints)
+                // Wall endpoints per-edge (midpoint or corner if ramp)
+                u32 wa_h, wa_l, wb_h, wb_l;
+                if (ramp_a) {
+                    wa_h = corner_v(adj_a, high_z);
+                    wa_l = corner_v(lo, low_z);
+                } else {
+                    wa_h = mid_v(edge_a, high_z);
+                    wa_l = mid_v(edge_a, low_z);
+                }
+                if (ramp_b) {
+                    wb_h = corner_v(adj_b, high_z);
+                    wb_l = corner_v(lo, low_z);
+                } else {
+                    wb_h = mid_v(edge_b, high_z);
+                    wb_l = mid_v(edge_b, low_z);
+                }
+
+                // Low triangle (may be degenerate if ramp replaces endpoint with lo corner)
+                u32 vlo = corner_v(lo, low_z);
+                if (!ramp_a && !ramp_b) {
+                    add_tri(vlo, wa_l, wb_l);
+                }
+
+                // Wall quad
+                if (!ramp_a || !ramp_b) {
+                    glm::vec3 wall_n = glm::normalize(glm::vec3{
+                        vertices[vlo].position.x - xm,
+                        vertices[vlo].position.y - ym, 0.0f});
+                    if (!ramp_a) { vertices[wa_h].normal = wall_n; vertices[wa_l].normal = wall_n; }
+                    if (!ramp_b) { vertices[wb_h].normal = wall_n; vertices[wb_l].normal = wall_n; }
+
+                    glm::vec3 cross = glm::cross(
+                        vertices[wb_h].position - vertices[wa_h].position,
+                        vertices[wa_l].position - vertices[wa_h].position);
+                    if (glm::dot(cross, wall_n) >= 0) {
+                        indices.push_back(wa_h); indices.push_back(wb_h); indices.push_back(wa_l);
+                        indices.push_back(wb_h); indices.push_back(wb_l); indices.push_back(wa_l);
+                    } else {
+                        indices.push_back(wa_h); indices.push_back(wa_l); indices.push_back(wb_h);
+                        indices.push_back(wb_h); indices.push_back(wa_l); indices.push_back(wb_l);
+                    }
+                }
+
+                // High surface: substitute midpoints with wall endpoints
                 u32 vh[4];
                 for (u32 i = 0; i < 4; ++i) vh[i] = corner_v(i, high_z);
                 u32 fan[5];
                 switch (lo) {
-                    case 0: // TL low. High: TR, BR, BL, mid_left, mid_top
+                    case 0: // TL low. edge_a=top(0), edge_b=left(2)
                         fan[0] = vh[1]; fan[1] = vh[3]; fan[2] = vh[2];
-                        fan[3] = mid_v(2, high_z); fan[4] = mid_v(0, high_z); break;
-                    case 1: // TR low. High: TL, mid_top, mid_right, BR, BL
-                        fan[0] = vh[0]; fan[1] = mid_v(0, high_z); fan[2] = mid_v(3, high_z);
+                        fan[3] = wb_h; fan[4] = wa_h; break;
+                    case 1: // TR low. edge_a=top(0), edge_b=right(3)
+                        fan[0] = vh[0]; fan[1] = wa_h; fan[2] = wb_h;
                         fan[3] = vh[3]; fan[4] = vh[2]; break;
-                    case 2: // BL low. High: TL, TR, BR, mid_bottom, mid_left
+                    case 2: // BL low. edge_a=bottom(1), edge_b=left(2)
                         fan[0] = vh[0]; fan[1] = vh[1]; fan[2] = vh[3];
-                        fan[3] = mid_v(1, high_z); fan[4] = mid_v(2, high_z); break;
-                    default: // BR low. High: TL, TR, mid_right, mid_bottom, BL
-                        fan[0] = vh[0]; fan[1] = vh[1]; fan[2] = mid_v(3, high_z);
-                        fan[3] = mid_v(1, high_z); fan[4] = vh[2]; break;
+                        fan[3] = wa_h; fan[4] = wb_h; break;
+                    default: // BR low. edge_a=bottom(1), edge_b=right(3)
+                        fan[0] = vh[0]; fan[1] = vh[1]; fan[2] = wb_h;
+                        fan[3] = wa_h; fan[4] = vh[2]; break;
                 }
                 for (u32 i = 1; i + 1 < 5; ++i) {
                     add_tri(fan[0], fan[i], fan[i+1]);
