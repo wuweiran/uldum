@@ -348,8 +348,7 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
     auto* combat = world.combats.get(id);
     if (combat) {
         using simulation::AttackState;
-        // Attack animation covers: TurningToFace, WindUp, Backswing, Cooldown
-        // (the full attack cycle, not just the damage frames)
+        // Attack animation covers the full attack cycle
         if (combat->attack_state == AttackState::TurningToFace ||
             combat->attack_state == AttackState::WindUp ||
             combat->attack_state == AttackState::Backswing ||

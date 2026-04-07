@@ -324,9 +324,11 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
         }
 
         if (!target_valid) {
-            // Target dead or gone — clear combat state
+            // Target dead or gone — let backswing/cooldown finish before clearing
             combat.target = Unit{};
-            if (combat.attack_state != AttackState::Idle) {
+            if (combat.attack_state != AttackState::Idle &&
+                combat.attack_state != AttackState::Backswing &&
+                combat.attack_state != AttackState::Cooldown) {
                 combat.attack_state = AttackState::Idle;
             }
 
@@ -375,7 +377,23 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                 }
             }
 
-            if (!target_valid) continue;
+            // No valid target — but let backswing/cooldown finish
+            if (!target_valid) {
+                if (combat.attack_state == AttackState::Backswing) {
+                    combat.attack_timer -= dt;
+                    if (combat.attack_timer <= 0) {
+                        combat.attack_state = AttackState::Cooldown;
+                        combat.attack_timer = combat.attack_cooldown - combat.cast_point - combat.backswing;
+                        if (combat.attack_timer < 0) combat.attack_timer = 0;
+                    }
+                } else if (combat.attack_state == AttackState::Cooldown) {
+                    combat.attack_timer -= dt;
+                    if (combat.attack_timer <= 0) {
+                        combat.attack_state = AttackState::Idle;
+                    }
+                }
+                continue;
+            }
         }
 
         combat.target = target;
@@ -477,11 +495,14 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
             f32 turn_rate = mov ? mov->turn_rate : 3.0f;
             f32 max_turn = turn_rate * dt;
 
+            constexpr f32 ATTACK_FACING_TOLERANCE = 0.1745f;  // ~10 degrees
             if (std::abs(diff) > max_turn) {
                 transform->facing += (diff > 0 ? max_turn : -max_turn);
                 transform->facing = normalize_angle(transform->facing);
             } else {
                 transform->facing = desired;
+            }
+            if (std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE) {
                 combat.attack_state = AttackState::WindUp;
                 combat.attack_timer = combat.cast_point;
             }
@@ -518,7 +539,12 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
         case AttackState::Cooldown:
             combat.attack_timer -= dt;
             if (combat.attack_timer <= 0) {
-                combat.attack_state = AttackState::Idle;  // loops back to check range
+                // If target still valid and in range, go straight to next swing
+                if (target_valid && dist <= combat.range) {
+                    combat.attack_state = AttackState::TurningToFace;
+                } else {
+                    combat.attack_state = AttackState::Idle;
+                }
             }
             break;
         }

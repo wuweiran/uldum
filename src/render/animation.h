@@ -26,8 +26,10 @@ struct AnimationInstance {
     AnimState current_state  = AnimState::Idle;
     AnimState previous_state = AnimState::Idle;
     f32 time           = 0.0f;
-    f32 blend_factor   = 0.0f;
-    f32 blend_duration = 0.10f;
+    f32 prev_time      = 0.0f;   // snapshot of time at transition (for crossfade)
+    f32 prev_speed     = 1.0f;   // previous clip's playback speed
+    f32 blend_factor   = 1.0f;   // 0 = fully previous, 1 = fully current
+    f32 blend_duration = 0.15f;  // crossfade duration in seconds
     f32 playback_speed = 1.0f;
     bool looping       = true;
     bool finished      = false;

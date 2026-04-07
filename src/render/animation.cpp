@@ -124,10 +124,12 @@ void set_anim_state(AnimationInstance& inst, AnimState state,
         if (!force_restart) return;  // same state, no restart requested — keep playing/holding
     }
 
+    inst.prev_time      = inst.time;
+    inst.prev_speed     = inst.playback_speed;
     inst.previous_state = inst.current_state;
     inst.current_state  = state;
     inst.time           = 0.0f;
-    inst.blend_factor   = (state == inst.previous_state) ? 1.0f : 0.0f;  // no crossfade on restart
+    inst.blend_factor   = (state == inst.previous_state) ? 1.0f : 0.0f;  // skip crossfade on restart
     inst.finished       = false;
 
     // Looping: idle and walk loop; attack, spell, death play once
@@ -159,10 +161,16 @@ void update_animation(AnimationInstance& inst, f32 dt) {
         }
     }
 
-    // Advance crossfade blend
+    // Advance crossfade blend and previous clip time
     if (inst.blend_factor < 1.0f) {
         inst.blend_factor += dt / inst.blend_duration;
         if (inst.blend_factor > 1.0f) inst.blend_factor = 1.0f;
+
+        // Keep advancing previous clip so the blend source isn't frozen
+        i32 prev_clip = inst.state_to_clip[static_cast<u8>(inst.previous_state)];
+        if (prev_clip >= 0 && prev_clip < static_cast<i32>(inst.model->animations.size())) {
+            inst.prev_time += dt * inst.prev_speed;
+        }
     }
 }
 
@@ -190,6 +198,37 @@ void evaluate_animation(AnimationInstance& inst) {
                 current_globals[i] = current_globals[skel.bones[i].parent_index] * local;
             } else {
                 current_globals[i] = local;
+            }
+        }
+    }
+
+    // Crossfade: blend with previous clip if transitioning
+    if (inst.blend_factor < 1.0f) {
+        std::vector<glm::mat4> prev_globals(bone_count, glm::mat4{1.0f});
+        i32 prev_clip_idx = inst.state_to_clip[static_cast<u8>(inst.previous_state)];
+        if (prev_clip_idx >= 0 && prev_clip_idx < static_cast<i32>(inst.model->animations.size())) {
+            evaluate_clip(inst.model->animations[prev_clip_idx], skel, inst.prev_time, prev_globals);
+        } else {
+            // Rest pose for previous
+            for (u32 i = 0; i < bone_count; ++i) {
+                LocalTransform lt;
+                lt.translation = skel.bones[i].rest_translation;
+                lt.rotation    = skel.bones[i].rest_rotation;
+                lt.scale       = skel.bones[i].rest_scale;
+                glm::mat4 local = trs_to_matrix(lt);
+                if (skel.bones[i].parent_index >= 0) {
+                    prev_globals[i] = prev_globals[skel.bones[i].parent_index] * local;
+                } else {
+                    prev_globals[i] = local;
+                }
+            }
+        }
+
+        // Lerp global bone matrices
+        f32 t = inst.blend_factor;
+        for (u32 i = 0; i < bone_count; ++i) {
+            for (u32 col = 0; col < 4; ++col) {
+                current_globals[i][col] = glm::mix(prev_globals[i][col], current_globals[i][col], t);
             }
         }
     }
