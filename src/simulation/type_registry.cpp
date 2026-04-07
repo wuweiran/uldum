@@ -60,6 +60,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         def.id = key;
         def.display_name = val.value("display_name", key);
         def.model_path   = val.value("model", "");
+        def.model_scale  = val.value("model_scale", 1.0f);
 
         if (val.contains("health")) {
             auto& h = val["health"];
@@ -69,9 +70,10 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
 
         if (val.contains("movement")) {
             auto& m = val["movement"];
-            def.move_speed = m.value("speed", 270.0f);
-            def.turn_rate  = m.value("turn_rate", 0.6f);
-            def.move_type  = parse_move_type(m.value("type", "ground"));
+            def.move_speed        = m.value("speed", 270.0f);
+            def.turn_rate         = m.value("turn_rate", 0.6f);
+            def.collision_radius  = m.value("collision_radius", 32.0f);
+            def.move_type         = parse_move_type(m.value("type", "ground"));
         }
 
         if (val.contains("combat")) {

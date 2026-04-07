@@ -1,7 +1,9 @@
 #include "asset/model.h"
 
 #include <cgltf.h>
+#include <stb_image.h>
 
+#include <filesystem>
 #include <format>
 #include <unordered_map>
 
@@ -74,6 +76,19 @@ static void extract_skeleton(const cgltf_data* data, const cgltf_skin& skin,
 
         if (ibm) {
             bone.inverse_bind_matrix = read_mat4(ibm, i);
+        }
+
+        // Extract rest pose from node's TRS
+        if (node->has_translation) {
+            bone.rest_translation = {node->translation[0], node->translation[1], node->translation[2]};
+        }
+        if (node->has_rotation) {
+            // cgltf stores quaternion as x,y,z,w; glm::quat is w,x,y,z
+            bone.rest_rotation = glm::quat(node->rotation[3], node->rotation[0],
+                                            node->rotation[1], node->rotation[2]);
+        }
+        if (node->has_scale) {
+            bone.rest_scale = {node->scale[0], node->scale[1], node->scale[2]};
         }
     }
 }
@@ -157,6 +172,44 @@ static void extract_animations(const cgltf_data* data, const NodeToBoneMap& node
     }
 }
 
+// ── Texture extraction ───────────────────────────────────────────────────
+
+static void extract_textures(const cgltf_data* data, std::string_view model_path,
+                              std::vector<TextureData>& textures) {
+    namespace fs = std::filesystem;
+    fs::path base_dir = fs::path(model_path).parent_path();
+
+    for (cgltf_size i = 0; i < data->images_count; ++i) {
+        const cgltf_image& img = data->images[i];
+
+        int w = 0, h = 0, channels = 0;
+        u8* pixels = nullptr;
+
+        if (img.buffer_view) {
+            // Embedded image (typical for .glb)
+            const u8* buf = static_cast<const u8*>(img.buffer_view->buffer->data)
+                            + img.buffer_view->offset;
+            int len = static_cast<int>(img.buffer_view->size);
+            pixels = stbi_load_from_memory(buf, len, &w, &h, &channels, 4);
+        } else if (img.uri) {
+            // External image file relative to model directory
+            fs::path img_path = base_dir / img.uri;
+            std::string img_str = img_path.string();
+            pixels = stbi_load(img_str.c_str(), &w, &h, &channels, 4);
+        }
+
+        if (pixels) {
+            TextureData tex;
+            tex.width    = static_cast<u32>(w);
+            tex.height   = static_cast<u32>(h);
+            tex.channels = 4;
+            tex.pixels.assign(pixels, pixels + w * h * 4);
+            stbi_image_free(pixels);
+            textures.push_back(std::move(tex));
+        }
+    }
+}
+
 // ── Model loading ─────────────────────────────────────────────────────────
 
 std::expected<ModelData, std::string> load_model(std::string_view path) {
@@ -178,6 +231,9 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
 
     ModelData model;
     model.name = path_str;
+
+    // Extract textures from glTF images
+    extract_textures(data, path, model.textures);
 
     // Extract skeleton from first skin (if any)
     NodeToBoneMap node_to_bone;

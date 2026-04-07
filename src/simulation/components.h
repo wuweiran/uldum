@@ -20,7 +20,7 @@ namespace uldum::simulation {
 
 struct Transform {
     glm::vec3 position{0.0f};
-    f32       facing = 0.0f;   // radians around Z axis (up). 0 = facing +Y
+    f32       facing = 0.0f;   // radians around Z axis (up). 0 = facing +X (WC3 convention)
     f32       scale  = 1.0f;
 };
 
@@ -71,6 +71,7 @@ struct Owner {
 struct Movement {
     f32       speed     = 0;
     f32       turn_rate = 0;  // radians per second
+    f32       collision_radius = 32.0f;  // per-unit collision radius (game units)
     MoveType  type      = MoveType::Ground;  // engine preset (pathfinding needs it)
     glm::vec3 target_pos{0.0f};
     bool      moving    = false;

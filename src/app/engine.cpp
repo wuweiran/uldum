@@ -50,14 +50,8 @@ bool Engine::init() {
         return false;
     }
 
-    // Verify asset pipeline with test loads
+    // Verify asset pipeline with config load
     {
-        auto tex = m_asset.load_texture("textures/test_2x2.png");
-        if (!tex.is_valid()) log::error(TAG, "Test texture load FAILED");
-
-        auto model = m_asset.load_model("models/test_triangle.gltf");
-        if (!model.is_valid()) log::error(TAG, "Test model load FAILED");
-
         auto cfg = m_asset.load_config("config/engine.json");
         if (cfg.is_valid()) {
             auto* doc = m_asset.get(cfg);
@@ -67,11 +61,8 @@ bool Engine::init() {
                           eng.value("name", "?"), eng.value("version", "?"));
             }
         } else {
-            log::error(TAG, "Test config load FAILED");
+            log::error(TAG, "Engine config load FAILED");
         }
-
-        log::info(TAG, "Asset pipeline verified — {} textures, {} models, {} configs loaded",
-                  m_asset.texture_count(), m_asset.model_count(), m_asset.config_count());
     }
 
     // Renderer
@@ -132,6 +123,9 @@ bool Engine::init() {
         }
         log::info(TAG, "Alliances initialized — {} players", manifest.players.size());
     }
+
+    // Set map root for model path resolution
+    m_renderer.set_map_root(m_map.map_root());
 
     // Feed terrain data to renderer and simulation
     if (m_map.terrain().is_valid()) {

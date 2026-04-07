@@ -16,6 +16,7 @@ struct UnitTypeDef {
     std::string id;
     std::string display_name;
     std::string model_path;
+    f32 model_scale = 1.0f;
 
     // Health (engine built-in state)
     f32 max_health = 100;
@@ -24,6 +25,7 @@ struct UnitTypeDef {
     // Movement
     f32      move_speed = 270;
     f32      turn_rate = 0.6f;
+    f32      collision_radius = 32.0f;
     MoveType move_type = MoveType::Ground;
 
     // Combat

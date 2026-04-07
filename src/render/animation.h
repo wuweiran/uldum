@@ -17,7 +17,7 @@ namespace uldum::render {
 
 // Animation states — driven by simulation components.
 // Clip names in glTF must match: "idle", "walk", "attack", "spell", "death"
-enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Count };
+enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Birth, Count };
 
 // Per-entity animation instance with state machine.
 struct AnimationInstance {

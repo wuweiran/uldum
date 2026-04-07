@@ -48,13 +48,11 @@ static f32 angle_diff(f32 from, f32 to) {
 
 // ── Movement system ───────────────────────────────────────────────────────
 
-static constexpr f32 COLLISION_RADIUS = 20.0f;  // per-unit; two units collide at 2x this
-
 // Helper: find the closest unit blocking the path ahead.
 // Returns the blocker's id (UINT32_MAX if clear).
 static u32 find_blocker_id(World& world, const SpatialGrid& grid, u32 self_id,
-                            glm::vec3 pos, glm::vec3 dir, f32 look_ahead) {
-    f32 check_radius = COLLISION_RADIUS * 2.0f + look_ahead;
+                            glm::vec3 pos, glm::vec3 dir, f32 self_radius, f32 look_ahead) {
+    f32 check_radius = self_radius * 2.0f + look_ahead;
     UnitFilter filter;
     filter.exclude_buildings = true;
     auto nearby = grid.units_in_range(world, pos, check_radius, filter);
@@ -68,6 +66,9 @@ static u32 find_blocker_id(World& world, const SpatialGrid& grid, u32 self_id,
 
         auto* ot = world.transforms.get(other.id);
         if (!ot) continue;
+        auto* om = world.movements.get(other.id);
+        f32 other_radius = om ? om->collision_radius : 16.0f;
+        f32 combined = self_radius + other_radius;
 
         glm::vec3 to_other = ot->position - pos;
         to_other.z = 0;
@@ -81,7 +82,7 @@ static u32 find_blocker_id(World& world, const SpatialGrid& grid, u32 self_id,
         // Is it close enough laterally to block?
         f32 forward_dist = d * dot;
         f32 lateral = std::sqrt(std::max(0.0f, d * d - forward_dist * forward_dist));
-        if (lateral < COLLISION_RADIUS * 2.0f && d < best_dist) {
+        if (lateral < combined && d < best_dist) {
             best_id = other.id;
             best_dist = d;
         }
@@ -191,7 +192,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
                 f32 bd = glm::length(to_blocker);
                 f32 dot = (bd > 0.01f) ? glm::dot(to_blocker / bd, forward) : 0;
 
-                if (dot > 0.1f && bd < COLLISION_RADIUS * 4.0f) {
+                if (dot > 0.1f && bd < mov.collision_radius * 4.0f) {
                     // Still blocking — keep steering around
                     dir = compute_avoidance_dir(transform->position, forward, blocker_t, mov.avoid_side);
                 } else {
@@ -207,7 +208,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         // If not currently avoiding, check for new blockers
         if (mov.avoid_id == UINT32_MAX) {
             f32 look_ahead = mov.speed * 0.4f;
-            u32 blocker_id = find_blocker_id(world, grid, id, transform->position, forward, look_ahead);
+            u32 blocker_id = find_blocker_id(world, grid, id, transform->position, forward, mov.collision_radius, look_ahead);
             if (blocker_id != UINT32_MAX) {
                 mov.avoid_id = blocker_id;
 
@@ -234,7 +235,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         }
 
         // Turn toward movement direction
-        f32 desired_facing = std::atan2(-dir.x, dir.y);
+        f32 desired_facing = std::atan2(dir.y, dir.x);
         f32 face_diff = angle_diff(transform->facing, desired_facing);
         f32 max_turn = mov.turn_rate * dt;
 
@@ -407,7 +408,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                             tb.z = 0;
                             f32 bd = glm::length(tb);
                             f32 dot = (bd > 0.01f) ? glm::dot(tb / bd, forward) : 0;
-                            if (dot > 0.1f && bd < COLLISION_RADIUS * 4.0f) {
+                            if (dot > 0.1f && bd < mov->collision_radius * 4.0f) {
                                 dir = compute_avoidance_dir(transform->position, forward, bt, mov->avoid_side);
                             } else {
                                 mov->avoid_id = UINT32_MAX;
@@ -417,7 +418,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                         }
                     }
                     if (mov->avoid_id == UINT32_MAX) {
-                        u32 blocker = find_blocker_id(world, grid, id, transform->position, forward, mov->speed * 0.4f);
+                        u32 blocker = find_blocker_id(world, grid, id, transform->position, forward, mov->collision_radius, mov->speed * 0.4f);
                         if (blocker != UINT32_MAX && blocker != target.id) {
                             mov->avoid_id = blocker;
                             if (mov->avoid_lock <= 0) {
@@ -438,7 +439,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     }
 
                     // Turn toward actual movement direction (not always the target)
-                    f32 desired = std::atan2(-dir.x, dir.y);
+                    f32 desired = std::atan2(dir.y, dir.x);
                     f32 diff = angle_diff(transform->facing, desired);
                     f32 max_turn = mov->turn_rate * dt;
                     if (std::abs(diff) > max_turn) {
@@ -470,7 +471,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                 combat.attack_state = AttackState::MovingToTarget;
                 break;
             }
-            f32 desired = std::atan2(-to_target.x, to_target.y);
+            f32 desired = std::atan2(to_target.y, to_target.x);
             f32 diff = angle_diff(transform->facing, desired);
             auto* mov = world.movements.get(id);
             f32 turn_rate = mov ? mov->turn_rate : 3.0f;
@@ -634,7 +635,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     }
                     case CastState::TurningToFace: {
                         if (dist > 0.1f) {
-                            f32 desired = std::atan2(-to_target.x, to_target.y);
+                            f32 desired = std::atan2(to_target.y, to_target.x);
                             f32 diff = angle_diff(transform->facing, desired);
                             auto* mov = world.movements.get(id);
                             f32 turn_rate = mov ? mov->turn_rate : 3.0f;
@@ -821,18 +822,19 @@ static void remove_all_components_and_free(World& world, Handle h) {
 // Prevents all overlaps. Each overlapping pair is separated to the boundary.
 
 void system_collision(World& world, const SpatialGrid& grid) {
-    f32 min_dist = COLLISION_RADIUS * 2.0f;
-
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
         if (world.dead_states.has(id)) continue;
 
         auto* transform = world.transforms.get(id);
         if (!transform) continue;
+        auto* mov = world.movements.get(id);
+        if (!mov) continue;
+        f32 self_radius = mov->collision_radius;
 
         UnitFilter filter;
         filter.exclude_buildings = true;
-        auto nearby = grid.units_in_range(world, transform->position, min_dist, filter);
+        auto nearby = grid.units_in_range(world, transform->position, self_radius * 4.0f, filter);
 
         for (auto& other : nearby) {
             if (other.id <= id) continue;
@@ -840,6 +842,9 @@ void system_collision(World& world, const SpatialGrid& grid) {
 
             auto* other_t = world.transforms.get(other.id);
             if (!other_t) continue;
+            auto* other_mov = world.movements.get(other.id);
+            f32 other_radius = other_mov ? other_mov->collision_radius : 32.0f;
+            f32 min_dist = self_radius + other_radius;
 
             glm::vec3 diff = transform->position - other_t->position;
             diff.z = 0;
@@ -854,8 +859,8 @@ void system_collision(World& world, const SpatialGrid& grid) {
                     other_t->position.x -= n.x * half;
                     other_t->position.y -= n.y * half;
                 } else {
-                    transform->position.x += COLLISION_RADIUS;
-                    other_t->position.x -= COLLISION_RADIUS;
+                    transform->position.x += self_radius;
+                    other_t->position.x -= other_radius;
                 }
             }
         }

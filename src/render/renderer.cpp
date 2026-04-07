@@ -1,5 +1,4 @@
 #include "render/renderer.h"
-#include "render/procedural_skeleton.h"
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "map/terrain_data.h"
 #include "simulation/world.h"
@@ -12,6 +11,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <vector>
 
@@ -164,26 +164,6 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
         m_projectile_mesh.native_z_up = true;
     }
 
-    // Create procedural skinned test model for all units
-    {
-        m_test_model = create_procedural_test_model();
-        if (!m_test_model.skinned_meshes.empty()) {
-            u32 bone_count = static_cast<u32>(m_test_model.skeleton.bones.size());
-            m_test_skinned_mesh = upload_skinned_mesh(m_rhi->allocator(),
-                m_test_model.skinned_meshes[0], bone_count);
-            m_test_skinned_mesh.native_z_up = true;
-
-            // Allocate bone descriptor set
-            if (m_test_skinned_mesh.bone_buffer) {
-                m_test_skinned_mesh.bone_descriptor = allocate_bone_descriptor(
-                    m_test_skinned_mesh.bone_buffer,
-                    bone_count * sizeof(glm::mat4));
-            }
-            log::info(TAG, "Procedural test skeleton: {} bones, {} verts",
-                      bone_count, m_test_skinned_mesh.vertex_count);
-        }
-    }
-
     log::info(TAG, "Renderer initialized — textured mesh + skinned + terrain pipelines ready");
     return true;
 }
@@ -202,7 +182,12 @@ void Renderer::shutdown() {
         if (anim.bone_buffer) vmaDestroyBuffer(alloc, anim.bone_buffer, anim.bone_alloc);
     }
     m_anim_instances.clear();
-    destroy_mesh(alloc, m_test_skinned_mesh);
+    for (auto& [path, lm] : m_model_cache) {
+        destroy_mesh(alloc, lm.mesh);
+        if (lm.diffuse_texture.image) destroy_texture(*m_rhi, lm.diffuse_texture);
+    }
+    m_model_cache.clear();
+    m_model_failed.clear();
     destroy_mesh(alloc, m_projectile_mesh);
     destroy_mesh(alloc, m_placeholder_mesh);
     for (auto& [path, mesh] : m_mesh_cache) {
@@ -269,22 +254,29 @@ static i32 find_clip_by_name(const asset::ModelData& model, std::string_view nam
     return -1;
 }
 
-AnimationInstance& Renderer::get_or_create_anim(u32 entity_id) {
+AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& model) {
     auto it = m_anim_instances.find(entity_id);
     if (it != m_anim_instances.end()) return it->second;
 
     AnimationInstance inst;
-    inst.model = &m_test_model;
+    inst.model = &model.data;
 
     // Bind animation states to clips by name (like WC3 model animations)
-    inst.state_to_clip[static_cast<u8>(AnimState::Idle)]   = find_clip_by_name(m_test_model, "idle");
-    inst.state_to_clip[static_cast<u8>(AnimState::Walk)]   = find_clip_by_name(m_test_model, "walk");
-    inst.state_to_clip[static_cast<u8>(AnimState::Attack)] = find_clip_by_name(m_test_model, "attack");
-    inst.state_to_clip[static_cast<u8>(AnimState::Spell)]  = find_clip_by_name(m_test_model, "spell");
-    inst.state_to_clip[static_cast<u8>(AnimState::Death)]  = find_clip_by_name(m_test_model, "death");
+    inst.state_to_clip[static_cast<u8>(AnimState::Idle)]   = find_clip_by_name(model.data, "idle");
+    inst.state_to_clip[static_cast<u8>(AnimState::Walk)]   = find_clip_by_name(model.data, "walk");
+    inst.state_to_clip[static_cast<u8>(AnimState::Attack)] = find_clip_by_name(model.data, "attack");
+    inst.state_to_clip[static_cast<u8>(AnimState::Spell)]  = find_clip_by_name(model.data, "spell");
+    inst.state_to_clip[static_cast<u8>(AnimState::Death)]  = find_clip_by_name(model.data, "death");
+    inst.state_to_clip[static_cast<u8>(AnimState::Birth)]  = find_clip_by_name(model.data, "birth");
+
+    // Start with birth animation if available
+    if (inst.state_to_clip[static_cast<u8>(AnimState::Birth)] >= 0) {
+        inst.current_state = AnimState::Birth;
+        inst.looping = false;
+    }
 
     // Allocate per-entity bone buffer (persistently mapped)
-    u32 bone_count = static_cast<u32>(m_test_model.skeleton.bones.size());
+    u32 bone_count = static_cast<u32>(model.data.skeleton.bones.size());
     if (bone_count > 0) {
         VkBufferCreateInfo buf_ci{};
         buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -322,6 +314,11 @@ struct AnimStateInfo {
 
 static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
                                         AnimationInstance& anim) {
+    // Birth animation plays once then transitions to idle
+    if (anim.current_state == AnimState::Birth && !anim.finished) {
+        return {AnimState::Birth, 0, false};
+    }
+
     if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
 
     // Spell casting (ability system)
@@ -817,7 +814,6 @@ bool Renderer::create_skinned_mesh_pipeline() {
     cfg.vertex_input.pVertexBindingDescriptions    = &binding;
     cfg.vertex_input.vertexAttributeDescriptionCount = 5;
     cfg.vertex_input.pVertexAttributeDescriptions  = attrs;
-
     cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
     cfg.stages[0].module = vert;
@@ -1175,7 +1171,98 @@ bool Renderer::create_terrain_pipeline() {
     return true;
 }
 
-// ── Mesh cache ─────────────────────────────────────────────────────────────
+// ── Model loading + mesh cache ────────────────────────────────────────────
+
+LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
+    // Check cache first
+    auto it = m_model_cache.find(model_path);
+    if (it != m_model_cache.end()) return &it->second;
+
+    // Don't retry paths that already failed
+    if (m_model_failed.contains(model_path)) return nullptr;
+
+    // Resolve path: try map assets, then engine root, then absolute
+    namespace fs = std::filesystem;
+    std::string resolved;
+
+    if (!m_map_root.empty()) {
+        std::string map_asset = m_map_root + "/shared/assets/" + model_path;
+        if (fs::exists(map_asset)) resolved = map_asset;
+    }
+    if (resolved.empty() && fs::exists(model_path)) {
+        resolved = model_path;
+    }
+    if (resolved.empty()) {
+        log::warn(TAG, "Model not found: '{}'", model_path);
+        m_model_failed.insert(model_path);
+        return nullptr;
+    }
+
+    // Load model from file
+    auto result = asset::load_model(resolved);
+    if (!result) {
+        log::error(TAG, "Failed to load model '{}': {}", model_path, result.error());
+        m_model_failed.insert(model_path);
+        return nullptr;
+    }
+
+    LoadedModel lm;
+    lm.data = std::move(*result);
+
+    // Merge all meshes into one and upload
+    VmaAllocator alloc = m_rhi->allocator();
+    if (!lm.data.skinned_meshes.empty() && lm.data.has_skeleton()) {
+        // Merge all skinned mesh primitives into one
+        asset::SkinnedMeshData merged;
+        for (auto& sm : lm.data.skinned_meshes) {
+            u32 base_vertex = static_cast<u32>(merged.vertices.size());
+            merged.vertices.insert(merged.vertices.end(), sm.vertices.begin(), sm.vertices.end());
+            for (u32 idx : sm.indices) {
+                merged.indices.push_back(base_vertex + idx);
+            }
+        }
+        u32 bone_count = static_cast<u32>(lm.data.skeleton.bones.size());
+        lm.mesh = upload_skinned_mesh(alloc, merged, bone_count);
+        lm.is_skinned = true;
+        log::info(TAG, "Loaded skinned model '{}': {} meshes merged, {} verts, {} bones, {} anims",
+                  model_path, lm.data.skinned_meshes.size(), lm.mesh.vertex_count,
+                  bone_count, lm.data.animations.size());
+    } else if (!lm.data.meshes.empty()) {
+        // Merge all static mesh primitives into one
+        asset::MeshData merged;
+        for (auto& m : lm.data.meshes) {
+            u32 base_vertex = static_cast<u32>(merged.vertices.size());
+            merged.vertices.insert(merged.vertices.end(), m.vertices.begin(), m.vertices.end());
+            for (u32 idx : m.indices) {
+                merged.indices.push_back(base_vertex + idx);
+            }
+        }
+        lm.mesh = upload_mesh(alloc, merged);
+        lm.is_skinned = false;
+        log::info(TAG, "Loaded static model '{}': {} meshes merged, {} verts",
+                  model_path, lm.data.meshes.size(), lm.mesh.vertex_count);
+    } else {
+        log::warn(TAG, "Model '{}' has no meshes", model_path);
+        m_model_failed.insert(model_path);
+        return nullptr;
+    }
+
+    // Upload diffuse texture (from model or use default)
+    if (!lm.data.textures.empty()) {
+        lm.diffuse_texture = upload_texture_rgba(*m_rhi,
+            lm.data.textures[0].pixels.data(),
+            lm.data.textures[0].width,
+            lm.data.textures[0].height);
+        lm.material.diffuse = lm.diffuse_texture;
+        lm.material.descriptor_set = allocate_mesh_descriptor(lm.diffuse_texture);
+        log::info(TAG, "  Texture: {}x{}", lm.data.textures[0].width, lm.data.textures[0].height);
+    } else {
+        lm.material = m_default_material;
+    }
+
+    auto [inserted, _] = m_model_cache.emplace(model_path, std::move(lm));
+    return &inserted->second;
+}
 
 GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
     auto it = m_mesh_cache.find(model_path);
@@ -1183,7 +1270,17 @@ GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
 
     if (model_path == "projectile") {
         m_mesh_cache[model_path] = m_projectile_mesh;
+    } else if (model_path == "placeholder") {
+        m_mesh_cache[model_path] = m_placeholder_mesh;
+        m_mesh_cache[model_path].native_z_up = true;
     } else {
+        // Try loading as a real model first
+        auto* lm = get_or_load_model(model_path);
+        if (lm) {
+            // Return the loaded model's mesh (caller uses mesh cache for non-unit entities)
+            m_mesh_cache[model_path] = lm->mesh;
+            return m_mesh_cache[model_path];
+        }
         log::trace(TAG, "Using placeholder mesh for '{}'", model_path);
         m_mesh_cache[model_path] = m_placeholder_mesh;
     }
@@ -1489,7 +1586,7 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
     auto& renderables = world.renderables;
     auto& handle_infos = world.handle_infos;
 
-    bool has_skinned_shadow = m_skinned_shadow_pipeline && m_test_skinned_mesh.vertex_buffer;
+    bool has_skinned_shadow = m_skinned_shadow_pipeline != VK_NULL_HANDLE;
 
     // Pass A: skinned units
     if (has_skinned_shadow) {
@@ -1503,6 +1600,9 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
             if (!renderable.visible) continue;
             auto* info = handle_infos.get(id);
             if (!info || info->category != simulation::Category::Unit) continue;
+
+            auto* lm = get_or_load_model(renderable.model_path);
+            if (!lm || !lm->is_skinned) continue;
 
             const auto* transform = transforms.get(id);
             if (!transform) continue;
@@ -1526,20 +1626,22 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
                 glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
                 model = model * slope_tilt_matrix(normal);
             }
-            model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::rotate(model, transform->facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
             model = glm::scale(model, glm::vec3{transform->scale});
+            // glTF Y-up → game Z-up
+            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
 
             glm::mat4 light_mvp = light_vp * model;
             vkCmdPushConstants(cmd, m_skinned_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(glm::mat4), &light_mvp);
             VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &m_test_skinned_mesh.vertex_buffer, &offset);
-            vkCmdBindIndexBuffer(cmd, m_test_skinned_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, m_test_skinned_mesh.index_count, 1, 0, 0, 0);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &lm->mesh.vertex_buffer, &offset);
+            vkCmdBindIndexBuffer(cmd, lm->mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, lm->mesh.index_count, 1, 0, 0, 0);
         }
     }
 
-    // Pass B: non-unit entities (projectiles, etc.)
+    // Pass B: non-skinned entities (projectiles, static meshes, etc.)
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
     vkCmdSetViewport(cmd, 0, 1, &vp);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -1550,7 +1652,11 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         if (!renderable.visible) continue;
 
         auto* info = handle_infos.get(id);
-        if (has_skinned_shadow && info && info->category == simulation::Category::Unit) continue;
+        // Skip skinned units (already drawn in Pass A)
+        if (has_skinned_shadow && info && info->category == simulation::Category::Unit) {
+            auto* lm = get_or_load_model(renderable.model_path);
+            if (lm && lm->is_skinned) continue;
+        }
 
         const auto* transform = transforms.get(id);
         if (!transform) continue;
@@ -1562,10 +1668,13 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
             glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
             model = model * slope_tilt_matrix(normal);
         }
-        model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
+        f32 facing = transform->facing;
+        if (!mesh.native_z_up) facing += glm::half_pi<f32>();
+        model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});
         if (!mesh.native_z_up) {
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+            // glTF Y-up → game Z-up
+            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
         }
 
         glm::mat4 light_mvp = light_vp * model;
@@ -1652,9 +1761,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
     frame_dt = std::min(frame_dt, 0.1f);  // clamp to avoid huge jumps
     last_time = now;
 
-    // Update all animation instances and upload bone matrices
-    bool skinned_available = m_skinned_mesh_pipeline && m_test_skinned_mesh.vertex_buffer &&
-                             m_test_skinned_mesh.bone_descriptor;
+    bool has_skinned_pipeline = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
 
     // Clean up animation instances for entities that no longer exist in the world
     {
@@ -1667,8 +1774,6 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         for (u32 eid : stale) {
             auto it = m_anim_instances.find(eid);
             if (it != m_anim_instances.end()) {
-                // Descriptor set is lightweight — freed when its pool is destroyed at shutdown.
-                // Buffer is the real GPU resource that must be freed now.
                 if (it->second.bone_buffer) {
                     vmaDestroyBuffer(m_rhi->allocator(), it->second.bone_buffer, it->second.bone_alloc);
                 }
@@ -1677,13 +1782,18 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         }
     }
 
-    if (skinned_available) {
+    // Update animations for skinned units
+    if (has_skinned_pipeline) {
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
+            const auto& renderable = renderables.data()[i];
             auto* info = handle_infos.get(id);
             if (!info || info->category != simulation::Category::Unit) continue;
 
-            auto& anim = get_or_create_anim(id);
+            auto* lm = get_or_load_model(renderable.model_path);
+            if (!lm || !lm->is_skinned) continue;
+
+            auto& anim = get_or_create_anim(id, *lm);
             auto [desired, duration, restart] = derive_anim_state(world, id, anim);
             set_anim_state(anim, desired, duration, restart);
             update_animation(anim, frame_dt);
@@ -1692,7 +1802,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
     }
 
     // Pass 1: Draw skinned units with skinned pipeline
-    if (skinned_available) {
+    if (has_skinned_pipeline) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skinned_mesh_pipeline);
         vkCmdSetViewport(cmd, 0, 1, &viewport);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -1704,6 +1814,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
             auto* info = handle_infos.get(id);
             if (!info || info->category != simulation::Category::Unit) continue;
+
+            auto* lm = get_or_load_model(renderable.model_path);
+            if (!lm || !lm->is_skinned) continue;
 
             const auto* transform = transforms.get(id);
             if (!transform) continue;
@@ -1719,8 +1832,10 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
                             anim.bone_matrices.size() * sizeof(glm::mat4));
             }
 
+            // Use corpse material only for placeholder models (no real texture)
             bool is_corpse = world.dead_states.has(id);
-            auto& mat = is_corpse ? m_corpse_material : m_default_material;
+            bool has_own_texture = lm->diffuse_texture.image != VK_NULL_HANDLE;
+            auto& mat = (is_corpse && !has_own_texture) ? m_corpse_material : lm->material;
             if (mat.descriptor_set && m_shadow_desc_set) {
                 VkDescriptorSet sets[] = {mat.descriptor_set, m_shadow_desc_set,
                                           anim.bone_descriptor};
@@ -1733,22 +1848,24 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
                 glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
                 model = model * slope_tilt_matrix(normal);
             }
-            model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::rotate(model, transform->facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
             model = glm::scale(model, glm::vec3{transform->scale});
+            // glTF Y-up → game Z-up
+            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
 
             glm::mat4 mvp = vp * model;
             struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
             vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(push), &push);
 
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &m_test_skinned_mesh.vertex_buffer, &offset);
-            vkCmdBindIndexBuffer(cmd, m_test_skinned_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, m_test_skinned_mesh.index_count, 1, 0, 0, 0);
+            VkDeviceSize vb_offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &lm->mesh.vertex_buffer, &vb_offset);
+            vkCmdBindIndexBuffer(cmd, lm->mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, lm->mesh.index_count, 1, 0, 0, 0);
         }
     }
 
-    // Pass 2: Draw non-unit entities (projectiles, etc.) with regular mesh pipeline
+    // Pass 2: Draw non-skinned entities (static meshes, projectiles, etc.)
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -1759,14 +1876,22 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         if (!renderable.visible) continue;
 
         auto* info = handle_infos.get(id);
-        // Skip units (already drawn with skinned pipeline)
-        if (skinned_available && info && info->category == simulation::Category::Unit) continue;
+        // Skip skinned units (already drawn in Pass 1)
+        if (has_skinned_pipeline && info && info->category == simulation::Category::Unit) {
+            auto* lm = get_or_load_model(renderable.model_path);
+            if (lm && lm->is_skinned) continue;
+        }
 
         const auto* transform = transforms.get(id);
         if (!transform) continue;
 
+        // Use corpse material only for placeholder models (no real texture)
         bool is_corpse = world.dead_states.has(id);
-        auto& mat = is_corpse ? m_corpse_material : m_default_material;
+        auto* lm_static = get_or_load_model(renderable.model_path);
+        bool has_own_tex = lm_static && lm_static->diffuse_texture.image != VK_NULL_HANDLE;
+        auto& mat = (is_corpse && !has_own_tex)
+                    ? m_corpse_material
+                    : (lm_static ? lm_static->material : m_default_material);
         if (mat.descriptor_set && m_shadow_desc_set) {
             VkDescriptorSet mesh_sets[] = {mat.descriptor_set, m_shadow_desc_set};
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1781,10 +1906,13 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             glm::vec3 normal = m_pathfinder->sample_normal(transform->position.x, transform->position.y);
             model = model * slope_tilt_matrix(normal);
         }
-        model = glm::rotate(model, transform->facing, glm::vec3{0.0f, 0.0f, 1.0f});
+        f32 facing = transform->facing;
+        if (!mesh.native_z_up) facing += glm::half_pi<f32>();
+        model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});
         if (!mesh.native_z_up) {
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(-90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+            // glTF Y-up → game Z-up
+            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
         }
 
         glm::mat4 mvp = vp * model;

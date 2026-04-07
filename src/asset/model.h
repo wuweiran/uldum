@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "asset/texture.h"
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -49,6 +50,10 @@ struct Bone {
     std::string name;
     i32         parent_index = -1;          // -1 = root
     glm::mat4   inverse_bind_matrix{1.0f};
+    // Rest pose (default TRS from glTF node)
+    glm::vec3   rest_translation{0.0f};
+    glm::quat   rest_rotation{1, 0, 0, 0};  // w,x,y,z
+    glm::vec3   rest_scale{1.0f};
 };
 
 struct Skeleton {
@@ -80,6 +85,7 @@ struct ModelData {
     Skeleton                     skeleton;
     std::vector<AnimationClip>   animations;
     std::string                  name;
+    std::vector<TextureData>     textures;  // extracted diffuse textures
 
     bool has_skeleton() const { return !skeleton.empty(); }
 };

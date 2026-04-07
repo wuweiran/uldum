@@ -45,8 +45,9 @@ struct LocalTransform {
     glm::vec3 scale{1.0f};
 };
 
-static LocalTransform sample_channel(const asset::AnimationChannel& ch, f32 time) {
-    LocalTransform lt;
+static LocalTransform sample_channel(const asset::AnimationChannel& ch, f32 time,
+                                     const LocalTransform& rest) {
+    LocalTransform lt = rest;  // start from rest pose, not identity
     u32 i0, i1;
     f32 t;
 
@@ -89,13 +90,18 @@ static void evaluate_clip(const asset::AnimationClip& clip, const asset::Skeleto
                            f32 time, std::span<glm::mat4> out_globals) {
     u32 bone_count = static_cast<u32>(skel.bones.size());
 
-    // Start with identity local transforms
+    // Start with rest pose local transforms (not identity!)
     std::vector<LocalTransform> locals(bone_count);
+    for (u32 i = 0; i < bone_count; ++i) {
+        locals[i].translation = skel.bones[i].rest_translation;
+        locals[i].rotation    = skel.bones[i].rest_rotation;
+        locals[i].scale       = skel.bones[i].rest_scale;
+    }
 
-    // Apply clip channels
+    // Apply clip channels (overrides rest pose for animated components only)
     for (auto& ch : clip.channels) {
         if (ch.bone_index < bone_count) {
-            locals[ch.bone_index] = sample_channel(ch, time);
+            locals[ch.bone_index] = sample_channel(ch, time, locals[ch.bone_index]);
         }
     }
 
@@ -173,8 +179,19 @@ void evaluate_animation(AnimationInstance& inst) {
     if (clip_idx >= 0 && clip_idx < static_cast<i32>(inst.model->animations.size())) {
         evaluate_clip(inst.model->animations[clip_idx], skel, inst.time, current_globals);
     } else {
-        // No clip — use identity (bind pose)
-        for (u32 i = 0; i < bone_count; ++i) current_globals[i] = glm::mat4{1.0f};
+        // No clip — use rest pose
+        for (u32 i = 0; i < bone_count; ++i) {
+            LocalTransform lt;
+            lt.translation = skel.bones[i].rest_translation;
+            lt.rotation    = skel.bones[i].rest_rotation;
+            lt.scale       = skel.bones[i].rest_scale;
+            glm::mat4 local = trs_to_matrix(lt);
+            if (skel.bones[i].parent_index >= 0) {
+                current_globals[i] = current_globals[skel.bones[i].parent_index] * local;
+            } else {
+                current_globals[i] = local;
+            }
+        }
     }
 
     // Compute final skinning matrices: global * inverse_bind

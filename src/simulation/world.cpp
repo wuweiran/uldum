@@ -51,7 +51,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     u32 id = h.id;
 
     // All game objects
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit, h.generation});
 
     // Widget — HP is engine built-in
@@ -77,7 +77,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // Unit
     world.owners.add(id, Owner{owner});
-    world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->move_type, {}, false});
+    world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->collision_radius, def->move_type, {}, false});
     {
         Combat combat;
         combat.damage           = def->damage;

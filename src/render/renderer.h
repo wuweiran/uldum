@@ -18,6 +18,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace uldum::rhi { class VulkanRhi; }
 namespace uldum::simulation { struct World; class Pathfinder; }
@@ -26,6 +27,15 @@ namespace uldum::map { struct TerrainData; }
 
 namespace uldum::render {
 
+// A fully loaded model: CPU data + GPU resources + material.
+struct LoadedModel {
+    asset::ModelData data;
+    GpuMesh          mesh{};             // first mesh (skinned or static)
+    GpuTexture       diffuse_texture{};  // from model or default
+    MeshMaterial     material{};
+    bool             is_skinned = false;
+};
+
 class Renderer {
 public:
     bool init(rhi::VulkanRhi& rhi);
@@ -33,6 +43,9 @@ public:
 
     void update_camera(const platform::InputState& input, f32 dt);
     void handle_resize(f32 aspect);
+
+    // Set the map root directory for resolving model asset paths.
+    void set_map_root(std::string_view root) { m_map_root = root; }
 
     // Build (or rebuild) the terrain GPU mesh and splatmap from terrain data.
     void set_terrain(const map::TerrainData& terrain);
@@ -63,6 +76,7 @@ private:
     bool create_shadow_resources();
     bool create_default_texture();
     bool create_terrain_textures();
+    LoadedModel* get_or_load_model(const std::string& model_path);
     GpuMesh& get_or_upload_mesh(const std::string& model_path);
     VkDescriptorSet allocate_mesh_descriptor(const GpuTexture& diffuse);
     VkDescriptorSet allocate_terrain_descriptor(const TerrainMaterial& mat);
@@ -74,6 +88,7 @@ private:
     rhi::VulkanRhi* m_rhi = nullptr;
     const simulation::Pathfinder* m_pathfinder = nullptr;
     Camera          m_camera;
+    std::string     m_map_root;  // map root for resolving model paths
 
     // Descriptor infrastructure
     VkDescriptorSetLayout m_mesh_desc_layout    = VK_NULL_HANDLE;  // set 0: 1 diffuse sampler
@@ -120,7 +135,11 @@ private:
     // Terrain material (ground layer textures + splatmap)
     TerrainMaterial m_terrain_material{};
 
-    // Cached GPU meshes (model_path → GpuMesh)
+    // Cached loaded models (model_path → LoadedModel)
+    std::unordered_map<std::string, LoadedModel> m_model_cache;
+    std::unordered_set<std::string> m_model_failed;  // paths that failed to load
+
+    // Cached GPU meshes for special built-in meshes (projectile, etc.)
     std::unordered_map<std::string, GpuMesh> m_mesh_cache;
 
     // Placeholder mesh for models that fail to load
@@ -136,10 +155,6 @@ private:
     // Terrain mesh
     TerrainMesh m_terrain{};
 
-    // Procedural test model (used for all units until real glTF models are loaded)
-    asset::ModelData m_test_model;
-    GpuMesh          m_test_skinned_mesh{};
-
     // Per-entity animation instances (entity id → AnimationInstance)
     std::unordered_map<u32, AnimationInstance> m_anim_instances;
 
@@ -148,8 +163,8 @@ private:
     EffectRegistry  m_effect_registry;
     EffectManager   m_effect_manager;
 
-    // Get or create animation instance for an entity
-    AnimationInstance& get_or_create_anim(u32 entity_id);
+    // Get or create animation instance for an entity using its model.
+    AnimationInstance& get_or_create_anim(u32 entity_id, LoadedModel& model);
 };
 
 } // namespace uldum::render
