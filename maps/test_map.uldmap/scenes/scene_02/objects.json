@@ -1,7 +1,7 @@
 {
     "units": [
-        { "type": "footman", "owner": 0, "x": 4032.0, "y": 4096.0, "facing": 0.0 },
-        { "type": "paladin", "owner": 0, "x": 4160.0, "y": 4096.0, "facing": 0.0 }
+        { "type": "footman", "owner": 0, "x": 3800.0, "y": 4096.0, "facing": 180.0 },
+        { "type": "paladin", "owner": 0, "x": 3900.0, "y": 4096.0, "facing": 0.0 }
     ],
     "destructables": [],
     "items": [],

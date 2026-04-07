@@ -91,6 +91,7 @@ bool Editor::init(const std::string& map_path) {
         m_map_loaded = true;
         m_scenes = m_map.list_scenes();
         m_current_scene = m_map.manifest().start_scene;
+        m_renderer.set_map_root(m_map.map_root());
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
         }
@@ -648,6 +649,7 @@ void Editor::open_map(const std::string& path) {
         m_map_loaded = true;
         m_scenes = m_map.list_scenes();
         m_current_scene = m_map.manifest().start_scene;
+        m_renderer.set_map_root(m_map.map_root());
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
         }
