@@ -320,10 +320,12 @@ void ScriptEngine::bind_api() {
         if (t) { t->position.x = x; t->position.y = y; t->position.z = sim.pathfinder().sample_height(x, y); }
     };
     lua["GetUnitFacing"] = [&](simulation::Unit u) -> f32 {
-        auto* t = sim.world().transforms.get(u.id); return t ? t->facing : 0;
+        auto* t = sim.world().transforms.get(u.id);
+        return t ? t->facing * 57.2957795f : 0;  // rad → deg
     };
-    lua["SetUnitFacing"] = [&](simulation::Unit u, f32 facing) {
-        auto* t = sim.world().transforms.get(u.id); if (t) t->facing = facing;
+    lua["SetUnitFacing"] = [&](simulation::Unit u, f32 degrees) {
+        auto* t = sim.world().transforms.get(u.id);
+        if (t) t->facing = degrees * 0.0174532925f;  // deg → rad
     };
 
     // Health

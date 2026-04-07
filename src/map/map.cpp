@@ -223,7 +223,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             pu.type   = u.value("type", "");
             pu.x      = u.value("x", 0.0f);
             pu.y      = u.value("y", 0.0f);
-            pu.facing = u.value("facing", 0.0f);
+            pu.facing = u.value("facing", 0.0f) * (glm::pi<f32>() / 180.0f);
             pu.owner  = u.value("owner", 0u);
             m_scene.units.push_back(pu);
 
@@ -271,7 +271,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             pd.type      = d.value("type", "");
             pd.x         = d.value("x", 0.0f);
             pd.y         = d.value("y", 0.0f);
-            pd.facing    = d.value("facing", 0.0f);
+            pd.facing    = d.value("facing", 0.0f) * (glm::pi<f32>() / 180.0f);
             pd.variation = static_cast<u8>(d.value("variation", 0));
             m_scene.destructables.push_back(pd);
 
