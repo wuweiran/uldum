@@ -1,5 +1,6 @@
 #include "simulation/systems.h"
 #include "simulation/world.h"
+#include "simulation/type_registry.h"
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
@@ -522,6 +523,15 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                 } else {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
+
+                // Play attack sound
+                if (world.on_sound) {
+                    auto* info = world.handle_infos.get(id);
+                    auto* def = info ? world.types->get_unit_type(info->type_id) : nullptr;
+                    if (def && !def->sound_attack.empty()) {
+                        world.on_sound(def->sound_attack, transform->position);
+                    }
+                }
                 combat.attack_state = AttackState::Backswing;
                 combat.attack_timer = combat.backswing;
             }
@@ -910,6 +920,15 @@ void system_death(World& world) {
             if (info->category == Category::Item) continue;
 
             log::info("Combat", "{} has died (id={})", info->type_id, id);
+
+            // Play death sound
+            if (world.on_sound) {
+                auto* def = world.types->get_unit_type(info->type_id);
+                if (def && !def->sound_death.empty()) {
+                    auto* t = world.transforms.get(id);
+                    if (t) world.on_sound(def->sound_death, t->position);
+                }
+            }
 
             // Fire death callback for script engine
             if (world.on_death) {

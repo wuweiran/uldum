@@ -146,6 +146,13 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             }
         }
 
+        if (val.contains("sounds")) {
+            auto& s = val["sounds"];
+            def.sound_attack = s.value("attack", "");
+            def.sound_death  = s.value("death", "");
+            def.sound_birth  = s.value("birth", "");
+        }
+
         if (val.contains("building")) {
             auto& b = val["building"];
             def.build_time = b.value("build_time", 60.0f);

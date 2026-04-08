@@ -94,6 +94,19 @@ if(MSVC)
     target_compile_options(imgui PRIVATE /W0)
 endif()
 
+# ── miniaudio (audio playback) — header-only ──────────────────────────────
+message(STATUS "Fetching miniaudio...")
+FetchContent_Declare(miniaudio
+    URL      https://github.com/mackron/miniaudio/archive/refs/tags/0.11.21.tar.gz
+)
+FetchContent_Populate(miniaudio)
+
+add_library(miniaudio STATIC miniaudio_impl.c)
+target_include_directories(miniaudio SYSTEM PUBLIC ${miniaudio_SOURCE_DIR})
+if(MSVC)
+    target_compile_options(miniaudio PRIVATE /W0)
+endif()
+
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
 message(STATUS "Fetching VMA...")
 FetchContent_Declare(vma

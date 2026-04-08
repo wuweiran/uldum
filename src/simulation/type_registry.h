@@ -65,6 +65,11 @@ struct UnitTypeDef {
     std::map<std::string, f32>   hero_base_attrs;      // "strength" → 22.0
     std::map<std::string, f32>   hero_attr_per_level;   // "strength" → 2.7
 
+    // Sounds (triggered by animation events)
+    std::string sound_attack;  // played on attack damage point
+    std::string sound_death;   // played on death
+    std::string sound_birth;   // played on spawn
+
     // Building (if "structure" classification set)
     f32 build_time = 0;
 };

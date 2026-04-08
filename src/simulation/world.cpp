@@ -114,6 +114,12 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         world.buildings.add(id, BuildingComp{});
     }
 
+    // Play birth sound
+    if (world.on_sound && !def->sound_birth.empty()) {
+        auto* t = world.transforms.get(id);
+        if (t) world.on_sound(def->sound_birth, t->position);
+    }
+
     Unit unit;
     unit.id = h.id;
     unit.generation = h.generation;

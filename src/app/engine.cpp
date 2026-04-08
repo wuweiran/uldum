@@ -124,8 +124,9 @@ bool Engine::init() {
         log::info(TAG, "Alliances initialized — {} players", manifest.players.size());
     }
 
-    // Set map root for model path resolution
+    // Set map root for asset path resolution
     m_renderer.set_map_root(m_map.map_root());
+    m_audio.set_map_root(m_map.map_root());
 
     // Feed terrain data to renderer and simulation
     if (m_map.terrain().is_valid()) {
@@ -135,10 +136,15 @@ bool Engine::init() {
     }
 
     // Scripting — init after map so we can load map scripts
-    if (!m_script.init(m_simulation, m_map, &m_renderer.effect_registry(), &m_renderer.effect_manager())) {
+    if (!m_script.init(m_simulation, m_map, &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio)) {
         log::error(TAG, "ScriptEngine init failed");
         return false;
     }
+
+    // Wire sound callback: simulation fires sounds, audio engine plays them
+    m_simulation.world().on_sound = [this](std::string_view path, glm::vec3 pos) {
+        m_audio.play_sfx(path, pos);
+    };
 
     // Initialize spatial grid before scripts run (so GetUnitsInRange works in main())
     m_simulation.spatial_grid().update(m_simulation.world());
@@ -201,7 +207,12 @@ void Engine::run() {
         // Update camera
         m_renderer.update_camera(m_platform->input(), frame_dt);
 
-        // Audio
+        // Audio — update listener from camera position
+        {
+            auto& cam = m_renderer.camera();
+            glm::vec3 forward = cam.forward_dir();
+            m_audio.set_listener(cam.position(), forward, glm::vec3{0, 0, 1});
+        }
         m_audio.update();
 
         // Render (skip if window is minimized — extent would be zero)

@@ -15,6 +15,7 @@ namespace sol { class state; }
 namespace uldum::simulation { class Simulation; struct World; class AbilityRegistry; }
 namespace uldum::map { class MapManager; }
 namespace uldum::render { class EffectRegistry; class EffectManager; }
+namespace uldum::audio { class AudioEngine; }
 
 namespace uldum::script {
 
@@ -60,7 +61,8 @@ public:
 
     bool init(simulation::Simulation& sim, map::MapManager& map,
               render::EffectRegistry* effects = nullptr,
-              render::EffectManager* effect_mgr = nullptr);
+              render::EffectManager* effect_mgr = nullptr,
+              audio::AudioEngine* audio = nullptr);
     void shutdown();
     void update(float dt);
 
@@ -102,6 +104,7 @@ private:
     map::MapManager*            m_map = nullptr;
     render::EffectRegistry*  m_effects    = nullptr;
     render::EffectManager*   m_effect_mgr = nullptr;
+    audio::AudioEngine*      m_audio      = nullptr;
 
     // Triggers
     std::unordered_map<u32, Trigger> m_triggers;

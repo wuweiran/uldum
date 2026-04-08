@@ -65,6 +65,11 @@ struct World {
                                                       Unit target_unit, glm::vec3 target_pos)>;
     AbilityEffectCallback on_ability_effect;
 
+    // Sound callback — fired when a unit event needs a sound.
+    // Parameters: sound path, position. Empty path = no sound.
+    using SoundCallback = std::function<void(std::string_view path, glm::vec3 position)>;
+    SoundCallback on_sound;
+
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
 

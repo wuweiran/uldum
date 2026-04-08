@@ -37,6 +37,14 @@ void Camera::update(const platform::InputState& input, f32 dt) {
     if (m_position.z < 128.0f) m_position.z = 128.0f;
 }
 
+glm::vec3 Camera::forward_dir() const {
+    return {
+        -std::cos(m_pitch) * std::sin(m_yaw),
+         std::cos(m_pitch) * std::cos(m_yaw),
+         std::sin(m_pitch)
+    };
+}
+
 void Camera::recalculate() {
     if (!m_dirty) return;
 

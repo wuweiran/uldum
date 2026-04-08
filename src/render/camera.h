@@ -22,6 +22,7 @@ public:
     glm::mat4 view_projection() const;
 
     glm::vec3 position() const { return m_position; }
+    glm::vec3 forward_dir() const;
 
 private:
     void recalculate();

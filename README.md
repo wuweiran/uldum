@@ -10,34 +10,41 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 - **Unit-centric gameplay** — ECS internally, unit facade for scripting
 - **Lua 5.4 scripting** — trigger/event system, sandboxed map scripts
 - **Map system** — heightmap terrain, object placement, asset overrides
+- **Audio** — 3D positional SFX, music streaming, ambient loops (miniaudio)
 - **Server-authoritative multiplayer** — with single player via in-process local server
-- **Terrain editor** — in-engine ImGui-based editor (sculpt, paint, pathing, objects)
+- **Terrain editor** — in-engine ImGui-based editor (sculpt, paint, cliff, ramp, pathing)
 - **Cross-platform** — Windows and Android
 
 ## Current Status
 
-Phase 10 complete. Terrain editor.
+Phase 11 complete. Audio system.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
 - VMA for GPU memory, GLSL shaders compiled to SPIR-V at build time
 - Asset pipeline: PNG textures (stb_image), glTF models with skeleton + animation (cgltf), JSON configs (nlohmann/json)
 - Handle-based AssetManager with path caching + absolute path loading
+- Real glTF model loading: mesh merging, embedded texture extraction, per-model material
 - ECS simulation: sparse set storage, generational typed handles (Unit, Destructable, Item)
 - Map system: `.uldmap` packages with manifest, types, scenes, scripts, assets
   - Manifest: metadata, players, teams, alliances, map-defined enumerations
   - Type loading from map's `types/` directory (no engine gameplay data)
   - Scene: terrain + object placements (units, destructables, items, regions, cameras)
 - WC3-scale coordinates (1 tile = 128 game units, melee range 128, speed ~270)
+- WC3 facing convention (0 = +X, 90 = +Y, degrees in JSON/Lua, radians internally)
 - Generic state system (HP engine-built-in, mana/energy/etc. map-defined)
 - Generic attribute system (string-based: armor, attack_type, strength, etc. all map-defined)
 - String-based classifications, attack/armor types (map declares valid values in manifest)
 - Alliance system: per-player-pair, asymmetric (allied, passive), loaded from manifest teams
 - A* pathfinding on tile grid with 8-directional movement
 - Movement with committed-side local avoidance (steer around other units)
+- Per-unit collision radius (configurable per type in JSON)
 - Hard collision resolution (prevents unit overlap)
 - Spatial grid for efficient proximity queries
 - Combat system: attack state machine, auto-acquire within acquire_range, attack-move
+  - Attack facing tolerance (~10 degrees, like WC3)
+  - Backswing completes even when target dies (cancelable by player orders)
+  - Continuous attack: no idle gap between swings against same target
 - Unified damage pipeline with damage types (map-defined), on_damage event with SetDamageAmount
 - Death system with on_death callback, corpse lifecycle
 - Projectile system: flight, homing, hit detection, impact damage
@@ -47,11 +54,11 @@ Phase 10 complete. Terrain editor.
 - Skeletal animation (Phase 9):
   - GPU skinning via vertex shader + per-entity bone SSBO
   - glTF skeleton/animation extraction (joints, weights, inverse bind matrices, keyframes)
-  - Animation state machine: idle, walk, attack, spell, death (clips bound by name)
+  - Rest pose support for correct bind pose rendering
+  - Animation state machine: idle, walk, attack, spell, death, birth (clips bound by name)
   - Playback speed syncs to gameplay timing (attack cooldown, movement speed)
-  - Crossfade blending between states
+  - Crossfade blending between all state transitions
   - Skinned shadow pass (shadows match animation pose)
-  - Procedural 2-bone test skeleton for development without real models
 - Effect system (Phase 9):
   - Named effects: engine defaults + map-defined (Lua or JSON)
   - Lifecycle: CreateEffect (persistent) / PlayEffect (fire-and-forget) / DestroyEffect
@@ -65,26 +72,43 @@ Phase 10 complete. Terrain editor.
   - Full engine API: unit CRUD, orders, abilities, damage, spatial queries, hero, player
   - Alliance API: SetAlliance, IsPlayerAlly, IsPlayerEnemy
   - Effect API: DefineEffect, CreateEffect, PlayEffect, DestroyEffect
+  - Audio API: PlaySound, PlayMusic, StopMusic, PlayAmbientLoop, SetVolume
   - Attribute API: GetUnitAttribute, SetUnitAttribute
   - Proper Unit/Player usertypes with == operator, nil for invalid handles
   - Context functions with wrong-event warnings
 - Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
 - Terrain splatmap rendering: 4 ground texture layers blended per tile
-- Shadow mapping: 2048x2048 depth pass, 3x3 PCF filtering, depth bias
+- Shadow mapping: 2048x2048 depth pass, 3x3 PCF filtering, depth bias, normal offset bias
 - Directional lighting with world-space normals and shadows
+- Render interpolation: smooth 60fps visuals from 32Hz simulation tick
 - Game coordinates: X=right, Y=forward, Z=up
 - Terrain editor (Phase 10):
   - Separate `uldum_editor.exe` build target with ImGui (Dear ImGui + Vulkan + Win32)
   - Heightmap sculpting: raise, lower, smooth, flatten brushes
   - Texture painting: splatmap with 4 ground layers
-  - Cliff level editing: sheer terraces with smoothed diagonal edges
-  - Ramp placement: slopes between adjacent cliff levels
-  - Water placement: per-tile water height
+  - Cliff level editing: sheer terraces with smoothed diagonal edges (midpoint cutting)
+  - Cliff constraint enforcement: max 1 level difference between adjacent vertices
+  - Per-edge ramp-aware cliff smoothing (no gaps at ramp/cliff boundaries)
+  - Diagonal cliff case (saddle points) with proper wall geometry
+  - Ramp placement: slopes between adjacent cliff levels (auto-validated)
+  - Water placement: per-tile water as splatmap layer
   - Pathing editing: toggle walkable flag per vertex
+  - WC3-style brush sizing (1 = single vertex)
   - Tile-based brush with vertex indicator and grid overlay
   - Save/load terrain.bin (binary format)
   - Open Map folder picker, scene switching
   - DPI-aware UI scaling
+- Audio system (Phase 11):
+  - miniaudio high-level engine (ma_engine) with 3D spatialization
+  - 5 volume channels: Master, SFX, Music, Ambient, Voice (sound groups)
+  - SFX: 3D positioned and 2D fire-and-forget sounds, auto-cleanup
+  - Music: streaming playback with looping and crossfade between tracks
+  - Ambient: 3D looping sounds with fade-out
+  - Listener updated from camera position each frame
+  - Animation-driven sounds: attack, death, birth sounds defined per unit type in JSON
+  - Sound callback system: simulation fires events, audio engine plays them (no coupling)
+  - Path resolution: map shared/assets first, then engine root
+  - Lua API: PlaySound, PlaySoundAtPoint, PlaySound2D, PlayMusic, StopMusic, PlayAmbientLoop, StopAmbientLoop, SetVolume
 - Ninja build system for parallel compilation
 
 ## Prerequisites
@@ -115,7 +139,7 @@ scripts\build.bat
 
 First build fetches third-party dependencies via CMake FetchContent (takes ~1 min). Subsequent builds are incremental.
 
-Output: `build/bin/uldum_dev.exe` (developer runtime), `build/bin/uldum_editor.exe` (map editor), `build/bin/uldum_game.exe` (shipped game), `build/bin/uldum_server.exe` (dedicated server). See [docs/build-targets.md](docs/build-targets.md) for details.
+Output: `build/bin/uldum_dev.exe` (developer runtime), `build/bin/uldum_editor.exe` (map editor). See [docs/build-targets.md](docs/build-targets.md) for details.
 
 ## Run
 
@@ -124,7 +148,7 @@ cd build\bin
 uldum_dev.exe
 ```
 
-The engine loads the test map from `maps/test_map.uldmap/` automatically. The test scene spawns creep waves attacking two hero units with abilities (cleave, consecration, holy light).
+The engine loads the test map from `maps/test_map.uldmap/` automatically. The test scene spawns units with real glTF models, skeletal animation, combat, and abilities.
 
 **Controls:**
 - **WASD** — move camera on the ground plane
@@ -147,18 +171,19 @@ src/
 ├── rhi/            Vulkan 1.3 abstraction
 ├── asset/          Resource manager, format loaders (glTF, PNG, JSON)
 ├── render/         Pipelines, camera, terrain, animation, particles, effects
-├── audio/          3D positional audio (miniaudio) [stub]
+├── audio/          3D positional audio, music, ambient (miniaudio)
 ├── script/         Lua 5.4 VM, engine API bindings, triggers
 ├── simulation/     ECS, units, abilities, pathfinding, combat, AI
 ├── network/        Server-authoritative multiplayer (ENet) [stub]
 ├── map/            Map format, terrain data, overrides
-├── editor/         Map editor executable — terrain tools, object placement [stub]
-└── app/            Engine core + entry points (dev, game, server)
+├── editor/         Map editor executable — terrain tools, cliff/ramp editing
+└── app/            Engine core + entry points (dev, editor)
 ```
 
 ## Documentation
 
 - [docs/design.md](docs/design.md) — Full technical design and roadmap
+- [docs/audio.md](docs/audio.md) — Audio system design
 - [docs/model-format.md](docs/model-format.md) — Model, animation, texture, and effect specifications
 
 ## License

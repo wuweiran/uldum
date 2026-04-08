@@ -6,6 +6,7 @@
 #include "simulation/spatial_query.h"
 #include "map/map.h"
 #include "render/effect.h"
+#include "audio/audio.h"
 #include "core/log.h"
 
 #define SOL_ALL_SAFETIES_ON 1
@@ -38,10 +39,12 @@ ScriptEngine::~ScriptEngine() = default;
 
 bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
                          render::EffectRegistry* effects,
-                         render::EffectManager* effect_mgr) {
+                         render::EffectManager* effect_mgr,
+                         audio::AudioEngine* audio) {
     m_sim = &sim;
     m_map = &map;
     m_effects = effects;
+    m_audio = audio;
     m_effect_mgr = effect_mgr;
 
     m_lua = std::make_unique<sol::state>();
@@ -573,6 +576,54 @@ void ScriptEngine::bind_api() {
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
         m_effect_mgr->play_on_unit(name, unit, t->position);
+    };
+    // ── Audio API ──────────────────────────────────────────────────────
+
+    lua["PlaySound"] = [this](std::string_view path, simulation::Unit unit) {
+        if (!m_audio) return;
+        auto& sim = *m_sim;
+        auto* t = sim.world().transforms.get(unit.id);
+        if (t) m_audio->play_sfx(path, t->position);
+    };
+
+    lua["PlaySoundAtPoint"] = [this](std::string_view path, f32 x, f32 y) {
+        if (!m_audio) return;
+        m_audio->play_sfx(path, {x, y, 0});
+    };
+
+    lua["PlaySound2D"] = [this](std::string_view path) {
+        if (!m_audio) return;
+        m_audio->play_sfx_2d(path);
+    };
+
+    lua["PlayMusic"] = [this](std::string_view path, sol::optional<f32> fade_in) {
+        if (!m_audio) return;
+        m_audio->play_music(path, fade_in.value_or(1.0f));
+    };
+
+    lua["StopMusic"] = [this](sol::optional<f32> fade_out) {
+        if (!m_audio) return;
+        m_audio->stop_music(fade_out.value_or(1.0f));
+    };
+
+    lua["PlayAmbientLoop"] = [this](std::string_view path, f32 x, f32 y) -> u32 {
+        if (!m_audio) return 0;
+        return m_audio->play_ambient(path, {x, y, 0}).id;
+    };
+
+    lua["StopAmbientLoop"] = [this](u32 handle_id, sol::optional<f32> fade_out) {
+        if (!m_audio) return;
+        m_audio->stop_ambient({handle_id}, fade_out.value_or(0.5f));
+    };
+
+    lua["SetVolume"] = [this](std::string_view channel, f32 volume) {
+        if (!m_audio) return;
+        audio::Channel ch = audio::Channel::Master;
+        if (channel == "sfx")     ch = audio::Channel::SFX;
+        else if (channel == "music")   ch = audio::Channel::Music;
+        else if (channel == "ambient") ch = audio::Channel::Ambient;
+        else if (channel == "voice")   ch = audio::Channel::Voice;
+        m_audio->set_volume(ch, volume);
     };
 }
 
