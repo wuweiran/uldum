@@ -10,6 +10,7 @@
         "vision": { "day": 1400, "night": 800 },
         "abilities": ["attack", "move", "stop", "hold_position", "defend"],
         "classifications": ["ground"],
+        "sounds": { "attack": "sounds/chop.ogg" },
         "selection": { "radius": 32, "priority": 5 }
     },
     "paladin": {
@@ -30,6 +31,7 @@
             "primary_attr": "strength",
             "attr_per_level": { "strength": 2.7, "agility": 1.5, "intelligence": 1.8 }
         },
+        "sounds": { "attack": "sounds/knifeSlice.ogg" },
         "classifications": ["ground", "hero"],
         "selection": { "radius": 48, "priority": 10 }
     },

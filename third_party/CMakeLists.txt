@@ -103,6 +103,8 @@ FetchContent_Populate(miniaudio)
 
 add_library(miniaudio STATIC miniaudio_impl.c)
 target_include_directories(miniaudio SYSTEM PUBLIC ${miniaudio_SOURCE_DIR})
+target_include_directories(miniaudio PRIVATE ${stb_SOURCE_DIR})  # stb_vorbis header for OGG decoding
+target_link_libraries(miniaudio PRIVATE stb)  # stb_vorbis implementation
 if(MSVC)
     target_compile_options(miniaudio PRIVATE /W0)
 endif()

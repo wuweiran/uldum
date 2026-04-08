@@ -184,6 +184,9 @@ void AudioEngine::play_sfx(std::string_view path, glm::vec3 position) {
 
     ma_sound_set_spatialization_enabled(sound, MA_TRUE);
     ma_sound_set_position(sound, position.x, position.y, position.z);
+    ma_sound_set_min_distance(sound, 500.0f);
+    ma_sound_set_max_distance(sound, 5000.0f);
+    ma_sound_set_volume(sound, 0.4f);
     ma_sound_start(sound);
     m_active_sfx.push_back({sound});
 }
@@ -288,6 +291,8 @@ SoundHandle AudioEngine::play_ambient(std::string_view path, glm::vec3 position)
 
     ma_sound_set_spatialization_enabled(sound, MA_TRUE);
     ma_sound_set_position(sound, position.x, position.y, position.z);
+    ma_sound_set_min_distance(sound, 500.0f);
+    ma_sound_set_max_distance(sound, 5000.0f);
     ma_sound_set_looping(sound, MA_TRUE);
     ma_sound_start(sound);
 
