@@ -15,6 +15,12 @@ public:
     void init(f32 aspect_ratio);
     void update(const platform::InputState& input, f32 dt);
 
+    // Right-click drag panning (editor). Call with mouse delta while right button held.
+    void pan(f32 dx, f32 dy);
+
+    // Scroll wheel zoom (moves along view direction).
+    void zoom(f32 scroll_delta);
+
     void set_aspect(f32 aspect) { m_aspect = aspect; m_dirty = true; }
 
     glm::mat4 view_matrix() const;

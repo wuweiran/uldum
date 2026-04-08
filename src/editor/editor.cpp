@@ -200,11 +200,13 @@ void Editor::run() {
         previous_time = current_time;
         if (frame_dt > 0.25f) frame_dt = 0.25f;
 
-        // Camera
-        m_renderer.update_camera(m_platform->input(), frame_dt);
-
         // Terrain cursor — raycast and snap to nearest vertex
         auto& input = m_platform->input();
+
+        // Scroll wheel zoom (when not over UI)
+        if (input.scroll_delta != 0.0f && !ImGui::GetIO().WantCaptureMouse) {
+            m_renderer.camera().zoom(input.scroll_delta);
+        }
         m_cursor_valid = raycast_terrain(input.mouse_x, input.mouse_y, m_cursor_pos);
         if (m_cursor_valid && m_map_loaded) {
             auto& td = m_map.terrain();
@@ -214,29 +216,22 @@ void Editor::run() {
             m_cursor_vy = std::clamp(m_cursor_vy, 0, static_cast<i32>(td.tiles_y));
         }
 
-        // Apply brush when clicking on terrain (and not over ImGui)
+        // Right-click drag: pan camera
         bool over_ui = ImGui::GetIO().WantCaptureMouse;
+        if (input.mouse_right && !over_ui) {
+            m_renderer.camera().pan(input.mouse_dx, input.mouse_dy);
+        }
+
+        // Apply brush when left-clicking on terrain (and not over ImGui)
         if (input.mouse_left && m_cursor_valid && !over_ui) {
             if (m_continuous) {
-                // Continuous: apply every frame while held
                 apply_brush(frame_dt);
             } else if (!m_brush_applied) {
-                // Single click: apply once
-                apply_brush(1.0f);  // dt=1 so amount = brush_amount * 1
+                apply_brush(1.0f);
                 m_brush_applied = true;
             }
         }
-        // Right-click: cliff lower (one-shot always)
-        if (input.mouse_right && m_cursor_valid && !over_ui && !m_brush_applied) {
-            if (m_tool == Tool::Cliff) {
-                brush_cliff_lower();
-                m_brush_applied = true;
-            } else if (m_tool == Tool::Ramp) {
-                brush_ramp_clear();
-                m_brush_applied = true;
-            }
-        }
-        if (!input.mouse_left && !input.mouse_right) {
+        if (!input.mouse_left) {
             m_brush_applied = false;
         }
 
@@ -384,23 +379,20 @@ void Editor::apply_brush(f32 dt) {
     case Tool::Smooth:  brush_smooth(strength, dt);  break;
     case Tool::Flatten: brush_flatten(strength, dt); break;
     case Tool::Paint:   brush_paint(strength, dt);   break;
-    case Tool::Cliff:
-        if (!m_brush_applied) {
-            brush_cliff_raise();
-            m_brush_applied = true;
-        }
+    case Tool::CliffRaise:
+        if (!m_brush_applied) { brush_cliff_raise(); m_brush_applied = true; }
         break;
-    case Tool::Ramp:
-        if (!m_brush_applied) {
-            brush_ramp_set();
-            m_brush_applied = true;
-        }
+    case Tool::CliffLower:
+        if (!m_brush_applied) { brush_cliff_lower(); m_brush_applied = true; }
+        break;
+    case Tool::RampSet:
+        if (!m_brush_applied) { brush_ramp_set(); m_brush_applied = true; }
+        break;
+    case Tool::RampClear:
+        if (!m_brush_applied) { brush_ramp_clear(); m_brush_applied = true; }
         break;
     case Tool::Pathing:
-        if (!m_brush_applied) {
-            brush_pathing_toggle();
-            m_brush_applied = true;
-        }
+        if (!m_brush_applied) { brush_pathing_toggle(); m_brush_applied = true; }
         break;
     default: break;
     }
@@ -931,20 +923,25 @@ void Editor::draw_ui() {
     ImGui::Separator();
 
     int tool = static_cast<int>(m_tool);
-    ImGui::RadioButton("Raise",   &tool, static_cast<int>(Tool::Raise));
-    ImGui::RadioButton("Lower",   &tool, static_cast<int>(Tool::Lower));
-    ImGui::RadioButton("Smooth",  &tool, static_cast<int>(Tool::Smooth));
-    ImGui::RadioButton("Flatten", &tool, static_cast<int>(Tool::Flatten));
-    ImGui::RadioButton("Paint",   &tool, static_cast<int>(Tool::Paint));
-    ImGui::RadioButton("Cliff",   &tool, static_cast<int>(Tool::Cliff));
-    ImGui::RadioButton("Ramp",    &tool, static_cast<int>(Tool::Ramp));
-    ImGui::RadioButton("Pathing", &tool, static_cast<int>(Tool::Pathing));
+    ImGui::RadioButton("Raise",       &tool, static_cast<int>(Tool::Raise));
+    ImGui::RadioButton("Lower",       &tool, static_cast<int>(Tool::Lower));
+    ImGui::RadioButton("Smooth",      &tool, static_cast<int>(Tool::Smooth));
+    ImGui::RadioButton("Flatten",     &tool, static_cast<int>(Tool::Flatten));
+    ImGui::RadioButton("Paint",       &tool, static_cast<int>(Tool::Paint));
+    ImGui::RadioButton("Cliff Raise", &tool, static_cast<int>(Tool::CliffRaise));
+    ImGui::RadioButton("Cliff Lower", &tool, static_cast<int>(Tool::CliffLower));
+    ImGui::RadioButton("Ramp Set",    &tool, static_cast<int>(Tool::RampSet));
+    ImGui::RadioButton("Ramp Clear",  &tool, static_cast<int>(Tool::RampClear));
+    ImGui::RadioButton("Pathing",     &tool, static_cast<int>(Tool::Pathing));
     m_tool = static_cast<Tool>(tool);
 
     ImGui::Separator();
     ImGui::SliderInt("Size", &m_brush_size, 1, 11);
 
-    if (m_tool != Tool::Cliff && m_tool != Tool::Ramp && m_tool != Tool::Pathing) {
+    bool is_one_shot = m_tool == Tool::CliffRaise || m_tool == Tool::CliffLower ||
+                       m_tool == Tool::RampSet || m_tool == Tool::RampClear ||
+                       m_tool == Tool::Pathing;
+    if (!is_one_shot) {
         ImGui::SliderFloat("Amount", &m_brush_amount, 1.0f, 32.0f, "%.0f");
         ImGui::Checkbox("Continuous", &m_continuous);
         if (m_continuous) {
@@ -961,17 +958,8 @@ void Editor::draw_ui() {
         ImGui::Combo("Layer", &m_paint_layer, layers, 4);
     }
 
-    if (m_tool == Tool::Cliff) {
-        ImGui::TextWrapped("Left click: raise cliff level\nRight click: lower cliff level");
-    }
-
-    if (m_tool == Tool::Ramp) {
-        ImGui::TextWrapped("Left click: mark as ramp\nRight click: clear ramp");
-    }
-
-    if (m_tool == Tool::Pathing) {
-        ImGui::TextWrapped("Left click: toggle walkable");
-    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Right-click drag to pan camera");
 
     ImGui::End();
 

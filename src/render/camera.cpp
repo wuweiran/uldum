@@ -37,6 +37,25 @@ void Camera::update(const platform::InputState& input, f32 dt) {
     if (m_position.z < 128.0f) m_position.z = 128.0f;
 }
 
+void Camera::pan(f32 dx, f32 dy) {
+    // Pan camera on XY ground plane. Scale by height so panning feels consistent at any zoom.
+    f32 scale = m_position.z * 0.002f;
+    glm::vec3 right{std::cos(m_yaw), std::sin(m_yaw), 0.0f};
+    glm::vec3 forward{-std::sin(m_yaw), std::cos(m_yaw), 0.0f};
+    m_position -= right * dx * scale;
+    m_position += forward * dy * scale;
+    m_dirty = true;
+}
+
+void Camera::zoom(f32 scroll_delta) {
+    // Move along view direction. Scale step by current height for consistent feel.
+    f32 step = m_position.z * 0.15f * scroll_delta;
+    glm::vec3 dir = forward_dir();
+    m_position += dir * step;
+    if (m_position.z < 128.0f) m_position.z = 128.0f;
+    m_dirty = true;
+}
+
 glm::vec3 Camera::forward_dir() const {
     return {
         -std::cos(m_pitch) * std::sin(m_yaw),

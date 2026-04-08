@@ -22,8 +22,10 @@ enum class Tool : u8 {
     Smooth,
     Flatten,
     Paint,
-    Cliff,
-    Ramp,
+    CliffRaise,
+    CliffLower,
+    RampSet,
+    RampClear,
     Pathing,
     Count
 };
