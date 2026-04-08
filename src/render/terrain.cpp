@@ -64,6 +64,13 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         }
     };
 
+    // Duplicate a vertex (for wall quads — separate from surface so normals don't blend)
+    auto dup_v = [&](u32 src) -> u32 {
+        u32 idx = static_cast<u32>(vertices.size());
+        vertices.push_back(vertices[src]);
+        return idx;
+    };
+
     // ── Surface tiles ────────────────────────────────────────────────────
     // Each tile has its own 4 vertices. Each corner's Z uses that corner's
     // own cliff_level * layer_height + heightmap. This means at a cliff
@@ -241,23 +248,25 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     add_tri(vh, wa_h, wb_h);
                 }
 
-                // Wall quad
+                // Wall quad (duplicated vertices so wall normals don't blend with surface)
                 if (!ramp_a || !ramp_b) {
                     glm::vec3 wall_n = glm::normalize(glm::vec3{
                         xm - vertices[vh].position.x,
                         ym - vertices[vh].position.y, 0.0f});
-                    if (!ramp_a) { vertices[wa_h].normal = wall_n; vertices[wa_l].normal = wall_n; }
-                    if (!ramp_b) { vertices[wb_h].normal = wall_n; vertices[wb_l].normal = wall_n; }
+                    u32 d_wa_h = dup_v(wa_h); u32 d_wa_l = dup_v(wa_l);
+                    u32 d_wb_h = dup_v(wb_h); u32 d_wb_l = dup_v(wb_l);
+                    vertices[d_wa_h].normal = vertices[d_wa_l].normal = wall_n;
+                    vertices[d_wb_h].normal = vertices[d_wb_l].normal = wall_n;
 
                     glm::vec3 cross = glm::cross(
-                        vertices[wb_h].position - vertices[wa_h].position,
-                        vertices[wa_l].position - vertices[wa_h].position);
+                        vertices[d_wb_h].position - vertices[d_wa_h].position,
+                        vertices[d_wa_l].position - vertices[d_wa_h].position);
                     if (glm::dot(cross, wall_n) >= 0) {
-                        indices.push_back(wa_h); indices.push_back(wb_h); indices.push_back(wa_l);
-                        indices.push_back(wb_h); indices.push_back(wb_l); indices.push_back(wa_l);
+                        indices.push_back(d_wa_h); indices.push_back(d_wb_h); indices.push_back(d_wa_l);
+                        indices.push_back(d_wb_h); indices.push_back(d_wb_l); indices.push_back(d_wa_l);
                     } else {
-                        indices.push_back(wa_h); indices.push_back(wa_l); indices.push_back(wb_h);
-                        indices.push_back(wb_h); indices.push_back(wa_l); indices.push_back(wb_l);
+                        indices.push_back(d_wa_h); indices.push_back(d_wa_l); indices.push_back(d_wb_h);
+                        indices.push_back(d_wb_h); indices.push_back(d_wa_l); indices.push_back(d_wb_l);
                     }
                 }
 
@@ -392,18 +401,20 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     low_center.x - wall_center.x,
                     low_center.y - wall_center.y, 0.0f});
 
-                if (!ramp_a) { vertices[wa_h].normal = wall_n; vertices[wa_l].normal = wall_n; }
-                if (!ramp_b) { vertices[wb_h].normal = wall_n; vertices[wb_l].normal = wall_n; }
+                u32 d_wa_h = dup_v(wa_h); u32 d_wa_l = dup_v(wa_l);
+                u32 d_wb_h = dup_v(wb_h); u32 d_wb_l = dup_v(wb_l);
+                vertices[d_wa_h].normal = vertices[d_wa_l].normal = wall_n;
+                vertices[d_wb_h].normal = vertices[d_wb_l].normal = wall_n;
 
                 glm::vec3 cross = glm::cross(
-                    vertices[wb_h].position - vertices[wa_h].position,
-                    vertices[wa_l].position - vertices[wa_h].position);
+                    vertices[d_wb_h].position - vertices[d_wa_h].position,
+                    vertices[d_wa_l].position - vertices[d_wa_h].position);
                 if (glm::dot(cross, wall_n) >= 0) {
-                    indices.push_back(wa_h); indices.push_back(wb_h); indices.push_back(wa_l);
-                    indices.push_back(wb_h); indices.push_back(wb_l); indices.push_back(wa_l);
+                    indices.push_back(d_wa_h); indices.push_back(d_wb_h); indices.push_back(d_wa_l);
+                    indices.push_back(d_wb_h); indices.push_back(d_wb_l); indices.push_back(d_wa_l);
                 } else {
-                    indices.push_back(wa_h); indices.push_back(wa_l); indices.push_back(wb_h);
-                    indices.push_back(wb_h); indices.push_back(wa_l); indices.push_back(wb_l);
+                    indices.push_back(d_wa_h); indices.push_back(d_wa_l); indices.push_back(d_wb_h);
+                    indices.push_back(d_wb_h); indices.push_back(d_wa_l); indices.push_back(d_wb_l);
                 }
 
             } else if (high_count == 3) {
@@ -454,23 +465,25 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     add_tri(vlo, wa_l, wb_l);
                 }
 
-                // Wall quad
+                // Wall quad (duplicated vertices so wall normals don't blend with surface)
                 if (!ramp_a || !ramp_b) {
                     glm::vec3 wall_n = glm::normalize(glm::vec3{
                         vertices[vlo].position.x - xm,
                         vertices[vlo].position.y - ym, 0.0f});
-                    if (!ramp_a) { vertices[wa_h].normal = wall_n; vertices[wa_l].normal = wall_n; }
-                    if (!ramp_b) { vertices[wb_h].normal = wall_n; vertices[wb_l].normal = wall_n; }
+                    u32 d_wa_h = dup_v(wa_h); u32 d_wa_l = dup_v(wa_l);
+                    u32 d_wb_h = dup_v(wb_h); u32 d_wb_l = dup_v(wb_l);
+                    vertices[d_wa_h].normal = vertices[d_wa_l].normal = wall_n;
+                    vertices[d_wb_h].normal = vertices[d_wb_l].normal = wall_n;
 
                     glm::vec3 cross = glm::cross(
-                        vertices[wb_h].position - vertices[wa_h].position,
-                        vertices[wa_l].position - vertices[wa_h].position);
+                        vertices[d_wb_h].position - vertices[d_wa_h].position,
+                        vertices[d_wa_l].position - vertices[d_wa_h].position);
                     if (glm::dot(cross, wall_n) >= 0) {
-                        indices.push_back(wa_h); indices.push_back(wb_h); indices.push_back(wa_l);
-                        indices.push_back(wb_h); indices.push_back(wb_l); indices.push_back(wa_l);
+                        indices.push_back(d_wa_h); indices.push_back(d_wb_h); indices.push_back(d_wa_l);
+                        indices.push_back(d_wb_h); indices.push_back(d_wb_l); indices.push_back(d_wa_l);
                     } else {
-                        indices.push_back(wa_h); indices.push_back(wa_l); indices.push_back(wb_h);
-                        indices.push_back(wb_h); indices.push_back(wa_l); indices.push_back(wb_l);
+                        indices.push_back(d_wa_h); indices.push_back(d_wa_l); indices.push_back(d_wb_h);
+                        indices.push_back(d_wb_h); indices.push_back(d_wa_l); indices.push_back(d_wb_l);
                     }
                 }
 
@@ -507,50 +520,26 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         }
     }
 
-    // Smooth normals for surface vertices.
-    // Accumulate face normals per grid position, then assign back.
-    // Uses a map from (vx, vy) -> accumulated normal.
-    u32 surface_vert_end = static_cast<u32>(vertices.size());
+    // Smooth normals: standard per-vertex averaging of all adjacent face normals.
     {
-        std::vector<glm::vec3> normal_accum(td.verts_x() * td.verts_y(), glm::vec3{0.0f});
+        u32 vc = static_cast<u32>(vertices.size());
+        std::vector<glm::vec3> normal_accum(vc, glm::vec3{0.0f});
 
-        // Accumulate: for each triangle, add face normal to its 3 vertex positions
         for (u32 i = 0; i + 2 < static_cast<u32>(indices.size()); i += 3) {
             u32 ia = indices[i], ib = indices[i+1], ic = indices[i+2];
-            if (ia >= surface_vert_end || ib >= surface_vert_end || ic >= surface_vert_end)
-                continue; // skip wall triangles
             glm::vec3 face_n = glm::cross(
                 vertices[ib].position - vertices[ia].position,
                 vertices[ic].position - vertices[ia].position);
-            // Map each vertex back to grid position
-            for (u32 vi : {ia, ib, ic}) {
-                auto& p = vertices[vi].position;
-                u32 gx = static_cast<u32>(std::round(p.x / td.tile_size));
-                u32 gy = static_cast<u32>(std::round(p.y / td.tile_size));
-                gx = std::min(gx, td.tiles_x);
-                gy = std::min(gy, td.tiles_y);
-                normal_accum[gy * td.verts_x() + gx] += face_n;
-            }
+            normal_accum[ia] += face_n;
+            normal_accum[ib] += face_n;
+            normal_accum[ic] += face_n;
         }
 
-        // Normalize
-        for (auto& n : normal_accum) {
-            f32 len = glm::length(n);
-            n = (len > 0) ? n / len : glm::vec3{0, 0, 1};
-        }
-
-        // Assign back to surface vertices
-        for (u32 i = 0; i < surface_vert_end; ++i) {
-            auto& p = vertices[i].position;
-            u32 gx = static_cast<u32>(std::round(p.x / td.tile_size));
-            u32 gy = static_cast<u32>(std::round(p.y / td.tile_size));
-            gx = std::min(gx, td.tiles_x);
-            gy = std::min(gy, td.tiles_y);
-            vertices[i].normal = normal_accum[gy * td.verts_x() + gx];
+        for (u32 i = 0; i < vc; ++i) {
+            f32 len = glm::length(normal_accum[i]);
+            vertices[i].normal = (len > 0.001f) ? normal_accum[i] / len : glm::vec3{0, 0, 1};
         }
     }
-
-    // Cliff walls are generated inline with surface tiles above (cases 1, 2, 3).
 
     // Water is a tile type (splatmap layer 3 = water). No separate water geometry.
 
