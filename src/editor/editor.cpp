@@ -542,6 +542,7 @@ void Editor::brush_cliff_raise() {
             if (level < 15) { level++; m_terrain_dirty = true; }
         }
     }
+    cleanup_ramp_flags();
 }
 
 void Editor::brush_cliff_lower() {
@@ -559,6 +560,41 @@ void Editor::brush_cliff_lower() {
             if (level > 0) { level--; m_terrain_dirty = true; }
         }
     }
+    cleanup_ramp_flags();
+}
+
+void Editor::cleanup_ramp_flags() {
+    auto& td = m_map.terrain();
+    if (!td.is_valid()) return;
+
+    for (u32 vy = 0; vy <= td.tiles_y; ++vy) {
+        for (u32 vx = 0; vx <= td.tiles_x; ++vx) {
+            if (!(td.pathing_at(vx, vy) & map::PATHING_RAMP)) continue;
+
+            // Check all tiles touching this vertex for a cliff difference of 1
+            bool has_cliff = false;
+            for (i32 dy = -1; dy <= 0 && !has_cliff; ++dy) {
+                for (i32 dx = -1; dx <= 0 && !has_cliff; ++dx) {
+                    i32 tx = static_cast<i32>(vx) + dx;
+                    i32 ty = static_cast<i32>(vy) + dy;
+                    if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
+                        continue;
+                    u8 c[4] = {
+                        td.cliff_at(tx, ty), td.cliff_at(tx+1, ty),
+                        td.cliff_at(tx, ty+1), td.cliff_at(tx+1, ty+1)
+                    };
+                    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+                    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+                    if (cmax - cmin == 1) has_cliff = true;
+                }
+            }
+
+            if (!has_cliff) {
+                td.pathing_at(vx, vy) &= ~map::PATHING_RAMP;
+                m_terrain_dirty = true;
+            }
+        }
+    }
 }
 
 void Editor::brush_ramp_set() {
@@ -571,6 +607,25 @@ void Editor::brush_ramp_set() {
             i32 dx = static_cast<i32>(ix) - m_cursor_vx;
             i32 dy = static_cast<i32>(iy) - m_cursor_vy;
             if (dx * dx + dy * dy > r2) continue;
+
+            // Only allow ramp where an adjacent tile has cliff difference of 1
+            bool has_cliff = false;
+            for (i32 oy = -1; oy <= 0 && !has_cliff; ++oy) {
+                for (i32 ox = -1; ox <= 0 && !has_cliff; ++ox) {
+                    i32 tx = static_cast<i32>(ix) + ox;
+                    i32 ty = static_cast<i32>(iy) + oy;
+                    if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
+                        continue;
+                    u8 c[4] = {
+                        td.cliff_at(tx, ty), td.cliff_at(tx+1, ty),
+                        td.cliff_at(tx, ty+1), td.cliff_at(tx+1, ty+1)
+                    };
+                    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+                    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+                    if (cmax - cmin == 1) has_cliff = true;
+                }
+            }
+            if (!has_cliff) continue;
 
             td.pathing_at(ix, iy) |= map::PATHING_RAMP;
             m_terrain_dirty = true;

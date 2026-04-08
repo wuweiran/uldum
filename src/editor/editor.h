@@ -61,6 +61,7 @@ private:
     void brush_ramp_set();
     void brush_ramp_clear();
     void brush_pathing_toggle();
+    void cleanup_ramp_flags();  // remove RAMP from vertices with no adjacent cliff difference
 
     // Modules
     std::unique_ptr<platform::Platform> m_platform;
