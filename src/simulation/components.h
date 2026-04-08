@@ -96,8 +96,9 @@ struct Combat {
     f32         damage          = 0;
     f32         range           = 1.0f;
     f32         attack_cooldown = 1.0f;    // total time between attacks
-    f32         cast_point      = 0.3f;    // time into attack when damage fires
-    f32         backswing       = 0.3f;    // recovery time after cast_point
+    f32         damage_time     = 0.3f;    // seconds before attack damage fires
+    f32         backswing_time  = 0.3f;    // seconds of attack recovery
+    f32         dmg_point       = 0.5f;    // fraction (0-1) of attack animation at damage point
     bool        is_ranged       = false;
     f32         projectile_speed = 20.0f;  // for ranged attacks
     f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range
@@ -156,6 +157,8 @@ struct AbilitySet {
     // Cast state machine — active while processing a Cast order
     CastState   cast_state    = CastState::None;
     f32         cast_timer    = 0;
+    f32         cast_point_secs = 0;  // cached for renderer: seconds for wind-up phase
+    f32         cast_backswing_secs = 0; // cached for renderer: seconds for backswing phase
     std::string casting_id;       // ability being cast
     Unit        cast_target_unit;
     glm::vec3   cast_target_pos{0};

@@ -4,6 +4,7 @@
 #include "simulation/world.h"
 #include "simulation/components.h"
 #include "simulation/pathfinding.h"
+#include "simulation/type_registry.h"
 #include "asset/model.h"
 #include "core/log.h"
 
@@ -323,9 +324,11 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
 
 // Derive animation state and gameplay duration from simulation components.
 struct AnimStateInfo {
-    AnimState state;
-    f32       duration;       // 0 = use default clip speed
-    bool      force_restart;  // true = restart animation (new attack swing)
+    AnimState      state;
+    f32            duration;       // 0 = use default clip speed
+    bool           force_restart;  // true = restart animation (new attack swing)
+    AttackAnimInfo attack_info;    // only used when state == Attack
+    bool           has_attack_info = false;
 };
 
 static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
@@ -337,33 +340,37 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 
     if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
 
-    // Spell casting (ability system)
+    // Spell casting (ability system) — two-phase animation like attacks
     auto* aset = world.ability_sets.get(id);
-    if (aset && aset->cast_state != simulation::CastState::None) {
-        auto* ability_def_ptr = aset->casting_id.empty() ? nullptr : &aset->casting_id;
-        // Use spell animation during the cast
-        return {AnimState::Spell, 0, false};
+    if (aset && (aset->cast_state == simulation::CastState::CastPoint ||
+                 aset->cast_state == simulation::CastState::Backswing)) {
+        f32 cp = 0.5f;
+        auto* hi = world.handle_infos.get(id);
+        if (hi && world.types) {
+            auto* def = world.types->get_unit_type(hi->type_id);
+            if (def) cp = def->cast_point;
+        }
+        AttackAnimInfo info;
+        info.dmg_point  = cp;
+        info.cast_point = aset->cast_point_secs;
+        info.backswing  = aset->cast_backswing_secs;
+        f32 dur = aset->cast_point_secs + aset->cast_backswing_secs;
+        return {AnimState::Spell, dur, false, info, true};
     }
 
     auto* combat = world.combats.get(id);
     if (combat) {
         using simulation::AttackState;
-        // Attack animation covers the full attack cycle
-        if (combat->attack_state == AttackState::TurningToFace ||
-            combat->attack_state == AttackState::WindUp ||
-            combat->attack_state == AttackState::Backswing ||
-            combat->attack_state == AttackState::Cooldown) {
 
-            f32 attack_dur = combat->attack_cooldown;  // full attack cycle duration
-            if (attack_dur <= 0) attack_dur = combat->cast_point + combat->backswing;
+        // Attack animation plays only during WindUp + Backswing
+        if (combat->attack_state == AttackState::WindUp ||
+            combat->attack_state == AttackState::Backswing) {
 
-            // Detect new attack swing: WindUp with a fresh timer means a new swing started
+            // Detect new attack swing: WindUp with a fresh timer
             bool new_swing = false;
             if (combat->attack_state == AttackState::WindUp) {
-                // Approximate: if timer is near cast_point, it just started
-                if (combat->attack_timer > combat->cast_point * 0.8f) {
-                    // Check if this is a different swing than last time
-                    u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);  // rough ID
+                if (combat->attack_timer > combat->damage_time * 0.8f) {
+                    u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);
                     if (swing_id != anim.attack_swing_id) {
                         anim.attack_swing_id = swing_id;
                         new_swing = true;
@@ -371,9 +378,16 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
                 }
             }
 
-            return {AnimState::Attack, attack_dur, new_swing};
+            // Two-phase timing: animation syncs dmg_point fraction with cast_point seconds
+            AttackAnimInfo info;
+            info.dmg_point  = combat->dmg_point;
+            info.cast_point = combat->damage_time;
+            info.backswing  = combat->backswing_time;
+            f32 dur = combat->damage_time + combat->backswing_time;  // animation covers wind-up + backswing only
+            return {AnimState::Attack, dur, new_swing, info, true};
         }
 
+        // TurningToFace / Cooldown / MovingToTarget: not swinging
         if (combat->attack_state == AttackState::MovingToTarget) {
             return {AnimState::Walk, 0, false};
         }
@@ -1821,8 +1835,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             if (!lm || !lm->is_skinned) continue;
 
             auto& anim = get_or_create_anim(id, *lm);
-            auto [desired, duration, restart] = derive_anim_state(world, id, anim);
-            set_anim_state(anim, desired, duration, restart);
+            auto anim_info = derive_anim_state(world, id, anim);
+            set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
+                           anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
             update_animation(anim, frame_dt);
             evaluate_animation(anim);
         }

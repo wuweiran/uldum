@@ -37,6 +37,11 @@ struct AnimationInstance {
     // Track attack swings to restart animation on each new attack
     u32 attack_swing_id = 0;
 
+    // Two-phase attack animation: wind-up plays at one speed, backswing at another
+    f32 attack_dmg_time    = 0.0f;  // clip time where damage point is (dmg_point * clip_dur)
+    f32 attack_phase1_speed = 1.0f; // playback speed for [0, dmg_time]
+    f32 attack_phase2_speed = 1.0f; // playback speed for [dmg_time, clip_end]
+
     // Mapping from AnimState to clip index (-1 = no clip, use bind pose)
     std::array<i32, static_cast<usize>(AnimState::Count)> state_to_clip{};
 
@@ -54,10 +59,19 @@ struct AnimationInstance {
     AnimationInstance() { state_to_clip.fill(-1); }
 };
 
+// Two-phase attack timing info (wind-up + backswing with different speeds).
+struct AttackAnimInfo {
+    f32 dmg_point  = 0.5f;  // fraction of clip at damage point
+    f32 cast_point = 0.3f;  // seconds for wind-up phase
+    f32 backswing  = 0.3f;  // seconds for backswing phase
+};
+
 // Request a state change. Restarts animation if force_restart is true.
 // gameplay_duration: scale clip to match this timing (0 = default speed).
+// attack_info: if non-null, enables two-phase speed for attack animations.
 void set_anim_state(AnimationInstance& inst, AnimState state,
-                     f32 gameplay_duration = 0, bool force_restart = false);
+                     f32 gameplay_duration = 0, bool force_restart = false,
+                     const AttackAnimInfo* attack_info = nullptr);
 
 void update_animation(AnimationInstance& inst, f32 dt);
 void evaluate_animation(AnimationInstance& inst);

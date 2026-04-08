@@ -409,7 +409,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     combat.attack_timer -= dt;
                     if (combat.attack_timer <= 0) {
                         combat.attack_state = AttackState::Cooldown;
-                        combat.attack_timer = combat.attack_cooldown - combat.cast_point - combat.backswing;
+                        combat.attack_timer = combat.attack_cooldown - combat.damage_time - combat.backswing_time;
                         if (combat.attack_timer < 0) combat.attack_timer = 0;
                     }
                 } else if (combat.attack_state == AttackState::Cooldown) {
@@ -585,7 +585,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
             }
             if (std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE) {
                 combat.attack_state = AttackState::WindUp;
-                combat.attack_timer = combat.cast_point;
+                combat.attack_timer = combat.damage_time;
             }
             break;
         }
@@ -613,7 +613,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     }
                 }
                 combat.attack_state = AttackState::Backswing;
-                combat.attack_timer = combat.backswing;
+                combat.attack_timer = combat.backswing_time;
             }
             break;
 
@@ -621,7 +621,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
             combat.attack_timer -= dt;
             if (combat.attack_timer <= 0) {
                 combat.attack_state = AttackState::Cooldown;
-                combat.attack_timer = combat.attack_cooldown - combat.cast_point - combat.backswing;
+                combat.attack_timer = combat.attack_cooldown - combat.damage_time - combat.backswing_time;
                 if (combat.attack_timer < 0) combat.attack_timer = 0;
             }
             break;
@@ -765,6 +765,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         }
                         aset.cast_state = CastState::CastPoint;
                         aset.cast_timer = lvl.cast_point;
+                        aset.cast_point_secs = lvl.cast_point;
+                        aset.cast_backswing_secs = lvl.backswing;
                         break;
                     }
                     case CastState::CastPoint:

@@ -119,7 +119,8 @@ static void evaluate_clip(const asset::AnimationClip& clip, const asset::Skeleto
 // ── Public API ────────────────────────────────────────────────────────────
 
 void set_anim_state(AnimationInstance& inst, AnimState state,
-                     f32 gameplay_duration, bool force_restart) {
+                     f32 gameplay_duration, bool force_restart,
+                     const AttackAnimInfo* attack_info) {
     if (state == inst.current_state) {
         if (!force_restart) return;  // same state, no restart requested — keep playing/holding
     }
@@ -135,12 +136,24 @@ void set_anim_state(AnimationInstance& inst, AnimState state,
     // Looping: idle and walk loop; attack, spell, death play once
     inst.looping = (state == AnimState::Idle || state == AnimState::Walk);
 
-    // Compute playback speed: scale clip duration to match gameplay timing
+    // Compute playback speed
     i32 clip_idx = inst.state_to_clip[static_cast<u8>(state)];
-    if (gameplay_duration > 0 && clip_idx >= 0 &&
-        clip_idx < static_cast<i32>(inst.model->animations.size())) {
-        f32 clip_dur = inst.model->animations[clip_idx].duration;
-        inst.playback_speed = (clip_dur > 0) ? clip_dur / gameplay_duration : 1.0f;
+    f32 clip_dur = 0;
+    if (clip_idx >= 0 && clip_idx < static_cast<i32>(inst.model->animations.size())) {
+        clip_dur = inst.model->animations[clip_idx].duration;
+    }
+
+    // Two-phase attack: wind-up and backswing play at different speeds
+    if ((state == AnimState::Attack || state == AnimState::Spell) && attack_info && clip_dur > 0) {
+        f32 dmg_frac = std::clamp(attack_info->dmg_point, 0.01f, 0.99f);
+        inst.attack_dmg_time = dmg_frac * clip_dur;
+        f32 phase1_clip = inst.attack_dmg_time;          // clip time for wind-up
+        f32 phase2_clip = clip_dur - inst.attack_dmg_time; // clip time for backswing
+        inst.attack_phase1_speed = (attack_info->cast_point > 0) ? phase1_clip / attack_info->cast_point : 1.0f;
+        inst.attack_phase2_speed = (attack_info->backswing > 0) ? phase2_clip / attack_info->backswing : 1.0f;
+        inst.playback_speed = inst.attack_phase1_speed;  // start with wind-up speed
+    } else if (gameplay_duration > 0 && clip_dur > 0) {
+        inst.playback_speed = clip_dur / gameplay_duration;
     } else {
         inst.playback_speed = 1.0f;
     }
@@ -152,7 +165,17 @@ void update_animation(AnimationInstance& inst, f32 dt) {
     i32 clip_idx = inst.state_to_clip[static_cast<u8>(inst.current_state)];
     if (clip_idx >= 0 && clip_idx < static_cast<i32>(inst.model->animations.size())) {
         auto& clip = inst.model->animations[clip_idx];
-        inst.time += dt * inst.playback_speed;
+
+        // Two-phase animation: switch speed when crossing damage/cast point
+        if ((inst.current_state == AnimState::Attack || inst.current_state == AnimState::Spell)
+            && inst.attack_dmg_time > 0) {
+            f32 speed = (inst.time < inst.attack_dmg_time)
+                ? inst.attack_phase1_speed : inst.attack_phase2_speed;
+            inst.time += dt * speed;
+        } else {
+            inst.time += dt * inst.playback_speed;
+        }
+
         if (inst.looping && clip.duration > 0) {
             inst.time = std::fmod(inst.time, clip.duration);
         } else if (inst.time >= clip.duration) {
