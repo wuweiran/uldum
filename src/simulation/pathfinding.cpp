@@ -27,27 +27,6 @@ bool Pathfinder::is_passable(u32 vx, u32 vy, MoveType move_type) const {
     return false;
 }
 
-bool Pathfinder::can_traverse(u32 ax, u32 ay, u32 bx, u32 by, MoveType move_type) const {
-    if (!m_terrain) return false;
-    // Air units ignore cliffs
-    if (move_type == MoveType::Air) return true;
-
-    u8 cliff_a = m_terrain->cliff_at(ax, ay);
-    u8 cliff_b = m_terrain->cliff_at(bx, by);
-
-    if (cliff_a == cliff_b) return true;  // same level, always ok
-
-    // Different cliff levels: only allowed if both vertices have RAMP flag
-    // and the level difference is exactly 1
-    if (std::abs(static_cast<i32>(cliff_a) - static_cast<i32>(cliff_b)) == 1) {
-        u8 flags_a = m_terrain->pathing_at(ax, ay);
-        u8 flags_b = m_terrain->pathing_at(bx, by);
-        return (flags_a & map::PATHING_RAMP) && (flags_b & map::PATHING_RAMP);
-    }
-
-    return false;  // cliff difference > 1 is never traversable on ground
-}
-
 // ── Terrain sampling ─────────────────────────────────────────────────────
 
 f32 Pathfinder::sample_height(f32 x, f32 y) const {
@@ -95,6 +74,70 @@ f32 Pathfinder::tile_size() const {
     return (m_terrain && m_terrain->is_valid()) ? m_terrain->tile_size : 128.0f;
 }
 
+i32 Pathfinder::tile_effective_level(u32 tx, u32 ty) const {
+    auto& td = *m_terrain;
+    if (tx >= td.tiles_x || ty >= td.tiles_y) return 0;
+
+    u8 c[4] = { td.cliff_at(tx,ty), td.cliff_at(tx+1,ty),
+                 td.cliff_at(tx,ty+1), td.cliff_at(tx+1,ty+1) };
+    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+
+    if (cmin == cmax) return static_cast<i32>(cmin);  // flat tile
+
+    // Count ramp flags
+    u32 ramp_count = 0;
+    if (td.pathing_at(tx, ty) & map::PATHING_RAMP) ramp_count++;
+    if (td.pathing_at(tx+1, ty) & map::PATHING_RAMP) ramp_count++;
+    if (td.pathing_at(tx, ty+1) & map::PATHING_RAMP) ramp_count++;
+    if (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP) ramp_count++;
+
+    if (ramp_count == 4 && cmax - cmin == 1) return -1;  // ramp: connects both levels
+
+    // Cliff tile (mixed levels, not a ramp): effective level = min (low side)
+    return static_cast<i32>(cmin);
+}
+
+bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y, u8 cliff_level, MoveType move_type) const {
+    if (!m_terrain || !m_terrain->is_valid()) return true;
+    if (move_type == MoveType::Air) return true;
+    auto& td = *m_terrain;
+
+    u32 old_tx = std::min(static_cast<u32>(old_x / td.tile_size), td.tiles_x - 1);
+    u32 old_ty = std::min(static_cast<u32>(old_y / td.tile_size), td.tiles_y - 1);
+    u32 new_tx = std::min(static_cast<u32>(new_x / td.tile_size), td.tiles_x - 1);
+    u32 new_ty = std::min(static_cast<u32>(new_y / td.tile_size), td.tiles_y - 1);
+
+    if (old_tx == new_tx && old_ty == new_ty) return true;  // same tile
+
+    i32 src_level = tile_effective_level(old_tx, old_ty);
+    i32 dest_level = tile_effective_level(new_tx, new_ty);
+
+    // Either tile is a ramp: allow transition (ramp connects both levels)
+    if (src_level == -1 || dest_level == -1) return true;
+
+    // Both are flat/cliff tiles: must be same effective level
+    return src_level == dest_level;
+}
+
+bool Pathfinder::is_ramp_at(f32 x, f32 y) const {
+    if (!m_terrain || !m_terrain->is_valid()) return false;
+    auto& td = *m_terrain;
+    u32 tx = std::min(static_cast<u32>(x / td.tile_size), td.tiles_x - 1);
+    u32 ty = std::min(static_cast<u32>(y / td.tile_size), td.tiles_y - 1);
+    return tile_effective_level(tx, ty) == -1;
+}
+
+u8 Pathfinder::cliff_level_at(f32 x, f32 y) const {
+    if (!m_terrain || !m_terrain->is_valid()) return 0;
+    auto& td = *m_terrain;
+    u32 vx = static_cast<u32>(std::round(x / td.tile_size));
+    u32 vy = static_cast<u32>(std::round(y / td.tile_size));
+    vx = std::min(vx, td.tiles_x);
+    vy = std::min(vy, td.tiles_y);
+    return td.cliff_at(vx, vy);
+}
+
 // ── A* pathfinding ───────────────────────────────────────────────────────
 
 struct AStarNode {
@@ -102,6 +145,7 @@ struct AStarNode {
     f32 g_cost;     // cost from start
     f32 f_cost;     // g + heuristic
     u32 parent_idx; // index into closed list
+    u8  cliff_level = 0; // cliff level at this node
 };
 
 struct NodeCompare {
@@ -143,7 +187,7 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
         return std::sqrt(dx * dx + dy * dy);
     };
 
-    AStarNode start_node{sx, sy, 0, heuristic(sx, sy), UINT32_MAX};
+    AStarNode start_node{sx, sy, 0, heuristic(sx, sy), UINT32_MAX, td.cliff_at(sx, sy)};
     open.push(start_node);
 
     static constexpr i32 dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
@@ -202,10 +246,16 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
             if (closed.contains(vert_key(nvx, nvy))) continue;
             if (!is_passable(nvx, nvy, move_type)) continue;
 
-            // Cliff traversal check
-            if (!can_traverse(current.vx, current.vy, nvx, nvy, move_type)) continue;
+            // Tile-based cliff check
+            f32 world_cur_x = static_cast<f32>(current.vx) * td.tile_size;
+            f32 world_cur_y = static_cast<f32>(current.vy) * td.tile_size;
+            {
+                f32 world_nx = static_cast<f32>(nvx) * td.tile_size;
+                f32 world_ny = static_cast<f32>(nvy) * td.tile_size;
+                if (!can_move_to(world_cur_x, world_cur_y, world_nx, world_ny, current.cliff_level, move_type)) continue;
+            }
 
-            // For diagonal movement, check that both cardinal neighbors are passable and traversable
+            // For diagonal movement, check that both cardinal neighbors are passable
             if (dx[i] != 0 && dy[i] != 0) {
                 u32 cx = static_cast<u32>(static_cast<i32>(current.vx) + dx[i]);
                 u32 cy = current.vy;
@@ -213,14 +263,28 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
                 u32 ry = static_cast<u32>(static_cast<i32>(current.vy) + dy[i]);
                 if (!is_passable(cx, cy, move_type) || !is_passable(rx, ry, move_type))
                     continue;
-                if (!can_traverse(current.vx, current.vy, cx, cy, move_type) ||
-                    !can_traverse(current.vx, current.vy, rx, ry, move_type))
+                // Both cardinal steps must also be tile-passable
+                f32 wcx = static_cast<f32>(cx) * td.tile_size;
+                f32 wcy = static_cast<f32>(cy) * td.tile_size;
+                f32 wrx = static_cast<f32>(rx) * td.tile_size;
+                f32 wry = static_cast<f32>(ry) * td.tile_size;
+                if (!can_move_to(world_cur_x, world_cur_y, wcx, wcy, current.cliff_level, move_type) ||
+                    !can_move_to(world_cur_x, world_cur_y, wrx, wry, current.cliff_level, move_type))
                     continue;
             }
 
+            // Update cliff level: on ramp tiles, adopt the vertex's cliff level
+            // On flat/cliff tiles, keep current level (can_move_to already validated)
+            f32 world_x = static_cast<f32>(nvx) * td.tile_size;
+            f32 world_y = static_cast<f32>(nvy) * td.tile_size;
+            u32 dtx = std::min(static_cast<u32>(world_x / td.tile_size), td.tiles_x - 1);
+            u32 dty = std::min(static_cast<u32>(world_y / td.tile_size), td.tiles_y - 1);
+            i32 dest_eff = tile_effective_level(dtx, dty);
+            u8 node_cliff = (dest_eff == -1) ? td.cliff_at(nvx, nvy) : current.cliff_level;
+
             f32 new_g = current.g_cost + cost[i];
             f32 new_f = new_g + heuristic(nvx, nvy);
-            open.push({nvx, nvy, new_g, new_f, current_idx});
+            open.push({nvx, nvy, new_g, new_f, current_idx, node_cliff});
         }
     }
 

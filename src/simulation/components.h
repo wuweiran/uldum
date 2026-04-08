@@ -76,6 +76,7 @@ struct Movement {
     f32       turn_rate = 0;  // radians per second
     f32       collision_radius = 32.0f;  // per-unit collision radius (game units)
     MoveType  type      = MoveType::Ground;  // engine preset (pathfinding needs it)
+    u8        cliff_level = 0;  // current cliff level the unit is on
     glm::vec3 target_pos{0.0f};
     bool      moving    = false;
 
@@ -104,6 +105,7 @@ struct Combat {
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;
     Unit        target;
+    glm::vec3   chase_path_dest{0};  // last pathfind destination for re-path detection
 };
 
 // Visual feedback: scale pulse on attack hit, decays back to 1.0

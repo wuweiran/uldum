@@ -233,6 +233,13 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             if (unit.is_valid()) {
                 auto* t = world.transforms.get(unit.id);
                 if (t) t->position.z = sample_height(pu.x, pu.y);
+                // Set initial cliff level from nearest vertex
+                auto* mov = world.movements.get(unit.id);
+                if (mov) {
+                    u32 vx = std::min(static_cast<u32>(std::round(pu.x / m_scene.terrain.tile_size)), m_scene.terrain.tiles_x);
+                    u32 vy = std::min(static_cast<u32>(std::round(pu.y / m_scene.terrain.tile_size)), m_scene.terrain.tiles_y);
+                    mov->cliff_level = m_scene.terrain.cliff_at(vx, vy);
+                }
 
                 // Buildings block pathing vertices around their position
                 auto* cls = world.classifications.get(unit.id);

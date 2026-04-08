@@ -32,9 +32,6 @@ public:
     // Check if a vertex is passable for a given move type.
     bool is_passable(u32 vx, u32 vy, MoveType move_type) const;
 
-    // Check if movement between two adjacent vertices is allowed (cliff level check).
-    bool can_traverse(u32 ax, u32 ay, u32 bx, u32 by, MoveType move_type) const;
-
     // Sample terrain height at world position (bilinear interpolation).
     // Returns final height: cliff_level * layer_height + heightmap.
     f32 sample_height(f32 x, f32 y) const;
@@ -45,7 +42,19 @@ public:
     // Get tile size from terrain data (for world→grid conversion).
     f32 tile_size() const;
 
+    // Check if a unit at (old_x, old_y) with cliff_level can move to (new_x, new_y).
+    bool can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y, u8 cliff_level, MoveType move_type) const;
+
+    // Get the cliff level at a world position (nearest vertex).
+    u8 cliff_level_at(f32 x, f32 y) const;
+
+    // Check if a world position is on a ramp tile.
+    bool is_ramp_at(f32 x, f32 y) const;
+
 private:
+    // Get the effective cliff level of a tile. Ramp tiles connect both levels.
+    // Returns -1 for ramp tiles (passable from either level).
+    i32 tile_effective_level(u32 tx, u32 ty) const;
     const map::TerrainData* m_terrain = nullptr;
 };
 

@@ -273,6 +273,8 @@ void ScriptEngine::bind_api() {
         if (unit.is_valid()) {
             auto* t = world.transforms.get(unit.id);
             if (t) t->position.z = sim.pathfinder().sample_height(x, y);
+            auto* mov = world.movements.get(unit.id);
+            if (mov) mov->cliff_level = sim.pathfinder().cliff_level_at(x, y);
             set_context_unit(unit.id);
             fire_event("on_unit_created", unit.id);
             return sol::make_object(*m_lua, unit);

@@ -77,7 +77,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // Unit
     world.owners.add(id, Owner{owner});
-    world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->collision_radius, def->move_type, {}, false});
+    world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->collision_radius, def->move_type, 0, {}, false});
     {
         Combat combat;
         combat.damage           = def->damage;
