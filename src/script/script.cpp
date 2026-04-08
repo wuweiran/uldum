@@ -530,7 +530,17 @@ void ScriptEngine::bind_api() {
 
     // ── Effect API ─────────────────────────────────────────────────────
 
-    lua["DefineEffect"] = [&](const std::string& name, sol::table def) {
+    // Helper: read color from Lua table (supports {r=, g=, b=, a=} or {1, 2, 3, 4})
+    auto read_color = [](sol::table c, glm::vec4 fallback) -> glm::vec4 {
+        if (c["r"].valid()) {
+            return {c.get_or("r", fallback.r), c.get_or("g", fallback.g),
+                    c.get_or("b", fallback.b), c.get_or("a", fallback.a)};
+        }
+        return {c.get_or(1, fallback.r), c.get_or(2, fallback.g),
+                c.get_or(3, fallback.b), c.get_or(4, fallback.a)};
+    };
+
+    lua["DefineEffect"] = [&, read_color](const std::string& name, sol::table def) {
         if (!m_effects) return;
         render::EffectDef edef;
         edef.name      = name;
@@ -541,12 +551,10 @@ void ScriptEngine::bind_api() {
         edef.gravity   = def.get_or("gravity", -200.0f);
         edef.emit_rate = def.get_or("emit_rate", 0.0f);
         if (def["start_color"].valid()) {
-            auto c = def["start_color"].get<sol::table>();
-            edef.start_color = {c.get_or(1, 1.0f), c.get_or(2, 1.0f), c.get_or(3, 1.0f), c.get_or(4, 1.0f)};
+            edef.start_color = read_color(def["start_color"], {1, 1, 1, 1});
         }
         if (def["end_color"].valid()) {
-            auto c = def["end_color"].get<sol::table>();
-            edef.end_color = {c.get_or(1, 1.0f), c.get_or(2, 1.0f), c.get_or(3, 1.0f), c.get_or(4, 0.0f)};
+            edef.end_color = read_color(def["end_color"], {1, 1, 1, 0});
         }
         m_effects->define(name, edef);
     };
@@ -556,11 +564,16 @@ void ScriptEngine::bind_api() {
         return m_effect_mgr->create(name, {x, y, z});
     };
 
-    lua["CreateEffectOnUnit"] = [&](const std::string& name, simulation::Unit unit) -> u32 {
+    lua["CreateEffectOnUnit"] = [this, &sim](const std::string& name, simulation::Unit unit,
+                                              sol::optional<std::string> attach_point) -> u32 {
         if (!m_effect_mgr) return 0;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return 0;
-        return m_effect_mgr->create_on_unit(name, unit, t->position);
+        glm::vec3 pos = t->position;
+        if (attach_point && m_attach_fn) {
+            pos += m_attach_fn(unit.id, *attach_point) * t->scale;
+        }
+        return m_effect_mgr->create_on_unit(name, unit, pos);
     };
 
     lua["DestroyEffect"] = [&](u32 id) {
@@ -571,11 +584,16 @@ void ScriptEngine::bind_api() {
         if (m_effect_mgr) m_effect_mgr->play(name, {x, y, z});
     };
 
-    lua["PlayEffectOnUnit"] = [&](const std::string& name, simulation::Unit unit) {
+    lua["PlayEffectOnUnit"] = [this, &sim](const std::string& name, simulation::Unit unit,
+                                            sol::optional<std::string> attach_point) {
         if (!m_effect_mgr) return;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
-        m_effect_mgr->play_on_unit(name, unit, t->position);
+        glm::vec3 pos = t->position;
+        if (attach_point && m_attach_fn) {
+            pos += m_attach_fn(unit.id, *attach_point) * t->scale;
+        }
+        m_effect_mgr->play_on_unit(name, unit, pos);
     };
     // ── Audio API ──────────────────────────────────────────────────────
 

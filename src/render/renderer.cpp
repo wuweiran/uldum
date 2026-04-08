@@ -1279,6 +1279,14 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     return &inserted->second;
 }
 
+glm::vec3 Renderer::get_attachment_point(u32 entity_id, std::string_view bone_name) const {
+    auto it = m_anim_instances.find(entity_id);
+    if (it == m_anim_instances.end()) return {0, 0, 0};
+    glm::vec3 local = render::get_attachment_point(it->second, bone_name);
+    // Convert from glTF Y-up to game Z-up: (X, Y, Z) → (X, -Z, Y)
+    return {local.x, -local.z, local.y};
+}
+
 GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
     auto it = m_mesh_cache.find(model_path);
     if (it != m_mesh_cache.end()) return it->second;

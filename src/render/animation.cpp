@@ -233,10 +233,31 @@ void evaluate_animation(AnimationInstance& inst) {
         }
     }
 
+    // Store global transforms for attachment point lookups
+    inst.bone_globals = current_globals;
+
     // Compute final skinning matrices: global * inverse_bind
     for (u32 i = 0; i < bone_count; ++i) {
         inst.bone_matrices[i] = current_globals[i] * skel.bones[i].inverse_bind_matrix;
     }
+}
+
+glm::vec3 get_attachment_point(const AnimationInstance& inst, std::string_view bone_name) {
+    if (!inst.model) return {0, 0, 0};
+    auto& skel = inst.model->skeleton;
+
+    // Try exact name, then with "attach_" prefix (Blender convention)
+    std::string prefixed = "attach_" + std::string(bone_name);
+
+    for (u32 i = 0; i < static_cast<u32>(skel.bones.size()); ++i) {
+        if (skel.bones[i].name == bone_name || skel.bones[i].name == prefixed) {
+            if (i < inst.bone_globals.size()) {
+                return glm::vec3(inst.bone_globals[i][3]);
+            }
+            break;
+        }
+    }
+    return {0, 0, 0};
 }
 
 } // namespace uldum::render

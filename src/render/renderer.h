@@ -68,6 +68,9 @@ public:
     EffectRegistry& effect_registry() { return m_effect_registry; }
     EffectManager&  effect_manager()  { return m_effect_manager; }
 
+    // Get attachment point position in model-local space for a unit. Returns {0,0,0} if not found.
+    glm::vec3 get_attachment_point(u32 entity_id, std::string_view bone_name) const;
+
 private:
     bool create_descriptor_layouts();
     bool create_mesh_pipeline();

@@ -33,6 +33,7 @@ struct Particle {
     f32 life     = 0;
     f32 max_life = 1;
     f32 size     = 8;
+    f32 gravity  = -200.0f;
 };
 
 // Emitter shapes
@@ -73,7 +74,7 @@ public:
     void remove_emitter(u32 id);
 
     // Spawn a one-shot burst at a position
-    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10);
+    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f);
 
     // Update particles (spawn, simulate, kill dead). Call once per frame.
     void update(f32 dt);

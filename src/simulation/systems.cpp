@@ -251,8 +251,23 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         if (std::abs(face_diff) < glm::half_pi<f32>()) {
             f32 step = mov.speed * dt;
             if (step > dist) step = dist;
-            transform->position.x += dir.x * step;
-            transform->position.y += dir.y * step;
+            f32 new_x = transform->position.x + dir.x * step;
+            f32 new_y = transform->position.y + dir.y * step;
+
+            // Reject movement that crosses a cliff boundary
+            u32 old_vx = static_cast<u32>(transform->position.x / pathfinder.tile_size());
+            u32 old_vy = static_cast<u32>(transform->position.y / pathfinder.tile_size());
+            u32 new_vx = static_cast<u32>(new_x / pathfinder.tile_size());
+            u32 new_vy = static_cast<u32>(new_y / pathfinder.tile_size());
+            if (old_vx != new_vx || old_vy != new_vy) {
+                if (!pathfinder.can_traverse(old_vx, old_vy, new_vx, new_vy, mov.type)) {
+                    new_x = transform->position.x;
+                    new_y = transform->position.y;
+                }
+            }
+
+            transform->position.x = new_x;
+            transform->position.y = new_y;
         }
 
         // Update Z from terrain height
@@ -472,8 +487,23 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     if (std::abs(diff) < glm::half_pi<f32>()) {
                         f32 step = mov->speed * dt;
                         if (step > dist) step = dist;
-                        transform->position.x += dir.x * step;
-                        transform->position.y += dir.y * step;
+                        f32 new_x = transform->position.x + dir.x * step;
+                        f32 new_y = transform->position.y + dir.y * step;
+
+                        // Reject movement across cliff boundary
+                        f32 ts = pathfinder.tile_size();
+                        u32 old_vx = static_cast<u32>(transform->position.x / ts);
+                        u32 old_vy = static_cast<u32>(transform->position.y / ts);
+                        u32 new_vx = static_cast<u32>(new_x / ts);
+                        u32 new_vy = static_cast<u32>(new_y / ts);
+                        if ((old_vx != new_vx || old_vy != new_vy) &&
+                            !pathfinder.can_traverse(old_vx, old_vy, new_vx, new_vy, mov->type)) {
+                            new_x = transform->position.x;
+                            new_y = transform->position.y;
+                        }
+
+                        transform->position.x = new_x;
+                        transform->position.y = new_y;
                         transform->position.z = pathfinder.sample_height(
                             transform->position.x, transform->position.y);
                     }

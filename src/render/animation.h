@@ -42,6 +42,8 @@ struct AnimationInstance {
 
     // Output: final bone matrices, ready for GPU upload
     std::vector<glm::mat4> bone_matrices;
+    // Global bone transforms (before inverse bind — for attachment point lookups)
+    std::vector<glm::mat4> bone_globals;
 
     // Per-entity GPU bone buffer (allocated by renderer)
     VkBuffer      bone_buffer     = VK_NULL_HANDLE;
@@ -59,5 +61,8 @@ void set_anim_state(AnimationInstance& inst, AnimState state,
 
 void update_animation(AnimationInstance& inst, f32 dt);
 void evaluate_animation(AnimationInstance& inst);
+
+// Get the local-space position of a named attachment bone. Returns (0,0,0) if not found.
+glm::vec3 get_attachment_point(const AnimationInstance& inst, std::string_view bone_name);
 
 } // namespace uldum::render

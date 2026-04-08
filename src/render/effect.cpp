@@ -14,33 +14,7 @@ static constexpr const char* TAG = "Effect";
 // ── EffectRegistry ────────────────────────────────────────────────────────
 
 void EffectRegistry::register_defaults() {
-    define("hit_spark", {
-        .name = "hit_spark", .count = 5, .speed = 80, .life = 0.3f, .size = 6, .gravity = -100,
-        .start_color = {1, 0.7f, 0.2f, 1}, .end_color = {1, 0.3f, 0, 0}
-    });
-    define("death_burst", {
-        .name = "death_burst", .count = 20, .speed = 150, .life = 0.6f, .size = 10, .gravity = -200,
-        .start_color = {0.8f, 0.1f, 0.1f, 1}, .end_color = {0.3f, 0, 0, 0}
-    });
-    define("heal_glow", {
-        .name = "heal_glow", .count = 12, .speed = 60, .life = 0.5f, .size = 8, .gravity = 50,
-        .start_color = {0.2f, 1, 0.3f, 1}, .end_color = {0.1f, 0.8f, 0.2f, 0}
-    });
-    define("spell_cast", {
-        .name = "spell_cast", .count = 15, .speed = 100, .life = 0.4f, .size = 7, .gravity = -50,
-        .start_color = {0.3f, 0.5f, 1, 1}, .end_color = {0.1f, 0.2f, 0.8f, 0}
-    });
-    define("blood_splat", {
-        .name = "blood_splat", .count = 8, .speed = 120, .life = 0.4f, .size = 5, .gravity = -300,
-        .start_color = {0.6f, 0, 0, 1}, .end_color = {0.3f, 0, 0, 0}
-    });
-    define("aura_glow", {
-        .name = "aura_glow", .count = 0, .speed = 30, .life = 0.8f, .size = 5, .gravity = 40,
-        .emit_rate = 8,
-        .start_color = {0.4f, 0.6f, 1, 0.6f}, .end_color = {0.2f, 0.3f, 0.8f, 0}
-    });
-
-    log::info(TAG, "Registered {} default effects", m_defs.size());
+    // No engine-defined effects. Maps define all effects via Lua DefineEffect() or JSON.
 }
 
 void EffectRegistry::define(const std::string& name, const EffectDef& def) {
@@ -103,7 +77,7 @@ u32 EffectManager::create(const std::string& name, glm::vec3 position) {
 
     // If burst-only, spawn initial burst
     if (def->count > 0 && def->emit_rate <= 0 && m_particles) {
-        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size);
+        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity);
     }
 
     m_instances.push_back(std::move(inst));
@@ -135,7 +109,7 @@ void EffectManager::play(const std::string& name, glm::vec3 position) {
     if (!def) { log::warn(TAG, "Unknown effect '{}'", name); return; }
 
     if (m_particles) {
-        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size);
+        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity);
     }
     // No instance needed for fire-and-forget with no continuous emission
     if (def->emit_rate > 0) {
@@ -155,7 +129,7 @@ void EffectManager::play_on_unit(const std::string& name, simulation::Unit unit,
     glm::vec3 pos = unit_pos;
     pos.z += 32.0f;
     if (m_particles) {
-        m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size);
+        m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size, def->gravity);
     }
     if (def->emit_rate > 0) {
         EffectInstance inst;
@@ -192,7 +166,7 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
             if (to_spawn > 0) {
                 inst.emit_accumulator -= static_cast<f32>(to_spawn);
                 m_particles->burst(inst.position, to_spawn, inst.def->start_color,
-                                   inst.def->speed, inst.def->life, inst.def->size);
+                                   inst.def->speed, inst.def->life, inst.def->size, inst.def->gravity);
             }
         }
 

@@ -42,6 +42,9 @@ public:
     // Sample terrain normal at world position.
     glm::vec3 sample_normal(f32 x, f32 y) const;
 
+    // Get tile size from terrain data (for world→grid conversion).
+    f32 tile_size() const;
+
 private:
     const map::TerrainData* m_terrain = nullptr;
 };

@@ -77,7 +77,7 @@ void ParticleSystem::remove_emitter(u32 id) {
     std::erase_if(m_emitters, [id](const ParticleEmitter& e) { return e.id == id; });
 }
 
-void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size) {
+void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity) {
     ParticleEmitter e;
     e.position       = position;
     e.shape          = EmitterShape::Sphere;
@@ -86,6 +86,7 @@ void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 s
     e.particle_size  = size;
     e.start_color    = color;
     e.end_color      = glm::vec4(color.r, color.g, color.b, 0);
+    e.gravity        = gravity;
     e.burst_count    = count;
     e.active         = true;
     e.duration       = 0;  // dies immediately after burst
@@ -103,6 +104,7 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
         p.life        = emitter.particle_life;
         p.max_life    = emitter.particle_life;
         p.size        = emitter.particle_size;
+        p.gravity     = emitter.gravity;
 
         glm::vec3 dir;
         if (emitter.shape == EmitterShape::Sphere) {
@@ -162,7 +164,7 @@ void ParticleSystem::update(f32 dt) {
 
     // Simulate particles
     for (auto& p : m_particles) {
-        p.velocity.z += p.max_life > 0 ? -200.0f * dt : 0;  // gravity
+        p.velocity.z += p.gravity * dt;
         p.position += p.velocity * dt;
         p.life -= dt;
     }

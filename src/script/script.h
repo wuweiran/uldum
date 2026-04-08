@@ -2,6 +2,8 @@
 
 #include "core/types.h"
 
+#include <glm/vec3.hpp>
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -59,10 +61,15 @@ public:
     ScriptEngine();
     ~ScriptEngine();  // defined in .cpp where sol::state is complete
 
+    // Callback to get attachment point position in model-local space.
+    using AttachPointFn = std::function<glm::vec3(u32 entity_id, std::string_view bone_name)>;
+
     bool init(simulation::Simulation& sim, map::MapManager& map,
               render::EffectRegistry* effects = nullptr,
               render::EffectManager* effect_mgr = nullptr,
               audio::AudioEngine* audio = nullptr);
+
+    void set_attach_point_fn(AttachPointFn fn) { m_attach_fn = std::move(fn); }
     void shutdown();
     void update(float dt);
 
@@ -105,6 +112,7 @@ private:
     render::EffectRegistry*  m_effects    = nullptr;
     render::EffectManager*   m_effect_mgr = nullptr;
     audio::AudioEngine*      m_audio      = nullptr;
+    AttachPointFn            m_attach_fn;
 
     // Triggers
     std::unordered_map<u32, Trigger> m_triggers;

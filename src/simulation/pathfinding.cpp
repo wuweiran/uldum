@@ -91,6 +91,10 @@ glm::vec3 Pathfinder::sample_normal(f32 x, f32 y) const {
     return glm::normalize(glm::cross(dx, dy));
 }
 
+f32 Pathfinder::tile_size() const {
+    return (m_terrain && m_terrain->is_valid()) ? m_terrain->tile_size : 128.0f;
+}
+
 // ── A* pathfinding ───────────────────────────────────────────────────────
 
 struct AStarNode {

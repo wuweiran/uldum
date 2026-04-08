@@ -128,6 +128,12 @@ bool Engine::init() {
     m_renderer.set_map_root(m_map.map_root());
     m_audio.set_map_root(m_map.map_root());
 
+    // Load map-defined effects
+    {
+        std::string effects_path = m_map.map_root() + "/types/effects.json";
+        m_renderer.effect_registry().load_from_json(effects_path);
+    }
+
     // Feed terrain data to renderer and simulation
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
@@ -145,6 +151,11 @@ bool Engine::init() {
     m_simulation.world().on_sound = [this](std::string_view path, glm::vec3 pos) {
         m_audio.play_sfx(path, pos);
     };
+
+    // Wire attachment point callback for effect positioning
+    m_script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+        return m_renderer.get_attachment_point(entity_id, bone);
+    });
 
     // Initialize spatial grid before scripts run (so GetUnitsInRange works in main())
     m_simulation.spatial_grid().update(m_simulation.world());

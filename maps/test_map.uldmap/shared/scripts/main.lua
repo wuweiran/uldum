@@ -108,6 +108,7 @@ function main()
         local caster = GetTriggerUnit()
         local target = GetSpellTargetUnit()
         if caster and target and IsUnitAlive(target) then
+            PlayEffectOnUnit("heal_glow", target, "overhead")
             local hp_before = GetUnitHealth(target)
             HealUnit(caster, target, 200)
             local hp_after = GetUnitHealth(target)
@@ -117,14 +118,14 @@ function main()
         end
     end)
 
-    -- Auto-cast: periodically order paladin to cast holy_light on footman when HP < 50%
+    -- Auto-cast: periodically order paladin to cast holy_light on footman when HP < 80%
     CreateTimer(1.0, true, function()
         if not IsUnitAlive(paladin) then return end
         if not IsUnitAlive(footman) then return end
 
         local hp = GetUnitHealth(footman)
         local max_hp = GetUnitMaxHealth(footman)
-        if hp < max_hp * 0.50 then
+        if hp < max_hp * 0.80 then
             IssueOrder(paladin, "cast", "holy_light", footman)
         end
     end)
@@ -170,7 +171,7 @@ function main()
     TriggerAddAction(hit_vfx, function()
         local target = GetDamageTarget()
         if target then
-            PlayEffectOnUnit("hit_spark", target)
+            PlayEffectOnUnit("hit_spark", target, "chest")
         end
     end)
 
@@ -182,7 +183,7 @@ function main()
     TriggerAddAction(death_trig, function()
         local unit = GetTriggerUnit()
         if unit then
-            PlayEffectOnUnit("death_burst", unit)
+            PlayEffectOnUnit("death_burst", unit, "chest")
             Log("[Death] " .. GetUnitTypeId(unit) .. " has died")
         end
     end)
