@@ -349,19 +349,24 @@ struct BrushRange {
     u32 min_ix, max_ix, min_iy, max_iy;
 };
 
+// size = WC3 convention (1 = single vertex). Radius = size - 1.
 static BrushRange compute_brush_range(const map::TerrainData& td, i32 cx, i32 cy, i32 size) {
-    BrushRange r;
-    r.min_ix = static_cast<u32>(std::max(0, cx - size));
-    r.max_ix = static_cast<u32>(std::min(static_cast<i32>(td.tiles_x), cx + size)) + 1;
-    r.min_iy = static_cast<u32>(std::max(0, cy - size));
-    r.max_iy = static_cast<u32>(std::min(static_cast<i32>(td.tiles_y), cy + size)) + 1;
-    return r;
+    i32 r = size - 1;
+    BrushRange br;
+    br.min_ix = static_cast<u32>(std::max(0, cx - r));
+    br.max_ix = static_cast<u32>(std::min(static_cast<i32>(td.tiles_x), cx + r)) + 1;
+    br.min_iy = static_cast<u32>(std::max(0, cy - r));
+    br.max_iy = static_cast<u32>(std::min(static_cast<i32>(td.tiles_y), cy + r)) + 1;
+    return br;
 }
 
 // Falloff based on tile distance from center vertex (0 at edge, 1 at center)
+// size = WC3 convention (1 = single vertex). Radius = size - 1.
 static f32 tile_falloff(i32 dx, i32 dy, i32 size) {
+    i32 r = size - 1;
+    if (r <= 0) return 1.0f;  // size 1: full strength at center
     f32 dist = std::sqrt(static_cast<f32>(dx * dx + dy * dy));
-    f32 t = dist / static_cast<f32>(size);
+    f32 t = dist / static_cast<f32>(r);
     if (t >= 1.0f) return 0.0f;
     return (1.0f - t * t) * (1.0f - t * t);
 }
@@ -526,12 +531,40 @@ void Editor::brush_paint(f32 strength, f32 dt) {
 // ── Cliff level editing ──────────────────────────────────────────────────
 
 // Cliff brush: raise all 4 corners of tiles whose center is within the circular brush.
+// Propagate cliff levels to enforce max 1 difference between adjacent vertices.
+// direction: +1 = after raise (pull neighbors up), -1 = after lower (pull neighbors down)
+static void enforce_cliff_constraint(map::TerrainData& td, i32 direction) {
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (u32 vy = 0; vy <= td.tiles_y; ++vy) {
+            for (u32 vx = 0; vx <= td.tiles_x; ++vx) {
+                u8 level = td.cliff_at(vx, vy);
+                // Check 8 neighbors (including diagonals — tile corners share a tile)
+                for (auto [nx, ny] : {std::pair{vx-1,vy-1}, {vx,vy-1}, {vx+1,vy-1},
+                                      std::pair{vx-1,vy},              {vx+1,vy},
+                                      std::pair{vx-1,vy+1}, {vx,vy+1}, {vx+1,vy+1}}) {
+                    if (nx > td.tiles_x || ny > td.tiles_y) continue;  // unsigned underflow handles < 0
+                    u8& neighbor = td.cliff_at(nx, ny);
+                    if (direction > 0 && neighbor + 1 < level) {
+                        neighbor = level - 1;
+                        changed = true;
+                    } else if (direction < 0 && level + 1 < neighbor) {
+                        neighbor = level + 1;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void Editor::brush_cliff_raise() {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r2 = m_brush_size * m_brush_size;
+    i32 r = m_brush_size - 1;
+    i32 r2 = r * r;
 
-    // Collect affected vertices: raise any vertex within the circle
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
             i32 dx = static_cast<i32>(ix) - m_cursor_vx;
@@ -542,13 +575,15 @@ void Editor::brush_cliff_raise() {
             if (level < 15) { level++; m_terrain_dirty = true; }
         }
     }
+    enforce_cliff_constraint(td, +1);
     cleanup_ramp_flags();
 }
 
 void Editor::brush_cliff_lower() {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r2 = m_brush_size * m_brush_size;
+    i32 r = m_brush_size - 1;
+    i32 r2 = r * r;
 
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
@@ -560,6 +595,7 @@ void Editor::brush_cliff_lower() {
             if (level > 0) { level--; m_terrain_dirty = true; }
         }
     }
+    enforce_cliff_constraint(td, -1);
     cleanup_ramp_flags();
 }
 
@@ -600,7 +636,8 @@ void Editor::cleanup_ramp_flags() {
 void Editor::brush_ramp_set() {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r2 = m_brush_size * m_brush_size;
+    i32 r = m_brush_size - 1;
+    i32 r2 = r * r;
 
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
@@ -626,7 +663,6 @@ void Editor::brush_ramp_set() {
                 }
             }
             if (!has_cliff) continue;
-
             td.pathing_at(ix, iy) |= map::PATHING_RAMP;
             m_terrain_dirty = true;
         }
@@ -636,7 +672,8 @@ void Editor::brush_ramp_set() {
 void Editor::brush_ramp_clear() {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r2 = m_brush_size * m_brush_size;
+    i32 r = m_brush_size - 1;
+    i32 r2 = r * r;
 
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
@@ -654,7 +691,8 @@ void Editor::brush_ramp_clear() {
 void Editor::brush_pathing_toggle() {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r2 = m_brush_size * m_brush_size;
+    i32 r = m_brush_size - 1;
+    i32 r2 = r * r;
 
     // Toggle WALKABLE flag on vertices in brush
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
@@ -778,10 +816,11 @@ void Editor::draw_overlays() {
         ImU32 grid_color = IM_COL32(255, 255, 255, 50);
 
         // Grid: tile grid centered on cursor vertex
-        i32 grid_min_x = std::max(0, m_cursor_vx - m_brush_size);
-        i32 grid_max_x = std::min(static_cast<i32>(td.tiles_x), m_cursor_vx + m_brush_size);
-        i32 grid_min_y = std::max(0, m_cursor_vy - m_brush_size);
-        i32 grid_max_y = std::min(static_cast<i32>(td.tiles_y), m_cursor_vy + m_brush_size);
+        i32 brush_r = m_brush_size - 1;
+        i32 grid_min_x = std::max(0, m_cursor_vx - brush_r);
+        i32 grid_max_x = std::min(static_cast<i32>(td.tiles_x), m_cursor_vx + brush_r);
+        i32 grid_min_y = std::max(0, m_cursor_vy - brush_r);
+        i32 grid_max_y = std::min(static_cast<i32>(td.tiles_y), m_cursor_vy + brush_r);
 
         // Horizontal lines
         for (i32 iy = grid_min_y; iy <= grid_max_y; ++iy) {
@@ -903,7 +942,7 @@ void Editor::draw_ui() {
     m_tool = static_cast<Tool>(tool);
 
     ImGui::Separator();
-    ImGui::SliderInt("Size", &m_brush_size, 1, 10);
+    ImGui::SliderInt("Size", &m_brush_size, 1, 11);
 
     if (m_tool != Tool::Cliff && m_tool != Tool::Ramp && m_tool != Tool::Pathing) {
         ImGui::SliderFloat("Amount", &m_brush_amount, 1.0f, 32.0f, "%.0f");

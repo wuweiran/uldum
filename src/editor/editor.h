@@ -85,7 +85,7 @@ private:
 
     // Tool state
     Tool  m_tool           = Tool::Raise;
-    i32   m_brush_size     = 2;     // radius in tiles (affects vertices within this many tiles)
+    i32   m_brush_size     = 2;     // WC3 convention: 1 = single vertex, 2 = 1-radius, etc.
     f32   m_brush_amount   = 10.0f; // fixed amount per click (game units)
     f32   m_brush_speed    = 30.0f; // continuous mode: game units per second
     bool  m_continuous     = false; // continuous mode (hold to keep applying)

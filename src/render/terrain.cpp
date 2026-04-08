@@ -302,12 +302,74 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 else if (c[0] == cmax && c[2] == cmax)  { edge_hi = 2; edge_lo = 3; } // left high
                 else if (c[1] == cmax && c[3] == cmax)  { edge_hi = 3; edge_lo = 2; } // right high
                 else {
-                    // Diagonal pair (TL+BR or TR+BL) — treat as 2 separate 1-high cases
-                    // For simplicity, render full low tile
-                    u32 v0 = corner_v(0, low_z), v1 = corner_v(1, low_z);
-                    u32 v2 = corner_v(2, low_z), v3 = corner_v(3, low_z);
-                    add_tri(v0, v1, v2);
-                    add_tri(v1, v3, v2);
+                    // Diagonal pair (TL+BR or TR+BL) — render as two 1-high triangles
+                    // Each high corner gets a small triangle + wall, like the 1-high case
+                    // but we do it twice for each high corner.
+                    u32 hi_a, hi_b;
+                    if (c[0] == cmax && c[3] == cmax) { hi_a = 0; hi_b = 3; } // TL + BR
+                    else { hi_a = 1; hi_b = 2; } // TR + BL
+
+                    // Render each high corner as a small high triangle with midpoint wall
+                    for (u32 pass = 0; pass < 2; ++pass) {
+                        u32 hi = (pass == 0) ? hi_a : hi_b;
+
+                        u32 ea, eb;
+                        switch (hi) {
+                            case 0: ea = 0; eb = 2; break;
+                            case 1: ea = 0; eb = 3; break;
+                            case 2: ea = 1; eb = 2; break;
+                            default: ea = 1; eb = 3; break;
+                        }
+
+                        u32 vh = corner_v(hi, high_z);
+                        u32 ma_h = mid_v(ea, high_z);
+                        u32 mb_h = mid_v(eb, high_z);
+                        add_tri(vh, ma_h, mb_h);
+
+                        // Wall
+                        u32 d_ma_h = dup_v(ma_h); u32 d_ma_l = mid_v(ea, low_z);
+                        u32 d_mb_h = dup_v(mb_h); u32 d_mb_l = mid_v(eb, low_z);
+                        glm::vec3 wall_n = glm::normalize(glm::vec3{
+                            xm - vertices[vh].position.x,
+                            ym - vertices[vh].position.y, 0.0f});
+                        vertices[d_ma_h].normal = vertices[d_ma_l].normal = wall_n;
+                        vertices[d_mb_h].normal = vertices[d_mb_l].normal = wall_n;
+
+                        glm::vec3 cross = glm::cross(
+                            vertices[d_mb_h].position - vertices[d_ma_h].position,
+                            vertices[d_ma_l].position - vertices[d_ma_h].position);
+                        if (glm::dot(cross, wall_n) >= 0) {
+                            indices.push_back(d_ma_h); indices.push_back(d_mb_h); indices.push_back(d_ma_l);
+                            indices.push_back(d_mb_h); indices.push_back(d_mb_l); indices.push_back(d_ma_l);
+                        } else {
+                            indices.push_back(d_ma_h); indices.push_back(d_ma_l); indices.push_back(d_mb_h);
+                            indices.push_back(d_mb_h); indices.push_back(d_ma_l); indices.push_back(d_mb_l);
+                        }
+                    }
+
+                    // Low center: 4 midpoints + 2 low corners form the remaining surface
+                    u32 vl_a = corner_v((hi_a == 0) ? 1 : 0, low_z);  // the two low corners
+                    u32 vl_b = corner_v((hi_a == 0) ? 2 : 3, low_z);
+                    u32 m_top  = mid_v(0, low_z);  // top edge midpoint
+                    u32 m_bot  = mid_v(1, low_z);  // bottom edge midpoint
+                    u32 m_left = mid_v(2, low_z);  // left edge midpoint
+                    u32 m_right = mid_v(3, low_z); // right edge midpoint
+
+                    // Fan from center-ish. Two low corners + 4 midpoints form a hexagon.
+                    // Triangulate from one low corner.
+                    if (hi_a == 0 && hi_b == 3) {
+                        // TL+BR high, TR(1) and BL(2) low
+                        // Hex CCW from TR: TR, m_right, m_bot, BL, m_left, m_top
+                        u32 hex[6] = {vl_a, mid_v(3, low_z), mid_v(1, low_z),
+                                      vl_b, mid_v(2, low_z), mid_v(0, low_z)};
+                        for (u32 i = 1; i + 1 < 6; ++i) add_tri(hex[0], hex[i], hex[i+1]);
+                    } else {
+                        // TR+BL high, TL(0) and BR(3) low
+                        // Hex CCW from TL: TL, m_top, m_right, BR, m_bot, m_left
+                        u32 hex[6] = {vl_a, mid_v(0, low_z), mid_v(3, low_z),
+                                      vl_b, mid_v(1, low_z), mid_v(2, low_z)};
+                        for (u32 i = 1; i + 1 < 6; ++i) add_tri(hex[0], hex[i], hex[i+1]);
+                    }
                     continue;
                 }
 
