@@ -3,7 +3,6 @@
 #include "map/terrain_data.h"
 #include "simulation/world.h"
 #include "simulation/components.h"
-#include "simulation/pathfinding.h"
 #include "simulation/type_registry.h"
 #include "asset/model.h"
 #include "core/log.h"
@@ -1658,8 +1657,8 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
             glm::vec3 vis_pos = lerp_position(*transform, alpha);
             f32 vis_facing = lerp_facing(*transform, alpha);
             glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-            if (m_pathfinder) {
-                glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
+            if (m_terrain_data) {
+                glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
                 model = model * slope_tilt_matrix(normal);
             }
             model = glm::rotate(model, vis_facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
@@ -1702,8 +1701,8 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         glm::vec3 vis_pos = lerp_position(*transform, alpha);
         f32 vis_facing = lerp_facing(*transform, alpha);
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-        if (m_pathfinder) {
-            glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
+        if (m_terrain_data) {
+            glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
             model = model * slope_tilt_matrix(normal);
         }
         f32 facing = vis_facing;
@@ -1885,8 +1884,8 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             glm::vec3 vis_pos = lerp_position(*transform, alpha);
             f32 vis_facing = lerp_facing(*transform, alpha);
             glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-            if (m_pathfinder) {
-                glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
+            if (m_terrain_data) {
+                glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
                 model = model * slope_tilt_matrix(normal);
             }
             model = glm::rotate(model, vis_facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
@@ -1945,8 +1944,8 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         glm::vec3 vis_pos = lerp_position(*transform, alpha);
         f32 vis_facing = lerp_facing(*transform, alpha);
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-        if (m_pathfinder) {
-            glm::vec3 normal = m_pathfinder->sample_normal(vis_pos.x, vis_pos.y);
+        if (m_terrain_data) {
+            glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
             model = model * slope_tilt_matrix(normal);
         }
         f32 facing = vis_facing;

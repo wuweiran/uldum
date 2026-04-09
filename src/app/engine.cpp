@@ -138,7 +138,7 @@ bool Engine::init() {
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
         m_simulation.set_terrain(&m_map.terrain());
-        m_renderer.set_pathfinder(&m_simulation.pathfinder());
+        m_renderer.set_terrain_data(&m_map.terrain());
     }
 
     // Scripting — init after map so we can load map scripts

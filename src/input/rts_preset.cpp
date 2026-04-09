@@ -237,16 +237,17 @@ void RtsPreset::handle_camera(const InputContext& ctx, f32 dt) {
     f32 w = static_cast<f32>(ctx.screen_w);
     f32 h = static_cast<f32>(ctx.screen_h);
 
-    // Edge pan: move camera when mouse is near screen edges
+    // Arrow keys: pan camera
     f32 pan_x = 0, pan_y = 0;
-    if (input.mouse_x < EDGE_PAN_MARGIN)     pan_x = -1.0f;
-    if (input.mouse_x > w - EDGE_PAN_MARGIN) pan_x =  1.0f;
-    if (input.mouse_y < EDGE_PAN_MARGIN)     pan_y = -1.0f;  // top = forward
-    if (input.mouse_y > h - EDGE_PAN_MARGIN) pan_y =  1.0f;  // bottom = backward
+    if (input.key_left)  pan_x = -1.0f;
+    if (input.key_right) pan_x =  1.0f;
+    if (input.key_up)    pan_y = -1.0f;  // up arrow = forward
+    if (input.key_down)  pan_y =  1.0f;  // down arrow = backward
+
+    // TODO: re-enable edge pan after testing
 
     if (pan_x != 0 || pan_y != 0) {
         f32 speed = EDGE_PAN_SPEED * dt;
-        // pan() takes screen-space deltas, so convert direction to pixel-like movement
         camera.pan(-pan_x * speed, -pan_y * speed);
     }
 

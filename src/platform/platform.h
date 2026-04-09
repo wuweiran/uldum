@@ -27,6 +27,10 @@ struct InputState {
     bool key_f1 = false;
     bool key_f2 = false;
     bool key_f3 = false;
+    bool key_up = false;
+    bool key_down = false;
+    bool key_left = false;
+    bool key_right = false;
 
     // Number keys (0-9) for control groups
     bool key_num[10] = {};

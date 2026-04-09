@@ -84,15 +84,52 @@ bool Picker::screen_to_world(f32 screen_x, f32 screen_y, glm::vec3& world_pos) c
     return false;
 }
 
+// Ray-cylinder intersection: find closest distance between ray and a vertical
+// line segment (the unit's selection axis). Returns distance from ray to axis,
+// and sets ray_t to the ray parameter at closest approach.
+static f32 ray_cylinder_dist(glm::vec3 ray_origin, glm::vec3 ray_dir,
+                              glm::vec3 cyl_base, f32 cyl_height, f32& ray_t) {
+    // Project to XY plane (cylinder axis is Z)
+    glm::vec2 ro{ray_origin.x - cyl_base.x, ray_origin.y - cyl_base.y};
+    glm::vec2 rd{ray_dir.x, ray_dir.y};
+
+    // Closest approach of ray to Z-axis in XY
+    f32 a = glm::dot(rd, rd);
+    if (a < 1e-8f) {
+        // Ray is nearly vertical — distance is just XY offset
+        ray_t = 0;
+        return glm::length(ro);
+    }
+    f32 b = glm::dot(ro, rd);
+    ray_t = -b / a;
+    if (ray_t < 0) ray_t = 0;
+
+    // Check Z bounds: ray must be within cylinder height at closest approach
+    f32 z_at_closest = ray_origin.z + ray_dir.z * ray_t;
+    if (z_at_closest < cyl_base.z || z_at_closest > cyl_base.z + cyl_height) {
+        // Clamp Z and recompute
+        f32 target_z = std::clamp(z_at_closest, cyl_base.z, cyl_base.z + cyl_height);
+        if (std::abs(ray_dir.z) > 1e-6f) {
+            ray_t = (target_z - ray_origin.z) / ray_dir.z;
+            if (ray_t < 0) ray_t = 0;
+        }
+    }
+
+    glm::vec3 closest_on_ray = ray_origin + ray_dir * ray_t;
+    f32 dx = closest_on_ray.x - cyl_base.x;
+    f32 dy = closest_on_ray.y - cyl_base.y;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
 simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
                                     simulation::Player player) const {
     if (!m_camera || !m_world) return {};
 
-    glm::vec3 world_pos;
-    if (!screen_to_world(screen_x, screen_y, world_pos)) return {};
+    glm::vec3 origin = ray_origin(screen_x, screen_y);
+    glm::vec3 dir = screen_to_ray(screen_x, screen_y);
 
     simulation::Unit best{};
-    f32 best_dist = 1e9f;
+    f32 best_ray_t = 1e9f;
     i32 best_priority = -1;
 
     auto& transforms = m_world->transforms;
@@ -110,24 +147,22 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         auto* info = handle_infos.get(id);
         if (!info || info->category != simulation::Category::Unit) continue;
 
-        // If player filter set, only pick own units
         if (player.is_valid()) {
             auto* own = owners.get(id);
             if (!own || own->player.id != player.id) continue;
         }
 
-        f32 dx = transform->position.x - world_pos.x;
-        f32 dy = transform->position.y - world_pos.y;
-        f32 dist = std::sqrt(dx * dx + dy * dy);
+        f32 ray_t;
+        f32 dist = ray_cylinder_dist(origin, dir, transform->position, sel.selection_height, ray_t);
 
-        if (dist > sel.selection_radius * 2.0f) continue;  // generous click radius
+        if (dist > sel.selection_radius) continue;
 
-        // Prefer higher priority, then closer
+        // Prefer higher priority, then closer along the ray
         if (sel.priority > best_priority ||
-            (sel.priority == best_priority && dist < best_dist)) {
+            (sel.priority == best_priority && ray_t < best_ray_t)) {
             best.id = id;
             best.generation = info->generation;
-            best_dist = dist;
+            best_ray_t = ray_t;
             best_priority = sel.priority;
         }
     }

@@ -2,6 +2,8 @@
 
 #include "core/types.h"
 
+#include <glm/vec3.hpp>
+
 #include <string_view>
 #include <vector>
 
@@ -79,6 +81,14 @@ struct TerrainData {
 
     bool is_valid() const { return tiles_x > 0 && tiles_y > 0 && !heightmap.empty(); }
 };
+
+// ── Terrain sampling (visual only — not for pathfinding) ─────────────────
+
+// Bilinear interpolated height at world position.
+f32 sample_height(const TerrainData& td, f32 x, f32 y);
+
+// Terrain surface normal at world position (central differences).
+glm::vec3 sample_normal(const TerrainData& td, f32 x, f32 y);
 
 // Create a flat terrain with all default values.
 TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 128.0f, f32 base_height = 0.0f);

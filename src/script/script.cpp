@@ -50,6 +50,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     m_lua = std::make_unique<sol::state>();
     auto& lua = *m_lua;
 
+
     // Open safe standard libraries
     lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
                        sol::lib::table, sol::lib::coroutine);
@@ -255,6 +256,7 @@ void ScriptEngine::fire_event(std::string_view event_name, u32 unit_id,
 void ScriptEngine::bind_api() {
     auto& lua = *m_lua;
     auto& sim = *m_sim;
+    const auto& terrain_ref = m_map->terrain();
 
     // Helper: return nil for invalid units
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
@@ -272,7 +274,7 @@ void ScriptEngine::bind_api() {
         auto unit = simulation::create_unit(world, type_id, owner, x, y, facing.value_or(0));
         if (unit.is_valid()) {
             auto* t = world.transforms.get(unit.id);
-            if (t) t->position.z = sim.pathfinder().sample_height(x, y);
+            if (t) t->position.z = ::uldum::map::sample_height(terrain_ref,x, y);
             auto* mov = world.movements.get(unit.id);
             if (mov) mov->cliff_level = sim.pathfinder().cliff_level_at(x, y);
             set_context_unit(unit.id);
@@ -322,7 +324,7 @@ void ScriptEngine::bind_api() {
     };
     lua["SetUnitPosition"] = [&](simulation::Unit u, f32 x, f32 y) {
         auto* t = sim.world().transforms.get(u.id);
-        if (t) { t->position.x = x; t->position.y = y; t->position.z = sim.pathfinder().sample_height(x, y); }
+        if (t) { t->position.x = x; t->position.y = y; t->position.z = ::uldum::map::sample_height(terrain_ref,x, y); }
     };
     lua["GetUnitFacing"] = [&](simulation::Unit u) -> f32 {
         auto* t = sim.world().transforms.get(u.id);

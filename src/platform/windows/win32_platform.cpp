@@ -176,6 +176,10 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         case VK_F1:     self->m_input.key_f1 = pressed; break;
         case VK_F2:     self->m_input.key_f2 = pressed; break;
         case VK_F3:     self->m_input.key_f3 = pressed; break;
+        case VK_UP:     self->m_input.key_up = pressed; break;
+        case VK_DOWN:   self->m_input.key_down = pressed; break;
+        case VK_LEFT:   self->m_input.key_left = pressed; break;
+        case VK_RIGHT:  self->m_input.key_right = pressed; break;
         case VK_SHIFT:  self->m_input.key_shift = pressed; break;
         case VK_CONTROL: self->m_input.key_ctrl = pressed; break;
         case VK_MENU:   self->m_input.key_alt = pressed; break;

@@ -1,5 +1,6 @@
 #include "simulation/pathfinding.h"
 #include "simulation/handle_types.h"
+#include "simulation/world.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 
@@ -13,119 +14,142 @@
 
 namespace uldum::simulation {
 
-// ── Vertex passability ───────────────────────────────────────────────────
+// ── Tile queries ─────────────────────────────────────────────────────────
 
-bool Pathfinder::is_passable(u32 vx, u32 vy, MoveType move_type) const {
-    if (!m_terrain || vx >= m_terrain->verts_x() || vy >= m_terrain->verts_y()) return false;
-    u8 flags = m_terrain->pathing_at(vx, vy);
-    bool is_water = m_terrain->is_water(vx, vy);
-    switch (move_type) {
-        case MoveType::Ground:     return (flags & map::PATHING_WALKABLE) && !is_water;
-        case MoveType::Air:        return (flags & map::PATHING_FLYABLE) != 0;
-        case MoveType::Amphibious: return (flags & map::PATHING_WALKABLE) != 0;  // can walk on water
+i32 Pathfinder::tile_effective_level(u32 tx, u32 ty) const {
+    auto& td = *m_terrain;
+    if (tx >= td.tiles_x || ty >= td.tiles_y) return -2;
+
+    u8 c[4] = { td.cliff_at(tx, ty),     td.cliff_at(tx+1, ty),
+                 td.cliff_at(tx, ty+1),   td.cliff_at(tx+1, ty+1) };
+    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+
+    // Flat tile: all corners same level
+    if (cmin == cmax) return static_cast<i32>(cmin);
+
+    // Ramp: all 4 corners have RAMP flag, exactly 1 level difference
+    if (cmax - cmin == 1) {
+        bool all_ramp = (td.pathing_at(tx, ty)     & map::PATHING_RAMP) &&
+                        (td.pathing_at(tx+1, ty)   & map::PATHING_RAMP) &&
+                        (td.pathing_at(tx, ty+1)   & map::PATHING_RAMP) &&
+                        (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP);
+        if (all_ramp) return -1;  // ramp: connects both levels
+    }
+
+    // Cliff wall: mixed levels, not a valid ramp — impassable
+    return -2;
+}
+
+bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
+    if (!m_terrain || tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return false;
+    if (move_type == MoveType::Air) return true;
+
+    i32 eff = tile_effective_level(tx, ty);
+    if (eff == -2) return false;  // cliff wall
+
+    auto& td = *m_terrain;
+    // Check that at least one corner is walkable and not water
+    for (u32 vy = ty; vy <= ty + 1; ++vy) {
+        for (u32 vx = tx; vx <= tx + 1; ++vx) {
+            u8 flags = td.pathing_at(vx, vy);
+            bool walkable = (flags & map::PATHING_WALKABLE) != 0;
+            bool water = td.is_water(vx, vy);
+            if (move_type == MoveType::Ground && walkable && !water) return true;
+            if (move_type == MoveType::Amphibious && walkable) return true;
+        }
     }
     return false;
 }
 
-// ── Terrain sampling ─────────────────────────────────────────────────────
-
-f32 Pathfinder::sample_height(f32 x, f32 y) const {
-    if (!m_terrain || !m_terrain->is_valid()) return 0.0f;
-    auto& td = *m_terrain;
-
-    f32 fx = x / td.tile_size;
-    f32 fy = y / td.tile_size;
-    u32 ix = static_cast<u32>(std::floor(fx));
-    u32 iy = static_cast<u32>(std::floor(fy));
-    ix = std::min(ix, td.tiles_x - 1);
-    iy = std::min(iy, td.tiles_y - 1);
-
-    f32 tx = fx - static_cast<f32>(ix);
-    f32 ty = fy - static_cast<f32>(iy);
-
-    // Bilinear interpolation using world_z_at (cliff + heightmap)
-    f32 h00 = td.world_z_at(ix, iy);
-    f32 h10 = td.world_z_at(ix + 1, iy);
-    f32 h01 = td.world_z_at(ix, iy + 1);
-    f32 h11 = td.world_z_at(ix + 1, iy + 1);
-
-    f32 h0 = h00 + tx * (h10 - h00);
-    f32 h1 = h01 + tx * (h11 - h01);
-    return h0 + ty * (h1 - h0);
-}
-
-glm::vec3 Pathfinder::sample_normal(f32 x, f32 y) const {
-    if (!m_terrain || !m_terrain->is_valid()) return {0, 0, 1};
-    auto& td = *m_terrain;
-
-    // Central differences
-    f32 eps = td.tile_size * 0.5f;
-    f32 hL = sample_height(x - eps, y);
-    f32 hR = sample_height(x + eps, y);
-    f32 hD = sample_height(x, y - eps);
-    f32 hU = sample_height(x, y + eps);
-
-    glm::vec3 dx{2.0f * eps, 0.0f, hR - hL};
-    glm::vec3 dy{0.0f, 2.0f * eps, hU - hD};
-    return glm::normalize(glm::cross(dx, dy));
-}
-
-f32 Pathfinder::tile_size() const {
-    return (m_terrain && m_terrain->is_valid()) ? m_terrain->tile_size : 128.0f;
-}
-
-i32 Pathfinder::tile_effective_level(u32 tx, u32 ty) const {
-    auto& td = *m_terrain;
-    if (tx >= td.tiles_x || ty >= td.tiles_y) return 0;
-
-    u8 c[4] = { td.cliff_at(tx,ty), td.cliff_at(tx+1,ty),
-                 td.cliff_at(tx,ty+1), td.cliff_at(tx+1,ty+1) };
-    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
-    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
-
-    if (cmin == cmax) return static_cast<i32>(cmin);  // flat tile
-
-    // Count ramp flags
-    u32 ramp_count = 0;
-    if (td.pathing_at(tx, ty) & map::PATHING_RAMP) ramp_count++;
-    if (td.pathing_at(tx+1, ty) & map::PATHING_RAMP) ramp_count++;
-    if (td.pathing_at(tx, ty+1) & map::PATHING_RAMP) ramp_count++;
-    if (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP) ramp_count++;
-
-    if (ramp_count == 4 && cmax - cmin == 1) return -1;  // ramp: connects both levels
-
-    // Cliff tile (mixed levels, not a ramp): effective level = min (low side)
-    return static_cast<i32>(cmin);
-}
-
-bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y, u8 cliff_level, MoveType move_type) const {
-    if (!m_terrain || !m_terrain->is_valid()) return true;
+bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
+                                u8 cliff_level, MoveType move_type) const {
+    if (!m_terrain) return false;
     if (move_type == MoveType::Air) return true;
+
+    // Both tiles must be occupiable
+    if (!can_occupy(src_tx, src_ty, move_type)) return false;
+    if (!can_occupy(dst_tx, dst_ty, move_type)) return false;
+
+    // Check cliff level compatibility
+    i32 src_eff = tile_effective_level(src_tx, src_ty);
+    i32 dst_eff = tile_effective_level(dst_tx, dst_ty);
+
+    // Either tile is a ramp: allow transition
+    if (src_eff == -1 || dst_eff == -1) {
+        // ok — ramp bridges levels
+    } else {
+        // Both flat: must be same effective level
+        if (src_eff != dst_eff) return false;
+    }
+
     auto& td = *m_terrain;
 
-    u32 old_tx = std::min(static_cast<u32>(old_x / td.tile_size), td.tiles_x - 1);
-    u32 old_ty = std::min(static_cast<u32>(old_y / td.tile_size), td.tiles_y - 1);
-    u32 new_tx = std::min(static_cast<u32>(new_x / td.tile_size), td.tiles_x - 1);
-    u32 new_ty = std::min(static_cast<u32>(new_y / td.tile_size), td.tiles_y - 1);
+    // Check shared edge/corner vertices are walkable
+    // Determine shared vertices between adjacent tiles
+    u32 min_vx = std::max(src_tx, dst_tx);
+    u32 max_vx = std::min(src_tx + 1, dst_tx + 1);
+    u32 min_vy = std::max(src_ty, dst_ty);
+    u32 max_vy = std::min(src_ty + 1, dst_ty + 1);
 
-    if (old_tx == new_tx && old_ty == new_ty) return true;  // same tile
+    for (u32 vy = min_vy; vy <= max_vy; ++vy) {
+        for (u32 vx = min_vx; vx <= max_vx; ++vx) {
+            u8 flags = td.pathing_at(vx, vy);
+            bool walkable = (flags & map::PATHING_WALKABLE) != 0;
+            bool water = td.is_water(vx, vy);
+            if (move_type == MoveType::Ground && (!walkable || water)) return false;
+            if (move_type == MoveType::Amphibious && !walkable) return false;
+        }
+    }
 
-    i32 src_level = tile_effective_level(old_tx, old_ty);
-    i32 dest_level = tile_effective_level(new_tx, new_ty);
+    // Diagonal movement: both cardinal intermediate tiles must be occupiable and connected
+    i32 dtx = static_cast<i32>(dst_tx) - static_cast<i32>(src_tx);
+    i32 dty = static_cast<i32>(dst_ty) - static_cast<i32>(src_ty);
+    if (dtx != 0 && dty != 0) {
+        // Check both cardinal neighbors
+        u32 mid1_tx = static_cast<u32>(static_cast<i32>(src_tx) + dtx);
+        u32 mid1_ty = src_ty;
+        u32 mid2_tx = src_tx;
+        u32 mid2_ty = static_cast<u32>(static_cast<i32>(src_ty) + dty);
 
-    // Either tile is a ramp: allow transition (ramp connects both levels)
-    if (src_level == -1 || dest_level == -1) return true;
+        if (!can_occupy(mid1_tx, mid1_ty, move_type) ||
+            !can_occupy(mid2_tx, mid2_ty, move_type))
+            return false;
+    }
 
-    // Both are flat/cliff tiles: must be same effective level
-    return src_level == dest_level;
+    return true;
 }
 
-bool Pathfinder::is_ramp_at(f32 x, f32 y) const {
-    if (!m_terrain || !m_terrain->is_valid()) return false;
+u8 Pathfinder::cliff_level_on_tile(u32 tx, u32 ty) const {
+    if (!m_terrain || tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return 0;
     auto& td = *m_terrain;
-    u32 tx = std::min(static_cast<u32>(x / td.tile_size), td.tiles_x - 1);
-    u32 ty = std::min(static_cast<u32>(y / td.tile_size), td.tiles_y - 1);
-    return tile_effective_level(tx, ty) == -1;
+
+    i32 eff = tile_effective_level(tx, ty);
+    if (eff >= 0) return static_cast<u8>(eff);
+
+    // Ramp: use min corner level (entering from low side) or max (from high side).
+    // Use the average — the movement system will update cliff_level based on nearest vertex.
+    u8 c[4] = { td.cliff_at(tx, ty),     td.cliff_at(tx+1, ty),
+                 td.cliff_at(tx, ty+1),   td.cliff_at(tx+1, ty+1) };
+    return std::min({c[0], c[1], c[2], c[3]});
+}
+
+// ── World coordinate helpers ─────────────────────────────────────────────
+
+glm::ivec2 Pathfinder::world_to_tile(f32 x, f32 y) const {
+    if (!m_terrain || !m_terrain->is_valid()) return {0, 0};
+    auto& td = *m_terrain;
+    i32 tx = static_cast<i32>(x / td.tile_size);
+    i32 ty = static_cast<i32>(y / td.tile_size);
+    tx = std::clamp(tx, 0, static_cast<i32>(td.tiles_x - 1));
+    ty = std::clamp(ty, 0, static_cast<i32>(td.tiles_y - 1));
+    return {tx, ty};
+}
+
+glm::vec2 Pathfinder::tile_center(u32 tx, u32 ty) const {
+    f32 ts = m_terrain ? m_terrain->tile_size : 128.0f;
+    return {(static_cast<f32>(tx) + 0.5f) * ts,
+            (static_cast<f32>(ty) + 0.5f) * ts};
 }
 
 u8 Pathfinder::cliff_level_at(f32 x, f32 y) const {
@@ -138,14 +162,34 @@ u8 Pathfinder::cliff_level_at(f32 x, f32 y) const {
     return td.cliff_at(vx, vy);
 }
 
-// ── A* pathfinding ───────────────────────────────────────────────────────
+f32 Pathfinder::tile_size() const {
+    return (m_terrain && m_terrain->is_valid()) ? m_terrain->tile_size : 128.0f;
+}
+
+// ── Movement validation ──────────────────────────────────────────────────
+
+bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
+                              u8 cliff_level, MoveType move_type) const {
+    if (!m_terrain || !m_terrain->is_valid()) return true;
+    if (move_type == MoveType::Air) return true;
+
+    glm::ivec2 src = world_to_tile(old_x, old_y);
+    glm::ivec2 dst = world_to_tile(new_x, new_y);
+
+    if (src == dst) return true;  // same tile
+    if (!can_occupy(dst.x, dst.y, move_type)) return false;
+
+    return are_connected(src.x, src.y, dst.x, dst.y, cliff_level, move_type);
+}
+
+// ── A* on tile graph ─────────────────────────────────────────────────────
 
 struct AStarNode {
-    u32 vx, vy;    // vertex coordinates
-    f32 g_cost;     // cost from start
-    f32 f_cost;     // g + heuristic
-    u32 parent_idx; // index into closed list
-    u8  cliff_level = 0; // cliff level at this node
+    u32 tx, ty;
+    f32 g_cost;
+    f32 f_cost;
+    u32 parent_idx;
+    u8  cliff_level;
 };
 
 struct NodeCompare {
@@ -154,54 +198,107 @@ struct NodeCompare {
     }
 };
 
-static u64 vert_key(u32 vx, u32 vy) {
-    return (static_cast<u64>(vy) << 32) | vx;
+static u64 tile_key(u32 tx, u32 ty) {
+    return (static_cast<u64>(ty) << 32) | tx;
 }
 
-Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) const {
-    Path result;
+// Build a set of tiles occupied by units (for A* cost penalty).
+// Returns a set of tile keys where non-self units are standing.
+static std::unordered_set<u64> build_unit_tile_set(const World* world, u32 self_id, f32 tile_size, u32 tiles_x, u32 tiles_y) {
+    std::unordered_set<u64> occupied;
+    if (!world) return occupied;
+
+    for (u32 i = 0; i < world->transforms.count(); ++i) {
+        u32 id = world->transforms.ids()[i];
+        if (id == self_id) continue;
+        if (world->dead_states.has(id)) continue;
+
+        // Only consider units (not doodads, projectiles, etc.)
+        auto* info = world->handle_infos.get(id);
+        if (!info || info->category != Category::Unit) continue;
+
+        auto& pos = world->transforms.data()[i].position;
+        i32 tx = static_cast<i32>(pos.x / tile_size);
+        i32 ty = static_cast<i32>(pos.y / tile_size);
+        if (tx >= 0 && ty >= 0 &&
+            static_cast<u32>(tx) < tiles_x && static_cast<u32>(ty) < tiles_y) {
+            occupied.insert(tile_key(tx, ty));
+        }
+    }
+    return occupied;
+}
+
+Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
+                                    u8 start_cliff_level, MoveType move_type,
+                                    const World* world, u32 self_id) const {
+    Corridor result;
     if (!m_terrain || !m_terrain->is_valid()) return result;
     auto& td = *m_terrain;
 
-    // Convert world positions to vertex coordinates
-    u32 max_vx = td.verts_x() - 1;
-    u32 max_vy = td.verts_y() - 1;
-    u32 sx = static_cast<u32>(std::clamp(start.x / td.tile_size, 0.0f, static_cast<f32>(max_vx)));
-    u32 sy = static_cast<u32>(std::clamp(start.y / td.tile_size, 0.0f, static_cast<f32>(max_vy)));
-    u32 gx = static_cast<u32>(std::clamp(goal.x / td.tile_size, 0.0f, static_cast<f32>(max_vx)));
-    u32 gy = static_cast<u32>(std::clamp(goal.y / td.tile_size, 0.0f, static_cast<f32>(max_vy)));
+    // Build unit occupancy for cost penalty
+    auto unit_tiles = build_unit_tile_set(world, self_id, td.tile_size, td.tiles_x, td.tiles_y);
+    static constexpr f32 UNIT_COST_PENALTY = 5.0f;
 
-    if (!is_passable(gx, gy, move_type)) {
+    glm::ivec2 s = world_to_tile(start.x, start.y);
+    glm::ivec2 g = world_to_tile(goal.x, goal.y);
+
+    // Goal must be occupiable; if not, find nearest occupiable tile
+    if (!can_occupy(g.x, g.y, move_type)) {
+        // Search in expanding rings
+        bool found = false;
+        for (i32 r = 1; r <= 10 && !found; ++r) {
+            for (i32 dy = -r; dy <= r && !found; ++dy) {
+                for (i32 dx = -r; dx <= r; ++dx) {
+                    if (std::abs(dx) != r && std::abs(dy) != r) continue;
+                    i32 nx = g.x + dx, ny = g.y + dy;
+                    if (nx < 0 || ny < 0 ||
+                        static_cast<u32>(nx) >= td.tiles_x ||
+                        static_cast<u32>(ny) >= td.tiles_y) continue;
+                    if (can_occupy(nx, ny, move_type)) {
+                        g = {nx, ny};
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!found) return result;
+    }
+
+    // Same tile: trivial corridor
+    if (s == g) {
+        result.tiles.push_back(s);
+        result.valid = true;
         return result;
     }
 
-    // A* with 8-directional movement on vertex grid
     std::priority_queue<AStarNode, std::vector<AStarNode>, NodeCompare> open;
     std::unordered_set<u64> closed;
     std::vector<AStarNode> all_nodes;
     all_nodes.reserve(256);
 
-    auto heuristic = [gx, gy](u32 vx, u32 vy) -> f32 {
-        f32 dx = static_cast<f32>(vx) - static_cast<f32>(gx);
-        f32 dy = static_cast<f32>(vy) - static_cast<f32>(gy);
+    auto heuristic = [&](u32 tx, u32 ty) -> f32 {
+        f32 dx = static_cast<f32>(tx) - static_cast<f32>(g.x);
+        f32 dy = static_cast<f32>(ty) - static_cast<f32>(g.y);
         return std::sqrt(dx * dx + dy * dy);
     };
 
-    AStarNode start_node{sx, sy, 0, heuristic(sx, sy), UINT32_MAX, td.cliff_at(sx, sy)};
-    open.push(start_node);
+    open.push({static_cast<u32>(s.x), static_cast<u32>(s.y),
+               0, heuristic(s.x, s.y), UINT32_MAX, start_cliff_level});
 
+    // 8 directions: dx, dy, cost
     static constexpr i32 dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
     static constexpr i32 dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     static constexpr f32 cost[] = {1.414f, 1.0f, 1.414f, 1.0f, 1.0f, 1.414f, 1.0f, 1.414f};
 
-    u32 max_iterations = td.verts_x() * td.verts_y();  // safety limit
+    u32 max_iterations = td.tiles_x * td.tiles_y;
     u32 iterations = 0;
 
     while (!open.empty() && iterations++ < max_iterations) {
         AStarNode current = open.top();
         open.pop();
 
-        u64 key = vert_key(current.vx, current.vy);
+        u64 key = tile_key(current.tx, current.ty);
         if (closed.contains(key)) continue;
         closed.insert(key);
 
@@ -209,86 +306,214 @@ Path Pathfinder::find_path(glm::vec3 start, glm::vec3 goal, MoveType move_type) 
         all_nodes.push_back(current);
 
         // Goal reached
-        if (current.vx == gx && current.vy == gy) {
-            std::vector<glm::vec3> waypoints;
+        if (current.tx == static_cast<u32>(g.x) && current.ty == static_cast<u32>(g.y)) {
+            // Reconstruct corridor
             u32 idx = current_idx;
             while (idx != UINT32_MAX) {
                 auto& n = all_nodes[idx];
-                f32 wx = static_cast<f32>(n.vx) * td.tile_size;
-                f32 wy = static_cast<f32>(n.vy) * td.tile_size;
-                waypoints.push_back({wx, wy, 0.0f});
+                result.tiles.push_back({static_cast<i32>(n.tx), static_cast<i32>(n.ty)});
                 idx = n.parent_idx;
             }
-            std::reverse(waypoints.begin(), waypoints.end());
-
-            // Replace first waypoint with exact start, last with exact goal
-            if (!waypoints.empty()) {
-                waypoints.front() = {start.x, start.y, 0.0f};
-                waypoints.back() = {goal.x, goal.y, 0.0f};
-            }
-
-            result.waypoints = std::move(waypoints);
+            std::reverse(result.tiles.begin(), result.tiles.end());
             result.valid = true;
             return result;
         }
 
         // Expand neighbors
         for (u32 i = 0; i < 8; ++i) {
-            i32 nx = static_cast<i32>(current.vx) + dx[i];
-            i32 ny = static_cast<i32>(current.vy) + dy[i];
+            i32 nx = static_cast<i32>(current.tx) + dx[i];
+            i32 ny = static_cast<i32>(current.ty) + dy[i];
 
-            if (nx < 0 || ny < 0 || static_cast<u32>(nx) > max_vx || static_cast<u32>(ny) > max_vy)
+            if (nx < 0 || ny < 0 ||
+                static_cast<u32>(nx) >= td.tiles_x ||
+                static_cast<u32>(ny) >= td.tiles_y)
                 continue;
 
-            u32 nvx = static_cast<u32>(nx);
-            u32 nvy = static_cast<u32>(ny);
+            u32 ntx = static_cast<u32>(nx);
+            u32 nty = static_cast<u32>(ny);
 
-            if (closed.contains(vert_key(nvx, nvy))) continue;
-            if (!is_passable(nvx, nvy, move_type)) continue;
+            if (closed.contains(tile_key(ntx, nty))) continue;
 
-            // Tile-based cliff check
-            f32 world_cur_x = static_cast<f32>(current.vx) * td.tile_size;
-            f32 world_cur_y = static_cast<f32>(current.vy) * td.tile_size;
-            {
-                f32 world_nx = static_cast<f32>(nvx) * td.tile_size;
-                f32 world_ny = static_cast<f32>(nvy) * td.tile_size;
-                if (!can_move_to(world_cur_x, world_cur_y, world_nx, world_ny, current.cliff_level, move_type)) continue;
+            if (!are_connected(current.tx, current.ty, ntx, nty,
+                               current.cliff_level, move_type))
+                continue;
+
+            // Update cliff level for the new tile
+            u8 new_cliff = cliff_level_on_tile(ntx, nty);
+            i32 eff = tile_effective_level(ntx, nty);
+            if (eff == -1) {
+                // On ramp: keep current level unless we've fully transitioned
+                // Use the vertex-based cliff to determine which side we're on
+                new_cliff = current.cliff_level;
+                // If the ramp connects current level to another, and we're going
+                // toward the other side, update
+                u8 ramp_min = cliff_level_on_tile(ntx, nty);
+                u8 ramp_max = ramp_min + 1;
+                if (current.cliff_level == ramp_min) new_cliff = ramp_max;
+                else if (current.cliff_level == ramp_max) new_cliff = ramp_min;
+                // If coming from another ramp, keep current level
+            } else if (eff >= 0) {
+                new_cliff = static_cast<u8>(eff);
             }
 
-            // For diagonal movement, check that both cardinal neighbors are passable
-            if (dx[i] != 0 && dy[i] != 0) {
-                u32 cx = static_cast<u32>(static_cast<i32>(current.vx) + dx[i]);
-                u32 cy = current.vy;
-                u32 rx = current.vx;
-                u32 ry = static_cast<u32>(static_cast<i32>(current.vy) + dy[i]);
-                if (!is_passable(cx, cy, move_type) || !is_passable(rx, ry, move_type))
-                    continue;
-                // Both cardinal steps must also be tile-passable
-                f32 wcx = static_cast<f32>(cx) * td.tile_size;
-                f32 wcy = static_cast<f32>(cy) * td.tile_size;
-                f32 wrx = static_cast<f32>(rx) * td.tile_size;
-                f32 wry = static_cast<f32>(ry) * td.tile_size;
-                if (!can_move_to(world_cur_x, world_cur_y, wcx, wcy, current.cliff_level, move_type) ||
-                    !can_move_to(world_cur_x, world_cur_y, wrx, wry, current.cliff_level, move_type))
-                    continue;
+            f32 tile_cost = cost[i];
+            if (unit_tiles.contains(tile_key(ntx, nty))) {
+                tile_cost += UNIT_COST_PENALTY;
             }
-
-            // Update cliff level: on ramp tiles, adopt the vertex's cliff level
-            // On flat/cliff tiles, keep current level (can_move_to already validated)
-            f32 world_x = static_cast<f32>(nvx) * td.tile_size;
-            f32 world_y = static_cast<f32>(nvy) * td.tile_size;
-            u32 dtx = std::min(static_cast<u32>(world_x / td.tile_size), td.tiles_x - 1);
-            u32 dty = std::min(static_cast<u32>(world_y / td.tile_size), td.tiles_y - 1);
-            i32 dest_eff = tile_effective_level(dtx, dty);
-            u8 node_cliff = (dest_eff == -1) ? td.cliff_at(nvx, nvy) : current.cliff_level;
-
-            f32 new_g = current.g_cost + cost[i];
-            f32 new_f = new_g + heuristic(nvx, nvy);
-            open.push({nvx, nvy, new_g, new_f, current_idx, node_cliff});
+            f32 new_g = current.g_cost + tile_cost;
+            f32 new_f = new_g + heuristic(ntx, nty);
+            open.push({ntx, nty, new_g, new_f, current_idx, new_cliff});
         }
     }
 
     return result;  // no path found
+}
+
+// ── Straight-line waypoint through corridor ──────────────────────────────
+
+// Check if a world-space point is inside any tile of the corridor.
+static bool point_in_corridor(const Corridor& corridor, glm::vec2 pt, f32 tile_size) {
+    i32 tx = static_cast<i32>(std::floor(pt.x / tile_size));
+    i32 ty = static_cast<i32>(std::floor(pt.y / tile_size));
+    for (auto& t : corridor.tiles) {
+        if (t.x == tx && t.y == ty) return true;
+    }
+    return false;
+}
+
+// Check if a line segment from A to B stays within the corridor, accounting for
+// collision radius. Center must stay in the corridor. Offset points (collision
+// radius) must be on occupiable terrain (not necessarily in the corridor — open
+// adjacent tiles are fine, but cliffs/walls are not).
+static bool line_in_corridor(const Corridor& corridor, glm::vec2 a, glm::vec2 b,
+                              f32 tile_size, f32 collision_radius,
+                              const Pathfinder& pf, MoveType move_type) {
+    glm::vec2 dir = b - a;
+    f32 len = glm::length(dir);
+    if (len < 0.001f) return true;
+
+    f32 step = tile_size * 0.4f;
+    u32 steps = static_cast<u32>(len / step) + 1;
+
+    for (u32 i = 0; i <= steps; ++i) {
+        f32 t = static_cast<f32>(i) / static_cast<f32>(steps);
+        glm::vec2 pt = a + dir * t;
+
+        // Center must be in the corridor
+        if (!point_in_corridor(corridor, pt, tile_size)) return false;
+
+        // TODO: collision radius check disabled for debugging — re-enable after fixing
+        // if (collision_radius > 0) {
+        //     glm::vec2 offsets[] = {
+        //         {collision_radius, 0}, {-collision_radius, 0},
+        //         {0, collision_radius}, {0, -collision_radius}
+        //     };
+        //     for (auto& off : offsets) {
+        //         glm::ivec2 t2 = pf.world_to_tile(pt.x + off.x, pt.y + off.y);
+        //         if (!pf.can_occupy(t2.x, t2.y, move_type)) return false;
+        //     }
+        // }
+    }
+    return true;
+}
+
+glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, const Corridor& corridor,
+                                              f32 collision_radius, MoveType move_type) const {
+    if (!m_terrain || corridor.tiles.empty()) return from;
+    f32 ts = m_terrain->tile_size;
+
+    // Find which corridor tile we're on (or nearest)
+    u32 start_idx = 0;
+    {
+        glm::ivec2 cur = world_to_tile(from.x, from.y);
+        for (u32 i = 0; i < corridor.tiles.size(); ++i) {
+            if (corridor.tiles[i] == cur) { start_idx = i; break; }
+        }
+    }
+
+    // Walk forward through corridor with exponential jumps to find the farthest
+    // reachable tile, then refine.
+    glm::vec2 best = tile_center(corridor.tiles[start_idx].x, corridor.tiles[start_idx].y);
+    u32 best_idx = start_idx;
+    u32 end = static_cast<u32>(corridor.tiles.size());
+
+    // Phase 1: exponential jumps (1, 2, 4, 8...) to find the rough limit
+    u32 last_good = start_idx;
+    u32 first_bad = end;
+    for (u32 jump = 1; ; jump *= 2) {
+        u32 test_idx = start_idx + jump;
+        if (test_idx >= end) test_idx = end - 1;
+
+        glm::vec2 target = tile_center(corridor.tiles[test_idx].x, corridor.tiles[test_idx].y);
+        if (line_in_corridor(corridor, from, target, ts, collision_radius, *this, move_type)) {
+            last_good = test_idx;
+            if (test_idx >= end - 1) break;  // reached the end
+        } else {
+            first_bad = test_idx;
+            break;
+        }
+    }
+
+    // Phase 2: binary search between last_good and first_bad
+    while (last_good + 1 < first_bad) {
+        u32 mid = (last_good + first_bad) / 2;
+        glm::vec2 target = tile_center(corridor.tiles[mid].x, corridor.tiles[mid].y);
+        if (line_in_corridor(corridor, from, target, ts, collision_radius, *this, move_type)) {
+            last_good = mid;
+        } else {
+            first_bad = mid;
+        }
+    }
+
+    best_idx = last_good;
+    best = tile_center(corridor.tiles[best_idx].x, corridor.tiles[best_idx].y);
+
+    // If the best is still the start tile, try the next tile as minimum progress
+    if (best_idx == start_idx && start_idx + 1 < end) {
+        best = tile_center(corridor.tiles[start_idx + 1].x, corridor.tiles[start_idx + 1].y);
+    }
+
+    return best;
+}
+
+// ── Recovery ─────────────────────────────────────────────────────────────
+
+glm::vec2 Pathfinder::find_nearest_valid(f32 x, f32 y, MoveType move_type) const {
+    if (!m_terrain || !m_terrain->is_valid()) return {x, y};
+    auto& td = *m_terrain;
+
+    glm::ivec2 t = world_to_tile(x, y);
+
+    // Already valid?
+    if (can_occupy(t.x, t.y, move_type)) return {x, y};
+
+    // Search expanding rings
+    for (i32 r = 1; r <= 20; ++r) {
+        f32 best_dist = 1e9f;
+        glm::vec2 best{x, y};
+        bool found = false;
+
+        for (i32 dy = -r; dy <= r; ++dy) {
+            for (i32 dx = -r; dx <= r; ++dx) {
+                if (std::abs(dx) != r && std::abs(dy) != r) continue;
+                i32 nx = t.x + dx, ny = t.y + dy;
+                if (nx < 0 || ny < 0 ||
+                    static_cast<u32>(nx) >= td.tiles_x ||
+                    static_cast<u32>(ny) >= td.tiles_y) continue;
+                if (!can_occupy(nx, ny, move_type)) continue;
+
+                glm::vec2 center = tile_center(nx, ny);
+                f32 dist = glm::length(center - glm::vec2{x, y});
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best = center;
+                    found = true;
+                }
+            }
+        }
+        if (found) return best;
+    }
+    return {x, y};  // give up
 }
 
 } // namespace uldum::simulation

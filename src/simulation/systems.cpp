@@ -4,6 +4,7 @@
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
+#include "map/terrain_data.h"
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
@@ -49,17 +50,20 @@ static f32 angle_diff(f32 from, f32 to) {
 
 // ── Movement system ───────────────────────────────────────────────────────
 
-// Helper: find the closest unit blocking the path ahead.
-// Returns the blocker's id (UINT32_MAX if clear).
-static u32 find_blocker_id(World& world, const SpatialGrid& grid, u32 self_id,
-                            glm::vec3 pos, glm::vec3 dir, f32 self_radius, f32 look_ahead) {
-    f32 check_radius = self_radius * 2.0f + look_ahead;
+// Local steering: adjust direction to avoid a nearby unit blocking the path.
+// Returns adjusted direction. If no blocker, returns original forward.
+static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const Pathfinder& pathfinder,
+                              u32 self_id, glm::vec3 pos, glm::vec3 forward, f32 self_radius,
+                              u8 cliff_level, MoveType move_type) {
+    f32 look_ahead = self_radius * 4.0f;
     UnitFilter filter;
     filter.exclude_buildings = true;
-    auto nearby = grid.units_in_range(world, pos, check_radius, filter);
+    auto nearby = grid.units_in_range(world, pos, look_ahead, filter);
 
-    u32 best_id = UINT32_MAX;
-    f32 best_dist = check_radius;
+    // Find closest blocker ahead
+    f32 best_dist = look_ahead;
+    const Transform* blocker_t = nullptr;
+    f32 blocker_radius = 0;
 
     for (auto& other : nearby) {
         if (other.id == self_id) continue;
@@ -74,33 +78,50 @@ static u32 find_blocker_id(World& world, const SpatialGrid& grid, u32 self_id,
         glm::vec3 to_other = ot->position - pos;
         to_other.z = 0;
         f32 d = glm::length(to_other);
-        if (d < 0.01f || d > check_radius) continue;
+        if (d < 0.01f || d > look_ahead) continue;
 
-        // Is it ahead of us?
-        f32 dot = glm::dot(to_other / d, dir);
-        if (dot < 0.3f) continue;
+        f32 dot = glm::dot(to_other / d, forward);
+        if (dot < 0.3f) continue;  // not ahead
 
-        // Is it close enough laterally to block?
         f32 forward_dist = d * dot;
         f32 lateral = std::sqrt(std::max(0.0f, d * d - forward_dist * forward_dist));
         if (lateral < combined && d < best_dist) {
-            best_id = other.id;
             best_dist = d;
+            blocker_t = ot;
+            blocker_radius = other_radius;
         }
     }
-    return best_id;
-}
 
-// Helper: compute avoidance direction — steer to the committed side of the blocker.
-static glm::vec3 compute_avoidance_dir(glm::vec3 pos, glm::vec3 forward, Transform* blocker_t, i8 side) {
-    // Perpendicular to forward direction
-    glm::vec3 perp = (side > 0) ? glm::vec3{forward.y, -forward.x, 0}
-                                 : glm::vec3{-forward.y, forward.x, 0};
-    // Blend: mostly sideways, some forward to keep progressing
-    return glm::normalize(perp * 0.6f + forward * 0.4f);
+    if (!blocker_t) return forward;
+
+    // Steer to the side with more space
+    glm::vec3 to_blocker = blocker_t->position - pos;
+    to_blocker.z = 0;
+    glm::vec3 left{-forward.y, forward.x, 0};
+    f32 side_dot = glm::dot(to_blocker, left);
+    glm::vec3 perp = (side_dot > 0) ? glm::vec3{forward.y, -forward.x, 0}
+                                      : glm::vec3{-forward.y, forward.x, 0};
+    glm::vec3 steer = glm::normalize(perp * 0.6f + forward * 0.4f);
+
+    // Validate: steered position must be on a passable tile
+    f32 test_step = self_radius;
+    f32 test_x = pos.x + steer.x * test_step;
+    f32 test_y = pos.y + steer.y * test_step;
+    if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, cliff_level, move_type)) {
+        // Try the other side
+        steer = glm::normalize(-perp * 0.6f + forward * 0.4f);
+        test_x = pos.x + steer.x * test_step;
+        test_y = pos.y + steer.y * test_step;
+        if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, cliff_level, move_type)) {
+            return forward;  // both sides blocked by terrain — just go forward
+        }
+    }
+
+    return steer;
 }
 
 void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
+    auto* terrain = pathfinder.terrain();
 
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
@@ -113,17 +134,13 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         // Only process Move / AttackMove orders
         if (!oq->current) {
             mov.moving = false;
-            mov.avoid_id = UINT32_MAX;
-            mov.avoid_side = 0;
             continue;
         }
 
         // If AttackMove and combat has an active target, pause path-following
-        // (combat system handles the chase). Resume when target is cleared.
         auto* combat = world.combats.get(id);
         if (combat && combat->target.is_valid()) {
-            if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
-                // Keep path alive but don't advance — combat is in control
+            if (std::get_if<orders::AttackMove>(&oq->current->payload)) {
                 continue;
             }
         }
@@ -137,26 +154,58 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         }
         if (!has_move) continue;
 
-        // Compute path if we don't have one yet
-        if (mov.path.empty()) {
-            auto result = pathfinder.find_path(transform->position, move_target, mov.type);
-            if (result.valid && result.waypoints.size() > 1) {
-                mov.path = std::move(result.waypoints);
-                mov.path_index = 1;
+        glm::vec2 pos2d{transform->position.x, transform->position.y};
+        glm::vec2 goal2d{move_target.x, move_target.y};
+
+        // ── Re-path: compute corridor + straight-line waypoint ──
+        mov.repath_timer -= dt;
+        bool need_repath = mov.corridor.empty() || mov.repath_timer <= 0 || !mov.has_waypoint;
+
+        if (need_repath) {
+            mov.repath_timer = Movement::REPATH_INTERVAL;
+            auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type, &world, id);
+            if (corridor.valid && !corridor.tiles.empty()) {
+                mov.corridor = std::move(corridor.tiles);
+                Corridor c_ref;
+                c_ref.tiles = mov.corridor;
+                c_ref.valid = true;
+                mov.waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov.collision_radius, mov.type);
+                mov.has_waypoint = true;
                 mov.moving = true;
             } else {
-                oq->current.reset();
+                // Path not found — keep the order, face toward goal, retry later
+                mov.corridor.clear();
+                mov.has_waypoint = false;
                 mov.moving = false;
-                continue;
+                log::trace("Movement", "No path for unit {} to ({:.0f},{:.0f}), cliff_level={}",
+                           id, goal2d.x, goal2d.y, mov.cliff_level);
             }
         }
 
-        if (mov.path_index >= mov.path.size()) {
-            mov.path.clear();
-            mov.path_index = 0;
+        // Face toward goal even if no path
+        if (!mov.has_waypoint) {
+            glm::vec2 to_goal = goal2d - pos2d;
+            f32 dist = glm::length(to_goal);
+            if (dist > 1.0f) {
+                f32 desired = std::atan2(to_goal.y, to_goal.x);
+                f32 diff = angle_diff(transform->facing, desired);
+                f32 max_turn = mov.turn_rate * dt;
+                if (std::abs(diff) > max_turn) {
+                    transform->facing += (diff > 0 ? max_turn : -max_turn);
+                } else {
+                    transform->facing = desired;
+                }
+                transform->facing = normalize_angle(transform->facing);
+            }
+            continue;
+        }
+
+        // Check arrival at final destination (half tile tolerance)
+        f32 goal_dist = glm::length(goal2d - pos2d);
+        if (goal_dist < pathfinder.tile_size() * 0.5f) {
+            mov.corridor.clear();
+            mov.has_waypoint = false;
             mov.moving = false;
-            mov.avoid_id = UINT32_MAX;
-            mov.avoid_side = 0;
             oq->current.reset();
             if (!oq->queued.empty()) {
                 oq->current = std::move(oq->queued.front());
@@ -165,86 +214,38 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             continue;
         }
 
-        // Current target waypoint
-        glm::vec3 wp = mov.path[mov.path_index];
-        glm::vec3 to_wp = wp - transform->position;
-        to_wp.z = 0;
-        f32 dist = glm::length(to_wp);
+        // Move toward waypoint
+        glm::vec2 to_wp = mov.waypoint - pos2d;
+        f32 wp_dist = glm::length(to_wp);
 
-        if (dist < 16.0f) {
-            mov.path_index++;
-            continue;
-        }
-
-        glm::vec3 forward = glm::normalize(to_wp);
-
-        // ── Avoidance: detect blocker, commit to a side, steer until clear ──
-        glm::vec3 dir = forward;
-
-        // Tick avoidance lock
-        if (mov.avoid_lock > 0) mov.avoid_lock -= dt;
-
-        // Check if we're currently avoiding someone
-        if (mov.avoid_id != UINT32_MAX) {
-            auto* blocker_t = world.transforms.get(mov.avoid_id);
-            if (blocker_t && !world.dead_states.has(mov.avoid_id)) {
-                glm::vec3 to_blocker = blocker_t->position - transform->position;
-                to_blocker.z = 0;
-                f32 bd = glm::length(to_blocker);
-                f32 dot = (bd > 0.01f) ? glm::dot(to_blocker / bd, forward) : 0;
-
-                if (dot > 0.1f && bd < mov.collision_radius * 4.0f) {
-                    // Still blocking — keep steering around
-                    dir = compute_avoidance_dir(transform->position, forward, blocker_t, mov.avoid_side);
-                } else {
-                    // Cleared the blocker
-                    mov.avoid_id = UINT32_MAX;
-                    // Keep avoid_side and lock — reuse same side for next blocker
+        if (wp_dist < 16.0f) {
+            // Reached waypoint — recompute next straight line through corridor
+            Corridor c_ref;
+            c_ref.tiles = mov.corridor;
+            c_ref.valid = true;
+            mov.waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov.collision_radius, mov.type);
+            to_wp = mov.waypoint - pos2d;
+            wp_dist = glm::length(to_wp);
+            if (wp_dist < 1.0f) {
+                // No more progress possible — treat as arrived, clear order
+                mov.corridor.clear();
+                mov.has_waypoint = false;
+                mov.moving = false;
+                oq->current.reset();
+                if (!oq->queued.empty()) {
+                    oq->current = std::move(oq->queued.front());
+                    oq->queued.pop_front();
                 }
-            } else {
-                mov.avoid_id = UINT32_MAX;
+                continue;
             }
         }
 
-        // If not currently avoiding, check for new blockers
-        if (mov.avoid_id == UINT32_MAX) {
-            f32 look_ahead = mov.speed * 0.4f;
-            u32 blocker_id = find_blocker_id(world, grid, id, transform->position, forward, mov.collision_radius, look_ahead);
-            if (blocker_id != UINT32_MAX) {
-                mov.avoid_id = blocker_id;
+        glm::vec3 forward{to_wp.x / wp_dist, to_wp.y / wp_dist, 0.0f};
 
-                // If lock is active, reuse the same side. Otherwise pick a new one.
-                if (mov.avoid_lock <= 0) {
-                    auto* blocker_t = world.transforms.get(blocker_id);
-                    if (blocker_t) {
-                        glm::vec3 to_blocker = blocker_t->position - transform->position;
-                        to_blocker.z = 0;
-                        glm::vec3 left{-forward.y, forward.x, 0};
-                        f32 side_dot = glm::dot(to_blocker, left);
-                        mov.avoid_side = (side_dot > 0) ? 1 : -1;
-                    }
-                }
-                mov.avoid_lock = 0.5f;  // lock this side for 0.5 seconds
-                dir = compute_avoidance_dir(transform->position, forward,
-                    world.transforms.get(blocker_id), mov.avoid_side);
-            } else {
-                // No blocker — clear side once lock expires
-                if (mov.avoid_lock <= 0) {
-                    mov.avoid_side = 0;
-                }
-            }
-        }
-
-        // If avoidance direction would cross a cliff, ignore avoidance
-        if (dir != forward) {
-            f32 test_step = mov.speed * dt;
-            f32 test_x = transform->position.x + dir.x * test_step;
-            f32 test_y = transform->position.y + dir.y * test_step;
-            if (!pathfinder.can_move_to(transform->position.x, transform->position.y, test_x, test_y, mov.cliff_level, mov.type)) {
-                dir = forward;
-                mov.avoid_id = UINT32_MAX;
-            }
-        }
+        // Local steering: avoid nearby units
+        glm::vec3 dir = local_steer(world, grid, pathfinder, id,
+                                     transform->position, forward, mov.collision_radius,
+                                     mov.cliff_level, mov.type);
 
         // Turn toward movement direction
         f32 desired_facing = std::atan2(dir.y, dir.x);
@@ -258,29 +259,40 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         }
         transform->facing = normalize_angle(transform->facing);
 
-        // Step forward
+        // Step forward (only if roughly facing the right direction)
         if (std::abs(face_diff) < glm::half_pi<f32>()) {
             f32 step = mov.speed * dt;
-            if (step > dist) step = dist;
+            if (step > wp_dist) step = wp_dist;
             f32 new_x = transform->position.x + dir.x * step;
             f32 new_y = transform->position.y + dir.y * step;
 
-            // Tile-based cliff check using unit's cliff level
-            if (!pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.cliff_level, mov.type)) {
-                bool can_x = pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.cliff_level, mov.type);
-                bool can_y = pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.cliff_level, mov.type);
-                if (!can_x) new_x = transform->position.x;
-                if (!can_y) new_y = transform->position.y;
-                if (can_x && can_y) new_y = transform->position.y;
-                mov.path.clear();
+            // Validate movement — try wall sliding if direct move blocked
+            if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.cliff_level, mov.type)) {
+                transform->position.x = new_x;
+                transform->position.y = new_y;
+            } else {
+                // Wall slide: try X-only, then Y-only
+                bool slid = false;
+                if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.cliff_level, mov.type)) {
+                    transform->position.x = new_x;
+                    slid = true;
+                }
+                if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.cliff_level, mov.type)) {
+                    transform->position.y = new_y;
+                    slid = true;
+                }
+                if (!slid) {
+                    // Fully blocked — re-path next frame
+                    mov.corridor.clear();
+                    mov.has_waypoint = false;
+                }
             }
-
-            transform->position.x = new_x;
-            transform->position.y = new_y;
         }
 
-        // Update Z and cliff level
-        transform->position.z = pathfinder.sample_height(transform->position.x, transform->position.y);
+        // Update visual Z and cliff level
+        if (terrain) {
+            transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
+        }
         mov.cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
         mov.moving = true;
     }
@@ -439,90 +451,56 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                 auto* mov = world.movements.get(id);
                 if (!mov || mov->speed <= 0) break;
 
-                // Pathfind to target (re-path when target moves > 1 tile)
-                glm::vec3 target_pos = target_t->position;
-                f32 path_dest_dist = glm::length(glm::vec2(target_pos - combat.chase_path_dest));
-                if (mov->path.empty() || path_dest_dist > pathfinder.tile_size()) {
-                    auto result = pathfinder.find_path(transform->position, target_pos, mov->type);
-                    if (result.valid && result.waypoints.size() > 1) {
-                        mov->path = std::move(result.waypoints);
-                        mov->path_index = 1;
+                // Re-path to target using corridor + straight line
+                glm::vec2 pos2d{transform->position.x, transform->position.y};
+                glm::vec2 target2d{target_t->position.x, target_t->position.y};
+
+                f32 chase_dest_dist = glm::length(target2d - glm::vec2{combat.chase_path_dest});
+                mov->repath_timer -= dt;
+                bool need_repath = mov->corridor.empty() || mov->repath_timer <= 0 ||
+                                   chase_dest_dist > pathfinder.tile_size() || !mov->has_waypoint;
+
+                if (need_repath) {
+                    auto corridor = pathfinder.find_corridor(pos2d, target2d, mov->cliff_level, mov->type, &world, id);
+                    if (corridor.valid && !corridor.tiles.empty()) {
+                        mov->corridor = std::move(corridor.tiles);
+                        Corridor c_ref;
+                        c_ref.tiles = mov->corridor;
+                        c_ref.valid = true;
+                        mov->waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov->collision_radius, mov->type);
+                        mov->has_waypoint = true;
                     } else {
-                        mov->path.clear();
+                        mov->corridor.clear();
+                        mov->has_waypoint = false;
                     }
-                    combat.chase_path_dest = target_pos;
+                    combat.chase_path_dest = target_t->position;
+                    mov->repath_timer = Movement::REPATH_INTERVAL;
                 }
 
-                // Advance waypoint when close
-                if (!mov->path.empty() && mov->path_index < mov->path.size()) {
-                    glm::vec3 to_wp = mov->path[mov->path_index] - transform->position;
-                    to_wp.z = 0;
-                    if (glm::length(to_wp) < pathfinder.tile_size() * 0.3f) {
-                        mov->path_index++;
-                        if (mov->path_index >= mov->path.size()) mov->path.clear();
-                    }
-                }
-
-                // Move toward current waypoint, or target if no path
-                glm::vec3 move_goal = (!mov->path.empty() && mov->path_index < mov->path.size())
-                    ? mov->path[mov->path_index] : target_pos;
-                glm::vec3 to_goal = move_goal - transform->position;
-                to_goal.z = 0;
+                // Move toward waypoint (or directly toward target if no path)
+                glm::vec2 move_goal = mov->has_waypoint ? mov->waypoint : target2d;
+                glm::vec2 to_goal = move_goal - pos2d;
                 f32 goal_dist = glm::length(to_goal);
                 if (goal_dist < 0.1f) break;
 
-                glm::vec3 forward = to_goal / goal_dist;
-                glm::vec3 dir = forward;
-
-                // Avoidance steering (validated against cliffs below)
-                if (mov->avoid_lock > 0) mov->avoid_lock -= dt;
-                if (mov->avoid_id != UINT32_MAX) {
-                    auto* bt = world.transforms.get(mov->avoid_id);
-                    if (bt && !world.dead_states.has(mov->avoid_id) && mov->avoid_id != target.id) {
-                        glm::vec3 tb = bt->position - transform->position;
-                        tb.z = 0;
-                        f32 bd = glm::length(tb);
-                        f32 dot_val = (bd > 0.01f) ? glm::dot(tb / bd, forward) : 0;
-                        if (dot_val > 0.1f && bd < mov->collision_radius * 4.0f) {
-                            dir = compute_avoidance_dir(transform->position, forward, bt, mov->avoid_side);
-                        } else {
-                            mov->avoid_id = UINT32_MAX;
-                        }
-                    } else {
-                        mov->avoid_id = UINT32_MAX;
-                    }
-                }
-                if (mov->avoid_id == UINT32_MAX) {
-                    u32 blocker = find_blocker_id(world, grid, id, transform->position, forward, mov->collision_radius, mov->speed * 0.4f);
-                    if (blocker != UINT32_MAX && blocker != target.id) {
-                        mov->avoid_id = blocker;
-                        if (mov->avoid_lock <= 0) {
-                            auto* bt = world.transforms.get(blocker);
-                            if (bt) {
-                                glm::vec3 tb = bt->position - transform->position;
-                                tb.z = 0;
-                                glm::vec3 left{-forward.y, forward.x, 0};
-                                mov->avoid_side = (glm::dot(tb, left) > 0) ? 1 : -1;
-                            }
-                        }
-                        mov->avoid_lock = 0.5f;
-                        dir = compute_avoidance_dir(transform->position, forward,
-                            world.transforms.get(blocker), mov->avoid_side);
-                    } else if (mov->avoid_lock <= 0) {
-                        mov->avoid_side = 0;
-                    }
+                // Reached waypoint — recompute straight line
+                if (goal_dist < 16.0f && mov->has_waypoint) {
+                    Corridor c_ref;
+                    c_ref.tiles = mov->corridor;
+                    c_ref.valid = true;
+                    mov->waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov->collision_radius, mov->type);
+                    move_goal = mov->waypoint;
+                    to_goal = move_goal - pos2d;
+                    goal_dist = glm::length(to_goal);
+                    if (goal_dist < 0.1f) break;
                 }
 
-                // If avoidance direction would cross a cliff, ignore avoidance
-                if (dir != forward) {
-                    f32 test_step = mov->speed * dt;
-                    f32 test_x = transform->position.x + dir.x * test_step;
-                    f32 test_y = transform->position.y + dir.y * test_step;
-                    if (!pathfinder.can_move_to(transform->position.x, transform->position.y, test_x, test_y, mov->cliff_level, mov->type)) {
-                        dir = forward;
-                        mov->avoid_id = UINT32_MAX;
-                    }
-                }
+                glm::vec3 forward{to_goal.x / goal_dist, to_goal.y / goal_dist, 0.0f};
+
+                // Local steering: avoid nearby units (but not the attack target)
+                glm::vec3 dir = local_steer(world, grid, pathfinder, id,
+                                             transform->position, forward, mov->collision_radius,
+                                             mov->cliff_level, mov->type);
 
                 // Turn + step
                 f32 desired = std::atan2(dir.y, dir.x);
@@ -541,25 +519,38 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     f32 new_x = transform->position.x + dir.x * step;
                     f32 new_y = transform->position.y + dir.y * step;
 
-                    // Tile-based cliff check using unit's cliff level
-                    if (!pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov->cliff_level, mov->type)) {
-                        bool can_x = pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov->cliff_level, mov->type);
-                        bool can_y = pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov->cliff_level, mov->type);
-                        if (!can_x) new_x = transform->position.x;
-                        if (!can_y) new_y = transform->position.y;
-                        if (can_x && can_y) new_y = transform->position.y;
-                        mov->path.clear();
+                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov->cliff_level, mov->type)) {
+                        transform->position.x = new_x;
+                        transform->position.y = new_y;
+                    } else {
+                        // Wall slide
+                        bool slid = false;
+                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov->cliff_level, mov->type)) {
+                            transform->position.x = new_x;
+                            slid = true;
+                        }
+                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov->cliff_level, mov->type)) {
+                            transform->position.y = new_y;
+                            slid = true;
+                        }
+                        if (!slid) {
+                            mov->corridor.clear();
+                            mov->has_waypoint = false;
+                        }
                     }
-
-                    transform->position.x = new_x;
-                    transform->position.y = new_y;
-                    transform->position.z = pathfinder.sample_height(new_x, new_y);
-                    mov->cliff_level = pathfinder.cliff_level_at(new_x, new_y);
+                    auto* terrain = pathfinder.terrain();
+                    if (terrain) {
+                        transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
+                    }
+                    mov->cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
                 }
             } else {
                 // In range — clear chase path, begin attack
                 auto* mov = world.movements.get(id);
-                if (mov) mov->path.clear();
+                if (mov) {
+                    mov->corridor.clear();
+                    mov->has_waypoint = false;
+                }
                 combat.attack_state = AttackState::TurningToFace;
             }
             break;

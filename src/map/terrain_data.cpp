@@ -1,6 +1,9 @@
 #include "map/terrain_data.h"
 #include "core/log.h"
 
+#include <glm/geometric.hpp>
+
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -8,6 +11,40 @@
 namespace uldum::map {
 
 static constexpr const char* TAG = "Terrain";
+
+// ── Terrain sampling (visual only) ───────────────────────────────────────
+
+f32 sample_height(const TerrainData& td, f32 x, f32 y) {
+    if (!td.is_valid()) return 0.0f;
+    f32 fx = x / td.tile_size;
+    f32 fy = y / td.tile_size;
+    u32 ix = std::min(static_cast<u32>(std::floor(fx)), td.tiles_x - 1);
+    u32 iy = std::min(static_cast<u32>(std::floor(fy)), td.tiles_y - 1);
+    f32 tx = fx - static_cast<f32>(ix);
+    f32 ty = fy - static_cast<f32>(iy);
+
+    f32 h00 = td.world_z_at(ix, iy);
+    f32 h10 = td.world_z_at(ix + 1, iy);
+    f32 h01 = td.world_z_at(ix, iy + 1);
+    f32 h11 = td.world_z_at(ix + 1, iy + 1);
+    f32 h0 = h00 + tx * (h10 - h00);
+    f32 h1 = h01 + tx * (h11 - h01);
+    return h0 + ty * (h1 - h0);
+}
+
+glm::vec3 sample_normal(const TerrainData& td, f32 x, f32 y) {
+    if (!td.is_valid()) return {0, 0, 1};
+    f32 eps = td.tile_size * 0.5f;
+    f32 hL = sample_height(td, x - eps, y);
+    f32 hR = sample_height(td, x + eps, y);
+    f32 hD = sample_height(td, x, y - eps);
+    f32 hU = sample_height(td, x, y + eps);
+    glm::vec3 ddx{2.0f * eps, 0.0f, hR - hL};
+    glm::vec3 ddy{0.0f, 2.0f * eps, hU - hD};
+    return glm::normalize(glm::cross(ddx, ddy));
+}
+
+// ── Terrain creation ─────────────────────────────────────────────────────
 
 TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size, f32 base_height) {
     TerrainData td;

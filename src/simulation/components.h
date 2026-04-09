@@ -62,6 +62,7 @@ struct AttributeBlock {
 
 struct Selectable {
     f32 selection_radius = 1.0f;
+    f32 selection_height = 100.0f;  // height of selection cylinder (world units)
     i32 priority         = 5;
 };
 
@@ -77,17 +78,16 @@ struct Movement {
     f32       collision_radius = 32.0f;  // per-unit collision radius (game units)
     MoveType  type      = MoveType::Ground;  // engine preset (pathfinding needs it)
     u8        cliff_level = 0;  // current cliff level the unit is on
-    glm::vec3 target_pos{0.0f};
     bool      moving    = false;
 
-    // Current path (set by MovementSystem when processing Move orders)
-    std::vector<glm::vec3> path;
-    u32 path_index = 0;  // current waypoint index
+    // Corridor from A* (tile path) and current straight-line waypoint
+    std::vector<glm::ivec2> corridor;  // tile coordinates
+    glm::vec2 waypoint{0};             // current straight-line target (world XY)
+    bool      has_waypoint = false;
 
-    // Avoidance state: committed side to steer around a blocker
-    u32 avoid_id    = UINT32_MAX;  // unit being avoided (UINT32_MAX = none)
-    i8  avoid_side  = 0;           // -1 = steer left, +1 = steer right
-    f32 avoid_lock  = 0;           // seconds remaining before side can change
+    // Re-path timer: re-compute corridor periodically
+    f32 repath_timer = 0;
+    static constexpr f32 REPATH_INTERVAL = 1.5f;
 };
 
 enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };

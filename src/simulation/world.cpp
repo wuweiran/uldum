@@ -56,7 +56,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // Widget — HP is engine built-in
     world.healths.add(id, Health{def->max_health, def->max_health, def->health_regen});
-    world.selectables.add(id, Selectable{def->selection_radius, def->selection_priority});
+    world.selectables.add(id, Selectable{def->selection_radius, def->model_scale * 2.0f, def->selection_priority});
 
     // Map-defined states (mana, energy, etc.)
     if (!def->states.empty()) {
@@ -77,7 +77,14 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // Unit
     world.owners.add(id, Owner{owner});
-    world.movements.add(id, Movement{def->move_speed, def->turn_rate, def->collision_radius, def->move_type, 0, {}, false});
+    {
+        Movement m;
+        m.speed = def->move_speed;
+        m.turn_rate = def->turn_rate;
+        m.collision_radius = def->collision_radius;
+        m.type = def->move_type;
+        world.movements.add(id, std::move(m));
+    }
     {
         Combat combat;
         combat.damage           = def->damage;
@@ -143,7 +150,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f, {x, y, 0.0f}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
     world.healths.add(id, Health{def->max_health, def->max_health, 0});
-    world.selectables.add(id, Selectable{1.0f, 1});
+    world.selectables.add(id, Selectable{1.0f, 50.0f, 1});
     world.destructables.add(id, DestructableComp{std::string(type_id), variation});
 
     if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
@@ -179,7 +186,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     world.transforms.add(id, Transform{{x, y, 0.0f}, 0, 1.0f, {x, y, 0.0f}, 0});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item, h.generation});
     world.healths.add(id, Health{1, 1, 0});
-    world.selectables.add(id, Selectable{0.5f, 1});
+    world.selectables.add(id, Selectable{0.5f, 20.0f, 1});
     world.item_infos.add(id, ItemInfo{std::string(type_id), def->charges, def->cooldown, 0});
     world.carriables.add(id, Carriable{});
 
@@ -230,6 +237,20 @@ void issue_order(World& world, Unit unit, Order order) {
     } else {
         oq->queued.clear();
         oq->current = std::move(order);
+
+        // Clear pathfinding state so the movement system re-paths immediately
+        auto* mov = world.movements.get(unit.id);
+        if (mov) {
+            mov->corridor.clear();
+            mov->has_waypoint = false;
+        }
+
+        // Clear combat target so the unit stops fighting and obeys the new order
+        auto* combat = world.combats.get(unit.id);
+        if (combat) {
+            combat->target = Unit{};
+            combat->attack_state = AttackState::Idle;
+        }
     }
 }
 
