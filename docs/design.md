@@ -467,12 +467,32 @@ Independent module, can be developed in parallel with other phases.
 
 Last because it's the most complex and needs a working local game loop.
 
-- **ENet integration**: reliable/unreliable UDP channels
-- **Local server**: in-process server for single player (no sockets, direct calls)
-- **Remote server**: networked server with state delta broadcasting
-- **Client prediction**: local simulation with server reconciliation
-- **Lobby system**: host/join, map selection, player slots, team assignment, ready check
-- **Desync detection**: periodic state checksums for debugging
+**Phase 12a — Local Server Refactor**
+- Extract simulation tick into a `Server` class with command interface
+- Player input goes through `Command` structs (move, attack, cast, etc.)
+- Single player runs server in-process (direct function calls, no sockets)
+- Clean client/server separation — foundation for all networking
+
+**Phase 12b — ENet Transport**
+- ENet integration: reliable/unreliable UDP channels
+- Command serialization (FlatBuffers): client → server
+- State delta serialization (FlatBuffers): server → clients
+- Remote server: accept connections, validate commands, broadcast state
+
+**Phase 12c — Client Prediction & Reconciliation**
+- Client runs local simulation for responsiveness
+- Server sends authoritative state snapshots
+- Client reconciles local state with server state
+- Interpolation for remote entities
+
+**Phase 12d — Lobby**
+- Host/join flow (one player hosts, or dedicated server)
+- Map selection, player slots, team assignment
+- Ready check → synchronized game start
+
+**Phase 12e — Desync Detection**
+- Periodic state checksums (server ↔ clients)
+- Debug logging for state divergence
 
 ### Phase 13 — GPU-Driven Rendering
 
