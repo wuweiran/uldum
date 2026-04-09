@@ -29,7 +29,6 @@ struct World {
     SparseSet<OrderQueue>           order_queues;
     SparseSet<AbilitySet>           ability_sets;
     SparseSet<UnitClassificationComp> classifications;
-    SparseSet<HeroComp>            heroes;
     SparseSet<Inventory>            inventories;
     SparseSet<BuildingComp>        buildings;
     SparseSet<Construction>         constructions;
@@ -79,7 +78,7 @@ struct World {
         state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
         owners.clear(); movements.clear(); combats.clear(); visions.clear();
         order_queues.clear(); ability_sets.clear(); classifications.clear();
-        heroes.clear(); inventories.clear(); buildings.clear();
+        inventories.clear(); buildings.clear();
         constructions.clear(); destructables.clear(); pathing_blockers.clear();
         item_infos.clear(); carriables.clear(); projectiles.clear();
         scale_pulses.clear(); dead_states.clear(); renderables.clear();
@@ -129,13 +128,7 @@ void     set_position(World& world, Unit unit, f32 x, f32 y);
 Player   get_owner(const World& world, Unit unit);
 bool     is_alive(const World& world, Unit unit);
 bool     is_dead(const World& world, Unit unit);
-bool     is_hero(const World& world, Unit unit);
 bool     is_building(const World& world, Unit unit);
-
-// ── Hero API ───────────────────────────────────────────────────────────────
-
-void     hero_add_xp(World& world, Unit hero, u32 xp);
-u32      hero_get_level(const World& world, Unit hero);
 
 // ── Destructable API ───────────────────────────────────────────────────────
 

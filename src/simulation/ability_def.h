@@ -16,7 +16,7 @@ namespace uldum::simulation {
 enum class AbilityForm : u8 {
     Passive,      // always active, modifiers + optional duration
     Aura,         // scan radius, apply/remove passive to nearby units
-    Instant,      // cast point → fire → backswing
+    Instant,      // cast_time → fire → backsw_time
     TargetUnit,   // + range + target validation + optional projectile
     TargetPoint,  // + range + ground position
     Toggle,       // on/off, periodic cost drain
@@ -41,8 +41,8 @@ struct AbilityLevelDef {
 
     f32 cooldown    = 0;
     f32 range       = 0;
-    f32 cast_point  = 0;
-    f32 backswing   = 0;
+    f32 cast_time    = 0;
+    f32 backsw_time  = 0;
     f32 damage      = 0;
     f32 heal        = 0;
 

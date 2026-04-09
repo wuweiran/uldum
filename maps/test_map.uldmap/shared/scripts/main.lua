@@ -89,7 +89,7 @@ function main()
         if not IsUnitAlive(paladin) then return end
         local px = GetUnitX(paladin)
         local py = GetUnitY(paladin)
-        local nearby = GetUnitsInRange(px, py, 500, { enemy_of = player1, alive_only = true })
+        local nearby = GetUnitsInRange(px, py, 325, { enemy_of = player1, alive_only = true })
         for _, u in ipairs(nearby) do
             DamageUnit(paladin, u, 15, "ability")
         end

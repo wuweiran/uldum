@@ -753,9 +753,9 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                             transform->facing = desired;
                         }
                         aset.cast_state = CastState::CastPoint;
-                        aset.cast_timer = lvl.cast_point;
-                        aset.cast_point_secs = lvl.cast_point;
-                        aset.cast_backswing_secs = lvl.backswing;
+                        aset.cast_timer = lvl.cast_time;
+                        aset.cast_point_secs = lvl.cast_time;
+                        aset.cast_backswing_secs = lvl.backsw_time;
                         break;
                     }
                     case CastState::CastPoint:
@@ -772,7 +772,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                                        aset.cast_target_unit, target_pos);
                             }
                             aset.cast_state = CastState::Backswing;
-                            aset.cast_timer = lvl.backswing;
+                            aset.cast_timer = lvl.backsw_time;
                         }
                         break;
                     case CastState::Backswing:
@@ -910,7 +910,6 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.order_queues.remove(h.id);
     world.ability_sets.remove(h.id);
     world.classifications.remove(h.id);
-    world.heroes.remove(h.id);
     world.inventories.remove(h.id);
     world.buildings.remove(h.id);
     world.constructions.remove(h.id);

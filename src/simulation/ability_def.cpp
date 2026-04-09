@@ -43,8 +43,8 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
     lvl.cost_can_kill = j.value("cost_can_kill", false);
     lvl.cooldown      = j.value("cooldown", 0.0f);
     lvl.range         = j.value("range", 0.0f);
-    lvl.cast_point    = j.value("cast_point", 0.0f);
-    lvl.backswing     = j.value("backswing", 0.0f);
+    lvl.cast_time     = j.value("cast_time", 0.0f);
+    lvl.backsw_time   = j.value("backsw_time", 0.0f);
     lvl.damage        = j.value("damage", 0.0f);
     lvl.heal          = j.value("heal", 0.0f);
 

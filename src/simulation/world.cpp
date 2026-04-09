@@ -23,7 +23,6 @@ static void remove_all_components(World& world, u32 id) {
     world.order_queues.remove(id);
     world.ability_sets.remove(id);
     world.classifications.remove(id);
-    world.heroes.remove(id);
     world.inventories.remove(id);
     world.buildings.remove(id);
     world.constructions.remove(id);
@@ -108,13 +107,12 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         world.renderables.add(id, Renderable{def->model_path, true});
     }
 
-    // Hero (if type has "hero" classification)
-    if (has_classification(def->classifications, "hero")) {
-        HeroComp hero;
-        hero.primary_attr    = def->hero_primary_attr;
-        hero.attr_per_level  = def->hero_attr_per_level;
-        world.heroes.add(id, std::move(hero));
-        world.inventories.add(id, Inventory{});
+    // Inventory (if type has inventory_size > 0)
+    if (def->inventory_size > 0) {
+        Inventory inv;
+        inv.max_slots = def->inventory_size;
+        inv.slots.resize(def->inventory_size);
+        world.inventories.add(id, std::move(inv));
     }
 
     // Building (if type has "structure" classification)
@@ -303,42 +301,8 @@ bool is_dead(const World& world, Unit unit) {
     return world.validate(unit) && world.dead_states.has(unit.id);
 }
 
-bool is_hero(const World& world, Unit unit) {
-    return world.validate(unit) && world.heroes.has(unit.id);
-}
-
 bool is_building(const World& world, Unit unit) {
     return world.validate(unit) && world.buildings.has(unit.id);
-}
-
-// ── Hero API ───────────────────────────────────────────────────────────────
-
-void hero_add_xp(World& world, Unit hero, u32 xp) {
-    if (!world.validate(hero)) return;
-    auto* h = world.heroes.get(hero.id);
-    if (!h) return;
-
-    auto* attrs = world.attribute_blocks.get(hero.id);
-
-    h->xp += xp;
-    while (h->xp >= h->xp_to_next) {
-        h->xp -= h->xp_to_next;
-        h->level++;
-        // Apply per-level attribute growth
-        if (attrs) {
-            for (auto& [attr, growth] : h->attr_per_level) {
-                attrs->numeric[attr] += growth;
-            }
-        }
-        h->xp_to_next = h->level * 200;
-        log::info(TAG, "Hero leveled up to {}", h->level);
-    }
-}
-
-u32 hero_get_level(const World& world, Unit hero) {
-    if (!world.validate(hero)) return 0;
-    auto* h = world.heroes.get(hero.id);
-    return h ? h->level : 0;
 }
 
 // ── Destructable API ───────────────────────────────────────────────────────

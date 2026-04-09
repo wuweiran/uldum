@@ -169,19 +169,12 @@ struct UnitClassificationComp {
     std::vector<std::string> flags;
 };
 
-// ── Hero Components ────────────────────────────────────────────────────────
-
-struct HeroComp {
-    u32         level = 1;
-    u32         xp    = 0;
-    u32         xp_to_next = 200;
-    std::string primary_attr;  // map-defined attribute name (e.g. "strength")
-    // Per-level attribute growth — attribute name → growth per level
-    std::map<std::string, f32> attr_per_level;
-};
+// ── Inventory ─────────────────────────────────────────────────────────────
+// Any unit can hold items if inventory_size > 0 in its type definition.
 
 struct Inventory {
-    std::array<Item, 6> slots{};
+    std::vector<Item> slots;  // sized by inventory_size from unit type def
+    u32 max_slots = 0;
 };
 
 // ── Building Components ────────────────────────────────────────────────────

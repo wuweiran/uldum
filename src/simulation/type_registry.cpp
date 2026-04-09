@@ -137,20 +137,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             }
         }
 
-        if (val.contains("hero")) {
-            auto& h = val["hero"];
-            def.hero_primary_attr = h.value("primary_attr", "");
-            if (h.contains("attr_per_level")) {
-                for (auto& [attr, growth] : h["attr_per_level"].items()) {
-                    def.hero_attr_per_level[attr] = growth.get<f32>();
-                }
-            }
-            for (auto& [attr, growth] : def.hero_attr_per_level) {
-                if (def.attributes_numeric.contains(attr)) {
-                    def.hero_base_attrs[attr] = def.attributes_numeric[attr];
-                }
-            }
-        }
+        def.inventory_size = val.value("inventory_size", 0u);
 
         if (val.contains("sounds")) {
             auto& s = val["sounds"];

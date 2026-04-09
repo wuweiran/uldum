@@ -34,9 +34,9 @@
         "max_level": 3,
         "target_filter": { "ally": true, "self": true },
         "levels": [
-            { "heal": 200, "cooldown": 10.0, "range": 1280, "cost": { "mana": 65 }, "cast_point": 0.5 },
-            { "heal": 400, "cooldown": 10.0, "range": 1280, "cost": { "mana": 65 }, "cast_point": 0.5 },
-            { "heal": 600, "cooldown": 10.0, "range": 1280, "cost": { "mana": 65 }, "cast_point": 0.5 }
+            { "heal": 200, "cooldown": 10.0, "range": 600, "cost": { "mana": 65 }, "cast_time": 0.5 },
+            { "heal": 400, "cooldown": 10.0, "range": 600, "cost": { "mana": 65 }, "cast_time": 0.5 },
+            { "heal": 600, "cooldown": 10.0, "range": 600, "cost": { "mana": 65 }, "cast_time": 0.5 }
         ]
     },
     "consecration": {

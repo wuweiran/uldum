@@ -65,7 +65,7 @@ Player or AI activates. No target selection.
 **Engine handles:**
 - Validate: cooldown ready? state cost affordable? (+ Lua `can_cast` stub)
 - Deduct state cost
-- Cast point (foreswing) → fire effect → backswing (cancellable)
+- cast_time (foreswing) → fire effect → backsw_time (cancellable)
 - Start cooldown
 
 **Map defines:**
@@ -91,7 +91,7 @@ Like instant, but requires selecting a ground position.
 
 **Engine handles:**
 - Range check to the point
-- Cast point → fire effect → backswing
+- cast_time → fire effect → backsw_time
 
 **Map defines:**
 - `on_effect(caster, point, ability)`: Lua callback
@@ -151,8 +151,8 @@ Each entry in `levels[]` uses these defaults for omitted fields:
 | `cost_can_kill` | `false` | Health cost won't kill caster |
 | `cooldown` | `0` | No cooldown |
 | `range` | `0` | Unlimited range (for instant) or melee range |
-| `cast_point` | `0` | No foreswing — instant fire |
-| `backswing` | `0` | No recovery |
+| `cast_time` | `0` | No foreswing — instant fire |
+| `backsw_time` | `0` | No recovery |
 | `damage` | `0` | |
 | `heal` | `0` | |
 | `modifiers` | `{}` | No attribute modifiers |
@@ -179,9 +179,9 @@ A minimal ability definition only needs `form`:
         "max_level": 3,
         "target_filter": { "ally": true, "self": true, "alive": true },
         "levels": [
-            { "cost": { "mana": 65 }, "cooldown": 9, "range": 20, "cast_point": 0.4, "backswing": 0.5 },
-            { "cost": { "mana": 65 }, "cooldown": 9, "range": 20, "cast_point": 0.4, "backswing": 0.5 },
-            { "cost": { "mana": 65 }, "cooldown": 9, "range": 20, "cast_point": 0.4, "backswing": 0.5 }
+            { "cost": { "mana": 65 }, "cooldown": 9, "range": 20, "cast_time": 0.4, "backsw_time": 0.5 },
+            { "cost": { "mana": 65 }, "cooldown": 9, "range": 20, "cast_time": 0.4, "backsw_time": 0.5 },
+            { "cost": { "mana": 65 }, "cooldown": 9, "range": 20, "cast_time": 0.4, "backsw_time": 0.5 }
         ]
     },
     "devotion_aura": {
@@ -268,7 +268,7 @@ Ability {
    d. Lua can_cast(caster, ability, target) returns true? (custom validation)
    e. In range?
 3. Turn to face target (if unit-targeted)
-4. Cast point (foreswing) — unit is committed, can't cancel
+4. cast_time (foreswing) — unit is committed, can't cancel
 5. FIRE:
    - Deduct state costs
    - Start cooldown

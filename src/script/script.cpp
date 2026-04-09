@@ -300,7 +300,10 @@ void ScriptEngine::bind_api() {
     };
 
     lua["IsUnitHero"] = [&](simulation::Unit unit) -> bool {
-        return simulation::is_hero(sim.world(), unit);
+        auto& world = sim.world();
+        if (!world.validate(unit)) return false;
+        auto* cls = world.classifications.get(unit.id);
+        return cls && simulation::has_classification(cls->flags, "hero");
     };
 
     lua["IsUnitBuilding"] = [&](simulation::Unit unit) -> bool {
@@ -486,15 +489,6 @@ void ScriptEngine::bind_api() {
             result[i + 1] = units[i];
         }
         return result;
-    };
-
-    // ── Hero API ──────────────────────────────────────────────────────
-
-    lua["GetHeroLevel"] = [&](simulation::Unit u) -> u32 {
-        return simulation::hero_get_level(sim.world(), u);
-    };
-    lua["AddHeroXP"] = [&](simulation::Unit u, u32 xp) {
-        simulation::hero_add_xp(sim.world(), u, xp);
     };
 
     // ── Player API ────────────────────────────────────────────────────

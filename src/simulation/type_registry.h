@@ -64,10 +64,8 @@ struct UnitTypeDef {
     std::map<std::string, f32>         attributes_numeric;
     std::map<std::string, std::string> attributes_string;
 
-    // Hero (if "hero" classification set)
-    std::string                  hero_primary_attr;
-    std::map<std::string, f32>   hero_base_attrs;      // "strength" → 22.0
-    std::map<std::string, f32>   hero_attr_per_level;   // "strength" → 2.7
+    // Inventory (0 = cannot hold items)
+    u32 inventory_size = 0;
 
     // Sounds (triggered by animation events)
     std::string sound_attack;  // played on attack damage point
