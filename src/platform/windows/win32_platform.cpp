@@ -99,6 +99,10 @@ bool Win32Platform::poll_events() {
     m_input.mouse_dx = 0;
     m_input.mouse_dy = 0;
     m_input.scroll_delta = 0;
+    m_input.mouse_left_pressed = false;
+    m_input.mouse_left_released = false;
+    m_input.mouse_right_pressed = false;
+    m_input.mouse_right_released = false;
 
     MSG msg{};
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -167,6 +171,17 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         case 'D':       self->m_input.key_d = pressed; break;
         case 'Q':       self->m_input.key_q = pressed; break;
         case 'E':       self->m_input.key_e = pressed; break;
+        case 'H':       self->m_input.key_h = pressed; break;
+        case 'P':       self->m_input.key_p = pressed; break;
+        case VK_F1:     self->m_input.key_f1 = pressed; break;
+        case VK_F2:     self->m_input.key_f2 = pressed; break;
+        case VK_F3:     self->m_input.key_f3 = pressed; break;
+        case VK_SHIFT:  self->m_input.key_shift = pressed; break;
+        case VK_CONTROL: self->m_input.key_ctrl = pressed; break;
+        case VK_MENU:   self->m_input.key_alt = pressed; break;
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            self->m_input.key_num[wparam - '0'] = pressed; break;
         }
         return 0;
     }
@@ -181,10 +196,10 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         return 0;
     }
 
-    case WM_LBUTTONDOWN: self->m_input.mouse_left = true;  return 0;
-    case WM_LBUTTONUP:   self->m_input.mouse_left = false; return 0;
-    case WM_RBUTTONDOWN: self->m_input.mouse_right = true;  return 0;
-    case WM_RBUTTONUP:   self->m_input.mouse_right = false; return 0;
+    case WM_LBUTTONDOWN: self->m_input.mouse_left = true;  self->m_input.mouse_left_pressed = true;  return 0;
+    case WM_LBUTTONUP:   self->m_input.mouse_left = false; self->m_input.mouse_left_released = true; return 0;
+    case WM_RBUTTONDOWN: self->m_input.mouse_right = true;  self->m_input.mouse_right_pressed = true;  return 0;
+    case WM_RBUTTONUP:   self->m_input.mouse_right = false; self->m_input.mouse_right_released = true; return 0;
     case WM_MBUTTONDOWN: self->m_input.mouse_middle = true;  return 0;
     case WM_MBUTTONUP:   self->m_input.mouse_middle = false; return 0;
 

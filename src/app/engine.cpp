@@ -157,6 +157,13 @@ bool Engine::init() {
         return m_renderer.get_attachment_point(entity_id, bone);
     });
 
+    // Input: command system, selection, picking
+    m_commands.init(&m_simulation.world());
+    m_selection.set_player(simulation::Player{0});  // local player = slot 0
+    m_picker.init(&m_renderer.camera(), &m_map.terrain(),
+                  &m_simulation.world(),
+                  m_platform->width(), m_platform->height());
+
     // Initialize spatial grid before scripts run (so GetUnitsInRange works in main())
     m_simulation.spatial_grid().update(m_simulation.world());
 
@@ -192,6 +199,7 @@ void Engine::run() {
             m_rhi.handle_resize(m_platform->width(), m_platform->height());
             f32 aspect = static_cast<f32>(m_platform->width()) / static_cast<f32>(m_platform->height());
             m_renderer.handle_resize(aspect);
+            m_picker.set_screen_size(m_platform->width(), m_platform->height());
         }
 
         // Delta time

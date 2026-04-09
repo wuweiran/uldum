@@ -22,6 +22,19 @@ struct InputState {
     bool key_d = false;
     bool key_q = false;  // down
     bool key_e = false;  // up
+    bool key_h = false;
+    bool key_p = false;
+    bool key_f1 = false;
+    bool key_f2 = false;
+    bool key_f3 = false;
+
+    // Number keys (0-9) for control groups
+    bool key_num[10] = {};
+
+    // Modifiers
+    bool key_shift = false;
+    bool key_ctrl  = false;
+    bool key_alt   = false;
 
     // Mouse
     f32  mouse_x = 0;    // pixel position
@@ -32,6 +45,12 @@ struct InputState {
     bool mouse_left = false;
     bool mouse_right = false;
     bool mouse_middle = false;
+
+    // Mouse press edges (true only on the frame the button was pressed/released)
+    bool mouse_left_pressed  = false;
+    bool mouse_left_released = false;
+    bool mouse_right_pressed  = false;
+    bool mouse_right_released = false;
 };
 
 class Platform {

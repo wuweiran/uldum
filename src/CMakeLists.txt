@@ -8,6 +8,7 @@ add_subdirectory(audio)
 add_subdirectory(script)
 add_subdirectory(simulation)
 add_subdirectory(network)
+add_subdirectory(input)
 add_subdirectory(map)
 add_subdirectory(editor)
 

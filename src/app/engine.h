@@ -8,6 +8,9 @@
 #include "script/script.h"
 #include "simulation/simulation.h"
 #include "network/network.h"
+#include "input/command_system.h"
+#include "input/selection.h"
+#include "input/picking.h"
 #include "map/map.h"
 
 #include <memory>
@@ -33,6 +36,9 @@ private:
     script::ScriptEngine     m_script;
     simulation::Simulation   m_simulation;
     network::NetworkManager  m_network;
+    input::CommandSystem     m_commands;
+    input::SelectionState    m_selection;
+    input::Picker            m_picker;
     map::MapManager          m_map;
 };
 

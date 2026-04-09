@@ -9,6 +9,7 @@ set(ULDUM_ENGINE_LIBS
     uldum_script
     uldum_simulation
     uldum_network
+    uldum_input
     uldum_map
 )
 
