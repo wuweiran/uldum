@@ -11,6 +11,7 @@
 #include "input/command_system.h"
 #include "input/selection.h"
 #include "input/picking.h"
+#include "input/rts_preset.h"
 #include "map/map.h"
 
 #include <memory>
@@ -39,6 +40,7 @@ private:
     input::CommandSystem     m_commands;
     input::SelectionState    m_selection;
     input::Picker            m_picker;
+    input::RtsPreset         m_input_preset;
     map::MapManager          m_map;
 };
 

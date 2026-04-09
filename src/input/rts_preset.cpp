@@ -1,0 +1,264 @@
+#include "input/rts_preset.h"
+#include "simulation/order.h"
+#include "core/log.h"
+
+#include <cmath>
+
+namespace uldum::input {
+
+static constexpr const char* TAG = "RtsInput";
+
+// Helper: check if key just pressed this frame (rising edge)
+static bool key_pressed(bool current, bool& prev) {
+    bool pressed = current && !prev;
+    prev = current;
+    return pressed;
+}
+
+void RtsPreset::update(const InputContext& ctx, f32 dt) {
+    handle_selection(ctx);
+    handle_orders(ctx);
+    handle_hotkeys(ctx);
+    handle_camera(ctx, dt);
+}
+
+// ── Selection ────────────────────────────────────────────────────────────
+
+void RtsPreset::handle_selection(const InputContext& ctx) {
+    auto& input = ctx.input;
+    auto& sel = ctx.selection;
+
+    // Start box drag on left press
+    if (input.mouse_left_pressed && !m_attack_move_mode) {
+        m_box_dragging = false;
+        m_box_start_x = input.mouse_x;
+        m_box_start_y = input.mouse_y;
+    }
+
+    // Detect drag threshold while holding left
+    if (input.mouse_left && !m_box_dragging && !m_attack_move_mode) {
+        f32 dx = input.mouse_x - m_box_start_x;
+        f32 dy = input.mouse_y - m_box_start_y;
+        if (std::sqrt(dx * dx + dy * dy) > BOX_DRAG_THRESHOLD) {
+            m_box_dragging = true;
+        }
+    }
+
+    // Left release: either box select or click select
+    if (input.mouse_left_released && !m_attack_move_mode) {
+        if (m_box_dragging) {
+            // Box select — own units in rectangle
+            auto units = ctx.picker.pick_units_in_box(
+                m_box_start_x, m_box_start_y,
+                input.mouse_x, input.mouse_y,
+                sel.player());
+
+            if (input.key_shift) {
+                // Shift+box: add to selection
+                for (auto& u : units) {
+                    if (!sel.is_selected(u) && sel.count() < MAX_SELECTION) {
+                        sel.toggle(u);
+                    }
+                }
+            } else {
+                sel.select_multiple(std::move(units));
+            }
+        } else {
+            // Click select
+            auto unit = ctx.picker.pick_unit(input.mouse_x, input.mouse_y, sel.player());
+            if (!unit.is_valid()) {
+                // Clicked empty — try picking any unit (for inspecting enemies)
+                unit = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+            }
+
+            if (unit.is_valid()) {
+                if (input.key_shift) {
+                    sel.toggle(unit);
+                } else {
+                    sel.select(unit);
+                }
+            } else if (!input.key_shift) {
+                sel.clear();
+            }
+        }
+        m_box_dragging = false;
+    }
+}
+
+// ── Orders ───────────────────────────────────────────────────────────────
+
+void RtsPreset::handle_orders(const InputContext& ctx) {
+    auto& input = ctx.input;
+    auto& sel = ctx.selection;
+
+    // Attack-move: A pressed → next left-click issues AttackMove
+    if (m_attack_move_mode && input.mouse_left_pressed) {
+        glm::vec3 world_pos;
+        if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+            if (!sel.empty()) {
+                GameCommand cmd;
+                cmd.player = sel.player();
+                cmd.units  = sel.selected();
+                cmd.order  = simulation::orders::AttackMove{world_pos};
+                cmd.queued = input.key_shift;
+                ctx.commands.submit(cmd);
+            }
+        }
+        m_attack_move_mode = false;
+        return;
+    }
+
+    // Right click: smart order
+    if (input.mouse_right_pressed && !sel.empty()) {
+        // Check if clicking on a unit
+        auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+
+        if (target.is_valid()) {
+            // Clicking on a unit — determine if enemy or ally
+            auto* target_owner = ctx.simulation.world().owners.get(target.id);
+            bool is_enemy = false;
+            if (target_owner) {
+                is_enemy = ctx.simulation.is_enemy(sel.player(), target_owner->player);
+            }
+
+            GameCommand cmd;
+            cmd.player = sel.player();
+            cmd.units  = sel.selected();
+            cmd.queued = input.key_shift;
+
+            if (is_enemy) {
+                cmd.order = simulation::orders::Attack{simulation::Unit{target}};
+            } else {
+                // Friendly unit — move to their position (follow not implemented, use move)
+                auto* t = ctx.simulation.world().transforms.get(target.id);
+                if (t) {
+                    cmd.order = simulation::orders::Move{t->position};
+                }
+            }
+            ctx.commands.submit(cmd);
+        } else {
+            // Clicking on ground — move order
+            glm::vec3 world_pos;
+            if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+                GameCommand cmd;
+                cmd.player = sel.player();
+                cmd.units  = sel.selected();
+                cmd.order  = simulation::orders::Move{world_pos};
+                cmd.queued = input.key_shift;
+                ctx.commands.submit(cmd);
+            }
+        }
+    }
+}
+
+// ── Hotkeys ──────────────────────────────────────────────────────────────
+
+void RtsPreset::handle_hotkeys(const InputContext& ctx) {
+    auto& input = ctx.input;
+    auto& sel = ctx.selection;
+
+    // S — Stop
+    if (key_pressed(input.key_s, m_prev_key_s) && !sel.empty()) {
+        GameCommand cmd;
+        cmd.player = sel.player();
+        cmd.units  = sel.selected();
+        cmd.order  = simulation::orders::Stop{};
+        cmd.queued = input.key_shift;
+        ctx.commands.submit(cmd);
+    }
+
+    // H — Hold position
+    if (key_pressed(input.key_h, m_prev_key_h) && !sel.empty()) {
+        GameCommand cmd;
+        cmd.player = sel.player();
+        cmd.units  = sel.selected();
+        cmd.order  = simulation::orders::HoldPosition{};
+        cmd.queued = input.key_shift;
+        ctx.commands.submit(cmd);
+    }
+
+    // A — Enter attack-move mode
+    if (key_pressed(input.key_a, m_prev_key_a)) {
+        m_attack_move_mode = true;
+    }
+
+    // Escape — cancel attack-move mode
+    if (input.key_escape) {
+        m_attack_move_mode = false;
+    }
+
+    // Control groups: Ctrl+N assign, N recall
+    for (u32 i = 0; i < 10; ++i) {
+        if (key_pressed(input.key_num[i], m_prev_key_num[i])) {
+            if (input.key_ctrl) {
+                sel.assign_group(i);
+            } else {
+                sel.recall_group(i);
+            }
+        }
+    }
+
+    // F1/F2/F3 — select hero 1/2/3 (find own heroes by classification)
+    auto select_hero = [&](u32 hero_index, bool pressed_now) {
+        if (!pressed_now) return;
+        auto& world = ctx.simulation.world();
+        u32 found = 0;
+        for (u32 i = 0; i < world.classifications.count(); ++i) {
+            u32 id = world.classifications.ids()[i];
+            auto& flags = world.classifications.data()[i].flags;
+            if (!simulation::has_classification(flags, "hero")) continue;
+
+            auto* own = world.owners.get(id);
+            if (!own || own->player.id != sel.player().id) continue;
+
+            if (found == hero_index) {
+                auto* info = world.handle_infos.get(id);
+                if (info) {
+                    simulation::Unit u;
+                    u.id = id;
+                    u.generation = info->generation;
+                    sel.select(u);
+                }
+                return;
+            }
+            found++;
+        }
+    };
+    select_hero(0, key_pressed(input.key_f1, m_prev_key_f1));
+    select_hero(1, key_pressed(input.key_f2, m_prev_key_f2));
+    select_hero(2, key_pressed(input.key_f3, m_prev_key_f3));
+}
+
+// ── Camera ───────────────────────────────────────────────────────────────
+
+void RtsPreset::handle_camera(const InputContext& ctx, f32 dt) {
+    auto& input = ctx.input;
+    auto& camera = ctx.camera;
+    f32 w = static_cast<f32>(ctx.screen_w);
+    f32 h = static_cast<f32>(ctx.screen_h);
+
+    // Edge pan: move camera when mouse is near screen edges
+    f32 pan_x = 0, pan_y = 0;
+    if (input.mouse_x < EDGE_PAN_MARGIN)     pan_x = -1.0f;
+    if (input.mouse_x > w - EDGE_PAN_MARGIN) pan_x =  1.0f;
+    if (input.mouse_y < EDGE_PAN_MARGIN)     pan_y = -1.0f;  // top = forward
+    if (input.mouse_y > h - EDGE_PAN_MARGIN) pan_y =  1.0f;  // bottom = backward
+
+    if (pan_x != 0 || pan_y != 0) {
+        f32 speed = EDGE_PAN_SPEED * dt;
+        // pan() takes screen-space deltas, so convert direction to pixel-like movement
+        camera.pan(-pan_x * speed, -pan_y * speed);
+    }
+
+    // Middle mouse drag: pan camera
+    if (input.mouse_middle) {
+        camera.pan(input.mouse_dx, input.mouse_dy);
+    }
+
+    // Scroll: zoom
+    if (input.scroll_delta != 0) {
+        camera.zoom(input.scroll_delta);
+    }
+}
+
+} // namespace uldum::input

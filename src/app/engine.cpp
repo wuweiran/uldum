@@ -189,10 +189,7 @@ void Engine::run() {
     u32 frame_count = 0;
 
     while (m_platform->poll_events()) {
-        // Input
-        if (m_platform->input().key_escape) {
-            break;
-        }
+        // (Escape handled by input preset for canceling orders/targeting)
 
         // Handle resize
         if (m_platform->was_resized()) {
@@ -223,8 +220,20 @@ void Engine::run() {
             accumulator -= TICK_DT;
         }
 
-        // Update camera
-        m_renderer.update_camera(m_platform->input(), frame_dt);
+        // Input preset: selection, orders, camera
+        {
+            input::InputContext ictx{
+                m_platform->input(),
+                m_selection,
+                m_commands,
+                m_picker,
+                m_renderer.camera(),
+                m_simulation,
+                m_platform->width(),
+                m_platform->height()
+            };
+            m_input_preset.update(ictx, frame_dt);
+        }
 
         // Audio — update listener from camera position
         {

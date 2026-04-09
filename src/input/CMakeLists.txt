@@ -2,6 +2,7 @@ add_library(uldum_input STATIC
     command_system.cpp
     selection.cpp
     picking.cpp
+    rts_preset.cpp
 )
 
 target_include_directories(uldum_input PUBLIC ${CMAKE_SOURCE_DIR}/src)
