@@ -346,7 +346,14 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
         bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
         bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
 
-        // Get current target: from Attack order, or from combat.target (auto-acquired)
+        // Unit has a Move order — don't attack, obey the order
+        if (is_moving) {
+            combat.target = Unit{};
+            combat.attack_state = AttackState::Idle;
+            continue;
+        }
+
+        // Get current target: from Attack order, or from combat.target (auto-acquired/fight-back)
         Unit target;
         if (attack_order) {
             target = attack_order->target;
@@ -397,20 +404,11 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                         if (d < best_dist) { best = e; best_dist = d; }
                     }
                     if (best.is_valid()) {
-                        if (is_attack_move) {
-                            // Keep AttackMove order, store target on combat component
-                            combat.target = best;
-                            target = best;
-                            target_valid = true;
-                        } else {
-                            // Idle: create an Attack order
-                            Order order;
-                            order.payload = orders::Attack{best};
-                            oq->current = std::move(order);
-                            combat.target = best;
-                            target = best;
-                            target_valid = true;
-                        }
+                        // Auto-acquire: set combat target only, no order created.
+                        // This matches WC3 behavior — auto-attack is not an order.
+                        combat.target = best;
+                        target = best;
+                        target_valid = true;
                     }
                 }
             }

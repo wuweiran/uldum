@@ -292,7 +292,7 @@ In-engine tool using Dear ImGui. Activated via editor mode toggle.
 | stb_image | latest | PNG/JPEG loading | MIT/Public Domain |
 | stb_vorbis | latest | OGG Vorbis decoding | MIT/Public Domain |
 | FlatBuffers | latest | Binary serialization | Apache 2.0 |
-| rapidjson | latest | JSON parsing | MIT |
+| nlohmann/json | 3.11 | JSON parsing | MIT |
 
 ## 15. Build Phases
 

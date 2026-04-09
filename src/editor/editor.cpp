@@ -391,8 +391,11 @@ void Editor::apply_brush(f32 dt) {
     case Tool::RampClear:
         if (!m_brush_applied) { brush_ramp_clear(); m_brush_applied = true; }
         break;
-    case Tool::Pathing:
-        if (!m_brush_applied) { brush_pathing_toggle(); m_brush_applied = true; }
+    case Tool::PathingBlock:
+        if (!m_brush_applied) { brush_pathing_block(); m_brush_applied = true; }
+        break;
+    case Tool::PathingAllow:
+        if (!m_brush_applied) { brush_pathing_allow(); m_brush_applied = true; }
         break;
     default: break;
     }
@@ -680,20 +683,37 @@ void Editor::brush_ramp_clear() {
 }
 
 
-void Editor::brush_pathing_toggle() {
+void Editor::brush_pathing_block() {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
     i32 r = m_brush_size - 1;
     i32 r2 = r * r;
 
-    // Toggle WALKABLE flag on vertices in brush
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
             i32 dx = static_cast<i32>(ix) - m_cursor_vx;
             i32 dy = static_cast<i32>(iy) - m_cursor_vy;
             if (dx * dx + dy * dy > r2) continue;
 
-            td.pathing_at(ix, iy) ^= map::PATHING_WALKABLE;
+            td.pathing_at(ix, iy) &= ~map::PATHING_WALKABLE;
+            m_terrain_dirty = true;
+        }
+    }
+}
+
+void Editor::brush_pathing_allow() {
+    auto& td = m_map.terrain();
+    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
+    i32 r = m_brush_size - 1;
+    i32 r2 = r * r;
+
+    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
+        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
+            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
+            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
+            if (dx * dx + dy * dy > r2) continue;
+
+            td.pathing_at(ix, iy) |= map::PATHING_WALKABLE;
             m_terrain_dirty = true;
         }
     }
@@ -932,7 +952,8 @@ void Editor::draw_ui() {
     ImGui::RadioButton("Cliff Lower", &tool, static_cast<int>(Tool::CliffLower));
     ImGui::RadioButton("Ramp Set",    &tool, static_cast<int>(Tool::RampSet));
     ImGui::RadioButton("Ramp Clear",  &tool, static_cast<int>(Tool::RampClear));
-    ImGui::RadioButton("Pathing",     &tool, static_cast<int>(Tool::Pathing));
+    ImGui::RadioButton("Path Block",  &tool, static_cast<int>(Tool::PathingBlock));
+    ImGui::RadioButton("Path Allow",  &tool, static_cast<int>(Tool::PathingAllow));
     m_tool = static_cast<Tool>(tool);
 
     ImGui::Separator();
@@ -940,7 +961,7 @@ void Editor::draw_ui() {
 
     bool is_one_shot = m_tool == Tool::CliffRaise || m_tool == Tool::CliffLower ||
                        m_tool == Tool::RampSet || m_tool == Tool::RampClear ||
-                       m_tool == Tool::Pathing;
+                       m_tool == Tool::PathingBlock || m_tool == Tool::PathingAllow;
     if (!is_one_shot) {
         ImGui::SliderFloat("Amount", &m_brush_amount, 1.0f, 32.0f, "%.0f");
         ImGui::Checkbox("Continuous", &m_continuous);

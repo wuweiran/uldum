@@ -60,7 +60,7 @@ Uldum is a game engine for map-based, unit-centric games with Lua scripting, mul
 
 ## Third-Party Libraries
 
-VMA, shaderc, sol2, Lua 5.4, ENet, miniaudio, Dear ImGui, Tracy, glm, cgltf, stb_image, stb_vorbis, FlatBuffers, rapidjson.
+VMA, shaderc, sol2, Lua 5.4, ENet, miniaudio, Dear ImGui, Tracy, glm, cgltf, stb_image, stb_vorbis, FlatBuffers, nlohmann/json.
 
 ## Build
 

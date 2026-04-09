@@ -54,22 +54,18 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 sel.player());
 
             if (input.key_shift) {
-                // Shift+box: add to selection
                 for (auto& u : units) {
                     if (!sel.is_selected(u) && sel.count() < MAX_SELECTION) {
                         sel.toggle(u);
                     }
                 }
-            } else {
+            } else if (!units.empty()) {
                 sel.select_multiple(std::move(units));
             }
+            // Empty box drag: don't change selection
         } else {
-            // Click select
+            // Click select — only own units
             auto unit = ctx.picker.pick_unit(input.mouse_x, input.mouse_y, sel.player());
-            if (!unit.is_valid()) {
-                // Clicked empty — try picking any unit (for inspecting enemies)
-                unit = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-            }
 
             if (unit.is_valid()) {
                 if (input.key_shift) {
@@ -77,9 +73,8 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 } else {
                     sel.select(unit);
                 }
-            } else if (!input.key_shift) {
-                sel.clear();
             }
+            // No unit found: don't change selection
         }
         m_box_dragging = false;
     }
@@ -244,7 +239,13 @@ void RtsPreset::handle_camera(const InputContext& ctx, f32 dt) {
     if (input.key_up)    pan_y = -1.0f;  // up arrow = forward
     if (input.key_down)  pan_y =  1.0f;  // down arrow = backward
 
-    // TODO: re-enable edge pan after testing
+    // Edge pan: only for shipped game builds, not dev
+#ifndef ULDUM_DEBUG
+    if (input.mouse_x < EDGE_PAN_MARGIN)     pan_x = -1.0f;
+    if (input.mouse_x > w - EDGE_PAN_MARGIN) pan_x =  1.0f;
+    if (input.mouse_y < EDGE_PAN_MARGIN)     pan_y = -1.0f;
+    if (input.mouse_y > h - EDGE_PAN_MARGIN) pan_y =  1.0f;
+#endif
 
     if (pan_x != 0 || pan_y != 0) {
         f32 speed = EDGE_PAN_SPEED * dt;

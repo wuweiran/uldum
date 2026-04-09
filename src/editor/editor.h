@@ -26,7 +26,8 @@ enum class Tool : u8 {
     CliffLower,
     RampSet,
     RampClear,
-    Pathing,
+    PathingBlock,
+    PathingAllow,
     Count
 };
 
@@ -62,7 +63,8 @@ private:
     void brush_cliff_lower();
     void brush_ramp_set();
     void brush_ramp_clear();
-    void brush_pathing_toggle();
+    void brush_pathing_block();
+    void brush_pathing_allow();
     void cleanup_ramp_flags();  // remove RAMP from vertices with no adjacent cliff difference
 
     // Modules
