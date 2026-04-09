@@ -340,7 +340,7 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 
     if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
 
-    // Spell casting (ability system) — two-phase animation like attacks
+    // Spell casting — two-phase animation (ability seconds don't derive from fraction)
     auto* aset = world.ability_sets.get(id);
     if (aset && (aset->cast_state == simulation::CastState::CastPoint ||
                  aset->cast_state == simulation::CastState::Backswing)) {
@@ -348,7 +348,7 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
         auto* hi = world.handle_infos.get(id);
         if (hi && world.types) {
             auto* def = world.types->get_unit_type(hi->type_id);
-            if (def) cp = def->cast_point;
+            if (def) cp = def->cast_pt;
         }
         AttackAnimInfo info;
         info.dmg_point  = cp;
@@ -362,14 +362,18 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
     if (combat) {
         using simulation::AttackState;
 
-        // Attack animation plays only during WindUp + Backswing
-        if (combat->attack_state == AttackState::WindUp ||
-            combat->attack_state == AttackState::Backswing) {
+        // Attack animation: uniform speed across full cycle (WC3 model).
+        // dmg_pt fraction naturally aligns visual hit with damage point.
+        if (combat->attack_state == AttackState::TurningToFace ||
+            combat->attack_state == AttackState::WindUp ||
+            combat->attack_state == AttackState::Backswing ||
+            combat->attack_state == AttackState::Cooldown) {
 
-            // Detect new attack swing: WindUp with a fresh timer
+            // Detect new attack swing
             bool new_swing = false;
             if (combat->attack_state == AttackState::WindUp) {
-                if (combat->attack_timer > combat->damage_time * 0.8f) {
+                f32 wind_up = combat->dmg_time;
+                if (combat->attack_timer > wind_up * 0.8f) {
                     u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);
                     if (swing_id != anim.attack_swing_id) {
                         anim.attack_swing_id = swing_id;
@@ -378,16 +382,9 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
                 }
             }
 
-            // Two-phase timing: animation syncs dmg_point fraction with cast_point seconds
-            AttackAnimInfo info;
-            info.dmg_point  = combat->dmg_point;
-            info.cast_point = combat->damage_time;
-            info.backswing  = combat->backswing_time;
-            f32 dur = combat->damage_time + combat->backswing_time;  // animation covers wind-up + backswing only
-            return {AnimState::Attack, dur, new_swing, info, true};
+            return {AnimState::Attack, combat->attack_cooldown, new_swing};
         }
 
-        // TurningToFace / Cooldown / MovingToTarget: not swinging
         if (combat->attack_state == AttackState::MovingToTarget) {
             return {AnimState::Walk, 0, false};
         }

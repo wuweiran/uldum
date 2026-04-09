@@ -96,9 +96,9 @@ struct Combat {
     f32         damage          = 0;
     f32         range           = 1.0f;
     f32         attack_cooldown = 1.0f;    // total time between attacks
-    f32         damage_time     = 0.3f;    // seconds before attack damage fires
-    f32         backswing_time  = 0.3f;    // seconds of attack recovery
-    f32         dmg_point       = 0.5f;    // fraction (0-1) of attack animation at damage point
+    f32         dmg_time        = 0.3f;    // seconds: fore-swing before damage
+    f32         backsw_time     = 0.3f;    // seconds: backswing after damage
+    f32         dmg_pt          = 0.5f;    // fraction of attack animation at damage point
     bool        is_ranged       = false;
     f32         projectile_speed = 20.0f;  // for ranged attacks
     f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range

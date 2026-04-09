@@ -198,9 +198,10 @@ Movement {
 Combat {
     f32        damage
     f32        range          // attack range (melee ~1.0, ranged ~6.0+)
-    f32        attack_cooldown // seconds between attacks
-    f32        cooldown_remaining
-    string     attack_type    // map-defined string (e.g. "normal", "pierce", "siege")
+    f32        attack_cooldown // seconds between attacks (full cycle)
+    f32        dmg_time       // seconds: fore-swing before damage fires
+    f32        backsw_time    // seconds: recovery after damage fires
+    f32        dmg_pt         // fraction (0-1) of attack animation at damage point
     Unit       target         // current attack target (typed handle, not raw ID)
 }
 
@@ -890,7 +891,7 @@ Systems are functions that iterate over component tuples each simulation tick:
 | System | Components | Responsibility |
 |--------|------------|----------------|
 | `MovementSystem` | Transform, Movement, OrderQueue | Move units toward targets, handle pathfinding |
-| `CombatSystem` | Transform, Combat, OrderQueue | Acquire targets, attack flow (cast point, backswing), spawn projectiles |
+| `CombatSystem` | Transform, Combat, OrderQueue | Acquire targets, attack flow (dmg_time fore-swing, backsw_time recovery), spawn projectiles |
 | `AbilitySystem` | AbilitySet, OrderQueue, Transform, Owner | Tick cooldowns, execute cast orders, tick applied ability durations, remove expired, scan aura radii and apply/remove |
 | `VisionSystem` | Transform, Vision, Owner | Update per-player fog of war |
 | `ProjectileSystem` | Projectile, Transform | Move projectiles, check hit, fire impact event |

@@ -32,11 +32,12 @@ struct UnitTypeDef {
     f32 damage = 10;
     f32 attack_range = 1.0f;
     f32 attack_cooldown = 1.0f;
-    f32 damage_time = 0.3f;       // seconds before attack damage fires (JSON: "dmg_pt")
-    f32 backswing_time = 0.3f;    // seconds of attack recovery (JSON: "backsw")
-    f32 dmg_point = 0.5f;         // fraction of attack animation at damage (JSON: "dmg_point")
-    f32 cast_point = 0.5f;        // fraction of spell animation at effect (JSON: "cast_pt")
-    f32 cast_backswing = 0.5f;    // fraction of spell animation at backswing start (JSON: "cast_backsw")
+    f32 dmg_time = 0.3f;           // seconds: fore-swing before damage (JSON: combat.dmg_time)
+    f32 backsw_time = 0.3f;       // seconds: backswing after damage (JSON: combat.backsw_time)
+
+    // Animation fractions (JSON: animation section)
+    f32 dmg_pt = 0.5f;            // fraction of attack animation at damage point
+    f32 cast_pt = 0.5f;           // fraction of spell animation at cast point
     bool is_ranged = false;
     f32 projectile_speed = 20.0f;
     f32 acquire_range = 10.0f;

@@ -81,14 +81,17 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.damage           = c.value("damage", 10.0f);
             def.attack_range     = c.value("range", 1.0f);
             def.attack_cooldown  = c.value("cooldown", 1.0f);
-            def.damage_time      = c.value("dmg_pt", 0.3f);
-            def.backswing_time   = c.value("backsw", 0.3f);
-            def.dmg_point        = c.value("dmg_point", 0.5f);
-            def.cast_point       = c.value("cast_pt", 0.5f);
-            def.cast_backswing   = c.value("cast_backsw", 0.5f);
+            def.dmg_time         = c.value("dmg_time", 0.3f);
+            def.backsw_time      = c.value("backsw_time", 0.3f);
             def.is_ranged        = c.value("ranged", false);
             def.projectile_speed = c.value("projectile_speed", 20.0f);
             def.acquire_range    = c.value("acquire_range", 10.0f);
+        }
+
+        if (val.contains("animation")) {
+            auto& a = val["animation"];
+            def.dmg_pt           = a.value("dmg_pt", 0.5f);
+            def.cast_pt          = a.value("cast_pt", 0.5f);
         }
 
         if (val.contains("vision")) {

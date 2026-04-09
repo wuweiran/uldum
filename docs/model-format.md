@@ -59,8 +59,8 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 |-----------|-------------|-------------|---------|
 | `idle` | Standing still, no active orders | Default state | Yes |
 | `walk` | Moving — Move order, AttackMove, or chasing an attack target | Movement or combat chase | Yes |
-| `attack` | Attacking — full attack cycle (turn, wind up, swing, cooldown) | Combat system | No (restarts each swing) |
-| `spell` | Casting an ability — during cast point and backswing | Ability cast system | No |
+| `attack` | Attacking — plays during WindUp + Backswing phases, scaled to `attack_cooldown` | Combat system | No (restarts each swing) |
+| `spell` | Casting an ability — plays during CastPoint + Backswing phases | Ability cast system | No |
 | `death` | Unit has died | Death system | No (holds last frame) |
 
 ### Behavior
@@ -68,7 +68,8 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **Missing clips**: If a model doesn't have a clip for a state, the bind pose is used (no crash)
 - **State transitions**: 0.15s crossfade blend between states
 - **Playback**: Animations run at render framerate (not simulation tick rate). The engine reads simulation state each frame to determine which clip to play
-- **Attack timing**: The `attack` clip should be authored to match the unit's `cast_point` + `backswing` timing from `unit_types.json`. The clip plays during WindUp and Backswing phases
+- **Attack timing**: The `attack` clip is uniformly scaled to fit `attack_cooldown`. The `animation.dmg_pt` fraction (from `unit_types.json`) defines where the visual hit lands in the clip. The engine uses `combat.dmg_time` and `combat.backsw_time` (seconds) for gameplay timing
+- **Spell timing**: The `spell` clip uses two-phase scaling. The `animation.cast_pt` fraction defines where the visual cast fires. The ability's `cast_point` and `backswing` (seconds) control gameplay timing
 
 ### glTF Example
 

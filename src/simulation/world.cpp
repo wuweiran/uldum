@@ -83,9 +83,9 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         combat.damage           = def->damage;
         combat.range            = def->attack_range;
         combat.attack_cooldown  = def->attack_cooldown;
-        combat.damage_time      = def->damage_time;
-        combat.backswing_time   = def->backswing_time;
-        combat.dmg_point        = def->dmg_point;
+        combat.dmg_time         = def->dmg_time;
+        combat.backsw_time      = def->backsw_time;
+        combat.dmg_pt           = def->dmg_pt;
         combat.is_ranged        = def->is_ranged;
         combat.projectile_speed = def->projectile_speed;
         combat.acquire_range    = def->acquire_range;

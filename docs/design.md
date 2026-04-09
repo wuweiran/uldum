@@ -395,7 +395,7 @@ Requires terrain data from Phase 6. Completes the simulation systems left incomp
 - Verify: units don't stack on top of each other
 
 **7c — Combat + projectiles**
-- CombatSystem: target acquisition, range checking, attack timing (cast point, backswing)
+- CombatSystem: target acquisition, range checking, attack timing (dmg_time fore-swing, backsw_time recovery)
 - Normal attack flow: melee hit, ranged projectile launch
 - ProjectileSystem: flight, homing, hit detection, impact event
 - Damage event: engine fires `on_damage` with raw damage + context, map Lua can modify (stubbed until Phase 8)

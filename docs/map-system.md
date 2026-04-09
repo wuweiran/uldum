@@ -28,7 +28,7 @@ Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 | HP (hit points) | Built-in state: current, max, regen. Engine fires death event at 0 |
 | State system | Additional depletable resources (mana, energy, etc.). Map declares which states exist. Engine ticks regen, checks cost for ability casts |
 | Attribute system | Single-value modifiers (strength, agility, etc.). All map-defined. Modified by abilities/items/levels |
-| Normal attack | Melee/ranged attack flow: cast point, backswing, attack speed, projectile launch |
+| Normal attack | Melee/ranged attack flow: dmg_time (fore-swing), backsw_time (recovery), attack cooldown, projectile launch |
 | Projectile system | Flight, homing, arc, collision detection, impact event |
 | Ability system | ~10 cast flow forms (instant, target_unit, target_point, passive, aura, toggle, channel, etc.). Cooldown, range check, state cost check. Applied abilities (WC3 "buffs") are abilities with duration + auto-remove |
 | Collision / spatial queries | `units_in_range()`, `units_in_rect()`, etc. |
