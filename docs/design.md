@@ -463,38 +463,68 @@ Independent module, can be developed in parallel with other phases.
 - **Music streaming**: background music with crossfade
 - **SFX system**: fire-and-forget sound effects, pooled voices
 
-### Phase 12 — Networking
+### Phase 12 — Input System
 
-Last because it's the most complex and needs a working local game loop.
+Player input → command → simulation pipeline. Engine provides built-in input presets;
+maps configure keybinds and UI layout. Mobile UI deferred until Android builds work.
 
-**Phase 12a — Local Server Refactor**
-- Extract simulation tick into a `Server` class with command interface
-- Player input goes through `Command` structs (move, attack, cast, etc.)
+**Phase 12a — Command System & Selection**
+- `GameCommand` struct: the universal unit of player intent (Move, AttackMove, Attack, Cast, Stop, Hold, Patrol)
+- All commands flow through the command system — Lua `IssueOrder`, input presets, and (later) network all produce `GameCommand`s
+- Engine-managed per-player selection state (selected units, subgroup)
+- Selection helpers: screen-to-world raycast, unit picking, box select region
+
+**Phase 12b — RTS Input Preset (Desktop)**
+- Left click: select unit / click ability target
+- Box drag: multi-select
+- Right click: smart order (move ground, attack enemy, follow ally)
+- Ability hotkeys (map-configurable)
+- Control groups (Ctrl+1..9 assign, 1..9 recall)
+- Camera: edge pan, middle-mouse drag, scroll zoom
+
+**Phase 12c — Map Input Configuration**
+- JSON config for keybinds, ability bar layout (per map)
+- Input preset selection in map manifest (`"input_preset": "rts"`)
+- Lua hooks: on_select, on_order, on_cast — scripts can intercept/modify
+
+**Phase 12d — Action/RPG Input Preset (Mobile, Deferred)**
+- Virtual joystick for direct movement
+- Ability buttons (tap-to-cast, tap-then-target)
+- Tap target selection
+- JSON config for button positions and layout
+
+### Phase 13 — Networking
+
+Server-authoritative model. Needs a working command system (Phase 12).
+
+**Phase 13a — Local Server Refactor**
+- Extract simulation tick into a `Server` class
+- Server receives `GameCommand`s, validates, executes on simulation
 - Single player runs server in-process (direct function calls, no sockets)
 - Clean client/server separation — foundation for all networking
 
-**Phase 12b — ENet Transport**
+**Phase 13b — ENet Transport**
 - ENet integration: reliable/unreliable UDP channels
 - Command serialization (FlatBuffers): client → server
 - State delta serialization (FlatBuffers): server → clients
 - Remote server: accept connections, validate commands, broadcast state
 
-**Phase 12c — Client Prediction & Reconciliation**
+**Phase 13c — Client Prediction & Reconciliation**
 - Client runs local simulation for responsiveness
 - Server sends authoritative state snapshots
 - Client reconciles local state with server state
 - Interpolation for remote entities
 
-**Phase 12d — Lobby**
+**Phase 13d — Lobby**
 - Host/join flow (one player hosts, or dedicated server)
 - Map selection, player slots, team assignment
 - Ready check → synchronized game start
 
-**Phase 12e — Desync Detection**
+**Phase 13e — Desync Detection**
 - Periodic state checksums (server ↔ clients)
 - Debug logging for state divergence
 
-### Phase 13 — GPU-Driven Rendering
+### Phase 15 — GPU-Driven Rendering
 
 Replace per-entity draw calls with a single indirect draw. Enables thousands of entities without CPU bottleneck.
 
@@ -505,7 +535,7 @@ Replace per-entity draw calls with a single indirect draw. Enables thousands of 
 - **Mesh merging**: combine meshes with same pipeline into shared vertex/index buffers with draw offsets
 - **Occlusion culling** (optional): hierarchical Z-buffer or GPU-driven occlusion queries
 
-### Phase 14 — Packaging & Distribution
+### Phase 16 — Packaging & Distribution
 
 Build targets, cross-platform packaging, and asset baking. See [build-targets.md](build-targets.md) for the full target design.
 
