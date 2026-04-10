@@ -47,6 +47,12 @@ void Camera::pan(f32 dx, f32 dy) {
     m_dirty = true;
 }
 
+void Camera::translate(f32 dx, f32 dy) {
+    m_position.x += dx;
+    m_position.y += dy;
+    m_dirty = true;
+}
+
 void Camera::zoom(f32 scroll_delta) {
     // Move along view direction. Scale step by current height for consistent feel.
     f32 step = m_position.z * 0.15f * scroll_delta;

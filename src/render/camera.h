@@ -18,6 +18,9 @@ public:
     // Right-click drag panning (editor). Call with mouse delta while right button held.
     void pan(f32 dx, f32 dy);
 
+    // Direct world-space XY translation (for ground-pinned drag pan).
+    void translate(f32 dx, f32 dy);
+
     // Scroll wheel zoom (moves along view direction).
     void zoom(f32 scroll_delta);
 

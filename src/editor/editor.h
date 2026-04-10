@@ -105,6 +105,10 @@ private:
     // Brush cursor
     glm::vec3 m_cursor_pos{0.0f};
     bool      m_cursor_valid = false;
+
+    // Right-click drag pan: anchor point on ground plane
+    bool      m_drag_active = false;
+    glm::vec3 m_drag_anchor{0.0f};  // world-space ground point pinned under cursor
 };
 
 } // namespace uldum::editor

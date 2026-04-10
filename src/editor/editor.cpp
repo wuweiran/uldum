@@ -216,10 +216,41 @@ void Editor::run() {
             m_cursor_vy = std::clamp(m_cursor_vy, 0, static_cast<i32>(td.tiles_y));
         }
 
-        // Right-click drag: pan camera
+        // Right-click drag: pan camera (ground-pinned at Z=0 plane)
         bool over_ui = ImGui::GetIO().WantCaptureMouse;
-        if (input.mouse_right && !over_ui) {
-            m_renderer.camera().pan(input.mouse_dx, input.mouse_dy);
+        auto unproject_to_ground = [&](f32 sx, f32 sy, glm::vec3& out) -> bool {
+            auto& cam = m_renderer.camera();
+            f32 w = static_cast<f32>(m_rhi.extent().width);
+            f32 h = static_cast<f32>(m_rhi.extent().height);
+            if (w <= 0 || h <= 0) return false;
+            f32 ndc_x = (2.0f * sx / w) - 1.0f;
+            f32 ndc_y = (2.0f * sy / h) - 1.0f;
+            glm::mat4 inv_vp = glm::inverse(cam.view_projection());
+            glm::vec4 nw = inv_vp * glm::vec4{ndc_x, ndc_y, 0.0f, 1.0f};
+            glm::vec4 fw = inv_vp * glm::vec4{ndc_x, ndc_y, 1.0f, 1.0f};
+            nw /= nw.w;
+            fw /= fw.w;
+            glm::vec3 ro = glm::vec3(nw);
+            glm::vec3 rd = glm::normalize(glm::vec3(fw) - ro);
+            if (std::abs(rd.z) < 1e-6f) return false;
+            f32 t = -ro.z / rd.z;  // intersect Z=0 plane
+            if (t <= 0.0f) return false;
+            out = ro + rd * t;
+            return true;
+        };
+        if (input.mouse_right_pressed && !over_ui) {
+            if (unproject_to_ground(input.mouse_x, input.mouse_y, m_drag_anchor))
+                m_drag_active = true;
+        }
+        if (input.mouse_right && m_drag_active) {
+            glm::vec3 current;
+            if (unproject_to_ground(input.mouse_x, input.mouse_y, current)) {
+                glm::vec3 delta = m_drag_anchor - current;
+                m_renderer.camera().translate(delta.x, delta.y);
+            }
+        }
+        if (input.mouse_right_released) {
+            m_drag_active = false;
         }
 
         // Apply brush when left-clicking on terrain (and not over ImGui)
