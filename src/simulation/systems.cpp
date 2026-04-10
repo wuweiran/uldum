@@ -202,7 +202,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type, &world, id);
             if (corridor.valid && !corridor.tiles.empty()) {
                 mov.corridor = std::move(corridor.tiles);
-                mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.type);
+                mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.cliff_level, mov.type);
                 mov.has_waypoint = true;
                 mov.moving = true;
             } else {
@@ -251,7 +251,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         f32 wp_dist = glm::length(to_wp);
 
         if (wp_dist < 16.0f) {
-            mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.type);
+            mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.cliff_level, mov.type);
             to_wp = mov.waypoint - pos2d;
             wp_dist = glm::length(to_wp);
             if (wp_dist < 1.0f) {

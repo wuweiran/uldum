@@ -87,6 +87,7 @@ public:
     // collision_radius: swept circle radius for the line test (0 = point).
     glm::vec2 find_straight_waypoint(glm::vec2 from, std::span<const glm::ivec2> corridor_tiles,
                                       f32 collision_radius = 0,
+                                      u8 cliff_level = 0,
                                       MoveType move_type = MoveType::Ground) const;
 
     // ── Recovery ──────────────────────────────────────────────────────────

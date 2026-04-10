@@ -294,6 +294,10 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     u32 max_iterations = td.tiles_x * td.tiles_y;
     u32 iterations = 0;
 
+    // Track the closest reachable node to the goal (fallback if goal is unreachable)
+    u32 best_reachable_idx = UINT32_MAX;
+    f32 best_reachable_h = 1e9f;
+
     while (!open.empty() && iterations++ < max_iterations) {
         AStarNode current = open.top();
         open.pop();
@@ -305,9 +309,15 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
         u32 current_idx = static_cast<u32>(all_nodes.size());
         all_nodes.push_back(current);
 
+        // Track closest to goal
+        f32 h = heuristic(current.tx, current.ty);
+        if (h < best_reachable_h) {
+            best_reachable_h = h;
+            best_reachable_idx = current_idx;
+        }
+
         // Goal reached
         if (current.tx == static_cast<u32>(g.x) && current.ty == static_cast<u32>(g.y)) {
-            // Reconstruct corridor
             u32 idx = current_idx;
             while (idx != UINT32_MAX) {
                 auto& n = all_nodes[idx];
@@ -338,20 +348,14 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
                                current.cliff_level, move_type))
                 continue;
 
-            // Update cliff level for the new tile
             u8 new_cliff = cliff_level_on_tile(ntx, nty);
             i32 eff = tile_effective_level(ntx, nty);
             if (eff == -1) {
-                // On ramp: keep current level unless we've fully transitioned
-                // Use the vertex-based cliff to determine which side we're on
                 new_cliff = current.cliff_level;
-                // If the ramp connects current level to another, and we're going
-                // toward the other side, update
                 u8 ramp_min = cliff_level_on_tile(ntx, nty);
                 u8 ramp_max = ramp_min + 1;
                 if (current.cliff_level == ramp_min) new_cliff = ramp_max;
                 else if (current.cliff_level == ramp_max) new_cliff = ramp_min;
-                // If coming from another ramp, keep current level
             } else if (eff >= 0) {
                 new_cliff = static_cast<u8>(eff);
             }
@@ -366,31 +370,34 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
         }
     }
 
-    return result;  // no path found
+    // Goal unreachable — move to the closest reachable tile instead
+    if (best_reachable_idx != UINT32_MAX && best_reachable_idx != 0) {
+        u32 idx = best_reachable_idx;
+        while (idx != UINT32_MAX) {
+            auto& n = all_nodes[idx];
+            result.tiles.push_back({static_cast<i32>(n.tx), static_cast<i32>(n.ty)});
+            idx = n.parent_idx;
+        }
+        std::reverse(result.tiles.begin(), result.tiles.end());
+        result.valid = true;
+    }
+
+    return result;
 }
 
 // ── Straight-line waypoint through corridor ──────────────────────────────
 
-// Check if a world-space point is inside any tile of the corridor.
-static bool point_in_corridor(std::span<const glm::ivec2> tiles, glm::vec2 pt, f32 tile_size) {
-    i32 tx = static_cast<i32>(std::floor(pt.x / tile_size));
-    i32 ty = static_cast<i32>(std::floor(pt.y / tile_size));
-    for (auto& t : tiles) {
-        if (t.x == tx && t.y == ty) return true;
-    }
-    return false;
-}
-
-// Check if a line segment from A to B stays within the corridor, accounting for
-// collision radius. Center must stay in the corridor. Offset points (collision
-// radius) must be on occupiable terrain (not necessarily in the corridor — open
-// adjacent tiles are fine, but cliffs/walls are not).
-static bool line_in_corridor(std::span<const glm::ivec2> tiles, glm::vec2 a, glm::vec2 b,
-                              f32 tile_size, f32 collision_radius,
-                              const Pathfinder& pf, MoveType move_type) {
+// Check if a straight line from A to B is passable on actual terrain.
+// Not limited to the A* corridor — any passable tile is fine.
+// Accounts for collision radius (swept capsule along the line).
+static bool line_passable(glm::vec2 a, glm::vec2 b, f32 tile_size, f32 collision_radius,
+                          u8 cliff_level, const Pathfinder& pf, MoveType move_type) {
     glm::vec2 dir = b - a;
     f32 len = glm::length(dir);
     if (len < 0.001f) return true;
+
+    glm::vec2 fwd = dir / len;
+    glm::vec2 perp{-fwd.y, fwd.x};  // perpendicular for collision radius
 
     f32 step = tile_size * 0.4f;
     u32 steps = static_cast<u32>(len / step) + 1;
@@ -399,26 +406,31 @@ static bool line_in_corridor(std::span<const glm::ivec2> tiles, glm::vec2 a, glm
         f32 t = static_cast<f32>(i) / static_cast<f32>(steps);
         glm::vec2 pt = a + dir * t;
 
-        // Center must be in the corridor
-        if (!point_in_corridor(tiles, pt, tile_size)) return false;
+        // Center must be on a passable tile at the correct cliff level
+        glm::ivec2 tile = pf.world_to_tile(pt.x, pt.y);
+        if (!pf.can_occupy(tile.x, tile.y, move_type)) return false;
+        i32 eff = pf.tile_effective_level(tile.x, tile.y);
+        if (eff >= 0 && static_cast<u8>(eff) != cliff_level) return false;
 
-        // TODO: collision radius check disabled for debugging — re-enable after fixing
-        // if (collision_radius > 0) {
-        //     glm::vec2 offsets[] = {
-        //         {collision_radius, 0}, {-collision_radius, 0},
-        //         {0, collision_radius}, {0, -collision_radius}
-        //     };
-        //     for (auto& off : offsets) {
-        //         glm::ivec2 t2 = pf.world_to_tile(pt.x + off.x, pt.y + off.y);
-        //         if (!pf.can_occupy(t2.x, t2.y, move_type)) return false;
-        //     }
-        // }
+        // Collision radius: check perpendicular offsets
+        if (collision_radius > 0) {
+            glm::vec2 offsets[] = {
+                pt + perp * collision_radius,
+                pt - perp * collision_radius,
+            };
+            for (auto& off : offsets) {
+                glm::ivec2 ot = pf.world_to_tile(off.x, off.y);
+                if (ot == tile) continue;  // same tile, already checked
+                if (!pf.can_occupy(ot.x, ot.y, move_type)) return false;
+            }
+        }
     }
     return true;
 }
 
 glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, std::span<const glm::ivec2> corridor_tiles,
-                                              f32 collision_radius, MoveType move_type) const {
+                                              f32 collision_radius, u8 cliff_level,
+                                              MoveType move_type) const {
     if (!m_terrain || corridor_tiles.empty()) return from;
     f32 ts = m_terrain->tile_size;
 
@@ -443,7 +455,7 @@ glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, std::span<const glm
         if (test_idx >= end) test_idx = end - 1;
 
         glm::vec2 target = tile_center(corridor_tiles[test_idx].x, corridor_tiles[test_idx].y);
-        if (line_in_corridor(corridor_tiles, from, target, ts, collision_radius, *this, move_type)) {
+        if (line_passable(from, target, ts, collision_radius, cliff_level, *this, move_type)) {
             last_good = test_idx;
             if (test_idx >= end - 1) break;  // reached the end
         } else {
@@ -456,7 +468,7 @@ glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, std::span<const glm
     while (last_good + 1 < first_bad) {
         u32 mid = (last_good + first_bad) / 2;
         glm::vec2 target = tile_center(corridor_tiles[mid].x, corridor_tiles[mid].y);
-        if (line_in_corridor(corridor_tiles, from, target, ts, collision_radius, *this, move_type)) {
+        if (line_passable(from, target, ts, collision_radius, cliff_level, *this, move_type)) {
             last_good = mid;
         } else {
             first_bad = mid;
