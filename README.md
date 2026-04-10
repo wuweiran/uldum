@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 11 complete. Audio system.
+Phase 13a complete. Local server refactor.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -109,6 +109,24 @@ Phase 11 complete. Audio system.
   - Sound callback system: simulation fires events, audio engine plays them (no coupling)
   - Path resolution: map shared/assets first, then engine root
   - Lua API: PlaySound, PlaySoundAtPoint, PlaySound2D, PlayMusic, StopMusic, PlayAmbientLoop, StopAmbientLoop, SetVolume
+- Input system (Phase 12):
+  - Command system: GameCommand struct, ownership validation, Lua on_order filter
+  - Selection state: click, box drag, shift-toggle, control groups (Ctrl+0-9), hero select (F1-F3)
+  - Picker: ray-cylinder intersection for unit picking, screen-to-world terrain raycast
+  - RTS input preset: WC3-style controls (select, smart order, attack-move, ability hotkeys)
+  - InputBindings: configurable action-to-key mapping with JSON overrides from manifest
+  - Preset factory: map manifest selects input preset (`"input_preset": "rts"`)
+  - Ability hotkeys: per-ability `"hotkey"` field, RTS preset scans selected unit's abilities
+  - Ability `"hidden"` field for system-level passives (no UI slot)
+  - Commands vs ability slots design: built-in commands (attack, move, stop, hold) separate from ability slots
+  - Lua selection API: GetSelectedUnits, SelectUnit, ClearSelection, IsUnitSelected
+  - Lua events: on_order (cancellable via CancelOrder), on_select
+  - Platform: key_letter[26] array for arbitrary A-Z key detection
+- Networking — local server (Phase 13a):
+  - GameServer class: owns Simulation + ScriptEngine (server-side state)
+  - Two-phase init: simulation before map load, game logic after
+  - Zero-overhead local play: tick() is a direct function call, no threading or IPC
+  - Clean client/server boundary: Engine holds GameServer + client modules (renderer, audio, input)
 - Ninja build system for parallel compilation
 
 ## Prerequisites
@@ -150,10 +168,18 @@ uldum_dev.exe
 
 The engine loads the test map from `maps/test_map.uldmap/` automatically. The test scene spawns units with real glTF models, skeletal animation, combat, and abilities.
 
-**Controls:**
-- **WASD** — move camera on the ground plane
-- **Q/E** — lower/raise camera height
-- **Escape** — quit
+**Controls (RTS preset):**
+- **Left click** — select unit
+- **Left drag** — box select
+- **Right click ground** — move order
+- **Right click enemy** — attack order
+- **A + left click** — attack-move (ground) or force-attack (unit)
+- **S** — stop, **H** — hold position
+- **T** — Holy Light (test map paladin ability hotkey)
+- **Ctrl+0-9** — assign control group, **0-9** — recall
+- **F1-F3** — select hero 1-3
+- **Arrow keys** — pan camera
+- **Scroll wheel** — zoom
 
 ## Troubleshooting
 
@@ -174,7 +200,7 @@ src/
 ├── audio/          3D positional audio, music, ambient (miniaudio)
 ├── script/         Lua 5.4 VM, engine API bindings, triggers
 ├── simulation/     ECS, units, abilities, pathfinding, combat, AI
-├── network/        Server-authoritative multiplayer (ENet) [stub]
+├── network/        GameServer, NetworkManager (ENet transport pending)
 ├── map/            Map format, terrain data, overrides
 ├── editor/         Map editor executable — terrain tools, cliff/ramp editing
 └── app/            Engine core + entry points (dev, editor)
@@ -182,9 +208,18 @@ src/
 
 ## Documentation
 
-- [docs/design.md](docs/design.md) — Full technical design and roadmap
+- [docs/design.md](docs/design.md) — Full technical design and phase roadmap
+- [docs/gameplay-model.md](docs/gameplay-model.md) — Game object hierarchy, components, unit/item/destructable model
+- [docs/ability-system.md](docs/ability-system.md) — Ability system, slots, hotkeys, scripting
+- [docs/input-system.md](docs/input-system.md) — Input system, commands, ability slots, Lua hooks
+- [docs/scripting.md](docs/scripting.md) — Lua scripting API, triggers, timers, events
+- [docs/map-system.md](docs/map-system.md) — Map format, engine vs map boundary, asset split
+- [docs/terrain.md](docs/terrain.md) — Terrain system, heightmap, cliffs, ramps, pathing
 - [docs/audio.md](docs/audio.md) — Audio system design
-- [docs/model-format.md](docs/model-format.md) — Model, animation, texture, and effect specifications
+- [docs/effects.md](docs/effects.md) — Particle and effect system
+- [docs/model-format.md](docs/model-format.md) — Model, animation, texture specifications
+- [docs/coordinates.md](docs/coordinates.md) — Coordinate system and unit conventions
+- [docs/build-targets.md](docs/build-targets.md) — Build targets and packaging
 
 ## License
 

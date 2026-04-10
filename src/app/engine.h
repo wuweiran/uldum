@@ -5,8 +5,7 @@
 #include "asset/asset.h"
 #include "render/renderer.h"
 #include "audio/audio.h"
-#include "script/script.h"
-#include "simulation/simulation.h"
+#include "network/game_server.h"
 #include "network/network.h"
 #include "input/command_system.h"
 #include "input/selection.h"
@@ -35,8 +34,7 @@ private:
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
     audio::AudioEngine       m_audio;
-    script::ScriptEngine     m_script;
-    simulation::Simulation   m_simulation;
+    network::GameServer      m_server;
     network::NetworkManager  m_network;
     input::CommandSystem     m_commands;
     input::SelectionState    m_selection;

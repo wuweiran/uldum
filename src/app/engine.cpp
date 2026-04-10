@@ -77,51 +77,21 @@ bool Engine::init() {
         return false;
     }
 
-    // Simulation
-    if (!m_simulation.init(m_asset)) {
-        log::error(TAG, "Simulation init failed");
+    // Simulation must init before map loading (map registers types/entities)
+    if (!m_server.init_simulation(m_asset)) {
+        log::error(TAG, "GameServer simulation init failed");
         return false;
     }
 
-    // Network
-    if (!m_network.init(m_simulation)) {
-        log::error(TAG, "NetworkManager init failed");
-        return false;
-    }
-
-    // Map — loads types, terrain, and preplaced objects
+    // Map — loads types, terrain, and preplaced objects into the simulation
     if (!m_map.init()) {
         log::error(TAG, "MapManager init failed");
         return false;
     }
 
-    if (!m_map.load_map("maps/test_map.uldmap", m_asset, m_simulation)) {
+    if (!m_map.load_map("maps/test_map.uldmap", m_asset, m_server.simulation())) {
         log::error(TAG, "Failed to load test map");
         return false;
-    }
-
-    // Initialize alliances from manifest teams
-    {
-        auto& manifest = m_map.manifest();
-        m_simulation.init_alliances(static_cast<u32>(manifest.players.size()));
-        // Players on the same team with allied=true are allies
-        for (auto& pa : manifest.players) {
-            for (auto& pb : manifest.players) {
-                if (pa.slot == pb.slot) continue;
-                if (pa.team == pb.team) {
-                    // Find the team def to check if it's allied
-                    for (auto& team : manifest.teams) {
-                        if (team.id == pa.team && team.allied) {
-                            m_simulation.set_alliance(
-                                simulation::Player{pa.slot},
-                                simulation::Player{pb.slot},
-                                true);
-                        }
-                    }
-                }
-            }
-        }
-        log::info(TAG, "Alliances initialized — {} players", manifest.players.size());
     }
 
     // Set map root for asset path resolution
@@ -134,34 +104,38 @@ bool Engine::init() {
         m_renderer.effect_registry().load_from_json(effects_path);
     }
 
-    // Feed terrain data to renderer and simulation
+    // Feed terrain data to renderer
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
-        m_simulation.set_terrain(&m_map.terrain());
         m_renderer.set_terrain_data(&m_map.terrain());
     }
 
-    // Scripting — init after map so we can load map scripts
-    if (!m_script.init(m_simulation, m_map, &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio)) {
-        log::error(TAG, "ScriptEngine init failed");
+    // Game server phase 2: alliances, terrain, scripting, map scripts
+    if (!m_server.init_game(m_map,
+                            &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio)) {
+        log::error(TAG, "GameServer game init failed");
         return false;
     }
 
-    // Wire sound callback: simulation fires sounds, audio engine plays them
-    m_simulation.world().on_sound = [this](std::string_view path, glm::vec3 pos) {
+    // Network
+    if (!m_network.init(m_server.simulation())) {
+        log::error(TAG, "NetworkManager init failed");
+        return false;
+    }
+
+    // Wire client-side callbacks
+    m_server.simulation().world().on_sound = [this](std::string_view path, glm::vec3 pos) {
         m_audio.play_sfx(path, pos);
     };
-
-    // Wire attachment point callback for effect positioning
-    m_script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+    m_server.script().set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
         return m_renderer.get_attachment_point(entity_id, bone);
     });
 
     // Input: command system, selection, picking, preset
-    m_commands.init(&m_simulation.world());
+    m_commands.init(&m_server.simulation().world());
     m_selection.set_player(simulation::Player{0});  // local player = slot 0
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
-                  &m_simulation.world(),
+                  &m_server.simulation().world(),
                   m_platform->width(), m_platform->height());
 
     // Load input configuration from manifest
@@ -169,19 +143,8 @@ bool Engine::init() {
     m_bindings.load(m_map.manifest().input_bindings_json);
     m_bindings.apply_defaults(input::rts_default_bindings());
 
-    // Wire input to script engine (before scripts run)
-    m_script.set_input(&m_selection, &m_commands);
-
-    // Initialize spatial grid before scripts run (so GetUnitsInRange works in main())
-    m_simulation.spatial_grid().update(m_simulation.world());
-
-    // Load and run map scripts
-    {
-        std::string main_script = m_map.map_root() + "/shared/scripts/main.lua";
-        m_script.load_script(main_script);
-        m_script.call_function("main");
-    }
-
+    // Wire input to script engine
+    m_server.script().set_input(&m_selection, &m_commands);
 
     log::info(TAG, "=== All modules initialized ===");
     return true;
@@ -222,8 +185,7 @@ void Engine::run() {
         float game_dt = TICK_DT * game_speed;  // how much game time passes per tick
         accumulator += frame_dt;
         while (accumulator >= TICK_DT) {
-            m_simulation.tick(game_dt);
-            m_script.update(game_dt);
+            m_server.tick(game_dt);
             game_time += game_dt;
             accumulator -= TICK_DT;
         }
@@ -237,7 +199,7 @@ void Engine::run() {
                 m_picker,
                 m_renderer.camera(),
                 m_bindings,
-                m_simulation,
+                m_server.simulation(),
                 m_platform->width(),
                 m_platform->height()
             };
@@ -256,9 +218,9 @@ void Engine::run() {
         f32 alpha = accumulator / TICK_DT;  // interpolation factor (0..1)
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-            m_renderer.draw_shadows(cmd, m_simulation.world(), alpha);
+            m_renderer.draw_shadows(cmd, m_server.simulation().world(), alpha);
             m_rhi.begin_rendering();
-            m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world(), alpha);
+            m_renderer.draw(cmd, m_rhi.extent(), m_server.simulation().world(), alpha);
             m_rhi.end_frame();
         }
 
@@ -277,8 +239,7 @@ void Engine::shutdown() {
     // Shutdown in reverse init order
     m_map.shutdown();
     m_network.shutdown();
-    m_simulation.shutdown();
-    m_script.shutdown();
+    m_server.shutdown();
     m_audio.shutdown();
     m_renderer.shutdown();
     m_asset.shutdown();
