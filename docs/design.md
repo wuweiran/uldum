@@ -491,10 +491,7 @@ maps configure keybinds and UI layout. Mobile UI deferred until Android builds w
 - Lua events: `on_order` (cancellable), `on_select`
 - Lua selection API: `GetSelectedUnits`, `SelectUnit`, `ClearSelection`, etc.
 
-**Phase 12d — Action/RPG Input Preset (Deferred)**
-- Desktop: slot-based key activation (slot 0 = Q, slot 1 = W, etc.)
-- Mobile: virtual joystick, ability touch buttons with form-based targeting gestures
-- Tap target selection
+*Phase 12d (Action/RPG Input Preset) merged into Phase 16b (Mobile UI).*
 
 ### Phase 13 — Networking
 
@@ -527,7 +524,7 @@ Server-authoritative model. Needs a working command system (Phase 12).
 - Periodic state checksums (server ↔ clients)
 - Debug logging for state divergence
 
-### Phase 15 — GPU-Driven Rendering
+### Phase 14 — GPU-Driven Rendering
 
 Replace per-entity draw calls with a single indirect draw. Enables thousands of entities without CPU bottleneck.
 
@@ -538,7 +535,7 @@ Replace per-entity draw calls with a single indirect draw. Enables thousands of 
 - **Mesh merging**: combine meshes with same pipeline into shared vertex/index buffers with draw offsets
 - **Occlusion culling** (optional): hierarchical Z-buffer or GPU-driven occlusion queries
 
-### Phase 16 — Packaging & Distribution
+### Phase 15 — Packaging & Distribution
 
 Build targets, cross-platform packaging, and asset baking. See [build-targets.md](build-targets.md) for the full target design.
 
@@ -554,3 +551,24 @@ Build targets, cross-platform packaging, and asset baking. See [build-targets.md
   - **Shaders**: GLSL (dev) → pre-compiled SPIR-V
   - **Configs**: JSON (dev) → FlatBuffers binary (optional, for load speed)
   - **Models**: glTF stays as-is (already efficient), or bake to engine-native binary mesh format
+
+### Phase 16 — UI System
+
+Runtime UI for gameplay. Desktop first; mobile after packaging enables Android builds.
+
+**Phase 16a — Framework & Desktop UI**
+- **UI framework**: immediate-mode or retained-mode widget system rendered via Vulkan
+- **RTS command card**: grid layout showing commands (bottom row) + ability slots (top rows), icons, hotkey text, cooldown overlays, tooltips
+- **RPG action bar**: horizontal slot bar with ability icons, keybinding labels, cooldown display
+- **Unit info panel**: HP/mana bars, portrait, name, level
+- **Minimap**: terrain overview, unit dots, camera viewport indicator
+- **Resource display**: top-bar with game resources (gold, lumber, supply — map-defined)
+- **Lua UI hooks**: scripts can create/update/hide UI elements, respond to button clicks
+- **Theme/skinning**: UI layout and style configurable per map
+
+**Phase 16b — Mobile UI & Action/RPG Preset**
+- **Virtual joystick**: touch-drag for direct hero movement
+- **Ability touch buttons**: per-slot buttons with form-based targeting gestures (tap, drag-direction, drag-target)
+- **Touch selection**: tap to select/target units
+- **Adaptive layout**: auto-scale UI for different screen sizes and aspect ratios
+- **Mobile-specific UX**: larger hit targets, swipe gestures, haptic feedback
