@@ -483,15 +483,18 @@ maps configure keybinds and UI layout. Mobile UI deferred until Android builds w
 - Camera: edge pan, middle-mouse drag, scroll zoom
 
 **Phase 12c — Map Input Configuration**
-- JSON config for keybinds, ability bar layout (per map)
-- Input preset selection in map manifest (`"input_preset": "rts"`)
-- Lua hooks: on_select, on_order, on_cast — scripts can intercept/modify
+- Commands vs ability slots: built-in commands (attack, move, stop, hold) are separate from ability slots
+- Ability slot system: 16-slot array per unit, Lua API for runtime slot management
+- `InputBindings`: action-to-key mapping with JSON overrides from manifest `"input"` section
+- Preset factory: engine creates preset from manifest `"input_preset"` field
+- Ability `"hotkey"` and `"hidden"` fields in ability definitions
+- Lua events: `on_order` (cancellable), `on_select`
+- Lua selection API: `GetSelectedUnits`, `SelectUnit`, `ClearSelection`, etc.
 
-**Phase 12d — Action/RPG Input Preset (Mobile, Deferred)**
-- Virtual joystick for direct movement
-- Ability buttons (tap-to-cast, tap-then-target)
+**Phase 12d — Action/RPG Input Preset (Deferred)**
+- Desktop: slot-based key activation (slot 0 = Q, slot 1 = W, etc.)
+- Mobile: virtual joystick, ability touch buttons with form-based targeting gestures
 - Tap target selection
-- JSON config for button positions and layout
 
 ### Phase 13 — Networking
 

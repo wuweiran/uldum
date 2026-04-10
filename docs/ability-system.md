@@ -140,6 +140,8 @@ All fields are optional except `form`. Omitted fields use these defaults:
 | `max_level` | `1` | Number of learnable levels |
 | `target_filter` | `{}` (match all) | Who can be targeted |
 | `levels` | `[{}]` | Per-level data array (at least one entry) |
+| `hotkey` | `""` | Key for RTS preset (e.g., `"T"` for Holy Light). Empty = no hotkey. |
+| `hidden` | `false` | If true, ability is not auto-assigned to a slot (no UI presence). Used for system-level passives like item stat bonuses. |
 
 ### Per-Level Field Defaults
 
@@ -175,6 +177,7 @@ A minimal ability definition only needs `form`:
         "name": "Holy Light",
         "icon": "icons/holy_light.png",
         "form": "target_unit",
+        "hotkey": "T",
         "stackable": false,
         "max_level": 3,
         "target_filter": { "ally": true, "self": true, "alive": true },
@@ -218,6 +221,7 @@ A minimal ability definition only needs `form`:
     "item_armor_bonus": {
         "name": "Armor Bonus",
         "form": "passive",
+        "hidden": true,
         "stackable": true,
         "max_level": 1,
         "levels": [
@@ -227,6 +231,7 @@ A minimal ability definition only needs `form`:
     "immolation": {
         "name": "Immolation",
         "form": "toggle",
+        "hotkey": "N",
         "max_level": 3,
         "levels": [
             { "toggle_cost_per_sec": { "mana": 5 }, "aura_radius": 10, "aura_ability": "immolation_damage" },
@@ -236,6 +241,55 @@ A minimal ability definition only needs `form`:
     }
 }
 ```
+
+## Ability Slots
+
+Units have a fixed-size slot array (16 slots max, engine constant). Slots
+connect abilities to the UI and input system. See `docs/input-system.md`
+for the full input/UI design.
+
+### Initial Assignment
+
+When a unit is created, its `"abilities"` list determines initial slot layout:
+
+```json
+"abilities": ["holy_light", "divine_shield", "devotion_aura", "resurrection"]
+```
+
+→ slot 0 = holy_light, slot 1 = divine_shield, slot 2 = devotion_aura,
+  slot 3 = resurrection, slots 4-15 = empty.
+
+### Runtime Slot Management (Lua API)
+
+| Function | Behavior |
+|----------|----------|
+| `AddAbility(unit, id)` | Add ability. Auto-slots to first empty slot if not hidden. |
+| `RemoveAbility(unit, id)` | Remove ability entirely. Clears its slot if it had one. |
+| `SetAbilitySlot(unit, id, slot)` | Move an existing ability to a specific slot. |
+| `ClearSlot(unit, slot)` | Unslot whatever is in that slot (ability stays on unit). |
+| `UnslotAbility(unit, id)` | Unslot a specific ability by ID (ability stays on unit). |
+| `SwapSlots(unit, a, b)` | Swap two slots. Either or both can be empty. |
+| `GetAbilitySlot(unit, id)` | Returns slot index, or -1 if not slotted. |
+| `GetSlotAbility(unit, slot)` | Returns ability ID, or nil if empty. |
+
+### Slot Rules
+
+- `RemoveAbility` clears the slot without shifting — other slots keep their indices.
+- `AddAbility` auto-assigns to the first empty slot if `hidden` is false.
+- If all slots are full, the ability still gets added (functional) but not slotted.
+- `hidden` abilities bypass auto-slot assignment. They function normally but have no UI presence.
+- Applied passives from other units (aura buffs via `ApplyPassiveAbility`) are never slotted.
+- Passive abilities that are not hidden CAN be slotted — they show icon/tooltip in the UI.
+
+### Hotkey
+
+The `"hotkey"` field on an ability definition is used by the RTS input preset.
+When the player presses a key, the preset checks all slotted abilities on the
+selected unit(s) for a matching hotkey. If found, the ability is activated
+(instant-cast, or enter targeting mode for targeted forms).
+
+The RPG preset ignores `"hotkey"` — it uses slot-based key mapping instead
+(slot 0 = first key, slot 1 = second key, etc.). See `docs/input-system.md`.
 
 ## Ability Instance (Runtime)
 

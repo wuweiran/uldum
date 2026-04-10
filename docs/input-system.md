@@ -1,7 +1,7 @@
 # Uldum Engine — Input System
 
 Player input → game command → simulation. The engine provides built-in input
-presets (control schemes); maps configure keybinds and UI layout.
+presets (control schemes); maps configure keybinds via manifest.json.
 
 ## 1. Architecture Overview
 
@@ -32,7 +32,62 @@ presets (control schemes); maps configure keybinds and UI layout.
 4. **Command System** — validates and submits `GameCommand`s to simulation
 5. **Lua Events** — scripts can observe and intercept
 
-## 2. Game Commands
+## 2. Commands vs Abilities
+
+Player actions are split into two categories:
+
+### Commands
+
+Built-in engine actions with fixed behavior. Defined per unit type in
+`"commands"`:
+
+```json
+"paladin": {
+    "commands": ["attack", "move", "stop", "hold_position"],
+    "abilities": ["holy_light", "divine_shield", "devotion_aura", "resurrection"],
+    ...
+}
+```
+
+Commands are:
+- **attack** — right-click enemy / A-click
+- **move** — right-click ground
+- **stop** — halt all actions
+- **hold_position** — stop and don't auto-acquire
+- **patrol** — move between waypoints, attack enemies in path
+
+Input presets handle commands through keybindings (S = stop, H = hold, A =
+attack-move). Commands are not slotted — they appear in a fixed area of the
+UI (in WC3, the bottom row of the command card).
+
+### Ability Slots
+
+Everything else: active spells, passive auras, toggles, channels. These
+go into numbered **slots** (0 through `MAX_ABILITY_SLOTS - 1`, currently 16).
+
+Initial slot assignment comes from the `"abilities"` list order in the unit
+type definition. Lua scripts can modify slots at runtime:
+
+```lua
+AddAbility(unit, "berserk")         -- auto-assigns to first empty slot
+RemoveAbility(unit, "berserk")      -- removes ability, clears its slot
+SetAbilitySlot(unit, "berserk", 3)  -- move existing ability to slot 3
+ClearSlot(unit, 3)                  -- unslot (ability stays on unit, not in UI)
+UnslotAbility(unit, "berserk")      -- same but by ability ID
+SwapSlots(unit, 2, 4)               -- swap two slots (either can be empty)
+GetAbilitySlot(unit, "berserk")     -- returns slot index, or -1
+GetSlotAbility(unit, 3)             -- returns ability ID, or nil
+```
+
+**Slot rules:**
+- Slots are a fixed-size array (16 entries). Empty slots are allowed.
+- `RemoveAbility` clears the slot — no shifting. Other slots keep their indices.
+- `AddAbility` auto-assigns to the first empty slot if the ability is not hidden.
+- If all slots are full, the ability is still added (functional) but not slotted.
+- `hidden` abilities (see ability-system.md) bypass slot assignment entirely.
+- Passive abilities can be slotted — they show in the UI with icon/tooltip.
+
+## 3. Game Commands
 
 A `GameCommand` represents a player's intent. All player interaction with the
 simulation goes through commands — input presets produce them, Lua can produce
@@ -46,10 +101,6 @@ struct GameCommand {
     bool                queued;      // shift-queued
 };
 ```
-
-This wraps the existing `Order` + `OrderPayload` (from `order.h`) with the
-player and unit list. The command system iterates `units` and calls
-`issue_order()` for each.
 
 ### Command flow
 
@@ -70,7 +121,7 @@ CommandSystem::submit(cmd)
 In multiplayer (Phase 13), the client sends `GameCommand` to the server instead
 of executing locally. The server validates and executes. The flow is identical.
 
-## 3. Selection State
+## 4. Selection State
 
 Selection is client-side — the server never needs to know what a player has
 selected. It only receives commands that reference specific units.
@@ -86,38 +137,29 @@ struct SelectionState {
 ### Selection rules (WC3-style)
 
 - **Click**: select single unit. Prefer highest priority within click radius.
-- **Box drag**: select all own units in box. Enemy units only if no own units.
+- **Box drag**: select all own units in box.
 - **Shift+click/box**: toggle add/remove from selection.
 - **Ctrl+click**: select all visible units of same type.
 - **Double click**: select all visible units of same type (same as ctrl+click).
 - **Tab**: cycle subgroup (when multiple unit types selected).
 - **Ctrl+N**: assign control group N (0-9).
 - **N**: recall control group N.
-- **Selection limit**: 24 units max (like WC3's 12, but doubled).
+- **Selection limit**: 24 units max.
 
 ### Picking
 
 The engine provides picking helpers used by input presets:
 
 ```cpp
-// Pick the best unit under screen coordinates (closest to cursor, highest priority)
 Unit pick_unit(f32 screen_x, f32 screen_y) const;
-
-// Collect all units within a screen-space rectangle
 std::vector<Unit> pick_units_in_box(f32 x0, f32 y0, f32 x1, f32 y1) const;
-
-// Convert screen position to world position on terrain
 bool screen_to_world(f32 screen_x, f32 screen_y, glm::vec3& world_pos) const;
 ```
 
-These use the camera's view-projection to unproject screen coords, then test
-against `Selectable` components using `selection_radius`.
+## 5. Input Presets
 
-## 4. Input Presets
-
-An input preset is a class that receives raw input each frame and produces
-game actions (selections, commands, camera movement). The engine ships two
-presets; maps choose which one to use via `manifest.json`.
+An input preset translates raw input into selections, commands, and camera
+movement. Maps choose which preset to use via `manifest.json`.
 
 ### Interface
 
@@ -125,12 +167,7 @@ presets; maps choose which one to use via `manifest.json`.
 class InputPreset {
 public:
     virtual ~InputPreset() = default;
-
-    // Called each frame with raw input, dt, and access to picking/selection.
     virtual void update(const InputContext& ctx, f32 dt) = 0;
-
-    // Called when a key/button binding fires (map-configurable).
-    virtual void on_action(std::string_view action, const InputContext& ctx) = 0;
 };
 ```
 
@@ -138,119 +175,179 @@ public:
 
 ```cpp
 struct InputContext {
-    const platform::InputState& input;      // raw mouse/keyboard
+    const platform::InputState& input;
     SelectionState&             selection;
     CommandSystem&              commands;
-    const render::Camera&       camera;
-
-    // Picking helpers
-    Unit pick_unit(f32 sx, f32 sy) const;
-    std::vector<Unit> pick_units_in_box(f32 x0, f32 y0, f32 x1, f32 y1) const;
-    bool screen_to_world(f32 sx, f32 sy, glm::vec3& pos) const;
+    Picker&                     picker;
+    render::Camera&             camera;
+    const InputBindings&        bindings;    // action-to-key mapping
+    const simulation::Simulation& simulation;
+    u32 screen_w;
+    u32 screen_h;
 };
 ```
 
-### RTS Preset
+### InputBindings
 
-Standard WC3-style controls for desktop:
+A flat map from action ID strings to key name strings. Handles rising-edge
+detection internally.
 
-| Input | Action |
-|---|---|
-| Left click | Select unit under cursor (or deselect if empty ground) |
-| Left drag | Box select |
-| Right click ground | Smart order: Move (or AttackMove if in attack-move mode) |
-| Right click enemy | Attack order |
-| Right click ally | Follow order (or right-click ability if applicable) |
-| Shift + right click | Queue order |
-| S | Stop |
-| H | Hold position |
-| A + left click | Attack-move to point |
-| P | Patrol (click waypoints) |
-| Ability hotkeys | Cast ability (may need target click) |
-| Ctrl+0-9 | Assign control group |
-| 0-9 | Recall control group |
-| F1-F3 | Select hero 1-3 |
-| Edge pan / arrow keys | Camera pan |
-| Mouse wheel | Camera zoom |
-
-### Action/RPG Preset (Mobile, deferred)
-
-| Input | Action |
-|---|---|
-| Virtual joystick | Direct movement of controlled unit |
-| Tap unit | Select / target |
-| Ability buttons | Cast (immediate or tap-target) |
-| Drag ability button | Directional cast |
-
-## 5. Map Configuration
-
-Maps configure input via `manifest.json` and an optional `input.json`.
-
-### manifest.json additions
-
-```json
-{
-    "input_preset": "rts",
-    "max_selection": 24
-}
+```cpp
+struct InputBindings {
+    bool action_pressed(const std::string& action,
+                        const platform::InputState& input) const;
+    void load(const nlohmann::json& j);
+    void apply_defaults(const std::unordered_map<std::string, std::string>& defaults);
+};
 ```
 
-### input.json (optional, per map)
+Key names match `InputState` field names without the `key_` prefix:
+`"S"`, `"H"`, `"A"`, `"F1"`, `"Escape"`, etc.
 
-Overrides default keybinds and defines the ability bar layout.
+### Preset Factory
+
+```cpp
+std::unique_ptr<InputPreset> create_preset(std::string_view name);
+// "rts" → RtsPreset, "action_rpg" → (Phase 12d)
+```
+
+### RTS Preset (Desktop)
+
+Standard WC3-style controls:
+
+| Input | Action |
+|---|---|
+| Left click | Select unit under cursor |
+| Left drag | Box select |
+| Right click ground | Move (or AttackMove in attack-move mode) |
+| Right click enemy | Attack order |
+| Right click ally | Move to ally position |
+| Shift + order | Queue order |
+| Ability hotkey | Cast ability (ability's `"hotkey"` field) |
+| Control groups | Ctrl+0-9 assign, 0-9 recall (hardcoded) |
+| F1-F3 | Select hero 1-3 |
+| Edge pan / arrow keys | Camera pan |
+| Mouse wheel | Zoom |
+
+Default command keybindings (overridable per map):
+
+| Action ID | Default Key |
+|---|---|
+| `stop` | S |
+| `hold` | H |
+| `attack_move` | A |
+| `patrol` | P |
+| `select_hero_1` | F1 |
+| `select_hero_2` | F2 |
+| `select_hero_3` | F3 |
+
+**Ability activation (RTS):** The RTS preset reads the selected unit's ability
+slots. When a key is pressed, it checks if any slotted ability has a matching
+`"hotkey"` value. If found, the preset enters targeting mode (for target_unit /
+target_point forms) or instant-casts (for no-target / toggle forms).
+
+### Action/RPG Preset (Phase 12d, deferred)
+
+| Input | Action |
+|---|---|
+| Virtual joystick / click-to-move | Direct movement |
+| Ability buttons (desktop: per-slot keys) | Cast |
+| Ability buttons (mobile: touch) | Cast with form-based targeting |
+| Tap unit | Select / target |
+
+**Ability activation (RPG desktop):** Slot-based. Keys are bound per slot in
+input bindings (e.g., slot 0 = Q, slot 1 = W). The ability's `"hotkey"` field
+is ignored.
+
+**Ability activation (RPG mobile):** No keys. Each occupied slot becomes a touch
+button. Targeting interaction is derived from the ability's `form`:
+- `instant` / `toggle` → tap button
+- `target_unit` → tap button, then tap target (or auto-target nearest)
+- `target_point` → tap button, then tap ground (or drag from button)
+- `channel` → tap button to start, tap again to cancel
+
+## 6. Map Configuration
+
+Maps configure input via the `"input"` section in `manifest.json`:
 
 ```json
 {
-    "keybinds": {
-        "stop": "S",
-        "hold": "H",
-        "attack_move": "A",
-        "patrol": "P",
-        "ability_1": "Q",
-        "ability_2": "W",
-        "ability_3": "E",
-        "ability_4": "R"
-    },
-    "ability_bar": {
-        "rows": 3,
-        "cols": 4,
-        "position": "bottom_right"
+    "input": {
+        "preset": "rts",
+        "bindings": {
+            "stop": "S",
+            "hold": "H",
+            "attack_move": "A",
+            "patrol": "P"
+        }
     }
 }
 ```
 
-## 6. Lua Events
+- `"preset"`: selects the input preset class. Default: `"rts"`.
+- `"bindings"`: overrides default keybindings. Omitted actions use preset defaults.
 
-The engine fires events at key moments. Scripts observe but do not drive input.
+The entire `"input"` section is optional. If absent, defaults to RTS preset
+with built-in bindings.
+
+## 7. Lua Events
+
+### on_order
+
+Fired before a command executes. Can be cancelled.
 
 ```lua
--- Fires when selection changes. units = array of Unit handles.
-OnSelect(function(player, units)
-    -- e.g. update custom UI
-end)
+local trig = CreateTrigger()
+TriggerRegisterEvent(trig, "on_order")
+TriggerAddAction(trig, function()
+    local order_type = GetOrderType()      -- "move", "attack", "stop", etc.
+    local player     = GetOrderPlayer()
+    local tx, ty     = GetOrderTargetX(), GetOrderTargetY()
+    local target     = GetOrderTargetUnit()
+    local units      = GetOrderUnits()
 
--- Fires before a command is executed. Return false to cancel.
-OnOrder(function(player, units, order_type, target)
-    -- e.g. prevent attacking allied units in a custom game mode
-    return true  -- allow
-end)
-
--- Fires when a unit is right-clicked (smart order context)
-OnSmartOrder(function(player, selected_units, target_unit, target_pos)
-    -- e.g. custom right-click behavior (repair, harvest, enter vehicle)
-    return false -- false = let engine handle default behavior
+    -- Cancel: prevent the order from executing
+    -- To replace: cancel + IssueOrder() a new one
+    if order_type == "move" and IsUnitFrozen(units[1]) then
+        CancelOrder()
+    end
 end)
 ```
 
-## 7. Interaction with Server (Phase 13)
+### on_select
 
-In single player (Phase 12), commands execute immediately:
+Fired after selection changes. Not cancellable.
+
+```lua
+local trig = CreateTrigger()
+TriggerRegisterEvent(trig, "on_select")
+TriggerAddAction(trig, function()
+    local units = GetSelectedUnits()
+    local count = GetSelectedUnitCount()
+    -- e.g. update custom UI
+end)
+```
+
+### Lua Selection API
+
+```lua
+GetSelectedUnits()          -- returns table of Unit handles
+GetSelectedUnitCount()      -- returns integer
+SelectUnit(unit)            -- replace selection with one unit
+SelectUnits(table)          -- replace selection with multiple
+ClearSelection()            -- clear
+IsUnitSelected(unit)        -- boolean
+```
+
+## 8. Interaction with Server (Phase 13)
+
+In single player, commands execute immediately:
 
 ```
 InputPreset → GameCommand → CommandSystem → issue_order()
 ```
 
-In multiplayer (Phase 13), the flow becomes:
+In multiplayer, the flow becomes:
 
 ```
 InputPreset → GameCommand → NetworkClient.send(cmd) → Server → issue_order()
@@ -260,29 +357,18 @@ The `CommandSystem` interface stays the same. In multiplayer mode, `submit()`
 sends over the network instead of executing locally. The input preset and
 selection state are completely unaware of networking.
 
-## 8. Implementation Plan (Phase 12)
+## 9. Future: UI System Interaction
 
-**12a — Command System & Selection**
-- `GameCommand` struct
-- `CommandSystem` class (validate, submit, fire Lua events)
-- `SelectionState` class (selection, control groups)
-- Picking helpers (screen_to_world, pick_unit, pick_units_in_box)
-- Wire into engine main loop
+The input system is designed to work with a future UI framework. When a UI
+system exists, it will read the same data:
 
-**12b — RTS Input Preset**
-- Left click select, box drag select
-- Right click smart orders (move, attack, follow)
-- Ability hotkeys
-- Control groups
-- Camera edge pan
-- Shift-queue
+- **RTS command card**: renders commands in a fixed area + ability slots in a
+  grid. Reads `"commands"` list and ability slot array. Displays ability icons,
+  hotkey letters, cooldown overlays, and tooltips.
+- **RPG action bar**: renders ability slots as a horizontal bar. Slot position
+  determines button position. Desktop: shows slot keybinding. Mobile: touch
+  buttons with form-based targeting gestures.
 
-**12c — Map Input Configuration**
-- `input.json` loading (keybinds, ability bar)
-- `input_preset` field in manifest
-- Lua event hooks (OnSelect, OnOrder, OnSmartOrder)
-
-**12d — Action/RPG Preset (deferred)**
-- Virtual joystick widget
-- Ability button UI
-- Touch input handling
+The UI layer is a consumer of the slot system — it never drives input. Input
+presets and UI are independent readers of the same underlying data (commands
+list, ability slots, ability definitions).
