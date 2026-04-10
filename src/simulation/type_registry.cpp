@@ -95,6 +95,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             auto& a = val["animation"];
             def.dmg_pt           = a.value("dmg_pt", 0.5f);
             def.cast_pt          = a.value("cast_pt", 0.5f);
+            def.walk_speed       = a.value("walk_speed", 0.0f);
         }
 
         if (val.contains("vision")) {

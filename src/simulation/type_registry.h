@@ -35,9 +35,10 @@ struct UnitTypeDef {
     f32 dmg_time = 0.3f;           // seconds: fore-swing before damage (JSON: combat.dmg_time)
     f32 backsw_time = 0.3f;       // seconds: backswing after damage (JSON: combat.backsw_time)
 
-    // Animation fractions (JSON: animation section)
+    // Animation (JSON: animation section)
     f32 dmg_pt = 0.5f;            // fraction of attack animation at damage point
     f32 cast_pt = 0.5f;           // fraction of spell animation at cast point
+    f32 walk_speed = 0;            // movement speed at which walk anim plays at 1x (0 = use move_speed)
     bool is_ranged = false;
     f32 projectile_speed = 20.0f;
     f32 acquire_range = 10.0f;

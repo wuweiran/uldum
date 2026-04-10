@@ -152,6 +152,9 @@ void set_anim_state(AnimationInstance& inst, AnimState state,
         inst.attack_phase1_speed = (attack_info->cast_point > 0) ? phase1_clip / attack_info->cast_point : 1.0f;
         inst.attack_phase2_speed = (attack_info->backswing > 0) ? phase2_clip / attack_info->backswing : 1.0f;
         inst.playback_speed = inst.attack_phase1_speed;  // start with wind-up speed
+    } else if (gameplay_duration < 0) {
+        // Negative = direct speed multiplier (used for walk speed sync)
+        inst.playback_speed = -gameplay_duration;
     } else if (gameplay_duration > 0 && clip_dur > 0) {
         inst.playback_speed = clip_dur / gameplay_duration;
     } else {

@@ -339,16 +339,16 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 
     if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
 
+    // Look up type def once (used by spell, walk)
+    const simulation::UnitTypeDef* type_def = nullptr;
+    auto* hi = world.handle_infos.get(id);
+    if (hi && world.types) type_def = world.types->get_unit_type(hi->type_id);
+
     // Spell casting — two-phase animation (ability seconds don't derive from fraction)
     auto* aset = world.ability_sets.get(id);
     if (aset && (aset->cast_state == simulation::CastState::CastPoint ||
                  aset->cast_state == simulation::CastState::Backswing)) {
-        f32 cp = 0.5f;
-        auto* hi = world.handle_infos.get(id);
-        if (hi && world.types) {
-            auto* def = world.types->get_unit_type(hi->type_id);
-            if (def) cp = def->cast_pt;
-        }
+        f32 cp = type_def ? type_def->cast_pt : 0.5f;
         AttackAnimInfo info;
         info.dmg_point  = cp;
         info.cast_point = aset->cast_point_secs;
@@ -388,14 +388,20 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
         }
 
         if (combat->attack_state == AttackState::MovingToTarget) {
-            return {AnimState::Walk, 0, false};
+            auto* mov = world.movements.get(id);
+            f32 ref = type_def ? type_def->walk_speed : 0;
+            if (ref <= 0 && mov) ref = mov->speed;
+            f32 ratio = (mov && mov->speed > 0 && ref > 0) ? mov->speed / ref : 1.0f;
+            return {AnimState::Walk, -ratio, false};
         }
     }
 
     auto* mov = world.movements.get(id);
     if (mov && mov->moving) {
-        f32 walk_cycle = (mov->speed > 0) ? 0.8f * (270.0f / mov->speed) : 0.8f;
-        return {AnimState::Walk, walk_cycle, false};
+        f32 ref = type_def ? type_def->walk_speed : 0;
+        if (ref <= 0) ref = mov->speed;
+        f32 ratio = (mov->speed > 0 && ref > 0) ? mov->speed / ref : 1.0f;
+        return {AnimState::Walk, -ratio, false};
     }
 
     return {AnimState::Idle, 0, false};
