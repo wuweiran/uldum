@@ -188,21 +188,25 @@ Owner {
 }
 
 Movement {
-    f32       speed          // units per second
-    f32       turn_rate      // radians per second
-    MoveType  type           // ground, air, amphibious — engine preset (needed for pathfinding)
-    vec3      target_pos     // current movement target (used by MovementSystem)
-    bool      moving         // currently in motion
+    f32       speed            // game units per second (WC3 scale: footman ~270)
+    f32       turn_rate        // WC3/DotA 2 convention, converted to rad/s at load (× 4π)
+    f32       collision_radius // per-unit collision size (game units)
+    MoveType  type             // ground, air, amphibious
+    u8        cliff_level      // current cliff level the unit is on
+    bool      moving
 }
 
 Combat {
     f32        damage
-    f32        range          // attack range (melee ~1.0, ranged ~6.0+)
-    f32        attack_cooldown // seconds between attacks (full cycle)
-    f32        dmg_time       // seconds: fore-swing before damage fires
-    f32        backsw_time    // seconds: recovery after damage fires
-    f32        dmg_pt         // fraction (0-1) of attack animation at damage point
-    Unit       target         // current attack target (typed handle, not raw ID)
+    f32        range            // attack range (game units)
+    f32        attack_cooldown  // seconds between attacks (full cycle)
+    f32        dmg_time         // seconds: fore-swing before damage fires
+    f32        backsw_time      // seconds: recovery after damage fires
+    f32        dmg_pt           // fraction (0-1) of attack animation at damage point
+    bool       is_ranged
+    f32        projectile_speed // for ranged attacks
+    f32        acquire_range    // auto-attack enemy detection range
+    Unit       target           // current attack target (runtime state)
 }
 
 Vision {
@@ -211,8 +215,8 @@ Vision {
 }
 
 OrderQueue {
-    Order              current
-    std::deque<Order>  queued
+    std::optional<Order>  current
+    std::deque<Order>     queued
 }
 
 AbilitySet {
@@ -221,8 +225,8 @@ AbilitySet {
     // (what WC3 calls "buffs"). No separate component for any of these.
 }
 
-UnitClassification {
-    set<string> flags   // map-defined strings: "ground", "air", "hero", "structure", etc.
+UnitClassificationComp {
+    std::vector<string> flags   // map-defined strings: "ground", "air", "hero", "structure", etc.
 }
 
 // Map-defined attributes (strength, agility, intelligence, etc.)
@@ -234,36 +238,26 @@ AttributeBlock {
 Note: `MoveType` is one of the few engine-defined enums because pathfinding needs
 to query terrain differently for ground vs air vs amphibious movement.
 
-### Hero Components (added to hero-type units)
+### Inventory (any unit with inventory_size > 0)
 
 ```
-Hero {
-    u32     level
-    u32     xp
-    u32     xp_to_next
-    string  primary_attr          // map-defined attribute name (e.g. "strength")
-
-    // Per-level attribute growth rates — map-defined attribute names
-    map<string, f32>  attr_per_level   // "strength" → 2.7, "agility" → 1.5
-}
-
 Inventory {
-    std::array<Item, 6>  slots   // typed Item handles, null if empty
+    std::vector<Item>  slots      // sized by inventory_size from unit type def
+    u32                max_slots
 }
 ```
 
-Hero attributes (strength, agility, intelligence, etc.) are stored in the unit's
-`AttributeBlock` component, not in the Hero component. The Hero component only
-tracks leveling metadata. Attribute values and growth rates reference map-defined
-attribute names via strings.
+There is no engine-level Hero component. "Hero" is a classification flag
+(`"hero"` in the unit's classifications list). Level, XP, and attribute growth
+are intended to be scripted in Lua. Any unit can hold items if its type defines
+`"inventory_size"` > 0.
 
 ### Building Components (added to building-type units)
 
 ```
-Building {
+BuildingComp {
     std::deque<TrainOrder>     train_queue      // units being trained
-    std::vector<ResearchId>    researched        // completed researches
-    std::vector<ResearchId>    available_research
+    std::vector<string>        researched        // completed research IDs
 }
 
 Construction {
@@ -914,26 +908,32 @@ struct World {
     // These are PRIVATE. External code accesses data through the
     // typed facade functions below, never through raw sparse sets.
 
-    SparseSet<Transform>    transforms;
-    SparseSet<HandleInfo>   handle_infos;
-    SparseSet<Health>       healths;
-    SparseSet<Movement>     movements;
-    SparseSet<Combat>       combats;
-    SparseSet<Owner>        owners;
-    SparseSet<OrderQueue>   order_queues;
-    SparseSet<AbilitySet>   ability_sets;
-    SparseSet<Vision>       visions;
-    SparseSet<Hero>         heroes;
-    SparseSet<Inventory>    inventories;
-    SparseSet<Building>     buildings;
-    // ... etc for all component types
+    SparseSet<Transform>              transforms;
+    SparseSet<HandleInfo>             handle_infos;
+    SparseSet<Health>                 healths;
+    SparseSet<StateBlock>             state_blocks;
+    SparseSet<AttributeBlock>         attribute_blocks;
+    SparseSet<Selectable>             selectables;
+    SparseSet<Owner>                  owners;
+    SparseSet<Movement>               movements;
+    SparseSet<Combat>                 combats;
+    SparseSet<Vision>                 visions;
+    SparseSet<OrderQueue>             order_queues;
+    SparseSet<AbilitySet>             ability_sets;
+    SparseSet<UnitClassificationComp> classifications;
+    SparseSet<Inventory>              inventories;
+    SparseSet<BuildingComp>           buildings;
+    SparseSet<Construction>           constructions;
+    SparseSet<DestructableComp>       destructables;
+    SparseSet<ProjectileComp>         projectiles;
+    SparseSet<ScalePulse>             scale_pulses;
+    SparseSet<DeadState>              dead_states;
+    SparseSet<Renderable>             renderables;
 
-    // Handle allocator (manages id + generation)
     HandleAllocator handles;
-    bool validate(Handle h) const;  // checks generation match
+    bool validate(Handle h) const;
 
-    // Type registry
-    TypeRegistry types;  // loaded from JSON
+    TypeRegistry* types;  // pointer, owned by Simulation
 };
 
 // ── Typed Game Objects ─────────────────────────────────────────

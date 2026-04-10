@@ -2,6 +2,8 @@
 #include "asset/asset.h"
 #include "core/log.h"
 
+#include <glm/gtc/constants.hpp>
+
 namespace uldum::simulation {
 
 static constexpr const char* TAG = "TypeRegistry";
@@ -71,7 +73,8 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         if (val.contains("movement")) {
             auto& m = val["movement"];
             def.move_speed        = m.value("speed", 270.0f);
-            def.turn_rate         = m.value("turn_rate", 0.6f);
+            // WC3 turn_rate convention: 0.5 ≈ 360°/s. Convert to rad/s: rate * 4π.
+            def.turn_rate         = m.value("turn_rate", 0.6f) * 4.0f * glm::pi<f32>();
             def.collision_radius  = m.value("collision_radius", 32.0f);
             def.move_type         = parse_move_type(m.value("type", "ground"));
         }
