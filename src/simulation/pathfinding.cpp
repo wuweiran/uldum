@@ -372,10 +372,10 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
 // ── Straight-line waypoint through corridor ──────────────────────────────
 
 // Check if a world-space point is inside any tile of the corridor.
-static bool point_in_corridor(const Corridor& corridor, glm::vec2 pt, f32 tile_size) {
+static bool point_in_corridor(std::span<const glm::ivec2> tiles, glm::vec2 pt, f32 tile_size) {
     i32 tx = static_cast<i32>(std::floor(pt.x / tile_size));
     i32 ty = static_cast<i32>(std::floor(pt.y / tile_size));
-    for (auto& t : corridor.tiles) {
+    for (auto& t : tiles) {
         if (t.x == tx && t.y == ty) return true;
     }
     return false;
@@ -385,7 +385,7 @@ static bool point_in_corridor(const Corridor& corridor, glm::vec2 pt, f32 tile_s
 // collision radius. Center must stay in the corridor. Offset points (collision
 // radius) must be on occupiable terrain (not necessarily in the corridor — open
 // adjacent tiles are fine, but cliffs/walls are not).
-static bool line_in_corridor(const Corridor& corridor, glm::vec2 a, glm::vec2 b,
+static bool line_in_corridor(std::span<const glm::ivec2> tiles, glm::vec2 a, glm::vec2 b,
                               f32 tile_size, f32 collision_radius,
                               const Pathfinder& pf, MoveType move_type) {
     glm::vec2 dir = b - a;
@@ -400,7 +400,7 @@ static bool line_in_corridor(const Corridor& corridor, glm::vec2 a, glm::vec2 b,
         glm::vec2 pt = a + dir * t;
 
         // Center must be in the corridor
-        if (!point_in_corridor(corridor, pt, tile_size)) return false;
+        if (!point_in_corridor(tiles, pt, tile_size)) return false;
 
         // TODO: collision radius check disabled for debugging — re-enable after fixing
         // if (collision_radius > 0) {
@@ -417,25 +417,23 @@ static bool line_in_corridor(const Corridor& corridor, glm::vec2 a, glm::vec2 b,
     return true;
 }
 
-glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, const Corridor& corridor,
+glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, std::span<const glm::ivec2> corridor_tiles,
                                               f32 collision_radius, MoveType move_type) const {
-    if (!m_terrain || corridor.tiles.empty()) return from;
+    if (!m_terrain || corridor_tiles.empty()) return from;
     f32 ts = m_terrain->tile_size;
 
     // Find which corridor tile we're on (or nearest)
     u32 start_idx = 0;
     {
         glm::ivec2 cur = world_to_tile(from.x, from.y);
-        for (u32 i = 0; i < corridor.tiles.size(); ++i) {
-            if (corridor.tiles[i] == cur) { start_idx = i; break; }
+        for (u32 i = 0; i < corridor_tiles.size(); ++i) {
+            if (corridor_tiles[i] == cur) { start_idx = i; break; }
         }
     }
 
     // Walk forward through corridor with exponential jumps to find the farthest
     // reachable tile, then refine.
-    glm::vec2 best = tile_center(corridor.tiles[start_idx].x, corridor.tiles[start_idx].y);
-    u32 best_idx = start_idx;
-    u32 end = static_cast<u32>(corridor.tiles.size());
+    u32 end = static_cast<u32>(corridor_tiles.size());
 
     // Phase 1: exponential jumps (1, 2, 4, 8...) to find the rough limit
     u32 last_good = start_idx;
@@ -444,8 +442,8 @@ glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, const Corridor& cor
         u32 test_idx = start_idx + jump;
         if (test_idx >= end) test_idx = end - 1;
 
-        glm::vec2 target = tile_center(corridor.tiles[test_idx].x, corridor.tiles[test_idx].y);
-        if (line_in_corridor(corridor, from, target, ts, collision_radius, *this, move_type)) {
+        glm::vec2 target = tile_center(corridor_tiles[test_idx].x, corridor_tiles[test_idx].y);
+        if (line_in_corridor(corridor_tiles, from, target, ts, collision_radius, *this, move_type)) {
             last_good = test_idx;
             if (test_idx >= end - 1) break;  // reached the end
         } else {
@@ -457,20 +455,19 @@ glm::vec2 Pathfinder::find_straight_waypoint(glm::vec2 from, const Corridor& cor
     // Phase 2: binary search between last_good and first_bad
     while (last_good + 1 < first_bad) {
         u32 mid = (last_good + first_bad) / 2;
-        glm::vec2 target = tile_center(corridor.tiles[mid].x, corridor.tiles[mid].y);
-        if (line_in_corridor(corridor, from, target, ts, collision_radius, *this, move_type)) {
+        glm::vec2 target = tile_center(corridor_tiles[mid].x, corridor_tiles[mid].y);
+        if (line_in_corridor(corridor_tiles, from, target, ts, collision_radius, *this, move_type)) {
             last_good = mid;
         } else {
             first_bad = mid;
         }
     }
 
-    best_idx = last_good;
-    best = tile_center(corridor.tiles[best_idx].x, corridor.tiles[best_idx].y);
+    glm::vec2 best = tile_center(corridor_tiles[last_good].x, corridor_tiles[last_good].y);
 
     // If the best is still the start tile, try the next tile as minimum progress
-    if (best_idx == start_idx && start_idx + 1 < end) {
-        best = tile_center(corridor.tiles[start_idx + 1].x, corridor.tiles[start_idx + 1].y);
+    if (last_good == start_idx && start_idx + 1 < end) {
+        best = tile_center(corridor_tiles[start_idx + 1].x, corridor_tiles[start_idx + 1].y);
     }
 
     return best;

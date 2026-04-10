@@ -120,9 +120,8 @@ static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const 
     return steer;
 }
 
-void system_movement(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
-    auto* terrain = pathfinder.terrain();
-
+void system_movement(World& world, float dt, const Pathfinder& pathfinder,
+                     const SpatialGrid& grid, const map::TerrainData* terrain) {
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
         auto& mov = world.movements.data()[i];
@@ -131,54 +130,85 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
-        // Only process Move / AttackMove orders
-        if (!oq->current) {
+        // ── Determine movement goal ──────────────────────────────────────
+        glm::vec2 pos2d{transform->position.x, transform->position.y};
+        glm::vec2 goal2d{0};
+        bool has_goal = false;
+        bool is_approach = false;
+
+        // Priority 1: Move / AttackMove order
+        if (oq->current) {
+            if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
+                goal2d = {m->target.x, m->target.y};
+                has_goal = true;
+            } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
+                // AttackMove with active combat target: defer to approach
+                auto* combat = world.combats.get(id);
+                if (combat && combat->target.is_valid()) {
+                    // Don't set goal from order — fall through to approach
+                } else {
+                    goal2d = {am->target.x, am->target.y};
+                    has_goal = true;
+                }
+            }
+        }
+
+        // Priority 2: Approach mode (set by combat/cast)
+        if (!has_goal && mov.approach_range > 0) {
+            if (mov.approach_target.is_valid()) {
+                if (world.validate(mov.approach_target)) {
+                    auto* ft = world.transforms.get(mov.approach_target.id);
+                    if (ft) {
+                        goal2d = {ft->position.x, ft->position.y};
+                        has_goal = true;
+                        is_approach = true;
+                    }
+                } else {
+                    // Target dead/invalid — stop approaching
+                    mov.approach_target = Unit{};
+                    mov.approach_range = 0;
+                }
+            } else {
+                // Fixed position approach (point-targeted spell)
+                goal2d = mov.approach_goal;
+                has_goal = true;
+                is_approach = true;
+            }
+
+            // Already in range? Don't move.
+            if (has_goal && is_approach) {
+                f32 dist = glm::length(goal2d - pos2d);
+                if (dist <= mov.approach_range) {
+                    mov.moving = false;
+                    continue;
+                }
+            }
+        }
+
+        if (!has_goal) {
             mov.moving = false;
             continue;
         }
 
-        // If AttackMove and combat has an active target, pause path-following
-        auto* combat = world.combats.get(id);
-        if (combat && combat->target.is_valid()) {
-            if (std::get_if<orders::AttackMove>(&oq->current->payload)) {
-                continue;
-            }
-        }
-
-        glm::vec3 move_target{0.0f};
-        bool has_move = false;
-        if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
-            move_target = m->target; has_move = true;
-        } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
-            move_target = am->target; has_move = true;
-        }
-        if (!has_move) continue;
-
-        glm::vec2 pos2d{transform->position.x, transform->position.y};
-        glm::vec2 goal2d{move_target.x, move_target.y};
-
-        // ── Re-path: compute corridor + straight-line waypoint ──
+        // ── Re-path: compute corridor + straight-line waypoint ──────────
         mov.repath_timer -= dt;
-        bool need_repath = mov.corridor.empty() || mov.repath_timer <= 0 || !mov.has_waypoint;
+        f32 dest_drift = glm::length(goal2d - mov.path_dest);
+        bool need_repath = mov.corridor.empty() || mov.repath_timer <= 0 ||
+                           !mov.has_waypoint || dest_drift > pathfinder.tile_size();
 
         if (need_repath) {
             mov.repath_timer = Movement::REPATH_INTERVAL;
+            mov.path_dest = goal2d;
             auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type, &world, id);
             if (corridor.valid && !corridor.tiles.empty()) {
                 mov.corridor = std::move(corridor.tiles);
-                Corridor c_ref;
-                c_ref.tiles = mov.corridor;
-                c_ref.valid = true;
-                mov.waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov.collision_radius, mov.type);
+                mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.type);
                 mov.has_waypoint = true;
                 mov.moving = true;
             } else {
-                // Path not found — keep the order, face toward goal, retry later
                 mov.corridor.clear();
                 mov.has_waypoint = false;
                 mov.moving = false;
-                log::trace("Movement", "No path for unit {} to ({:.0f},{:.0f}), cliff_level={}",
-                           id, goal2d.x, goal2d.y, mov.cliff_level);
             }
         }
 
@@ -200,34 +230,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             continue;
         }
 
-        // Check arrival at final destination (half tile tolerance)
-        f32 goal_dist = glm::length(goal2d - pos2d);
-        if (goal_dist < pathfinder.tile_size() * 0.5f) {
-            mov.corridor.clear();
-            mov.has_waypoint = false;
-            mov.moving = false;
-            oq->current.reset();
-            if (!oq->queued.empty()) {
-                oq->current = std::move(oq->queued.front());
-                oq->queued.pop_front();
-            }
-            continue;
-        }
-
-        // Move toward waypoint
-        glm::vec2 to_wp = mov.waypoint - pos2d;
-        f32 wp_dist = glm::length(to_wp);
-
-        if (wp_dist < 16.0f) {
-            // Reached waypoint — recompute next straight line through corridor
-            Corridor c_ref;
-            c_ref.tiles = mov.corridor;
-            c_ref.valid = true;
-            mov.waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov.collision_radius, mov.type);
-            to_wp = mov.waypoint - pos2d;
-            wp_dist = glm::length(to_wp);
-            if (wp_dist < 1.0f) {
-                // No more progress possible — treat as arrived, clear order
+        // Check arrival at destination (orders only — approach stops via range check above)
+        if (!is_approach) {
+            f32 goal_dist = glm::length(goal2d - pos2d);
+            if (goal_dist < pathfinder.tile_size() * 0.5f) {
                 mov.corridor.clear();
                 mov.has_waypoint = false;
                 mov.moving = false;
@@ -235,6 +241,29 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
                 if (!oq->queued.empty()) {
                     oq->current = std::move(oq->queued.front());
                     oq->queued.pop_front();
+                }
+                continue;
+            }
+        }
+
+        // ── Move toward waypoint ─────────────────────────────────────────
+        glm::vec2 to_wp = mov.waypoint - pos2d;
+        f32 wp_dist = glm::length(to_wp);
+
+        if (wp_dist < 16.0f) {
+            mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.type);
+            to_wp = mov.waypoint - pos2d;
+            wp_dist = glm::length(to_wp);
+            if (wp_dist < 1.0f) {
+                if (!is_approach) {
+                    mov.corridor.clear();
+                    mov.has_waypoint = false;
+                    mov.moving = false;
+                    oq->current.reset();
+                    if (!oq->queued.empty()) {
+                        oq->current = std::move(oq->queued.front());
+                        oq->queued.pop_front();
+                    }
                 }
                 continue;
             }
@@ -266,12 +295,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
             f32 new_x = transform->position.x + dir.x * step;
             f32 new_y = transform->position.y + dir.y * step;
 
-            // Validate movement — try wall sliding if direct move blocked
             if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.cliff_level, mov.type)) {
                 transform->position.x = new_x;
                 transform->position.y = new_y;
             } else {
-                // Wall slide: try X-only, then Y-only
                 bool slid = false;
                 if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.cliff_level, mov.type)) {
                     transform->position.x = new_x;
@@ -282,7 +309,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder, const
                     slid = true;
                 }
                 if (!slid) {
-                    // Fully blocked — re-path next frame
                     mov.corridor.clear();
                     mov.has_waypoint = false;
                 }
@@ -331,7 +357,7 @@ static void spawn_projectile(World& world, Unit source, Unit target, f32 damage,
 
 // ── Combat system ─────────────────────────────────────────────────────────
 
-void system_combat(World& world, float dt, const Pathfinder& pathfinder, const SpatialGrid& grid) {
+void system_combat(World& world, float dt, const SpatialGrid& grid) {
     for (u32 i = 0; i < world.combats.count(); ++i) {
         u32 id = world.combats.ids()[i];
         auto& combat = world.combats.data()[i];
@@ -342,7 +368,6 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
 
         // Determine attack target: explicit Attack order, or auto-acquired during AttackMove/idle
         auto* attack_order = oq->current ? std::get_if<orders::Attack>(&oq->current->payload) : nullptr;
-        bool is_attack_move = oq->current && std::get_if<orders::AttackMove>(&oq->current->payload);
         bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
         bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
 
@@ -377,6 +402,10 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                 combat.attack_state = AttackState::Idle;
             }
 
+            // Clear approach so movement system stops chasing the dead target
+            auto* mov = world.movements.get(id);
+            if (mov) { mov->approach_target = Unit{}; mov->approach_range = 0; }
+
             if (attack_order) {
                 // Explicit Attack order finished — advance queue
                 oq->current.reset();
@@ -385,7 +414,7 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
                     oq->queued.pop_front();
                 }
             }
-            // If AttackMove: order stays, unit resumes marching (movement system handles it)
+            // AttackMove: order stays — movement system picks up the destination next tick
 
             // Auto-acquire: scan for nearby enemies
             if (!is_casting && !is_moving && combat.acquire_range > 0 && combat.damage > 0) {
@@ -445,107 +474,19 @@ void system_combat(World& world, float dt, const Pathfinder& pathfinder, const S
         case AttackState::Idle:
         case AttackState::MovingToTarget: {
             if (dist > combat.range) {
+                // Delegate movement to the movement system via approach
                 combat.attack_state = AttackState::MovingToTarget;
                 auto* mov = world.movements.get(id);
-                if (!mov || mov->speed <= 0) break;
-
-                // Re-path to target using corridor + straight line
-                glm::vec2 pos2d{transform->position.x, transform->position.y};
-                glm::vec2 target2d{target_t->position.x, target_t->position.y};
-
-                f32 chase_dest_dist = glm::length(target2d - glm::vec2{combat.chase_path_dest});
-                mov->repath_timer -= dt;
-                bool need_repath = mov->corridor.empty() || mov->repath_timer <= 0 ||
-                                   chase_dest_dist > pathfinder.tile_size() || !mov->has_waypoint;
-
-                if (need_repath) {
-                    auto corridor = pathfinder.find_corridor(pos2d, target2d, mov->cliff_level, mov->type, &world, id);
-                    if (corridor.valid && !corridor.tiles.empty()) {
-                        mov->corridor = std::move(corridor.tiles);
-                        Corridor c_ref;
-                        c_ref.tiles = mov->corridor;
-                        c_ref.valid = true;
-                        mov->waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov->collision_radius, mov->type);
-                        mov->has_waypoint = true;
-                    } else {
-                        mov->corridor.clear();
-                        mov->has_waypoint = false;
-                    }
-                    combat.chase_path_dest = target_t->position;
-                    mov->repath_timer = Movement::REPATH_INTERVAL;
-                }
-
-                // Move toward waypoint (or directly toward target if no path)
-                glm::vec2 move_goal = mov->has_waypoint ? mov->waypoint : target2d;
-                glm::vec2 to_goal = move_goal - pos2d;
-                f32 goal_dist = glm::length(to_goal);
-                if (goal_dist < 0.1f) break;
-
-                // Reached waypoint — recompute straight line
-                if (goal_dist < 16.0f && mov->has_waypoint) {
-                    Corridor c_ref;
-                    c_ref.tiles = mov->corridor;
-                    c_ref.valid = true;
-                    mov->waypoint = pathfinder.find_straight_waypoint(pos2d, c_ref, mov->collision_radius, mov->type);
-                    move_goal = mov->waypoint;
-                    to_goal = move_goal - pos2d;
-                    goal_dist = glm::length(to_goal);
-                    if (goal_dist < 0.1f) break;
-                }
-
-                glm::vec3 forward{to_goal.x / goal_dist, to_goal.y / goal_dist, 0.0f};
-
-                // Local steering: avoid nearby units (but not the attack target)
-                glm::vec3 dir = local_steer(world, grid, pathfinder, id,
-                                             transform->position, forward, mov->collision_radius,
-                                             mov->cliff_level, mov->type);
-
-                // Turn + step
-                f32 desired = std::atan2(dir.y, dir.x);
-                f32 face_diff = angle_diff(transform->facing, desired);
-                f32 max_turn = mov->turn_rate * dt;
-                if (std::abs(face_diff) > max_turn) {
-                    transform->facing += (face_diff > 0 ? max_turn : -max_turn);
-                } else {
-                    transform->facing = desired;
-                }
-                transform->facing = normalize_angle(transform->facing);
-
-                if (std::abs(face_diff) < glm::half_pi<f32>()) {
-                    f32 step = mov->speed * dt;
-                    if (step > goal_dist) step = goal_dist;
-                    f32 new_x = transform->position.x + dir.x * step;
-                    f32 new_y = transform->position.y + dir.y * step;
-
-                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov->cliff_level, mov->type)) {
-                        transform->position.x = new_x;
-                        transform->position.y = new_y;
-                    } else {
-                        // Wall slide
-                        bool slid = false;
-                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov->cliff_level, mov->type)) {
-                            transform->position.x = new_x;
-                            slid = true;
-                        }
-                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov->cliff_level, mov->type)) {
-                            transform->position.y = new_y;
-                            slid = true;
-                        }
-                        if (!slid) {
-                            mov->corridor.clear();
-                            mov->has_waypoint = false;
-                        }
-                    }
-                    auto* terrain = pathfinder.terrain();
-                    if (terrain) {
-                        transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
-                    }
-                    mov->cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
+                if (mov) {
+                    mov->approach_target = target;
+                    mov->approach_range = combat.range;
                 }
             } else {
-                // In range — clear chase path, begin attack
+                // In range — stop approaching, begin attack
                 auto* mov = world.movements.get(id);
                 if (mov) {
+                    mov->approach_range = 0;
+                    mov->approach_target = Unit{};
                     mov->corridor.clear();
                     mov->has_waypoint = false;
                 }
@@ -688,6 +629,16 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                            def->form == AbilityForm::TargetPoint);
                         if (needs_range && lvl.range > 0) {
                             aset.cast_state = CastState::MovingToTarget;
+                            // Delegate approach to movement system
+                            auto* mov = world.movements.get(id);
+                            if (mov) {
+                                mov->approach_range = lvl.range;
+                                if (def->form == AbilityForm::TargetUnit) {
+                                    mov->approach_target = cast_order->target_unit;
+                                } else {
+                                    mov->approach_goal = {cast_order->target_pos.x, cast_order->target_pos.y};
+                                }
+                            }
                         } else {
                             aset.cast_state = CastState::TurningToFace;
                         }
@@ -725,17 +676,12 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     switch (aset.cast_state) {
                     case CastState::MovingToTarget: {
                         if (dist <= lvl.range) {
-                            aset.cast_state = CastState::TurningToFace;
-                        } else {
-                            // Move toward target (simple steering)
+                            // In range — stop approaching, begin cast
                             auto* mov = world.movements.get(id);
-                            if (mov && mov->speed > 0) {
-                                glm::vec3 dir = glm::normalize(to_target);
-                                f32 step = mov->speed * dt;
-                                transform->position.x += dir.x * step;
-                                transform->position.y += dir.y * step;
-                            }
+                            if (mov) { mov->approach_range = 0; mov->approach_target = Unit{}; }
+                            aset.cast_state = CastState::TurningToFace;
                         }
+                        // Movement system handles the actual approach
                         break;
                     }
                     case CastState::TurningToFace: {
@@ -834,7 +780,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 
 // ── Projectile system ─────────────────────────────────────────────────────
 
-void system_projectile(World& world, float dt, const Pathfinder& pathfinder) {
+void system_projectile(World& world, float dt) {
     // Collect IDs to destroy after iteration (can't modify sparse set during iteration)
     std::vector<u32> to_destroy;
 

@@ -245,11 +245,13 @@ void issue_order(World& world, Unit unit, Order order) {
         oq->queued.clear();
         oq->current = std::move(order);
 
-        // Clear pathfinding state so the movement system re-paths immediately
+        // Clear pathfinding + approach state so the movement system re-paths immediately
         auto* mov = world.movements.get(unit.id);
         if (mov) {
             mov->corridor.clear();
             mov->has_waypoint = false;
+            mov->approach_target = Unit{};
+            mov->approach_range = 0;
         }
 
         // Clear combat target so the unit stops fighting and obeys the new order

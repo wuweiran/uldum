@@ -85,9 +85,16 @@ struct Movement {
     glm::vec2 waypoint{0};             // current straight-line target (world XY)
     bool      has_waypoint = false;
 
-    // Re-path timer: re-compute corridor periodically
-    f32 repath_timer = 0;
+    // Re-path timer and destination tracking
+    f32       repath_timer = 0;
+    glm::vec2 path_dest{0};            // destination used for last pathfind (for repath detection)
     static constexpr f32 REPATH_INTERVAL = 1.5f;
+
+    // Approach mode: set by combat/cast to request movement toward a target.
+    // Movement system handles pathfinding + stepping; requester just checks distance.
+    Unit      approach_target;          // entity to approach (dynamic position)
+    glm::vec2 approach_goal{0};         // fixed position to approach (when no entity target)
+    f32       approach_range = 0;       // stop when within this distance (0 = disabled)
 };
 
 enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };
@@ -106,7 +113,6 @@ struct Combat {
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;
     Unit        target;
-    glm::vec3   chase_path_dest{0};  // last pathfind destination for re-path detection
 };
 
 // Visual feedback: scale pulse on attack hit, decays back to 1.0

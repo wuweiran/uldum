@@ -20,6 +20,7 @@ void Simulation::shutdown() {
 }
 
 void Simulation::set_terrain(const map::TerrainData* terrain) {
+    m_terrain = terrain;
     m_pathfinder.set_terrain(terrain);
     if (terrain && terrain->is_valid()) {
         m_spatial_grid.init(terrain->world_width(), terrain->world_height(), 512.0f, this);
@@ -69,10 +70,10 @@ void Simulation::tick(float dt) {
 
     system_health(m_world, dt);
     system_state(m_world, dt);
-    system_movement(m_world, dt, m_pathfinder, m_spatial_grid);
-    system_combat(m_world, dt, m_pathfinder, m_spatial_grid);
+    system_movement(m_world, dt, m_pathfinder, m_spatial_grid, m_terrain);
+    system_combat(m_world, dt, m_spatial_grid);
     system_ability(m_world, dt, m_abilities, m_spatial_grid);
-    system_projectile(m_world, dt, m_pathfinder);
+    system_projectile(m_world, dt);
     system_collision(m_world, m_spatial_grid, m_pathfinder);
     system_death(m_world);
     system_scale_pulse(m_world, dt);

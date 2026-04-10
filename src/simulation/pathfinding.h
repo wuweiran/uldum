@@ -6,6 +6,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <span>
 #include <vector>
 
 namespace uldum::map { struct TerrainData; }
@@ -19,12 +20,6 @@ enum class MoveType : u8;
 // A corridor: ordered list of tile coordinates from A* (source to destination).
 struct Corridor {
     std::vector<glm::ivec2> tiles;  // (tx, ty) in tile coordinates
-    bool valid = false;
-};
-
-// A path: sequence of world-space waypoints derived from a corridor via line-of-sight smoothing.
-struct Path {
-    std::vector<glm::vec2> waypoints;  // world XY positions (Z is visual only)
     bool valid = false;
 };
 
@@ -87,10 +82,10 @@ public:
                            u8 start_cliff_level, MoveType move_type,
                            const World* world = nullptr, u32 self_id = UINT32_MAX) const;
 
-    // Given a corridor, find the farthest point reachable in a straight line from
+    // Given corridor tiles, find the farthest point reachable in a straight line from
     // the given position without leaving the corridor. Returns the waypoint.
     // collision_radius: swept circle radius for the line test (0 = point).
-    glm::vec2 find_straight_waypoint(glm::vec2 from, const Corridor& corridor,
+    glm::vec2 find_straight_waypoint(glm::vec2 from, std::span<const glm::ivec2> corridor_tiles,
                                       f32 collision_radius = 0,
                                       MoveType move_type = MoveType::Ground) const;
 

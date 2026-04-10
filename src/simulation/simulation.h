@@ -59,12 +59,15 @@ public:
     // Query: does player_a consider player_b an enemy? (not allied and not same player)
     bool is_enemy(Player a, Player b) const;
 
+    const map::TerrainData* terrain() const { return m_terrain; }
+
 private:
     World           m_world;
     TypeRegistry    m_types;
     AbilityRegistry m_abilities;
     Pathfinder      m_pathfinder;
     SpatialGrid     m_spatial_grid;
+    const map::TerrainData* m_terrain = nullptr;
 
     // Alliance table: m_alliances[a * m_player_count + b] = flags from a toward b
     std::vector<AllianceFlags> m_alliances;
