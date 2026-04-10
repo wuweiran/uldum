@@ -49,17 +49,18 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
     if (eff == -2) return false;  // cliff wall
 
     auto& td = *m_terrain;
-    // Check that at least one corner is walkable and not water
+    // All 4 corners must be walkable (and not water for ground units).
+    // Vertices are shared between tiles — marking any vertex non-walkable
+    // blocks all tiles that touch it.
     for (u32 vy = ty; vy <= ty + 1; ++vy) {
         for (u32 vx = tx; vx <= tx + 1; ++vx) {
             u8 flags = td.pathing_at(vx, vy);
             bool walkable = (flags & map::PATHING_WALKABLE) != 0;
-            bool water = td.is_water(vx, vy);
-            if (move_type == MoveType::Ground && walkable && !water) return true;
-            if (move_type == MoveType::Amphibious && walkable) return true;
+            if (!walkable) return false;
+            if (move_type == MoveType::Ground && td.is_water(vx, vy)) return false;
         }
     }
-    return false;
+    return true;
 }
 
 bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,

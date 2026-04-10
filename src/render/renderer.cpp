@@ -1122,7 +1122,6 @@ bool Renderer::create_terrain_pipeline() {
         return false;
     }
 
-    // TerrainVertex input: 4 attributes, 48-byte stride
     VkVertexInputBindingDescription terrain_binding{};
     terrain_binding.binding   = 0;
     terrain_binding.stride    = sizeof(TerrainVertex);
@@ -1135,7 +1134,6 @@ bool Renderer::create_terrain_pipeline() {
     terrain_attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(TerrainVertex, splat_weights)};
 
     auto cfg = make_common_pipeline_state();
-    // Override vertex input with terrain format
     cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
     cfg.vertex_input.vertexAttributeDescriptionCount  = 4;
     cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;

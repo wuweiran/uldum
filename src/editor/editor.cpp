@@ -728,6 +728,7 @@ void Editor::brush_pathing_block() {
 
             td.pathing_at(ix, iy) &= ~map::PATHING_WALKABLE;
             m_terrain_dirty = true;
+            m_pathing_cache_dirty = true;
         }
     }
 }
@@ -746,6 +747,7 @@ void Editor::brush_pathing_allow() {
 
             td.pathing_at(ix, iy) |= map::PATHING_WALKABLE;
             m_terrain_dirty = true;
+            m_pathing_cache_dirty = true;
         }
     }
 }
@@ -754,8 +756,36 @@ void Editor::brush_pathing_allow() {
 
 void Editor::rebuild_terrain_mesh() {
     if (!m_map_loaded) return;
-    vkDeviceWaitIdle(m_rhi.device());  // wait for GPU to finish using old buffers
+    vkDeviceWaitIdle(m_rhi.device());
     m_renderer.set_terrain(m_map.terrain());
+    m_pathing_cache_dirty = true;
+}
+
+void Editor::rebuild_pathing_cache() {
+    m_blocked_tiles.clear();
+    m_blocked_verts.clear();
+    if (!m_map_loaded || !m_map.terrain().is_valid()) return;
+    auto& td = m_map.terrain();
+
+    for (u32 ty = 0; ty < td.tiles_y; ++ty) {
+        for (u32 tx = 0; tx < td.tiles_x; ++tx) {
+            bool w00 = (td.pathing_at(tx, ty)     & map::PATHING_WALKABLE) != 0;
+            bool w10 = (td.pathing_at(tx+1, ty)   & map::PATHING_WALKABLE) != 0;
+            bool w01 = (td.pathing_at(tx, ty+1)   & map::PATHING_WALKABLE) != 0;
+            bool w11 = (td.pathing_at(tx+1, ty+1) & map::PATHING_WALKABLE) != 0;
+            if (!w00 || !w10 || !w01 || !w11)
+                m_blocked_tiles.push_back({tx, ty});
+        }
+    }
+
+    for (u32 vy = 0; vy <= td.tiles_y; ++vy) {
+        for (u32 vx = 0; vx <= td.tiles_x; ++vx) {
+            if (!(td.pathing_at(vx, vy) & map::PATHING_WALKABLE))
+                m_blocked_verts.push_back({vx, vy});
+        }
+    }
+
+    m_pathing_cache_dirty = false;
 }
 
 void Editor::switch_scene(const std::string& scene_name) {
@@ -846,14 +876,12 @@ bool Editor::world_to_screen(glm::vec3 world_pos, ImVec2& screen_pos) const {
 
 void Editor::draw_overlays() {
     if (!m_map_loaded || !m_map.terrain().is_valid()) return;
-    if (ImGui::GetIO().WantCaptureMouse) return;
 
     auto* draw_list = ImGui::GetForegroundDrawList();
     auto& td = m_map.terrain();
 
-    // Surface height at a vertex as rendered: max cliff level of touching tiles + heightmap.
-    // This matches the per-tile surface mesh which uses max(4 corners).
-    if (m_cursor_valid) {
+    // Brush overlays: only when mouse is not over UI
+    if (m_cursor_valid && !ImGui::GetIO().WantCaptureMouse) {
         auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
 
         ImU32 grid_color = IM_COL32(255, 255, 255, 50);
@@ -923,6 +951,47 @@ void Editor::draw_overlays() {
             if (world_to_screen(cpos, sp)) {
                 draw_list->AddCircle(sp, 8.0f, IM_COL32(255, 255, 0, 255), 0, 2.0f);
             }
+        }
+    }
+
+    // Pathing visualization — always visible, cached + screen-culled
+    {
+        if (m_pathing_cache_dirty) rebuild_pathing_cache();
+
+        auto* fg = ImGui::GetForegroundDrawList();
+        ImU32 fill_color = IM_COL32(0, 0, 0, 60);
+        ImU32 dot_color  = IM_COL32(0, 0, 0, 200);
+        f32 z_off = 2.0f;
+        f32 sw = static_cast<f32>(m_rhi.extent().width);
+        f32 sh = static_cast<f32>(m_rhi.extent().height);
+
+        for (auto& [tx, ty] : m_blocked_tiles) {
+            glm::vec3 c00{tx * td.tile_size,     ty * td.tile_size,     td.world_z_at(tx, ty) + z_off};
+            glm::vec3 c10{(tx+1) * td.tile_size, ty * td.tile_size,     td.world_z_at(tx+1, ty) + z_off};
+            glm::vec3 c01{tx * td.tile_size,     (ty+1) * td.tile_size, td.world_z_at(tx, ty+1) + z_off};
+            glm::vec3 c11{(tx+1) * td.tile_size, (ty+1) * td.tile_size, td.world_z_at(tx+1, ty+1) + z_off};
+
+            ImVec2 s00, s10, s01, s11;
+            if (!world_to_screen(c00, s00) || !world_to_screen(c10, s10) ||
+                !world_to_screen(c01, s01) || !world_to_screen(c11, s11)) continue;
+
+            // Quick screen bounds check
+            f32 min_x = std::min({s00.x, s10.x, s01.x, s11.x});
+            f32 max_x = std::max({s00.x, s10.x, s01.x, s11.x});
+            f32 min_y = std::min({s00.y, s10.y, s01.y, s11.y});
+            f32 max_y = std::max({s00.y, s10.y, s01.y, s11.y});
+            if (max_x < 0 || min_x > sw || max_y < 0 || min_y > sh) continue;
+
+            ImVec2 quad[] = {s00, s10, s11, s01};
+            fg->AddConvexPolyFilled(quad, 4, fill_color);
+        }
+
+        for (auto& [vx, vy] : m_blocked_verts) {
+            glm::vec3 pos{vx * td.tile_size, vy * td.tile_size, td.world_z_at(vx, vy) + z_off};
+            ImVec2 sp;
+            if (!world_to_screen(pos, sp)) continue;
+            if (sp.x < 0 || sp.x > sw || sp.y < 0 || sp.y > sh) continue;
+            fg->AddCircleFilled(sp, 4.0f, dot_color);
         }
     }
 }

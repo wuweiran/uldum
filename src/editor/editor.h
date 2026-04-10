@@ -106,6 +106,14 @@ private:
     glm::vec3 m_cursor_pos{0.0f};
     bool      m_cursor_valid = false;
 
+    // Cached blocked tile/vertex lists — rebuilt only when pathing changes
+    struct BlockedTile { u32 tx, ty; };
+    struct BlockedVertex { u32 vx, vy; };
+    std::vector<BlockedTile>   m_blocked_tiles;
+    std::vector<BlockedVertex> m_blocked_verts;
+    bool m_pathing_cache_dirty = true;
+    void rebuild_pathing_cache();
+
     // Right-click drag pan: anchor point on ground plane
     bool      m_drag_active = false;
     glm::vec3 m_drag_anchor{0.0f};  // world-space ground point pinned under cursor
