@@ -328,16 +328,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 // Uses the unified deal_damage() from world.cpp which fires the on_damage callback.
 
 static void deal_attack_damage(World& world, Unit source, Unit target, f32 amount) {
-    auto* src_info = world.handle_infos.get(source.id);
-    auto* tgt_info = world.handle_infos.get(target.id);
-
     deal_damage(world, source, target, amount, "attack");
-
-    auto* hp = world.healths.get(target.id);
-    log::trace("Combat", "{} deals {:.0f} damage to {} (HP: {:.0f}/{:.0f})",
-               src_info ? src_info->type_id : "?", amount,
-               tgt_info ? tgt_info->type_id : "?",
-               hp ? hp->current : 0, hp ? hp->max : 0);
 }
 
 // ── Helper: spawn projectile ──────────────────────────────────────────────
@@ -992,7 +983,6 @@ void system_death(World& world) {
             dead.corpse_visible = false;
             auto* r = world.renderables.get(id);
             if (r) r->visible = false;
-            log::trace("Combat", "Corpse hidden (id={})", id);
         }
 
         // Fully destroy after cleanup_delay
@@ -1008,7 +998,6 @@ void system_death(World& world) {
     }
 
     for (auto h : to_destroy) {
-        log::trace("Combat", "Entity cleaned up (id={})", h.id);
         remove_all_components_and_free(world, h);
     }
 }
