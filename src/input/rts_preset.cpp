@@ -29,15 +29,18 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
 
+    // Skip selection when in targeting mode (ability or attack-move)
+    bool targeting = m_attack_move_mode || m_targeting_ability;
+
     // Start box drag on left press
-    if (input.mouse_left_pressed && !m_attack_move_mode) {
+    if (input.mouse_left_pressed && !targeting) {
         m_box_dragging = false;
         m_box_start_x = input.mouse_x;
         m_box_start_y = input.mouse_y;
     }
 
     // Detect drag threshold while holding left
-    if (input.mouse_left && !m_box_dragging && !m_attack_move_mode) {
+    if (input.mouse_left && !m_box_dragging && !targeting) {
         f32 dx = input.mouse_x - m_box_start_x;
         f32 dy = input.mouse_y - m_box_start_y;
         if (std::sqrt(dx * dx + dy * dy) > BOX_DRAG_THRESHOLD) {
@@ -46,7 +49,7 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     }
 
     // Left release: either box select or click select
-    if (input.mouse_left_released && !m_attack_move_mode) {
+    if (input.mouse_left_released && !targeting) {
         if (m_box_dragging) {
             // Box select — own units in rectangle
             auto units = ctx.picker.pick_units_in_box(
@@ -127,17 +130,29 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         return;
     }
 
-    // Attack-move: A pressed → next left-click issues AttackMove
+    // Attack-move: A pressed → next left-click: unit = Attack, ground = AttackMove
     if (m_attack_move_mode && input.mouse_left_pressed) {
-        glm::vec3 world_pos;
-        if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
-            if (!sel.empty()) {
+        if (!sel.empty()) {
+            auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+            if (target.is_valid()) {
+                // A-click on unit: force Attack
                 GameCommand cmd;
                 cmd.player = sel.player();
                 cmd.units  = sel.selected();
-                cmd.order  = simulation::orders::AttackMove{world_pos};
+                cmd.order  = simulation::orders::Attack{target};
                 cmd.queued = input.key_shift;
                 ctx.commands.submit(cmd);
+            } else {
+                // A-click on ground: AttackMove
+                glm::vec3 world_pos;
+                if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+                    GameCommand cmd;
+                    cmd.player = sel.player();
+                    cmd.units  = sel.selected();
+                    cmd.order  = simulation::orders::AttackMove{world_pos};
+                    cmd.queued = input.key_shift;
+                    ctx.commands.submit(cmd);
+                }
             }
         }
         m_attack_move_mode = false;

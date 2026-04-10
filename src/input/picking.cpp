@@ -146,6 +146,7 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
 
         auto* info = handle_infos.get(id);
         if (!info || info->category != simulation::Category::Unit) continue;
+        if (m_world->dead_states.has(id)) continue;
 
         if (player.is_valid()) {
             auto* own = owners.get(id);
@@ -196,6 +197,7 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
 
         auto* info = handle_infos.get(id);
         if (!info || info->category != simulation::Category::Unit) continue;
+        if (m_world->dead_states.has(id)) continue;
 
         auto* own = owners.get(id);
         if (!own || own->player.id != player.id) continue;

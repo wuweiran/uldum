@@ -224,12 +224,18 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
     hp->current -= amount;
     if (hp->current < 0) hp->current = 0;
 
-    // Fight-back: if target is idle (no order, no current target), attack the source
+    // Fight-back: if target is idle (no order, no current target), attack the source.
+    // Only fight back against enemies (different owner).
     if (source.is_valid() && world.validate(source)) {
-        auto* oq = world.order_queues.get(target.id);
-        auto* combat = world.combats.get(target.id);
-        if (oq && combat && !oq->current && !combat->target.is_valid()) {
-            combat->target = source;
+        auto* src_owner = world.owners.get(source.id);
+        auto* tgt_owner = world.owners.get(target.id);
+        bool same_owner = src_owner && tgt_owner && src_owner->player.id == tgt_owner->player.id;
+        if (!same_owner) {
+            auto* oq = world.order_queues.get(target.id);
+            auto* combat = world.combats.get(target.id);
+            if (oq && combat && !oq->current && !combat->target.is_valid()) {
+                combat->target = source;
+            }
         }
     }
 }
