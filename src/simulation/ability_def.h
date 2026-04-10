@@ -67,8 +67,10 @@ struct AbilityDef {
     std::string  id;
     std::string  name;
     std::string  icon;
+    std::string  hotkey;              // RTS preset key (e.g., "T"). Empty = no hotkey.
     AbilityForm  form      = AbilityForm::Passive;
     bool         stackable = false;
+    bool         hidden    = false;   // hidden abilities don't auto-assign to slots
     u32          max_level  = 1;
     TargetFilter target_filter;
 

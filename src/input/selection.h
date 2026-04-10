@@ -4,6 +4,7 @@
 #include "core/types.h"
 
 #include <array>
+#include <functional>
 #include <vector>
 
 namespace uldum::input {
@@ -36,6 +37,9 @@ public:
 
     // Check if a unit is selected.
     bool is_selected(simulation::Unit unit) const;
+
+    // Selection change callback (fired after any mutation).
+    std::function<void()> on_change;
 
     // ── Control groups ────────────────────────────────────────────────────
 

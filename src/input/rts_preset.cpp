@@ -1,5 +1,6 @@
 #include "input/rts_preset.h"
 #include "simulation/order.h"
+#include "simulation/ability_def.h"
 #include "core/log.h"
 
 #include <cmath>
@@ -8,7 +9,7 @@ namespace uldum::input {
 
 static constexpr const char* TAG = "RtsInput";
 
-// Helper: check if key just pressed this frame (rising edge)
+// Helper: check if key just pressed this frame (rising edge) — for hardcoded keys only
 static bool key_pressed(bool current, bool& prev) {
     bool pressed = current && !prev;
     prev = current;
@@ -86,6 +87,46 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
 
+    // Ability targeting: hotkey was pressed, now left-click to pick target
+    if (m_targeting_ability && input.mouse_left_pressed) {
+        if (!sel.empty()) {
+            const auto* def = ctx.simulation.abilities().get(m_targeting_ability_id);
+            if (def) {
+                if (def->form == simulation::AbilityForm::TargetUnit) {
+                    auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+                    if (target.is_valid()) {
+                        GameCommand cmd;
+                        cmd.player = sel.player();
+                        cmd.units  = sel.selected();
+                        cmd.order  = simulation::orders::Cast{m_targeting_ability_id, target, {}};
+                        cmd.queued = input.key_shift;
+                        ctx.commands.submit(cmd);
+                    }
+                } else if (def->form == simulation::AbilityForm::TargetPoint) {
+                    glm::vec3 world_pos;
+                    if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+                        GameCommand cmd;
+                        cmd.player = sel.player();
+                        cmd.units  = sel.selected();
+                        cmd.order  = simulation::orders::Cast{m_targeting_ability_id, {}, world_pos};
+                        cmd.queued = input.key_shift;
+                        ctx.commands.submit(cmd);
+                    }
+                }
+            }
+        }
+        m_targeting_ability = false;
+        m_targeting_ability_id.clear();
+        return;
+    }
+
+    // Escape cancels targeting mode
+    if (m_targeting_ability && input.key_escape) {
+        m_targeting_ability = false;
+        m_targeting_ability_id.clear();
+        return;
+    }
+
     // Attack-move: A pressed → next left-click issues AttackMove
     if (m_attack_move_mode && input.mouse_left_pressed) {
         glm::vec3 world_pos;
@@ -151,9 +192,10 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
 void RtsPreset::handle_hotkeys(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
+    auto& bindings = ctx.bindings;
 
-    // S — Stop
-    if (key_pressed(input.key_s, m_prev_key_s) && !sel.empty()) {
+    // Stop
+    if (bindings.action_pressed("stop", input) && !sel.empty()) {
         GameCommand cmd;
         cmd.player = sel.player();
         cmd.units  = sel.selected();
@@ -162,8 +204,8 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         ctx.commands.submit(cmd);
     }
 
-    // H — Hold position
-    if (key_pressed(input.key_h, m_prev_key_h) && !sel.empty()) {
+    // Hold position
+    if (bindings.action_pressed("hold", input) && !sel.empty()) {
         GameCommand cmd;
         cmd.player = sel.player();
         cmd.units  = sel.selected();
@@ -172,8 +214,8 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         ctx.commands.submit(cmd);
     }
 
-    // A — Enter attack-move mode
-    if (key_pressed(input.key_a, m_prev_key_a)) {
+    // Attack-move mode
+    if (bindings.action_pressed("attack_move", input)) {
         m_attack_move_mode = true;
     }
 
@@ -182,7 +224,7 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         m_attack_move_mode = false;
     }
 
-    // Control groups: Ctrl+N assign, N recall
+    // Control groups: Ctrl+N assign, N recall (hardcoded)
     for (u32 i = 0; i < 10; ++i) {
         if (key_pressed(input.key_num[i], m_prev_key_num[i])) {
             if (input.key_ctrl) {
@@ -193,9 +235,9 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         }
     }
 
-    // F1/F2/F3 — select hero 1/2/3 (find own heroes by classification)
-    auto select_hero = [&](u32 hero_index, bool pressed_now) {
-        if (!pressed_now) return;
+    // Select hero 1/2/3
+    auto select_hero = [&](u32 hero_index, const std::string& action) {
+        if (!bindings.action_pressed(action, input)) return;
         auto& world = ctx.simulation.world();
         u32 found = 0;
         for (u32 i = 0; i < world.classifications.count(); ++i) {
@@ -219,9 +261,45 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
             found++;
         }
     };
-    select_hero(0, key_pressed(input.key_f1, m_prev_key_f1));
-    select_hero(1, key_pressed(input.key_f2, m_prev_key_f2));
-    select_hero(2, key_pressed(input.key_f3, m_prev_key_f3));
+    select_hero(0, "select_hero_1");
+    select_hero(1, "select_hero_2");
+    select_hero(2, "select_hero_3");
+
+    // Ability hotkeys: scan selected unit's abilities for matching hotkey
+    if (!sel.empty()) {
+        auto& world = ctx.simulation.world();
+        u32 lead_id = sel.selected().front().id;
+        auto* aset = world.ability_sets.get(lead_id);
+        if (aset) {
+            for (auto& inst : aset->abilities) {
+                const auto* def = ctx.simulation.abilities().get(inst.ability_id);
+                if (!def || def->hotkey.empty()) continue;
+
+                // Rising-edge detection for this hotkey
+                bool current = InputBindings::resolve_key(def->hotkey, input);
+                bool& prev = m_prev_hotkey[def->hotkey];
+                bool pressed = current && !prev;
+                prev = current;
+                if (!pressed) continue;
+
+                if (def->form == simulation::AbilityForm::Instant ||
+                    def->form == simulation::AbilityForm::Toggle) {
+                    GameCommand cmd;
+                    cmd.player = sel.player();
+                    cmd.units  = sel.selected();
+                    cmd.order  = simulation::orders::Cast{inst.ability_id, {}, {}};
+                    cmd.queued = input.key_shift;
+                    ctx.commands.submit(cmd);
+                } else if (def->form == simulation::AbilityForm::TargetUnit ||
+                           def->form == simulation::AbilityForm::TargetPoint) {
+                    m_targeting_ability = true;
+                    m_targeting_ability_id = inst.ability_id;
+                    m_attack_move_mode = false;
+                }
+                break;
+            }
+        }
+    }
 }
 
 // ── Camera ───────────────────────────────────────────────────────────────

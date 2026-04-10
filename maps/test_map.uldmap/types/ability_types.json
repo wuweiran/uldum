@@ -31,6 +31,7 @@
     "holy_light": {
         "name": "Holy Light",
         "form": "target_unit",
+        "hotkey": "T",
         "max_level": 3,
         "target_filter": { "ally": true, "self": true },
         "levels": [

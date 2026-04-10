@@ -35,6 +35,9 @@ struct InputState {
     // Number keys (0-9) for control groups
     bool key_num[10] = {};
 
+    // Letter keys A-Z (key_letter[0] = A, key_letter[25] = Z)
+    bool key_letter[26] = {};
+
     // Modifiers
     bool key_shift = false;
     bool key_ctrl  = false;

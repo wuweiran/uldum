@@ -157,12 +157,20 @@ bool Engine::init() {
         return m_renderer.get_attachment_point(entity_id, bone);
     });
 
-    // Input: command system, selection, picking
+    // Input: command system, selection, picking, preset
     m_commands.init(&m_simulation.world());
     m_selection.set_player(simulation::Player{0});  // local player = slot 0
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
                   &m_simulation.world(),
                   m_platform->width(), m_platform->height());
+
+    // Load input configuration from manifest
+    m_input_preset = input::create_preset(m_map.manifest().input_preset);
+    m_bindings.load(m_map.manifest().input_bindings_json);
+    m_bindings.apply_defaults(input::rts_default_bindings());
+
+    // Wire input to script engine (before scripts run)
+    m_script.set_input(&m_selection, &m_commands);
 
     // Initialize spatial grid before scripts run (so GetUnitsInRange works in main())
     m_simulation.spatial_grid().update(m_simulation.world());
@@ -228,11 +236,12 @@ void Engine::run() {
                 m_commands,
                 m_picker,
                 m_renderer.camera(),
+                m_bindings,
                 m_simulation,
                 m_platform->width(),
                 m_platform->height()
             };
-            m_input_preset.update(ictx, frame_dt);
+            m_input_preset->update(ictx, frame_dt);
         }
 
         // Audio — update listener from camera position

@@ -4,6 +4,9 @@
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
+#include "input/selection.h"
+#include "input/command_system.h"
+#include "input/command.h"
 #include "map/map.h"
 #include "render/effect.h"
 #include "audio/audio.h"
@@ -87,6 +90,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     bind_api();
     bind_trigger_api();
     bind_timer_api();
+    bind_input_api();
 
     // Hook the world's damage callback so all damage (combat + script) fires on_damage events
     sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target, f32& amount, std::string_view damage_type) {
@@ -893,6 +897,141 @@ void ScriptEngine::bind_timer_api() {
     lua["DestroyTimer"] = [&](u32 id) {
         m_timers.erase(id);
     };
+}
+
+// ── Input API ─────────────────────────────────────────────────────────────
+
+void ScriptEngine::set_input(input::SelectionState* selection, input::CommandSystem* commands) {
+    m_selection = selection;
+    m_commands = commands;
+
+    // Wire selection change → on_select event
+    if (m_selection) {
+        m_selection->on_change = [this]() {
+            fire_event("on_select");
+        };
+    }
+
+    // Wire order filter → on_order event
+    if (m_commands) {
+        m_commands->set_order_filter([this](const input::GameCommand& cmd) -> bool {
+            // Decompose command into context
+            m_ctx_order_player = cmd.player.id;
+            m_ctx_order_queued = cmd.queued;
+            m_ctx_order_cancelled = false;
+            m_ctx_order_target_x = 0;
+            m_ctx_order_target_y = 0;
+            m_ctx_order_target_unit = UINT32_MAX;
+
+            std::visit([this](auto&& payload) {
+                using T = std::decay_t<decltype(payload)>;
+                if constexpr (std::is_same_v<T, simulation::orders::Move>) {
+                    m_ctx_order_type = "move";
+                    m_ctx_order_target_x = payload.target.x;
+                    m_ctx_order_target_y = payload.target.y;
+                } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
+                    m_ctx_order_type = "attack_move";
+                    m_ctx_order_target_x = payload.target.x;
+                    m_ctx_order_target_y = payload.target.y;
+                } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
+                    m_ctx_order_type = "attack";
+                    m_ctx_order_target_unit = payload.target.id;
+                } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
+                    m_ctx_order_type = "stop";
+                } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
+                    m_ctx_order_type = "hold";
+                } else if constexpr (std::is_same_v<T, simulation::orders::Patrol>) {
+                    m_ctx_order_type = "patrol";
+                    if (!payload.waypoints.empty()) {
+                        m_ctx_order_target_x = payload.waypoints[0].x;
+                        m_ctx_order_target_y = payload.waypoints[0].y;
+                    }
+                } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
+                    m_ctx_order_type = "cast";
+                    m_ctx_order_target_unit = payload.target_unit.id;
+                    m_ctx_order_target_x = payload.target_pos.x;
+                    m_ctx_order_target_y = payload.target_pos.y;
+                } else {
+                    m_ctx_order_type = "other";
+                }
+            }, cmd.order);
+
+            fire_event("on_order", UINT32_MAX, "", cmd.player.id);
+            return !m_ctx_order_cancelled;
+        });
+    }
+}
+
+void ScriptEngine::bind_input_api() {
+    auto& lua = *m_lua;
+
+    // ── Selection API ────────────────────────────────────────────────────
+
+    lua["GetSelectedUnits"] = [this]() -> sol::table {
+        auto& lua = *m_lua;
+        sol::table result = lua.create_table();
+        if (m_selection) {
+            u32 idx = 1;
+            for (auto& u : m_selection->selected()) {
+                result[idx++] = u.id;
+            }
+        }
+        return result;
+    };
+
+    lua["GetSelectedUnitCount"] = [this]() -> u32 {
+        return m_selection ? m_selection->count() : 0;
+    };
+
+    lua["SelectUnit"] = [this](u32 unit_id) {
+        if (!m_selection || !m_sim) return;
+        auto* info = m_sim->world().handle_infos.get(unit_id);
+        if (!info) return;
+        simulation::Unit u;
+        u.id = unit_id;
+        u.generation = info->generation;
+        m_selection->select(u);
+    };
+
+    lua["SelectUnits"] = [this](sol::table tbl) {
+        if (!m_selection || !m_sim) return;
+        std::vector<simulation::Unit> units;
+        for (auto& [k, v] : tbl) {
+            u32 id = v.as<u32>();
+            auto* info = m_sim->world().handle_infos.get(id);
+            if (info) {
+                simulation::Unit u;
+                u.id = id;
+                u.generation = info->generation;
+                units.push_back(u);
+            }
+        }
+        m_selection->select_multiple(std::move(units));
+    };
+
+    lua["ClearSelection"] = [this]() {
+        if (m_selection) m_selection->clear();
+    };
+
+    lua["IsUnitSelected"] = [this](u32 unit_id) -> bool {
+        if (!m_selection || !m_sim) return false;
+        auto* info = m_sim->world().handle_infos.get(unit_id);
+        if (!info) return false;
+        simulation::Unit u;
+        u.id = unit_id;
+        u.generation = info->generation;
+        return m_selection->is_selected(u);
+    };
+
+    // ── Order event context ──────────────────────────────────────────────
+
+    lua["GetOrderType"] = [this]() -> std::string { return m_ctx_order_type; };
+    lua["GetOrderTargetX"] = [this]() -> f32 { return m_ctx_order_target_x; };
+    lua["GetOrderTargetY"] = [this]() -> f32 { return m_ctx_order_target_y; };
+    lua["GetOrderTargetUnit"] = [this]() -> u32 { return m_ctx_order_target_unit; };
+    lua["GetOrderPlayer"] = [this]() -> u32 { return m_ctx_order_player; };
+    lua["IsOrderQueued"] = [this]() -> bool { return m_ctx_order_queued; };
+    lua["CancelOrder"] = [this]() { m_ctx_order_cancelled = true; };
 }
 
 } // namespace uldum::script

@@ -18,6 +18,7 @@ namespace uldum::simulation { class Simulation; struct World; class AbilityRegis
 namespace uldum::map { class MapManager; }
 namespace uldum::render { class EffectRegistry; class EffectManager; }
 namespace uldum::audio { class AudioEngine; }
+namespace uldum::input { class SelectionState; class CommandSystem; }
 
 namespace uldum::script {
 
@@ -70,6 +71,10 @@ public:
               audio::AudioEngine* audio = nullptr);
 
     void set_attach_point_fn(AttachPointFn fn) { m_attach_fn = std::move(fn); }
+
+    // Connect input systems (call after input is initialized, before scripts run).
+    void set_input(input::SelectionState* selection, input::CommandSystem* commands);
+
     void shutdown();
     void update(float dt);
 
@@ -102,6 +107,7 @@ private:
     void bind_api();
     void bind_trigger_api();
     void bind_timer_api();
+    void bind_input_api();
 
     u32 next_trigger_id() { return ++m_next_trigger; }
     u32 next_timer_id()   { return ++m_next_timer; }
@@ -113,6 +119,19 @@ private:
     render::EffectManager*   m_effect_mgr = nullptr;
     audio::AudioEngine*      m_audio      = nullptr;
     AttachPointFn            m_attach_fn;
+
+    // Input (set via set_input)
+    input::SelectionState*   m_selection = nullptr;
+    input::CommandSystem*    m_commands  = nullptr;
+
+    // Order event context
+    std::string m_ctx_order_type;
+    f32  m_ctx_order_target_x    = 0;
+    f32  m_ctx_order_target_y    = 0;
+    u32  m_ctx_order_target_unit = UINT32_MAX;
+    u32  m_ctx_order_player      = UINT32_MAX;
+    bool m_ctx_order_queued      = false;
+    bool m_ctx_order_cancelled   = false;
 
     // Triggers
     std::unordered_map<u32, Trigger> m_triggers;

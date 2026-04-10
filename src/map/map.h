@@ -2,6 +2,8 @@
 
 #include "map/terrain_data.h"
 
+#include <nlohmann/json.hpp>
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,6 +47,10 @@ struct MapManifest {
     std::vector<std::string> attack_types;
     std::vector<std::string> armor_types;
     std::vector<std::string> attributes;
+
+    // Input configuration
+    std::string input_preset = "rts";
+    nlohmann::json input_bindings_json;  // raw "bindings" object from manifest
 };
 
 struct PlacedUnit {

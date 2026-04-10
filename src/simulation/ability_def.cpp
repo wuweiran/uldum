@@ -83,7 +83,9 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
         def.name      = val.value("name", key);
         def.icon      = val.value("icon", "");
         def.form      = parse_ability_form(val.value("form", "passive"));
+        def.hotkey    = val.value("hotkey", "");
         def.stackable = val.value("stackable", false);
+        def.hidden    = val.value("hidden", false);
         def.max_level = val.value("max_level", 1u);
 
         if (val.contains("target_filter")) {

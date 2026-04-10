@@ -129,6 +129,15 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
         for (auto& a : j["attributes"]) m_manifest.attributes.push_back(a.get<std::string>());
     }
 
+    // Input configuration
+    if (j.contains("input") && j["input"].is_object()) {
+        auto& input = j["input"];
+        m_manifest.input_preset = input.value("preset", "rts");
+        if (input.contains("bindings") && input["bindings"].is_object()) {
+            m_manifest.input_bindings_json = input["bindings"];
+        }
+    }
+
     log::info(TAG, "Manifest: '{}' by {} — {} players, {} teams, scene '{}'",
               m_manifest.name, m_manifest.author,
               m_manifest.players.size(), m_manifest.teams.size(),

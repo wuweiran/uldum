@@ -163,6 +163,10 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
     case WM_KEYDOWN:
     case WM_KEYUP: {
         bool pressed = (msg == WM_KEYDOWN);
+        // Always set key_letter for A-Z
+        if (wparam >= 'A' && wparam <= 'Z') {
+            self->m_input.key_letter[wparam - 'A'] = pressed;
+        }
         switch (wparam) {
         case VK_ESCAPE: self->m_input.key_escape = pressed; break;
         case 'W':       self->m_input.key_w = pressed; break;
