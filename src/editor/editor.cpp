@@ -954,8 +954,8 @@ void Editor::draw_overlays() {
         }
     }
 
-    // Pathing visualization — always visible, cached + screen-culled
-    {
+    // Pathing visualization — toggled via View menu
+    if (m_show_pathing) {
         if (m_pathing_cache_dirty) rebuild_pathing_cache();
 
         auto* fg = ImGui::GetForegroundDrawList();
@@ -1029,6 +1029,10 @@ void Editor::draw_ui() {
                     if (!selected) switch_scene(scene);
                 }
             }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Show Pathing", nullptr, &m_show_pathing);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();

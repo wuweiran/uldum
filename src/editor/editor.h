@@ -106,6 +106,9 @@ private:
     glm::vec3 m_cursor_pos{0.0f};
     bool      m_cursor_valid = false;
 
+    // View options
+    bool m_show_pathing = true;
+
     // Cached blocked tile/vertex lists — rebuilt only when pathing changes
     struct BlockedTile { u32 tx, ty; };
     struct BlockedVertex { u32 vx, vy; };

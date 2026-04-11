@@ -3,6 +3,10 @@
 #include <cgltf.h>
 #include <stb_image.h>
 
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
+
 #include <filesystem>
 #include <format>
 #include <unordered_map>
@@ -243,15 +247,46 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
         extract_animations(data, node_to_bone, model.animations);
     }
 
-    // Extract meshes
-    for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
-        const cgltf_mesh& mesh = data->meshes[mi];
+    // Extract meshes by walking the node tree (not iterating meshes directly).
+    // This detects bone-parented meshes (e.g., weapons) and converts them to
+    // skinned meshes with 100% weight on the parent bone.
+
+    // Helper: get a node's local transform as a mat4
+    auto node_local_transform = [](const cgltf_node* node) -> glm::mat4 {
+        cgltf_float mat[16];
+        cgltf_node_transform_local(node, mat);
+        return glm::make_mat4(mat);
+    };
+
+    // Helper: find which bone a node is parented to.
+    // Returns bone index and the node's local transform (relative to bone parent).
+    struct BoneParentInfo { i32 bone_index = -1; glm::mat4 transform{1.0f}; };
+    auto find_parent_bone = [&](const cgltf_node* node) -> BoneParentInfo {
+        const cgltf_node* cur = node->parent;
+        while (cur) {
+            auto it = node_to_bone.find(cur);
+            if (it != node_to_bone.end()) {
+                // Just use the weapon node's local transform — it encodes the
+                // offset from the bone. The skinning shader handles the rest.
+                return {static_cast<i32>(it->second), node_local_transform(node)};
+            }
+            cur = cur->parent;
+        }
+        return {};
+    };
+
+    for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+        const cgltf_node& node = data->nodes[ni];
+        if (!node.mesh) continue;
+        const cgltf_mesh& mesh = *node.mesh;
+
+        // Determine if this node is bone-parented (unskinned mesh attached to skeleton)
+        auto bone_info = has_skin ? find_parent_bone(&node) : BoneParentInfo{};
 
         for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
             const cgltf_primitive& prim = mesh.primitives[pi];
             if (prim.type != cgltf_primitive_type_triangles) continue;
 
-            // Find attribute accessors
             const cgltf_accessor* pos_acc    = nullptr;
             const cgltf_accessor* norm_acc   = nullptr;
             const cgltf_accessor* uv_acc     = nullptr;
@@ -271,7 +306,6 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
 
             cgltf_size vertex_count = pos_acc->count;
 
-            // Read indices
             std::vector<u32> indices;
             if (prim.indices) {
                 indices.resize(prim.indices->count);
@@ -280,10 +314,10 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
                 }
             }
 
-            std::string mesh_name = mesh.name ? mesh.name : std::format("mesh_{}", mi);
+            std::string mesh_name = mesh.name ? mesh.name : std::format("mesh_{}", ni);
 
-            // Skinned mesh if we have skeleton + joint/weight attributes
             if (has_skin && joints_acc && weights_acc) {
+                // Properly skinned mesh
                 SkinnedMeshData smd;
                 smd.name = mesh_name;
                 smd.indices = std::move(indices);
@@ -295,17 +329,46 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
                     if (norm_acc) v.normal   = read_vec3(norm_acc, vi);
                     if (uv_acc)   v.texcoord = read_vec2(uv_acc, vi);
 
-                    // Joint indices (u16 or u8 in glTF → u32)
                     cgltf_uint joint_vals[4]{};
                     cgltf_accessor_read_uint(joints_acc, vi, joint_vals, 4);
                     v.bone_indices = {joint_vals[0], joint_vals[1], joint_vals[2], joint_vals[3]};
-
                     v.bone_weights = read_vec4(weights_acc, vi);
                 }
 
                 model.skinned_meshes.push_back(std::move(smd));
+            } else if (bone_info.bone_index >= 0) {
+                // Unskinned mesh parented to a bone — convert to skinned.
+                // The skinning shader computes: bone_global * inverse_bind * vertex.
+                // Regular skinned vertices are in bind-pose (model) space.
+                // The weapon's vertices are in the node's local space. To place them
+                // in bind-pose space: bind_matrix * node_local * vertex
+                // where bind_matrix = inverse(inverse_bind_matrix).
+                glm::mat4 bind_matrix = glm::inverse(model.skeleton.bones[bone_info.bone_index].inverse_bind_matrix);
+                glm::mat4 to_bind_space = bind_matrix * bone_info.transform;
+                glm::mat3 to_bind_normal = glm::transpose(glm::inverse(glm::mat3(to_bind_space)));
+
+                SkinnedMeshData smd;
+                smd.name = mesh_name;
+                smd.indices = std::move(indices);
+                smd.vertices.resize(vertex_count);
+
+                for (cgltf_size vi = 0; vi < vertex_count; ++vi) {
+                    auto& v = smd.vertices[vi];
+                    glm::vec3 pos = read_vec3(pos_acc, vi);
+                    v.position = glm::vec3(to_bind_space * glm::vec4(pos, 1.0f));
+                    if (norm_acc) {
+                        glm::vec3 n = read_vec3(norm_acc, vi);
+                        v.normal = glm::normalize(to_bind_normal * n);
+                    }
+                    if (uv_acc) v.texcoord = read_vec2(uv_acc, vi);
+
+                    v.bone_indices = {static_cast<u32>(bone_info.bone_index), 0, 0, 0};
+                    v.bone_weights = {1.0f, 0.0f, 0.0f, 0.0f};
+                }
+
+                model.skinned_meshes.push_back(std::move(smd));
             } else {
-                // Non-skinned mesh
+                // Non-skinned, not bone-parented
                 MeshData md;
                 md.name = mesh_name;
                 md.indices = std::move(indices);
