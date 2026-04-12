@@ -97,6 +97,8 @@ private:
     i32   m_paint_layer    = 0;
     bool  m_terrain_dirty  = false;
     bool  m_brush_applied  = false; // one-shot: already applied this click
+    i32   m_last_brush_vx = -1;   // last vertex where brush was applied (for drag)
+    i32   m_last_brush_vy = -1;
 
     // Snapped cursor (center vertex of brush)
     i32   m_cursor_vx = 0;

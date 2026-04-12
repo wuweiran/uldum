@@ -25,13 +25,10 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
     indices.reserve(td.tile_count() * 6 + td.tile_count() * 6);
 
     auto splat_at = [&](u32 ix, u32 iy) -> glm::vec4 {
-        u32 idx = iy * td.verts_x() + ix;
-        return {
-            static_cast<f32>(td.splatmap[0][idx]) / 255.0f,
-            static_cast<f32>(td.splatmap[1][idx]) / 255.0f,
-            static_cast<f32>(td.splatmap[2][idx]) / 255.0f,
-            static_cast<f32>(td.splatmap[3][idx]) / 255.0f
-        };
+        u8 layer = td.tile_layer[iy * td.verts_x() + ix];
+        glm::vec4 w{0};
+        w[std::min(layer, u8(3))] = 1.0f;
+        return w;
     };
 
     auto texcoord_at = [&](u32 ix, u32 iy) -> glm::vec2 {

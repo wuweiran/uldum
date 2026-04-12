@@ -39,7 +39,7 @@ struct TerrainData {
     // Per-vertex data — indexed by iy * (tiles_x+1) + ix
     std::vector<f32> heightmap;      // smooth offset within cliff layer
     std::vector<u8>  cliff_level;    // discrete elevation layer (0-15)
-    std::vector<u8>  splatmap[4];    // blend weight per texture layer (0-255)
+    std::vector<u8>  tile_layer;     // terrain type per vertex (0-3, index into texture layers)
     std::vector<u8>  pathing;        // PathingFlag bitfield
 
     // ── Helpers ────────────────────────────────────────────────────────
@@ -68,15 +68,9 @@ struct TerrainData {
         return static_cast<f32>(cliff_level[idx]) * layer_height + heightmap[idx];
     }
 
-    // Check if a vertex is water (dominant splatmap layer == WATER_LAYER)
+    // Check if a vertex is water
     bool is_water(u32 ix, u32 iy) const {
-        u32 idx = iy * verts_x() + ix;
-        u8 max_w = 0;
-        u32 max_l = 0;
-        for (u32 l = 0; l < 4; ++l) {
-            if (splatmap[l][idx] > max_w) { max_w = splatmap[l][idx]; max_l = l; }
-        }
-        return max_l == WATER_LAYER;
+        return tile_layer[iy * verts_x() + ix] == WATER_LAYER;
     }
 
     bool is_valid() const { return tiles_x > 0 && tiles_y > 0 && !heightmap.empty(); }

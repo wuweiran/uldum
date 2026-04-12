@@ -6,7 +6,7 @@ Tile-based heightmap terrain inspired by Warcraft III. The terrain is the founda
 
 ## Data Model
 
-Terrain is a regular grid of tiles at WC3 scale (1 tile = 128 game units). Heights, cliff levels, texture blend weights, and pathing are stored per-vertex. Water is stored per-tile.
+Terrain is a regular grid of tiles at WC3 scale (1 tile = 128 game units). All data is per-vertex.
 
 ```
 TerrainData
@@ -14,14 +14,11 @@ TerrainData
 ├── tile_size               — world-space size per tile (128.0 game units)
 ├── layer_height            — height per cliff level (128.0 game units)
 │
-├── Per-vertex data — (tiles_x+1) * (tiles_y+1) entries
-│   ├── heightmap: f32[]    — smooth height offset within cliff layer
-│   ├── cliff_level: u8[]   — discrete elevation layer (0-15)
-│   ├── splatmap: u8[4][]   — blend weights for 4 texture layers (0-255 each)
-│   └── pathing: u8[]       — flag bits (walkable, flyable, ramp, water)
-│
-└── Per-tile data — tiles_x * tiles_y entries
-    └── water_height: f32[] — water surface height (< 0 = no water)
+└── Per-vertex data — (tiles_x+1) * (tiles_y+1) entries
+    ├── heightmap: f32[]    — smooth height offset within cliff layer
+    ├── cliff_level: u8[]   — discrete elevation layer (0-15)
+    ├── tile_layer: u8[]    — terrain type (0-3, index into texture layers)
+    └── pathing: u8[]       — flag bits (walkable, flyable, ramp)
 ```
 
 ### Final Vertex Height
@@ -79,13 +76,10 @@ Ramp constraints:
 - Must form a contiguous strip of ramp-flagged vertices
 - Heightmap values on ramp vertices interpolate between the two layer base heights
 
-## Splatmap (Texture Blending)
+## Tile Layers (Ground Textures)
 
-Each vertex stores 4 blend weights (u8, 0-255) controlling how 4 ground texture layers mix at that point. The shader normalizes the weights and blends the texture samples.
-
-```
-final_color = sum(texture[i].sample(uv) * weight[i]) / sum(weight[i])
-```
+Each vertex stores a single terrain type index (0-3) selecting one of 4 ground
+texture layers. No blending — each vertex is 100% one type, like WC3.
 
 ### Texture Layers
 
@@ -96,31 +90,31 @@ A map's tileset defines which textures occupy each layer slot (0-3). Typical set
 | 0     | Grass      |
 | 1     | Dirt       |
 | 2     | Stone      |
-| 3     | Sand       |
+| 3     | Water      |
 
-The tileset is defined in the map's `tileset.json`, not by the engine. The engine only provides the 4-layer blending mechanism.
+The tileset is defined in the map's `tileset.json`, not by the engine.
 
 ### Painting
 
-The editor's paint brush modifies splatmap weights at nearby vertices:
-- Increase the selected layer's weight
-- Optionally decrease other layers to maintain a normalized sum
-- Brush has radius and strength (falloff from center)
+The editor's paint brush sets the tile layer at vertices within the brush radius.
+Click and drag to paint. Each vertex becomes 100% the selected layer.
 
 ## Water
 
-Water is a tile type, not a separate data layer. Splatmap layer 3 (`WATER_LAYER`) is the water texture. The engine checks if a vertex's dominant splatmap layer is the water layer to determine water behavior.
+Water is tile layer 3 (`WATER_LAYER`). The engine checks `tile_layer == 3` to
+determine water behavior.
 
 ### Water as a Tile Type
 
-- **Painting**: Use the editor's Paint tool with layer 3 (Water) to place water tiles, just like painting any other ground texture.
-- **Pathing**: Ground units cannot traverse vertices where the dominant splatmap layer is water. Amphibious units can. Air units ignore water.
-- **Rendering**: Currently renders as an opaque blue tile (same as other ground textures). Translucent water rendering with waves is planned for Phase 13 (GPU-Driven Rendering).
-- **Cliff interaction**: Water can only be placed on flat tiles (same cliff level on all 4 corners). No water on cliffs or ramps.
+- **Painting**: Use the editor's Paint tool with layer 3 (Water), same as other ground types.
+- **Pathing**: Ground units cannot traverse water vertices. Amphibious units can. Air units ignore water.
+- **Rendering**: Currently renders as an opaque blue tile. Translucent water rendering with waves is a future improvement.
 
 ## Pathing
 
-Per-vertex bitfield controlling movement. This is higher resolution than per-tile — each vertex acts as a pathing cell, giving `(tiles_x+1) * (tiles_y+1)` cells.
+Per-vertex bitfield controlling movement. A tile is passable only if **all 4 of
+its corner vertices** are walkable. Marking any single vertex blocks all tiles
+touching it.
 
 ### Pathing Flags
 
@@ -136,18 +130,17 @@ Default: all vertices are `WALKABLE | FLYABLE` (0x03).
 
 | Condition | Ground unit | Air unit |
 |-----------|------------|----------|
-| WALKABLE, not water | Can walk | Can fly |
-| Water tile (splatmap layer 3 dominant) | Blocked (amphibious can walk) | Can fly |
-| Not WALKABLE | Blocked | Can fly (if FLYABLE) |
+| All 4 corners WALKABLE, not water | Can walk | Can fly |
+| Water (tile_layer == 3) | Blocked (amphibious can walk) | Can fly |
+| Any corner not WALKABLE | Blocked | Can fly (if FLYABLE) |
 | Adjacent cliff levels differ | Blocked | Can fly |
-| Adjacent cliff levels differ + RAMP | Can walk (slope) | Can fly |
+| Adjacent cliff levels differ + all 4 RAMP | Can walk (slope) | Can fly |
 
-### Auto-Pathing
+### Ramp Validity
 
-The engine checks pathing based on terrain state:
-- Cliff edges: movement blocked between vertices with different cliff levels (unless RAMP)
-- Water: checked via splatmap dominant layer, not a separate flag
-- The editor can manually toggle WALKABLE per vertex
+A ramp tile requires **all 4 corners** to have the RAMP flag and exactly 1 cliff
+level difference. Partial ramp flags (3 of 4) are invalid — the editor enforces
+this by setting/clearing ramp per-tile, not per-vertex.
 
 ## Module Ownership
 
@@ -155,7 +148,7 @@ The engine checks pathing based on terrain state:
 |--------------|--------------------------------------------------------------|
 | `map`        | Owns `TerrainData`. Loads/saves from map file                |
 | `render`     | Reads `TerrainData`, builds GPU mesh, draws terrain           |
-| `simulation` | Reads heightmap for unit Z, pathing + splatmap for movement   |
+| `simulation` | Reads heightmap for unit Z, pathing + tile_layer for movement  |
 | `editor`     | Writes to `TerrainData` (sculpt, paint, cliff, ramp, pathing) |
 
 ## Rendering
@@ -163,10 +156,10 @@ The engine checks pathing based on terrain state:
 ### Terrain Mesh
 
 The renderer builds a GPU mesh from the terrain data:
-- One vertex per grid intersection with position, normal, texcoord, and splatmap weights
+- One vertex per grid intersection with position, normal, texcoord, and texture layer weights
 - Normal computed from cross product of adjacent edge vectors
 - Two triangles per tile
-- Splatmap weights passed as vertex attributes, shader blends 4 texture samples
+- Tile layer converted to 4-channel weights at mesh build time; shader blends 4 texture samples
 - Terrain mesh re-uploaded when modified (editor sculpt/paint)
 
 ### Cliff Walls
@@ -197,22 +190,17 @@ Terrain receives shadows from the shadow map. Cliff walls and water also receive
 
 ## Serialization
 
-Terrain data is stored in the `.uldmap` package as binary (format v2):
+Terrain data is stored in the `.uldmap` package as binary:
 
 ```
 terrain.bin
-├── Header: version(u32), tiles_x(u32), tiles_y(u32), tile_size(f32), layer_height(f32)
+├── tiles_x(u32), tiles_y(u32), tile_size(f32), layer_height(f32)
 ├── heightmap:    f32[vertex_count]
 ├── cliff_level:  u8[vertex_count]
-├── splatmap[0]:  u8[vertex_count]
-├── splatmap[1]:  u8[vertex_count]
-├── splatmap[2]:  u8[vertex_count]
-├── splatmap[3]:  u8[vertex_count]
+├── tile_layer:   u8[vertex_count]
 └── pathing:      u8[vertex_count]
 ```
 
-Straightforward flat arrays, no compression. A 64x64 tile map:
+Flat arrays, no compression. A 64x64 tile map:
 - vertex_count = 65 * 65 = 4225
-- Total: ~21 KB (header 20B + heightmap 16.9K + cliff 4.2K + splatmap 16.9K + pathing 4.2K)
-
-v1 (legacy) files without version header and with trailing `water_height: f32[tile_count]` are still supported for loading.
+- Total: ~25 KB (header 16B + heightmap 16.9K + cliff 4.2K + tile_layer 4.2K + pathing 4.2K)

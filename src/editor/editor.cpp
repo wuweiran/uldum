@@ -257,9 +257,15 @@ void Editor::run() {
         if (input.mouse_left && m_cursor_valid && !over_ui) {
             if (m_continuous) {
                 apply_brush(frame_dt);
-            } else if (!m_brush_applied) {
-                apply_brush(1.0f);
-                m_brush_applied = true;
+            } else {
+                // One-shot: apply once per click, then re-apply when cursor moves to a new vertex
+                bool new_vertex = (m_cursor_vx != m_last_brush_vx || m_cursor_vy != m_last_brush_vy);
+                if (!m_brush_applied || new_vertex) {
+                    apply_brush(1.0f);
+                    m_brush_applied = true;
+                    m_last_brush_vx = m_cursor_vx;
+                    m_last_brush_vy = m_cursor_vy;
+                }
             }
         }
         if (!input.mouse_left) {
@@ -515,12 +521,10 @@ void Editor::brush_flatten(f32 strength, f32 dt) {
     }
 }
 
-void Editor::brush_paint(f32 strength, f32 dt) {
+void Editor::brush_paint(f32 /*strength*/, f32 /*dt*/) {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-
-    f32 rate = std::min(1.0f, strength * dt * 0.5f);
-    i32 layer = std::clamp(m_paint_layer, 0, 3);
+    u8 layer = static_cast<u8>(std::clamp(m_paint_layer, 0, 3));
 
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
@@ -528,27 +532,7 @@ void Editor::brush_paint(f32 strength, f32 dt) {
                                  static_cast<i32>(iy) - m_cursor_vy, m_brush_size);
             if (w <= 0.0f) continue;
 
-            u32 idx = iy * td.verts_x() + ix;
-            f32 add = 255.0f * w * rate;
-
-            f32 cur = static_cast<f32>(td.splatmap[layer][idx]);
-            f32 new_val = std::min(255.0f, cur + add);
-            f32 delta = new_val - cur;
-            td.splatmap[layer][idx] = static_cast<u8>(new_val);
-
-            // Reduce other layers proportionally
-            f32 others_total = 0.0f;
-            for (i32 l = 0; l < 4; ++l)
-                if (l != layer) others_total += static_cast<f32>(td.splatmap[l][idx]);
-            if (others_total > 0.0f) {
-                for (i32 l = 0; l < 4; ++l) {
-                    if (l != layer) {
-                        f32 v = static_cast<f32>(td.splatmap[l][idx]);
-                        v -= delta * (v / others_total);
-                        td.splatmap[l][idx] = static_cast<u8>(std::max(0.0f, v));
-                    }
-                }
-            }
+            td.tile_layer[iy * td.verts_x() + ix] = layer;
             m_terrain_dirty = true;
         }
     }
@@ -626,6 +610,8 @@ void Editor::brush_cliff_lower() {
 }
 
 void Editor::cleanup_ramp_flags() {
+    // A vertex keeps RAMP only if it belongs to at least one valid ramp tile
+    // (cliff diff = 1 AND all 4 corners have RAMP).
     auto& td = m_map.terrain();
     if (!td.is_valid()) return;
 
@@ -633,10 +619,9 @@ void Editor::cleanup_ramp_flags() {
         for (u32 vx = 0; vx <= td.tiles_x; ++vx) {
             if (!(td.pathing_at(vx, vy) & map::PATHING_RAMP)) continue;
 
-            // Check all tiles touching this vertex for a cliff difference of 1
-            bool has_cliff = false;
-            for (i32 dy = -1; dy <= 0 && !has_cliff; ++dy) {
-                for (i32 dx = -1; dx <= 0 && !has_cliff; ++dx) {
+            bool valid = false;
+            for (i32 dy = -1; dy <= 0 && !valid; ++dy) {
+                for (i32 dx = -1; dx <= 0 && !valid; ++dx) {
                     i32 tx = static_cast<i32>(vx) + dx;
                     i32 ty = static_cast<i32>(vy) + dy;
                     if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
@@ -647,11 +632,18 @@ void Editor::cleanup_ramp_flags() {
                     };
                     u8 cmin = std::min({c[0], c[1], c[2], c[3]});
                     u8 cmax = std::max({c[0], c[1], c[2], c[3]});
-                    if (cmax - cmin == 1) has_cliff = true;
+                    if (cmax - cmin != 1) continue;
+
+                    // All 4 corners of this tile must have RAMP
+                    bool all_ramp = (td.pathing_at(tx, ty)     & map::PATHING_RAMP) &&
+                                    (td.pathing_at(tx+1, ty)   & map::PATHING_RAMP) &&
+                                    (td.pathing_at(tx, ty+1)   & map::PATHING_RAMP) &&
+                                    (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP);
+                    if (all_ramp) valid = true;
                 }
             }
 
-            if (!has_cliff) {
+            if (!valid) {
                 td.pathing_at(vx, vy) &= ~map::PATHING_RAMP;
                 m_terrain_dirty = true;
             }
@@ -660,57 +652,65 @@ void Editor::cleanup_ramp_flags() {
 }
 
 void Editor::brush_ramp_set() {
+    // Ramp operates per-tile: set RAMP on all 4 corners of valid tiles.
+    // A tile is valid for ramp if it has exactly 1 cliff level difference.
     auto& td = m_map.terrain();
-    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
     i32 r = m_brush_size - 1;
     i32 r2 = r * r;
 
-    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
-        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
-            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
-            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
-            if (dx * dx + dy * dy > r2) continue;
+    // Tiles touching the brush center vertex: (cx-1,cy-1) to (cx,cy)
+    for (i32 ty = m_cursor_vy - r; ty <= m_cursor_vy + r - 1; ++ty) {
+        for (i32 tx = m_cursor_vx - r; tx <= m_cursor_vx + r - 1; ++tx) {
+            if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
+                continue;
 
-            // Only allow ramp where an adjacent tile has cliff difference of 1
-            bool has_cliff = false;
-            for (i32 oy = -1; oy <= 0 && !has_cliff; ++oy) {
-                for (i32 ox = -1; ox <= 0 && !has_cliff; ++ox) {
-                    i32 tx = static_cast<i32>(ix) + ox;
-                    i32 ty = static_cast<i32>(iy) + oy;
-                    if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
-                        continue;
-                    u8 c[4] = {
-                        td.cliff_at(tx, ty), td.cliff_at(tx+1, ty),
-                        td.cliff_at(tx, ty+1), td.cliff_at(tx+1, ty+1)
-                    };
-                    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
-                    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
-                    if (cmax - cmin == 1) has_cliff = true;
-                }
-            }
-            if (!has_cliff) continue;
-            td.pathing_at(ix, iy) |= map::PATHING_RAMP;
+            // Check brush radius (tile center distance to cursor vertex)
+            f32 dx = static_cast<f32>(tx) + 0.5f - static_cast<f32>(m_cursor_vx);
+            f32 dy = static_cast<f32>(ty) + 0.5f - static_cast<f32>(m_cursor_vy);
+            if (dx * dx + dy * dy > static_cast<f32>(r2) + 0.5f) continue;
+
+            u8 c[4] = {
+                td.cliff_at(tx, ty), td.cliff_at(tx+1, ty),
+                td.cliff_at(tx, ty+1), td.cliff_at(tx+1, ty+1)
+            };
+            u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+            u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+            if (cmax - cmin != 1) continue;  // must be exactly 1 level diff
+
+            // Set RAMP on all 4 corners
+            td.pathing_at(tx, ty)     |= map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty)   |= map::PATHING_RAMP;
+            td.pathing_at(tx, ty+1)   |= map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty+1) |= map::PATHING_RAMP;
             m_terrain_dirty = true;
         }
     }
 }
 
 void Editor::brush_ramp_clear() {
+    // Clear ramp per-tile: remove RAMP from all 4 corners.
     auto& td = m_map.terrain();
-    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
     i32 r = m_brush_size - 1;
     i32 r2 = r * r;
 
-    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
-        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
-            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
-            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
-            if (dx * dx + dy * dy > r2) continue;
+    for (i32 ty = m_cursor_vy - r; ty <= m_cursor_vy + r - 1; ++ty) {
+        for (i32 tx = m_cursor_vx - r; tx <= m_cursor_vx + r - 1; ++tx) {
+            if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
+                continue;
 
-            td.pathing_at(ix, iy) &= ~map::PATHING_RAMP;
+            f32 dx = static_cast<f32>(tx) + 0.5f - static_cast<f32>(m_cursor_vx);
+            f32 dy = static_cast<f32>(ty) + 0.5f - static_cast<f32>(m_cursor_vy);
+            if (dx * dx + dy * dy > static_cast<f32>(r2) + 0.5f) continue;
+
+            td.pathing_at(tx, ty)     &= ~map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty)   &= ~map::PATHING_RAMP;
+            td.pathing_at(tx, ty+1)   &= ~map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty+1) &= ~map::PATHING_RAMP;
             m_terrain_dirty = true;
         }
     }
+    // Restore RAMP on vertices that still belong to a valid ramp tile
+    cleanup_ramp_flags();
 }
 
 
@@ -798,6 +798,7 @@ void Editor::switch_scene(const std::string& scene_name) {
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
         }
+        m_pathing_cache_dirty = true;
         log::info(TAG, "Switched to scene: {}", scene_name);
     }
 }
@@ -819,6 +820,7 @@ void Editor::open_map(const std::string& path) {
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
         }
+        m_pathing_cache_dirty = true;
         log::info(TAG, "Opened map: {}", m_map_path);
     } else {
         log::error(TAG, "Failed to open map: {}", m_map_path);
@@ -1065,7 +1067,8 @@ void Editor::draw_ui() {
 
     bool is_one_shot = m_tool == Tool::CliffRaise || m_tool == Tool::CliffLower ||
                        m_tool == Tool::RampSet || m_tool == Tool::RampClear ||
-                       m_tool == Tool::PathingBlock || m_tool == Tool::PathingAllow;
+                       m_tool == Tool::PathingBlock || m_tool == Tool::PathingAllow ||
+                       m_tool == Tool::Paint;
     if (!is_one_shot) {
         ImGui::SliderFloat("Amount", &m_brush_amount, 1.0f, 32.0f, "%.0f");
         ImGui::Checkbox("Continuous", &m_continuous);
