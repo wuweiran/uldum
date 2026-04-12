@@ -53,7 +53,8 @@ bool GameServer::init_game(map::MapManager& map,
         return false;
     }
 
-    // Initial spatial grid update (so script main() can query units)
+    // Apply building pathing blocks and initial spatial grid update
+    m_simulation.sync_pathing_blockers();
     m_simulation.spatial_grid().update(m_simulation.world());
 
     // Load and run map scripts

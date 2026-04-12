@@ -69,6 +69,10 @@ struct World {
     using SoundCallback = std::function<void(std::string_view path, glm::vec3 position)>;
     SoundCallback on_sound;
 
+    // Called when a pathing blocker is removed (unblock runtime vertices).
+    using PathingUnblockCallback = std::function<void(const std::vector<glm::ivec2>& verts)>;
+    PathingUnblockCallback on_pathing_unblock;
+
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
 

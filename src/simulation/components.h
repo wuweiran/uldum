@@ -210,7 +210,7 @@ struct DestructableComp {
 };
 
 struct PathingBlocker {
-    std::vector<glm::ivec2> blocked_tiles;
+    std::vector<glm::ivec2> blocked_vertices;  // vertex coords blocked at runtime
 };
 
 // ── Item Components ────────────────────────────────────────────────────────

@@ -27,6 +27,10 @@ static void remove_all_components(World& world, u32 id) {
     world.buildings.remove(id);
     world.constructions.remove(id);
     world.destructables.remove(id);
+    if (world.on_pathing_unblock) {
+        auto* pb = world.pathing_blockers.get(id);
+        if (pb) world.on_pathing_unblock(pb->blocked_vertices);
+    }
     world.pathing_blockers.remove(id);
     world.item_infos.remove(id);
     world.carriables.remove(id);

@@ -2,7 +2,9 @@
 
 #include "core/types.h"
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/ext/vector_int2.hpp>
 
 #include <string_view>
 #include <vector>
@@ -39,7 +41,7 @@ struct TerrainData {
     // Per-vertex data — indexed by iy * (tiles_x+1) + ix
     std::vector<f32> heightmap;      // smooth offset within cliff layer
     std::vector<u8>  cliff_level;    // discrete elevation layer (0-15)
-    std::vector<u8>  splatmap[4];    // blend weight per texture layer (0-255)
+    std::vector<u8>  tile_layer;     // terrain type per vertex (0-3, index into texture layers)
     std::vector<u8>  pathing;        // PathingFlag bitfield
 
     // ── Helpers ────────────────────────────────────────────────────────
@@ -68,18 +70,33 @@ struct TerrainData {
         return static_cast<f32>(cliff_level[idx]) * layer_height + heightmap[idx];
     }
 
-    // Check if a vertex is water (dominant splatmap layer == WATER_LAYER)
+    // Check if a vertex is water
     bool is_water(u32 ix, u32 iy) const {
-        u32 idx = iy * verts_x() + ix;
-        u8 max_w = 0;
-        u32 max_l = 0;
-        for (u32 l = 0; l < 4; ++l) {
-            if (splatmap[l][idx] > max_w) { max_w = splatmap[l][idx]; max_l = l; }
-        }
-        return max_l == WATER_LAYER;
+        return tile_layer[iy * verts_x() + ix] == WATER_LAYER;
     }
 
     bool is_valid() const { return tiles_x > 0 && tiles_y > 0 && !heightmap.empty(); }
+
+    // ── Tile queries ──────────────────────────────────────────────────────
+
+    // Effective level of a tile: flat → level, ramp → -1, cliff wall → -2.
+    i32 tile_effective_level(u32 tx, u32 ty) const;
+
+    // Is a tile passable for ground units? All 4 corners must be walkable.
+    // Does NOT check water or MoveType — caller handles that.
+    bool is_tile_passable(u32 tx, u32 ty) const;
+
+    // Is any corner of this tile water?
+    bool is_tile_water(u32 tx, u32 ty) const;
+
+    // Convert world position to tile coordinates (clamped to valid range).
+    glm::ivec2 world_to_tile(f32 x, f32 y) const;
+
+    // Get tile center in world coordinates.
+    glm::vec2 tile_center(u32 tx, u32 ty) const;
+
+    // Get cliff level at world position (nearest vertex).
+    u8 cliff_level_at(f32 x, f32 y) const;
 };
 
 // ── Terrain sampling (visual only — not for pathfinding) ─────────────────

@@ -97,6 +97,8 @@ private:
     i32   m_paint_layer    = 0;
     bool  m_terrain_dirty  = false;
     bool  m_brush_applied  = false; // one-shot: already applied this click
+    i32   m_last_brush_vx = -1;   // last vertex where brush was applied (for drag)
+    i32   m_last_brush_vy = -1;
 
     // Snapped cursor (center vertex of brush)
     i32   m_cursor_vx = 0;
@@ -105,6 +107,29 @@ private:
     // Brush cursor
     glm::vec3 m_cursor_pos{0.0f};
     bool      m_cursor_valid = false;
+
+    // Undo/redo system
+    struct TerrainEdit {
+        u32 min_vx, min_vy, max_vx, max_vy;  // affected vertex region (inclusive)
+        std::vector<f32> old_heightmap, new_heightmap;
+        std::vector<u8>  old_cliff,     new_cliff;
+        std::vector<u8>  old_tile_layer,new_tile_layer;
+        std::vector<u8>  old_pathing,   new_pathing;
+    };
+    std::vector<TerrainEdit> m_undo_stack;
+    std::vector<TerrainEdit> m_redo_stack;
+    bool m_stroke_active = false;
+    u32  m_stroke_min_vx = 0, m_stroke_min_vy = 0;
+    u32  m_stroke_max_vx = 0, m_stroke_max_vy = 0;
+    static constexpr u32 MAX_UNDO = 16;
+
+    void begin_stroke();   // snapshot before editing
+    void end_stroke();     // capture new state, push to undo stack
+    void undo();
+    void redo();
+    void apply_edit(const TerrainEdit& edit, bool use_new);
+    bool m_prev_undo_key = false;
+    bool m_prev_redo_key = false;
 
     // View options
     bool m_show_pathing = true;

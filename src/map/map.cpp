@@ -250,25 +250,20 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                     mov->cliff_level = m_scene.terrain.cliff_at(vx, vy);
                 }
 
-                // Buildings block pathing vertices around their position
+                // Buildings block pathing at runtime via PathingBlocker component
                 auto* cls = world.classifications.get(unit.id);
                 if (cls && simulation::has_classification(cls->flags, "structure")) {
                     auto& td = m_scene.terrain;
                     if (td.is_valid()) {
                         i32 cx = static_cast<i32>(pu.x / td.tile_size);
                         i32 cy = static_cast<i32>(pu.y / td.tile_size);
+                        simulation::PathingBlocker blocker;
                         for (i32 dy = -1; dy <= 2; ++dy) {
                             for (i32 dx = -1; dx <= 2; ++dx) {
-                                i32 vx = cx + dx;
-                                i32 vy = cy + dy;
-                                if (vx >= 0 && vy >= 0 &&
-                                    static_cast<u32>(vx) < td.verts_x() &&
-                                    static_cast<u32>(vy) < td.verts_y()) {
-                                    td.pathing_at(static_cast<u32>(vx), static_cast<u32>(vy)) &=
-                                        ~map::PATHING_WALKABLE;
-                                }
+                                blocker.blocked_vertices.push_back({cx + dx, cy + dy});
                             }
                         }
+                        world.pathing_blockers.add(unit.id, std::move(blocker));
                     }
                 }
 

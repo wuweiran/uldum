@@ -28,6 +28,10 @@ public:
     // Set terrain for pathfinding, height queries, and spatial grid sizing.
     void set_terrain(const map::TerrainData* terrain);
 
+    // Apply all PathingBlocker components to the runtime pathing grid.
+    // Call once after map entities are created.
+    void sync_pathing_blockers();
+
     World&       world()       { return m_world; }
     const World& world() const { return m_world; }
 

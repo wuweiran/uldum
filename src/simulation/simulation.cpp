@@ -11,6 +11,11 @@ static constexpr const char* TAG = "Simulation";
 bool Simulation::init(asset::AssetManager& /*assets*/) {
     m_world.types = &m_types;
 
+    // Wire pathing unblock: when a building is destroyed, release its blocked vertices
+    m_world.on_pathing_unblock = [this](const std::vector<glm::ivec2>& verts) {
+        m_pathfinder.unblock_vertices(verts);
+    };
+
     log::info(TAG, "Simulation initialized");
     return true;
 }
@@ -24,6 +29,13 @@ void Simulation::set_terrain(const map::TerrainData* terrain) {
     m_pathfinder.set_terrain(terrain);
     if (terrain && terrain->is_valid()) {
         m_spatial_grid.init(terrain->world_width(), terrain->world_height(), 512.0f, this);
+    }
+}
+
+void Simulation::sync_pathing_blockers() {
+    for (u32 i = 0; i < m_world.pathing_blockers.count(); ++i) {
+        auto& blocker = m_world.pathing_blockers.data()[i];
+        m_pathfinder.block_vertices(blocker.blocked_vertices);
     }
 }
 

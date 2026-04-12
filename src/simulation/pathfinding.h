@@ -37,9 +37,10 @@ public:
     void set_terrain(const map::TerrainData* terrain) { m_terrain = terrain; }
     const map::TerrainData* terrain() const { return m_terrain; }
 
-    // ── Tile queries ──────────────────────────────────────────────────────
+    // ── Tile queries (delegate to TerrainData + MoveType logic) ─────────
 
     // Can a unit of the given move type occupy this tile?
+    // Combines TerrainData::is_tile_passable() with MoveType (air/ground/amphibious).
     bool can_occupy(u32 tx, u32 ty, MoveType move_type) const;
 
     // Can a unit on tile (src_tx, src_ty) with cliff_level move to adjacent tile (dst_tx, dst_ty)?
@@ -47,24 +48,13 @@ public:
                        u8 cliff_level, MoveType move_type) const;
 
     // What cliff level should a unit have after entering this tile?
-    // For flat tiles: the tile's level. For ramps: the vertex cliff level at the tile center.
     u8 cliff_level_on_tile(u32 tx, u32 ty) const;
 
-    // Get effective level of a tile: flat → level, ramp → -1, cliff wall → -2 (impassable).
-    i32 tile_effective_level(u32 tx, u32 ty) const;
+    // ── Convenience wrappers (delegate to TerrainData) ───────────────────
 
-    // ── World coordinate helpers ──────────────────────────────────────────
-
-    // Convert world position to tile coordinates.
     glm::ivec2 world_to_tile(f32 x, f32 y) const;
-
-    // Get tile center in world coordinates.
     glm::vec2 tile_center(u32 tx, u32 ty) const;
-
-    // Get the cliff level at a world position (nearest vertex).
     u8 cliff_level_at(f32 x, f32 y) const;
-
-    // Get tile size.
     f32 tile_size() const;
 
     // ── Movement validation ─────────────────────────────────────────────
@@ -95,8 +85,17 @@ public:
     // Find the nearest occupiable tile center for a unit that's on an invalid tile.
     glm::vec2 find_nearest_valid(f32 x, f32 y, MoveType move_type) const;
 
+    // ── Runtime pathing blocks (buildings) ────────────────────────────────
+
+    // Block/unblock vertices at runtime (buildings, destructables).
+    // These are NOT saved to terrain — they exist only while the blocker lives.
+    void block_vertices(const std::vector<glm::ivec2>& verts);
+    void unblock_vertices(const std::vector<glm::ivec2>& verts);
+    bool is_vertex_blocked(u32 vx, u32 vy) const;
+
 private:
     const map::TerrainData* m_terrain = nullptr;
+    std::vector<u8> m_runtime_blocked;  // per-vertex refcount (multiple buildings can overlap)
 };
 
 } // namespace uldum::simulation

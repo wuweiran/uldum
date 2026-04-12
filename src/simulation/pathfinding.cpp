@@ -16,49 +16,17 @@ namespace uldum::simulation {
 
 // ── Tile queries ─────────────────────────────────────────────────────────
 
-i32 Pathfinder::tile_effective_level(u32 tx, u32 ty) const {
-    auto& td = *m_terrain;
-    if (tx >= td.tiles_x || ty >= td.tiles_y) return -2;
-
-    u8 c[4] = { td.cliff_at(tx, ty),     td.cliff_at(tx+1, ty),
-                 td.cliff_at(tx, ty+1),   td.cliff_at(tx+1, ty+1) };
-    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
-    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
-
-    // Flat tile: all corners same level
-    if (cmin == cmax) return static_cast<i32>(cmin);
-
-    // Ramp: all 4 corners have RAMP flag, exactly 1 level difference
-    if (cmax - cmin == 1) {
-        bool all_ramp = (td.pathing_at(tx, ty)     & map::PATHING_RAMP) &&
-                        (td.pathing_at(tx+1, ty)   & map::PATHING_RAMP) &&
-                        (td.pathing_at(tx, ty+1)   & map::PATHING_RAMP) &&
-                        (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP);
-        if (all_ramp) return -1;  // ramp: connects both levels
-    }
-
-    // Cliff wall: mixed levels, not a valid ramp — impassable
-    return -2;
-}
-
 bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
-    if (!m_terrain || tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return false;
+    if (!m_terrain) return false;
     if (move_type == MoveType::Air) return true;
+    if (!m_terrain->is_tile_passable(tx, ty)) return false;
+    if (move_type == MoveType::Ground && m_terrain->is_tile_water(tx, ty)) return false;
 
-    i32 eff = tile_effective_level(tx, ty);
-    if (eff == -2) return false;  // cliff wall
-
-    auto& td = *m_terrain;
-    // All 4 corners must be walkable (and not water for ground units).
-    // Vertices are shared between tiles — marking any vertex non-walkable
-    // blocks all tiles that touch it.
-    for (u32 vy = ty; vy <= ty + 1; ++vy) {
-        for (u32 vx = tx; vx <= tx + 1; ++vx) {
-            u8 flags = td.pathing_at(vx, vy);
-            bool walkable = (flags & map::PATHING_WALKABLE) != 0;
-            if (!walkable) return false;
-            if (move_type == MoveType::Ground && td.is_water(vx, vy)) return false;
-        }
+    // Runtime blocks (buildings): all 4 corners must be unblocked
+    if (!m_runtime_blocked.empty()) {
+        if (is_vertex_blocked(tx, ty) || is_vertex_blocked(tx+1, ty) ||
+            is_vertex_blocked(tx, ty+1) || is_vertex_blocked(tx+1, ty+1))
+            return false;
     }
     return true;
 }
@@ -73,8 +41,8 @@ bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
     if (!can_occupy(dst_tx, dst_ty, move_type)) return false;
 
     // Check cliff level compatibility
-    i32 src_eff = tile_effective_level(src_tx, src_ty);
-    i32 dst_eff = tile_effective_level(dst_tx, dst_ty);
+    i32 src_eff = m_terrain->tile_effective_level(src_tx, src_ty);
+    i32 dst_eff = m_terrain->tile_effective_level(dst_tx, dst_ty);
 
     // Either tile is a ramp: allow transition
     if (src_eff == -1 || dst_eff == -1) {
@@ -125,7 +93,7 @@ u8 Pathfinder::cliff_level_on_tile(u32 tx, u32 ty) const {
     if (!m_terrain || tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return 0;
     auto& td = *m_terrain;
 
-    i32 eff = tile_effective_level(tx, ty);
+    i32 eff = m_terrain->tile_effective_level(tx, ty);
     if (eff >= 0) return static_cast<u8>(eff);
 
     // Ramp: use min corner level (entering from low side) or max (from high side).
@@ -135,32 +103,18 @@ u8 Pathfinder::cliff_level_on_tile(u32 tx, u32 ty) const {
     return std::min({c[0], c[1], c[2], c[3]});
 }
 
-// ── World coordinate helpers ─────────────────────────────────────────────
+// ── Delegated helpers (convenience wrappers around TerrainData) ──────────
 
 glm::ivec2 Pathfinder::world_to_tile(f32 x, f32 y) const {
-    if (!m_terrain || !m_terrain->is_valid()) return {0, 0};
-    auto& td = *m_terrain;
-    i32 tx = static_cast<i32>(x / td.tile_size);
-    i32 ty = static_cast<i32>(y / td.tile_size);
-    tx = std::clamp(tx, 0, static_cast<i32>(td.tiles_x - 1));
-    ty = std::clamp(ty, 0, static_cast<i32>(td.tiles_y - 1));
-    return {tx, ty};
+    return (m_terrain && m_terrain->is_valid()) ? m_terrain->world_to_tile(x, y) : glm::ivec2{0, 0};
 }
 
 glm::vec2 Pathfinder::tile_center(u32 tx, u32 ty) const {
-    f32 ts = m_terrain ? m_terrain->tile_size : 128.0f;
-    return {(static_cast<f32>(tx) + 0.5f) * ts,
-            (static_cast<f32>(ty) + 0.5f) * ts};
+    return m_terrain ? m_terrain->tile_center(tx, ty) : glm::vec2{0};
 }
 
 u8 Pathfinder::cliff_level_at(f32 x, f32 y) const {
-    if (!m_terrain || !m_terrain->is_valid()) return 0;
-    auto& td = *m_terrain;
-    u32 vx = static_cast<u32>(std::round(x / td.tile_size));
-    u32 vy = static_cast<u32>(std::round(y / td.tile_size));
-    vx = std::min(vx, td.tiles_x);
-    vy = std::min(vy, td.tiles_y);
-    return td.cliff_at(vx, vy);
+    return (m_terrain && m_terrain->is_valid()) ? m_terrain->cliff_level_at(x, y) : 0;
 }
 
 f32 Pathfinder::tile_size() const {
@@ -350,7 +304,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
                 continue;
 
             u8 new_cliff = cliff_level_on_tile(ntx, nty);
-            i32 eff = tile_effective_level(ntx, nty);
+            i32 eff = m_terrain->tile_effective_level(ntx, nty);
             if (eff == -1) {
                 new_cliff = current.cliff_level;
                 u8 ramp_min = cliff_level_on_tile(ntx, nty);
@@ -410,7 +364,7 @@ static bool line_passable(glm::vec2 a, glm::vec2 b, f32 tile_size, f32 collision
         // Center must be on a passable tile at the correct cliff level
         glm::ivec2 tile = pf.world_to_tile(pt.x, pt.y);
         if (!pf.can_occupy(tile.x, tile.y, move_type)) return false;
-        i32 eff = pf.tile_effective_level(tile.x, tile.y);
+        i32 eff = pf.terrain()->tile_effective_level(tile.x, tile.y);
         if (eff >= 0 && static_cast<u8>(eff) != cliff_level) return false;
 
         // Collision radius: check perpendicular offsets
@@ -524,6 +478,42 @@ glm::vec2 Pathfinder::find_nearest_valid(f32 x, f32 y, MoveType move_type) const
         if (found) return best;
     }
     return {x, y};  // give up
+}
+
+// ── Runtime pathing blocks ───────────────────────────────────────────────
+
+void Pathfinder::block_vertices(const std::vector<glm::ivec2>& verts) {
+    if (!m_terrain) return;
+    if (m_runtime_blocked.empty())
+        m_runtime_blocked.resize(m_terrain->vertex_count(), 0);
+
+    for (auto& v : verts) {
+        if (v.x >= 0 && v.y >= 0 &&
+            static_cast<u32>(v.x) < m_terrain->verts_x() &&
+            static_cast<u32>(v.y) < m_terrain->verts_y()) {
+            u32 idx = v.y * m_terrain->verts_x() + v.x;
+            if (m_runtime_blocked[idx] < 255) m_runtime_blocked[idx]++;
+        }
+    }
+}
+
+void Pathfinder::unblock_vertices(const std::vector<glm::ivec2>& verts) {
+    if (m_runtime_blocked.empty()) return;
+
+    for (auto& v : verts) {
+        if (v.x >= 0 && v.y >= 0 &&
+            static_cast<u32>(v.x) < m_terrain->verts_x() &&
+            static_cast<u32>(v.y) < m_terrain->verts_y()) {
+            u32 idx = v.y * m_terrain->verts_x() + v.x;
+            if (m_runtime_blocked[idx] > 0) m_runtime_blocked[idx]--;
+        }
+    }
+}
+
+bool Pathfinder::is_vertex_blocked(u32 vx, u32 vy) const {
+    if (m_runtime_blocked.empty() || !m_terrain) return false;
+    if (vx >= m_terrain->verts_x() || vy >= m_terrain->verts_y()) return false;
+    return m_runtime_blocked[vy * m_terrain->verts_x() + vx] > 0;
 }
 
 } // namespace uldum::simulation

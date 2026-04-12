@@ -12,6 +12,67 @@ namespace uldum::map {
 
 static constexpr const char* TAG = "Terrain";
 
+// ── Tile queries ─────────────────────────────────────────────────────────
+
+i32 TerrainData::tile_effective_level(u32 tx, u32 ty) const {
+    if (tx >= tiles_x || ty >= tiles_y) return -2;
+
+    u8 c[4] = { cliff_at(tx, ty),     cliff_at(tx+1, ty),
+                 cliff_at(tx, ty+1),   cliff_at(tx+1, ty+1) };
+    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+
+    if (cmin == cmax) return static_cast<i32>(cmin);
+
+    if (cmax - cmin == 1) {
+        bool all_ramp = (pathing_at(tx, ty)     & PATHING_RAMP) &&
+                        (pathing_at(tx+1, ty)   & PATHING_RAMP) &&
+                        (pathing_at(tx, ty+1)   & PATHING_RAMP) &&
+                        (pathing_at(tx+1, ty+1) & PATHING_RAMP);
+        if (all_ramp) return -1;
+    }
+
+    return -2;
+}
+
+bool TerrainData::is_tile_passable(u32 tx, u32 ty) const {
+    if (tx >= tiles_x || ty >= tiles_y) return false;
+    if (tile_effective_level(tx, ty) == -2) return false;
+
+    for (u32 vy = ty; vy <= ty + 1; ++vy) {
+        for (u32 vx = tx; vx <= tx + 1; ++vx) {
+            if (!(pathing_at(vx, vy) & PATHING_WALKABLE)) return false;
+        }
+    }
+    return true;
+}
+
+bool TerrainData::is_tile_water(u32 tx, u32 ty) const {
+    if (tx >= tiles_x || ty >= tiles_y) return false;
+    return is_water(tx, ty) || is_water(tx+1, ty) || is_water(tx, ty+1) || is_water(tx+1, ty+1);
+}
+
+glm::ivec2 TerrainData::world_to_tile(f32 x, f32 y) const {
+    i32 tx = static_cast<i32>(x / tile_size);
+    i32 ty = static_cast<i32>(y / tile_size);
+    tx = std::clamp(tx, 0, static_cast<i32>(tiles_x - 1));
+    ty = std::clamp(ty, 0, static_cast<i32>(tiles_y - 1));
+    return {tx, ty};
+}
+
+glm::vec2 TerrainData::tile_center(u32 tx, u32 ty) const {
+    return {(static_cast<f32>(tx) + 0.5f) * tile_size,
+            (static_cast<f32>(ty) + 0.5f) * tile_size};
+}
+
+u8 TerrainData::cliff_level_at(f32 x, f32 y) const {
+    u32 vx = static_cast<u32>(std::round(x / tile_size));
+    u32 vy = static_cast<u32>(std::round(y / tile_size));
+    vx = std::min(vx, tiles_x);
+    vy = std::min(vy, tiles_y);
+    return cliff_at(vx, vy);
+}
+
 // ── Terrain sampling (visual only) ───────────────────────────────────────
 
 f32 sample_height(const TerrainData& td, f32 x, f32 y) {
@@ -56,8 +117,7 @@ TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size, f32 bas
 
     td.heightmap.assign(vc, base_height);
     td.cliff_level.assign(vc, 0);
-    for (auto& layer : td.splatmap) layer.assign(vc, 0);
-    td.splatmap[0].assign(vc, 255);  // default: full weight on layer 0
+    td.tile_layer.assign(vc, 0);  // default: layer 0
     td.pathing.assign(vc, PATHING_DEFAULT);
 
     log::info(TAG, "Created flat terrain: {}x{} tiles, tile_size={}", tiles_x, tiles_y, tile_size);
@@ -99,8 +159,8 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
     u32 vc = td.vertex_count();
 
     td.heightmap.resize(vc);
-    td.cliff_level.assign(vc, 0);   // all on level 0
-    for (auto& layer : td.splatmap) layer.assign(vc, 0);
+    td.cliff_level.assign(vc, 0);
+    td.tile_layer.assign(vc, 0);
     td.pathing.assign(vc, PATHING_DEFAULT);
 
     // Generate heights: two octaves of value noise
@@ -110,24 +170,20 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
             f32 wy = static_cast<f32>(iy) * tile_size;
 
             f32 h = 0.0f;
-            h += smooth_noise(wx * 0.001f, wy * 0.001f) * 64.0f;   // large hills (scaled for WC3 units)
-            h += smooth_noise(wx * 0.003f, wy * 0.003f) * 16.0f;   // small bumps
+            h += smooth_noise(wx * 0.001f, wy * 0.001f) * 64.0f;
+            h += smooth_noise(wx * 0.003f, wy * 0.003f) * 16.0f;
             td.height_at(ix, iy) = h;
         }
     }
 
-    // Assign splatmap based on height (simple threshold)
+    // Assign tile layer based on height
     for (u32 iy = 0; iy < td.verts_y(); ++iy) {
         for (u32 ix = 0; ix < td.verts_x(); ++ix) {
             f32 h = td.height_at(ix, iy);
             u32 idx = iy * td.verts_x() + ix;
-
-            // Clear all layers
-            for (auto& layer : td.splatmap) layer[idx] = 0;
-
-            if (h > 48.0f)       td.splatmap[2][idx] = 255;  // stone (high)
-            else if (h > 24.0f)  td.splatmap[1][idx] = 255;  // dirt (mid)
-            else                 td.splatmap[0][idx] = 255;  // grass (low)
+            if (h > 48.0f)       td.tile_layer[idx] = 2;  // stone
+            else if (h > 24.0f)  td.tile_layer[idx] = 1;  // dirt
+            else                 td.tile_layer[idx] = 0;  // grass
         }
     }
 
@@ -139,13 +195,11 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
 // ── Binary serialization ─────────────────────────────────────────────────
 
 // terrain.bin format:
-//   Header: tiles_x(u32), tiles_y(u32), tile_size(f32), layer_height(f32)
+// Terrain binary format:
+//   tiles_x(u32), tiles_y(u32), tile_size(f32), layer_height(f32)
 //   heightmap:    f32[vertex_count]
 //   cliff_level:  u8[vertex_count]
-//   splatmap[0]:  u8[vertex_count]
-//   splatmap[1]:  u8[vertex_count]
-//   splatmap[2]:  u8[vertex_count]
-//   splatmap[3]:  u8[vertex_count]
+//   tile_layer:   u8[vertex_count]
 //   pathing:      u8[vertex_count]
 
 bool save_terrain(const TerrainData& td, std::string_view path) {
@@ -165,8 +219,7 @@ bool save_terrain(const TerrainData& td, std::string_view path) {
     u32 vc = td.vertex_count();
     write(td.heightmap.data(),   vc * sizeof(f32));
     write(td.cliff_level.data(), vc * sizeof(u8));
-    for (u32 i = 0; i < 4; ++i)
-        write(td.splatmap[i].data(), vc * sizeof(u8));
+    write(td.tile_layer.data(),  vc * sizeof(u8));
     write(td.pathing.data(),     vc * sizeof(u8));
 
     log::info(TAG, "Saved terrain: {}x{} tiles to {}", td.tiles_x, td.tiles_y, path);
@@ -196,13 +249,12 @@ TerrainData load_terrain(std::string_view path) {
     u32 vc = td.vertex_count();
     td.heightmap.resize(vc);
     td.cliff_level.resize(vc);
-    for (auto& layer : td.splatmap) layer.resize(vc);
+    td.tile_layer.resize(vc);
     td.pathing.resize(vc);
 
     read(td.heightmap.data(),   vc * sizeof(f32));
     read(td.cliff_level.data(), vc * sizeof(u8));
-    for (u32 i = 0; i < 4; ++i)
-        read(td.splatmap[i].data(), vc * sizeof(u8));
+    read(td.tile_layer.data(),  vc * sizeof(u8));
     read(td.pathing.data(),     vc * sizeof(u8));
 
     if (!file.good()) {

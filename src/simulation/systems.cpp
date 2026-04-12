@@ -851,6 +851,10 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.buildings.remove(h.id);
     world.constructions.remove(h.id);
     world.destructables.remove(h.id);
+    if (world.on_pathing_unblock) {
+        auto* pb = world.pathing_blockers.get(h.id);
+        if (pb) world.on_pathing_unblock(pb->blocked_vertices);
+    }
     world.pathing_blockers.remove(h.id);
     world.item_infos.remove(h.id);
     world.carriables.remove(h.id);

@@ -19,6 +19,46 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace uldum::editor {
 
+// ── Undo helpers (used by begin_stroke/end_stroke/apply_edit) ────────────
+
+static void copy_region(const map::TerrainData& td, u32 min_vx, u32 min_vy, u32 max_vx, u32 max_vy,
+                         std::vector<f32>& heightmap, std::vector<u8>& cliff,
+                         std::vector<u8>& tile_layer, std::vector<u8>& pathing) {
+    u32 w = max_vx - min_vx + 1;
+    u32 count = w * (max_vy - min_vy + 1);
+    heightmap.resize(count);
+    cliff.resize(count);
+    tile_layer.resize(count);
+    pathing.resize(count);
+
+    for (u32 vy = min_vy; vy <= max_vy; ++vy) {
+        for (u32 vx = min_vx; vx <= max_vx; ++vx) {
+            u32 src = vy * td.verts_x() + vx;
+            u32 dst = (vy - min_vy) * w + (vx - min_vx);
+            heightmap[dst]  = td.heightmap[src];
+            cliff[dst]      = td.cliff_level[src];
+            tile_layer[dst] = td.tile_layer[src];
+            pathing[dst]    = td.pathing[src];
+        }
+    }
+}
+
+static void paste_region(map::TerrainData& td, u32 min_vx, u32 min_vy, u32 max_vx, u32 max_vy,
+                          const std::vector<f32>& heightmap, const std::vector<u8>& cliff,
+                          const std::vector<u8>& tile_layer, const std::vector<u8>& pathing) {
+    u32 w = max_vx - min_vx + 1;
+    for (u32 vy = min_vy; vy <= max_vy; ++vy) {
+        for (u32 vx = min_vx; vx <= max_vx; ++vx) {
+            u32 dst = vy * td.verts_x() + vx;
+            u32 src = (vy - min_vy) * w + (vx - min_vx);
+            td.heightmap[dst]   = heightmap[src];
+            td.cliff_level[dst] = cliff[src];
+            td.tile_layer[dst]  = tile_layer[src];
+            td.pathing[dst]     = pathing[src];
+        }
+    }
+}
+
 static constexpr const char* TAG = "Editor";
 
 // ── Init / Shutdown ──────────────────────────────────────────────────────
@@ -94,6 +134,7 @@ bool Editor::init(const std::string& map_path) {
         m_renderer.set_map_root(m_map.map_root());
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
+            m_simulation.set_terrain(&m_map.terrain());
         }
         log::info(TAG, "Map loaded: {} ({} scenes)", m_map_path, m_scenes.size());
     } else {
@@ -255,15 +296,79 @@ void Editor::run() {
 
         // Apply brush when left-clicking on terrain (and not over ImGui)
         if (input.mouse_left && m_cursor_valid && !over_ui) {
+            if (!m_stroke_active) begin_stroke();
+
+            // If cursor moved outside the snapshot region, re-snapshot with full terrain
+            if (m_stroke_active && !m_undo_stack.empty()) {
+                auto& edit = m_undo_stack.back();
+                i32 r = m_brush_size;
+                bool outside = (m_cursor_vx - r < static_cast<i32>(edit.min_vx)) ||
+                               (m_cursor_vy - r < static_cast<i32>(edit.min_vy)) ||
+                               (m_cursor_vx + r > static_cast<i32>(edit.max_vx)) ||
+                               (m_cursor_vy + r > static_cast<i32>(edit.max_vy));
+                if (outside) {
+                    // Extend to full terrain — old snapshot still valid for its region,
+                    // but we need the surrounding area too. Re-snapshot at full size.
+                    auto& td = m_map.terrain();
+                    // The current terrain already has modifications from this stroke.
+                    // We can't get the old state of the new area. Extend old_ by reading
+                    // the NEW region and copying old_ into its sub-region.
+                    u32 new_min_vx = 0, new_min_vy = 0;
+                    u32 new_max_vx = td.tiles_x, new_max_vy = td.tiles_y;
+                    u32 new_w = new_max_vx - new_min_vx + 1;
+                    u32 new_count = new_w * (new_max_vy - new_min_vy + 1);
+
+                    // Read current terrain as the "old" base (already partially modified)
+                    std::vector<f32> h(new_count); std::vector<u8> c(new_count), tl(new_count), p(new_count);
+                    copy_region(td, new_min_vx, new_min_vy, new_max_vx, new_max_vy, h, c, tl, p);
+
+                    // Overlay the original old snapshot into the correct sub-region
+                    u32 old_w = edit.max_vx - edit.min_vx + 1;
+                    for (u32 vy = edit.min_vy; vy <= edit.max_vy; ++vy) {
+                        for (u32 vx = edit.min_vx; vx <= edit.max_vx; ++vx) {
+                            u32 ni = (vy - new_min_vy) * new_w + (vx - new_min_vx);
+                            u32 oi = (vy - edit.min_vy) * old_w + (vx - edit.min_vx);
+                            h[ni]  = edit.old_heightmap[oi];
+                            c[ni]  = edit.old_cliff[oi];
+                            tl[ni] = edit.old_tile_layer[oi];
+                            p[ni]  = edit.old_pathing[oi];
+                        }
+                    }
+
+                    edit.min_vx = new_min_vx; edit.min_vy = new_min_vy;
+                    edit.max_vx = new_max_vx; edit.max_vy = new_max_vy;
+                    edit.old_heightmap = std::move(h);
+                    edit.old_cliff = std::move(c);
+                    edit.old_tile_layer = std::move(tl);
+                    edit.old_pathing = std::move(p);
+                }
+            }
+
             if (m_continuous) {
                 apply_brush(frame_dt);
-            } else if (!m_brush_applied) {
-                apply_brush(1.0f);
-                m_brush_applied = true;
+            } else {
+                bool new_vertex = (m_cursor_vx != m_last_brush_vx || m_cursor_vy != m_last_brush_vy);
+                if (!m_brush_applied || new_vertex) {
+                    apply_brush(1.0f);
+                    m_brush_applied = true;
+                    m_last_brush_vx = m_cursor_vx;
+                    m_last_brush_vy = m_cursor_vy;
+                }
             }
         }
         if (!input.mouse_left) {
+            if (m_stroke_active) end_stroke();
             m_brush_applied = false;
+        }
+
+        // Undo/Redo (Ctrl+Z / Ctrl+Y) — rising edge only
+        {
+            bool z_now = input.key_ctrl && input.key_letter['Z' - 'A'];
+            bool y_now = input.key_ctrl && input.key_letter['Y' - 'A'];
+            if (z_now && !m_prev_undo_key && !m_stroke_active) undo();
+            if (y_now && !m_prev_redo_key && !m_stroke_active) redo();
+            m_prev_undo_key = z_now;
+            m_prev_redo_key = y_now;
         }
 
         // Re-upload terrain mesh if modified
@@ -515,12 +620,10 @@ void Editor::brush_flatten(f32 strength, f32 dt) {
     }
 }
 
-void Editor::brush_paint(f32 strength, f32 dt) {
+void Editor::brush_paint(f32 /*strength*/, f32 /*dt*/) {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-
-    f32 rate = std::min(1.0f, strength * dt * 0.5f);
-    i32 layer = std::clamp(m_paint_layer, 0, 3);
+    u8 layer = static_cast<u8>(std::clamp(m_paint_layer, 0, 3));
 
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
@@ -528,27 +631,7 @@ void Editor::brush_paint(f32 strength, f32 dt) {
                                  static_cast<i32>(iy) - m_cursor_vy, m_brush_size);
             if (w <= 0.0f) continue;
 
-            u32 idx = iy * td.verts_x() + ix;
-            f32 add = 255.0f * w * rate;
-
-            f32 cur = static_cast<f32>(td.splatmap[layer][idx]);
-            f32 new_val = std::min(255.0f, cur + add);
-            f32 delta = new_val - cur;
-            td.splatmap[layer][idx] = static_cast<u8>(new_val);
-
-            // Reduce other layers proportionally
-            f32 others_total = 0.0f;
-            for (i32 l = 0; l < 4; ++l)
-                if (l != layer) others_total += static_cast<f32>(td.splatmap[l][idx]);
-            if (others_total > 0.0f) {
-                for (i32 l = 0; l < 4; ++l) {
-                    if (l != layer) {
-                        f32 v = static_cast<f32>(td.splatmap[l][idx]);
-                        v -= delta * (v / others_total);
-                        td.splatmap[l][idx] = static_cast<u8>(std::max(0.0f, v));
-                    }
-                }
-            }
+            td.tile_layer[iy * td.verts_x() + ix] = layer;
             m_terrain_dirty = true;
         }
     }
@@ -626,6 +709,8 @@ void Editor::brush_cliff_lower() {
 }
 
 void Editor::cleanup_ramp_flags() {
+    // A vertex keeps RAMP only if it belongs to at least one valid ramp tile
+    // (cliff diff = 1 AND all 4 corners have RAMP).
     auto& td = m_map.terrain();
     if (!td.is_valid()) return;
 
@@ -633,10 +718,9 @@ void Editor::cleanup_ramp_flags() {
         for (u32 vx = 0; vx <= td.tiles_x; ++vx) {
             if (!(td.pathing_at(vx, vy) & map::PATHING_RAMP)) continue;
 
-            // Check all tiles touching this vertex for a cliff difference of 1
-            bool has_cliff = false;
-            for (i32 dy = -1; dy <= 0 && !has_cliff; ++dy) {
-                for (i32 dx = -1; dx <= 0 && !has_cliff; ++dx) {
+            bool valid = false;
+            for (i32 dy = -1; dy <= 0 && !valid; ++dy) {
+                for (i32 dx = -1; dx <= 0 && !valid; ++dx) {
                     i32 tx = static_cast<i32>(vx) + dx;
                     i32 ty = static_cast<i32>(vy) + dy;
                     if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
@@ -647,11 +731,18 @@ void Editor::cleanup_ramp_flags() {
                     };
                     u8 cmin = std::min({c[0], c[1], c[2], c[3]});
                     u8 cmax = std::max({c[0], c[1], c[2], c[3]});
-                    if (cmax - cmin == 1) has_cliff = true;
+                    if (cmax - cmin != 1) continue;
+
+                    // All 4 corners of this tile must have RAMP
+                    bool all_ramp = (td.pathing_at(tx, ty)     & map::PATHING_RAMP) &&
+                                    (td.pathing_at(tx+1, ty)   & map::PATHING_RAMP) &&
+                                    (td.pathing_at(tx, ty+1)   & map::PATHING_RAMP) &&
+                                    (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP);
+                    if (all_ramp) valid = true;
                 }
             }
 
-            if (!has_cliff) {
+            if (!valid) {
                 td.pathing_at(vx, vy) &= ~map::PATHING_RAMP;
                 m_terrain_dirty = true;
             }
@@ -660,57 +751,65 @@ void Editor::cleanup_ramp_flags() {
 }
 
 void Editor::brush_ramp_set() {
+    // Ramp operates per-tile: set RAMP on all 4 corners of valid tiles.
+    // A tile is valid for ramp if it has exactly 1 cliff level difference.
     auto& td = m_map.terrain();
-    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
     i32 r = m_brush_size - 1;
     i32 r2 = r * r;
 
-    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
-        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
-            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
-            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
-            if (dx * dx + dy * dy > r2) continue;
+    // Tiles touching the brush center vertex: (cx-1,cy-1) to (cx,cy)
+    for (i32 ty = m_cursor_vy - r; ty <= m_cursor_vy + r - 1; ++ty) {
+        for (i32 tx = m_cursor_vx - r; tx <= m_cursor_vx + r - 1; ++tx) {
+            if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
+                continue;
 
-            // Only allow ramp where an adjacent tile has cliff difference of 1
-            bool has_cliff = false;
-            for (i32 oy = -1; oy <= 0 && !has_cliff; ++oy) {
-                for (i32 ox = -1; ox <= 0 && !has_cliff; ++ox) {
-                    i32 tx = static_cast<i32>(ix) + ox;
-                    i32 ty = static_cast<i32>(iy) + oy;
-                    if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
-                        continue;
-                    u8 c[4] = {
-                        td.cliff_at(tx, ty), td.cliff_at(tx+1, ty),
-                        td.cliff_at(tx, ty+1), td.cliff_at(tx+1, ty+1)
-                    };
-                    u8 cmin = std::min({c[0], c[1], c[2], c[3]});
-                    u8 cmax = std::max({c[0], c[1], c[2], c[3]});
-                    if (cmax - cmin == 1) has_cliff = true;
-                }
-            }
-            if (!has_cliff) continue;
-            td.pathing_at(ix, iy) |= map::PATHING_RAMP;
+            // Check brush radius (tile center distance to cursor vertex)
+            f32 dx = static_cast<f32>(tx) + 0.5f - static_cast<f32>(m_cursor_vx);
+            f32 dy = static_cast<f32>(ty) + 0.5f - static_cast<f32>(m_cursor_vy);
+            if (dx * dx + dy * dy > static_cast<f32>(r2) + 0.5f) continue;
+
+            u8 c[4] = {
+                td.cliff_at(tx, ty), td.cliff_at(tx+1, ty),
+                td.cliff_at(tx, ty+1), td.cliff_at(tx+1, ty+1)
+            };
+            u8 cmin = std::min({c[0], c[1], c[2], c[3]});
+            u8 cmax = std::max({c[0], c[1], c[2], c[3]});
+            if (cmax - cmin != 1) continue;  // must be exactly 1 level diff
+
+            // Set RAMP on all 4 corners
+            td.pathing_at(tx, ty)     |= map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty)   |= map::PATHING_RAMP;
+            td.pathing_at(tx, ty+1)   |= map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty+1) |= map::PATHING_RAMP;
             m_terrain_dirty = true;
         }
     }
 }
 
 void Editor::brush_ramp_clear() {
+    // Clear ramp per-tile: remove RAMP from all 4 corners.
     auto& td = m_map.terrain();
-    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
     i32 r = m_brush_size - 1;
     i32 r2 = r * r;
 
-    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
-        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
-            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
-            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
-            if (dx * dx + dy * dy > r2) continue;
+    for (i32 ty = m_cursor_vy - r; ty <= m_cursor_vy + r - 1; ++ty) {
+        for (i32 tx = m_cursor_vx - r; tx <= m_cursor_vx + r - 1; ++tx) {
+            if (tx < 0 || ty < 0 || tx >= static_cast<i32>(td.tiles_x) || ty >= static_cast<i32>(td.tiles_y))
+                continue;
 
-            td.pathing_at(ix, iy) &= ~map::PATHING_RAMP;
+            f32 dx = static_cast<f32>(tx) + 0.5f - static_cast<f32>(m_cursor_vx);
+            f32 dy = static_cast<f32>(ty) + 0.5f - static_cast<f32>(m_cursor_vy);
+            if (dx * dx + dy * dy > static_cast<f32>(r2) + 0.5f) continue;
+
+            td.pathing_at(tx, ty)     &= ~map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty)   &= ~map::PATHING_RAMP;
+            td.pathing_at(tx, ty+1)   &= ~map::PATHING_RAMP;
+            td.pathing_at(tx+1, ty+1) &= ~map::PATHING_RAMP;
             m_terrain_dirty = true;
         }
     }
+    // Restore RAMP on vertices that still belong to a valid ramp tile
+    cleanup_ramp_flags();
 }
 
 
@@ -752,13 +851,123 @@ void Editor::brush_pathing_allow() {
     }
 }
 
+// ── Undo/Redo ────────────────────────────────────────────────────────────
+
+void Editor::begin_stroke() {
+    if (m_stroke_active || !m_map_loaded) return;
+    m_stroke_active = true;
+
+    // Generous padded region around cursor — large enough to cover a typical drag.
+    // Uses a fixed padding so even if the user drags, most edits fit.
+    auto& td = m_map.terrain();
+    static constexpr i32 PAD = 32;  // vertices of padding beyond brush
+    i32 r = m_brush_size + PAD;
+    u32 min_vx = static_cast<u32>(std::max(0, m_cursor_vx - r));
+    u32 min_vy = static_cast<u32>(std::max(0, m_cursor_vy - r));
+    u32 max_vx = static_cast<u32>(std::min(static_cast<i32>(td.tiles_x), m_cursor_vx + r));
+    u32 max_vy = static_cast<u32>(std::min(static_cast<i32>(td.tiles_y), m_cursor_vy + r));
+
+    TerrainEdit edit;
+    edit.min_vx = min_vx;
+    edit.min_vy = min_vy;
+    edit.max_vx = max_vx;
+    edit.max_vy = max_vy;
+    copy_region(td, min_vx, min_vy, max_vx, max_vy,
+                edit.old_heightmap, edit.old_cliff, edit.old_tile_layer, edit.old_pathing);
+
+    m_undo_stack.push_back(std::move(edit));
+}
+
+void Editor::end_stroke() {
+    if (!m_stroke_active || m_undo_stack.empty()) return;
+    m_stroke_active = false;
+
+    auto& td = m_map.terrain();
+    auto& edit = m_undo_stack.back();
+
+    // Capture new state of the same region
+    copy_region(td, edit.min_vx, edit.min_vy, edit.max_vx, edit.max_vy,
+                edit.new_heightmap, edit.new_cliff, edit.new_tile_layer, edit.new_pathing);
+
+    // Discard if nothing changed
+    if (edit.old_heightmap == edit.new_heightmap &&
+        edit.old_cliff == edit.new_cliff &&
+        edit.old_tile_layer == edit.new_tile_layer &&
+        edit.old_pathing == edit.new_pathing) {
+        m_undo_stack.pop_back();
+        return;
+    }
+
+    m_redo_stack.clear();
+    if (m_undo_stack.size() > MAX_UNDO) {
+        m_undo_stack.erase(m_undo_stack.begin());
+    }
+}
+
+void Editor::apply_edit(const TerrainEdit& edit, bool use_new) {
+    auto& td = m_map.terrain();
+    if (use_new) {
+        paste_region(td, edit.min_vx, edit.min_vy, edit.max_vx, edit.max_vy,
+                     edit.new_heightmap, edit.new_cliff, edit.new_tile_layer, edit.new_pathing);
+    } else {
+        paste_region(td, edit.min_vx, edit.min_vy, edit.max_vx, edit.max_vy,
+                     edit.old_heightmap, edit.old_cliff, edit.old_tile_layer, edit.old_pathing);
+    }
+    m_terrain_dirty = true;
+    m_pathing_cache_dirty = true;
+}
+
+void Editor::undo() {
+    if (m_undo_stack.empty()) return;
+    auto edit = std::move(m_undo_stack.back());
+    m_undo_stack.pop_back();
+    apply_edit(edit, false);  // restore old values
+    m_redo_stack.push_back(std::move(edit));
+}
+
+void Editor::redo() {
+    if (m_redo_stack.empty()) return;
+    auto edit = std::move(m_redo_stack.back());
+    m_redo_stack.pop_back();
+    apply_edit(edit, true);  // restore new values
+    m_undo_stack.push_back(std::move(edit));
+}
+
 // ── Terrain mesh rebuild ─────────────────────────────────────────────────
 
 void Editor::rebuild_terrain_mesh() {
     if (!m_map_loaded) return;
     vkDeviceWaitIdle(m_rhi.device());
     m_renderer.set_terrain(m_map.terrain());
+    m_simulation.set_terrain(&m_map.terrain());
     m_pathing_cache_dirty = true;
+
+    // Update entities after terrain edit: adjust Z, remove units on impassable tiles
+    auto& td = m_map.terrain();
+    auto& world = m_simulation.world();
+    std::vector<simulation::Unit> to_remove;
+
+    for (u32 i = 0; i < world.transforms.count(); ++i) {
+        u32 id = world.transforms.ids()[i];
+        auto& t = world.transforms.data()[i];
+
+        auto* info = world.handle_infos.get(id);
+        if (!info || info->category != simulation::Category::Unit) continue;
+
+        glm::ivec2 tile = td.world_to_tile(t.position.x, t.position.y);
+        if (!td.is_tile_passable(tile.x, tile.y)) {
+            simulation::Unit u;
+            u.id = id;
+            u.generation = info->generation;
+            to_remove.push_back(u);
+        } else {
+            t.position.z = map::sample_height(td, t.position.x, t.position.y);
+        }
+    }
+
+    for (auto u : to_remove) {
+        simulation::destroy(world, u);
+    }
 }
 
 void Editor::rebuild_pathing_cache() {
@@ -797,7 +1006,9 @@ void Editor::switch_scene(const std::string& scene_name) {
         m_current_scene = scene_name;
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
+            m_simulation.set_terrain(&m_map.terrain());
         }
+        m_pathing_cache_dirty = true;
         log::info(TAG, "Switched to scene: {}", scene_name);
     }
 }
@@ -818,7 +1029,9 @@ void Editor::open_map(const std::string& path) {
         m_renderer.set_map_root(m_map.map_root());
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(m_map.terrain());
+            m_simulation.set_terrain(&m_map.terrain());
         }
+        m_pathing_cache_dirty = true;
         log::info(TAG, "Opened map: {}", m_map_path);
     } else {
         log::error(TAG, "Failed to open map: {}", m_map_path);
@@ -1022,13 +1235,9 @@ void Editor::draw_ui() {
             }
             ImGui::EndMenu();
         }
-        if (m_map_loaded && !m_scenes.empty() && ImGui::BeginMenu("Scene")) {
-            for (auto& scene : m_scenes) {
-                bool selected = (scene == m_current_scene);
-                if (ImGui::MenuItem(scene.c_str(), nullptr, selected)) {
-                    if (!selected) switch_scene(scene);
-                }
-            }
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !m_undo_stack.empty())) undo();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !m_redo_stack.empty())) redo();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -1036,6 +1245,18 @@ void Editor::draw_ui() {
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
+    }
+
+    // Scene window
+    if (m_map_loaded && !m_scenes.empty()) {
+        ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        for (auto& scene : m_scenes) {
+            bool selected = (scene == m_current_scene);
+            if (ImGui::RadioButton(scene.c_str(), selected)) {
+                if (!selected) switch_scene(scene);
+            }
+        }
+        ImGui::End();
     }
 
     // Tool panel
@@ -1065,7 +1286,8 @@ void Editor::draw_ui() {
 
     bool is_one_shot = m_tool == Tool::CliffRaise || m_tool == Tool::CliffLower ||
                        m_tool == Tool::RampSet || m_tool == Tool::RampClear ||
-                       m_tool == Tool::PathingBlock || m_tool == Tool::PathingAllow;
+                       m_tool == Tool::PathingBlock || m_tool == Tool::PathingAllow ||
+                       m_tool == Tool::Paint;
     if (!is_one_shot) {
         ImGui::SliderFloat("Amount", &m_brush_amount, 1.0f, 32.0f, "%.0f");
         ImGui::Checkbox("Continuous", &m_continuous);
