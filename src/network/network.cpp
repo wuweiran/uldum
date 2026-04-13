@@ -63,8 +63,20 @@ void NetworkManager::host_on_connect(u32 peer_id) {
 void NetworkManager::host_on_disconnect(u32 peer_id) {
     for (auto it = m_peers.begin(); it != m_peers.end(); ++it) {
         if (it->peer_id == peer_id) {
-            log::info(TAG, "Player {} (peer {}) disconnected", it->player.id, peer_id);
+            u32 player_id = it->player.id;
+            log::info(TAG, "Player {} (peer {}) disconnected — waiting {:.0f}s for reconnect",
+                      player_id, peer_id, m_disconnect_timeout);
+
+            // Move to disconnected list (preserve known entities for reconnect)
+            m_disconnected.push_back({it->player, std::move(it->known_entities), m_disconnect_timeout});
             m_peers.erase(it);
+
+            if (m_pause_on_disconnect && m_game_started) {
+                m_paused = true;
+                log::info(TAG, "Game paused — waiting for reconnect");
+            }
+
+            if (on_player_disconnected) on_player_disconnected(player_id);
             return;
         }
     }
@@ -87,17 +99,44 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             return;
         }
 
-        // Assign player slot
+        // Check if this is a reconnecting player
+        if (!m_disconnected.empty()) {
+            // Reconnect: assign to the first disconnected slot
+            auto it = m_disconnected.begin();
+            u32 slot = it->player.id;
+            PeerInfo info{peer_id, it->player, {}};
+            m_disconnected.erase(it);
+
+            auto welcome = build_welcome(slot,
+                static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
+            m_transport->send(peer_id, welcome, true);
+
+            // Re-send full state
+            m_peers.push_back(std::move(info));
+            host_send_spawn_burst(m_peers.back());
+
+            if (m_game_started) {
+                auto msg = build_start();
+                m_transport->send(peer_id, msg, true);
+            }
+
+            if (m_paused && m_disconnected.empty()) {
+                m_paused = false;
+                log::info(TAG, "All players reconnected — game resumed");
+            }
+
+            log::info(TAG, "Player {} reconnected (peer {})", slot, peer_id);
+            return;
+        }
+
+        // New player — assign slot
         u32 slot = m_next_player_slot++;
         PeerInfo info{peer_id, simulation::Player{slot}, {}};
 
-        // Send welcome
         auto welcome = build_welcome(slot,
-            static_cast<u32>(m_simulation->world().handle_infos.count()),
-            32);  // tick rate
+            static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
         m_transport->send(peer_id, welcome, true);
 
-        // Send spawn burst for all visible entities
         m_peers.push_back(std::move(info));
         host_send_spawn_burst(m_peers.back());
 
@@ -276,6 +315,28 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
         }
     }
 
+}
+
+void NetworkManager::host_update_disconnected(f32 dt) {
+    if (m_disconnected.empty()) return;
+
+    for (auto it = m_disconnected.begin(); it != m_disconnected.end(); ) {
+        it->timer -= dt;
+        if (it->timer <= 0) {
+            u32 player_id = it->player.id;
+            log::info(TAG, "Player {} reconnect timeout expired — dropped", player_id);
+            if (on_player_dropped) on_player_dropped(player_id);
+            it = m_disconnected.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // Unpause if all disconnected players have been dropped
+    if (m_paused && m_disconnected.empty()) {
+        m_paused = false;
+        log::info(TAG, "All disconnected players dropped — game resumed");
+    }
 }
 
 void NetworkManager::host_end_game(u32 winner_id, std::string_view stats_json) {
@@ -586,9 +647,14 @@ void NetworkManager::send_order(const input::GameCommand& cmd) {
     m_transport->send(0, msg, true);
 }
 
-void NetworkManager::update() {
+void NetworkManager::update(f32 dt) {
     if (m_mode == Mode::Offline) return;
     if (m_transport) m_transport->poll();
+
+    // Host: tick disconnect timeouts
+    if (m_mode == Mode::Host) {
+        host_update_disconnected(dt);
+    }
 
     // Client: apply interpolation each frame
     if (m_mode == Mode::Client && m_has_two_snaps) {

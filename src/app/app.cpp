@@ -165,6 +165,8 @@ bool App::start_session() {
         }
         u32 total_players = static_cast<u32>(m_map.manifest().players.size());
         m_network.set_expected_players(total_players > 1 ? total_players - 1 : 0);
+        m_network.set_disconnect_timeout(m_map.manifest().disconnect_timeout);
+        m_network.set_pause_on_disconnect(m_map.manifest().pause_on_disconnect);
         break;
     }
     case network::Mode::Client:
@@ -185,6 +187,12 @@ bool App::start_session() {
         m_server.script().set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
             return m_renderer.get_attachment_point(entity_id, bone);
         });
+        m_network.on_player_disconnected = [this](u32 player_id) {
+            m_server.script().fire_event("on_player_disconnected", UINT32_MAX, "", player_id);
+        };
+        m_network.on_player_dropped = [this](u32 player_id) {
+            m_server.script().fire_event("on_player_dropped", UINT32_MAX, "", player_id);
+        };
         m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {
                 m_network.host_end_game(winner_id, stats);
@@ -313,7 +321,14 @@ void App::run() {
         case AppState::Playing: {
             bool is_client = (m_args.net_mode == network::Mode::Client);
 
-            m_network.update();
+            m_network.update(frame_dt);
+
+            // Client: handle server disconnect
+            if (is_client && !m_network.is_connected() && m_network.local_player().is_valid()) {
+                log::warn(TAG, "Lost connection to server");
+                m_state = AppState::Results;
+                break;
+            }
 
             if (is_client && m_network.is_connected()) {
                 auto lp = m_network.local_player();
@@ -329,7 +344,8 @@ void App::run() {
             }
 
             bool should_tick = !is_client &&
-                (m_args.net_mode == network::Mode::Offline || m_network.is_game_started());
+                (m_args.net_mode == network::Mode::Offline || m_network.is_game_started()) &&
+                !m_network.is_paused();
             if (should_tick) {
                 float game_dt = TICK_DT * game_speed;
                 accumulator += frame_dt;

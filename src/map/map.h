@@ -48,8 +48,12 @@ struct MapManifest {
     std::vector<std::string> armor_types;
     std::vector<std::string> attributes;
 
-    // Fog of war: "none" or "explored" (default: "none")
+    // Fog of war: "none", "explored", or "unexplored" (default: "none")
     std::string fog_of_war = "none";
+
+    // Reconnect settings
+    f32  disconnect_timeout = 60.0f;   // seconds to wait before dropping a disconnected player
+    bool pause_on_disconnect = false;  // pause the game when a player disconnects
 
     // Input configuration
     std::string input_preset = "rts";

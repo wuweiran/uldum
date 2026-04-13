@@ -173,6 +173,24 @@ Lua calls EndGame(winner, stats) → S_END broadcast → session over
 
 The host reads expected player count from the map manifest. Simulation does not tick until all players connect. Offline mode skips all of this — simulation starts immediately.
 
+## Reconnect
+
+When a client disconnects, the server keeps their player state (units, buildings) alive:
+
+1. Disconnect detected → player moved to disconnected list, `on_player_disconnected` Lua event fires
+2. If `manifest.reconnect.pause` is true, simulation pauses for all players
+3. Timer counts down (`manifest.reconnect.timeout`, default 60s)
+4. If client reconnects (sends C_JOIN again) → gets S_WELCOME + full S_SPAWN burst + S_START, game resumes
+5. If timeout expires → `on_player_dropped` Lua event fires, game resumes, map script decides what happens to the player's units
+
+Manifest config:
+```json
+"reconnect": {
+    "timeout": 60,
+    "pause": true
+}
+```
+
 ### EndGame
 
 ```lua

@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 13c complete. Multiplayer session management.
+Phase 13d complete. Multiplayer reconnect.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -143,6 +143,11 @@ Phase 13c complete. Multiplayer session management.
   - Server waits for expected players before starting simulation
   - Synchronized start: `S_START` broadcast when all players connected
   - Lua `EndGame(winner, stats_json)` → `on_game_end` event → `S_END` broadcast
+- Reconnect (Phase 13d):
+  - Disconnected player's state kept alive during configurable timeout
+  - Reconnecting client receives full state snapshot to catch up
+  - Optional game pause on disconnect (configurable per map)
+  - Timeout fires `on_player_dropped` Lua event, client disconnect transitions to Results
 - Ninja build system for parallel compilation
 
 ## Prerequisites

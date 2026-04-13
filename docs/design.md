@@ -501,11 +501,12 @@ Server-authoritative model with client-side interpolation. See [network.md](netw
 - `EndGame(winner, stats_json)` Lua function → fires `on_game_end` event → broadcasts `S_END`
 - No lobby UI — that's a product-level concern (Phase 16)
 
-**Phase 13d — Reconnect**
-- Disconnected player's state kept alive during a configurable timeout window
+**Phase 13d — Reconnect** ✓
+- Disconnected player's state kept alive during configurable timeout (`manifest.reconnect.timeout`)
 - Reconnecting client receives full state snapshot to catch up
-- Game pause on disconnect (configurable per map/session)
-- Timeout expiry: player dropped, units become neutral or removed (map-defined behavior)
+- Optional game pause on disconnect (`manifest.reconnect.pause`)
+- Timeout expiry fires `on_player_dropped` Lua event (map decides what happens to units)
+- Client detects server disconnect and transitions to Results
 
 ### Phase 14 — GPU-Driven Rendering
 

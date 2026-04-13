@@ -132,6 +132,13 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
     // Fog of war
     m_manifest.fog_of_war = j.value("fog_of_war", "none");
 
+    // Reconnect settings
+    if (j.contains("reconnect") && j["reconnect"].is_object()) {
+        auto& rc = j["reconnect"];
+        m_manifest.disconnect_timeout = rc.value("timeout", 60.0f);
+        m_manifest.pause_on_disconnect = rc.value("pause", false);
+    }
+
     // Input configuration
     if (j.contains("input") && j["input"].is_object()) {
         auto& input = j["input"];

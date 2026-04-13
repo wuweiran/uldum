@@ -44,7 +44,8 @@ public:
     void shutdown();
 
     // Called every frame: polls transport, processes incoming messages.
-    void update();
+    // dt = frame delta time (used for disconnect timeout countdown).
+    void update(f32 dt = 0);
 
     // Host: broadcast S_STATE for all connected clients. Call once per sim tick.
     void host_broadcast_tick(u32 tick);
@@ -93,8 +94,17 @@ public:
     // Set the map hash for join verification.
     void set_map_hash(u32 hash) { m_map_hash = hash; }
 
+    // Configure reconnect behavior (call after init_host).
+    void set_disconnect_timeout(f32 seconds) { m_disconnect_timeout = seconds; }
+    void set_pause_on_disconnect(bool pause) { m_pause_on_disconnect = pause; }
+
+    // Host: is the game paused due to a disconnected player?
+    bool is_paused() const { return m_paused; }
+
     // ── Callbacks ───────────────────────────────────────────────────────
     std::function<void(std::string_view path, glm::vec3 pos)> on_sound;
+    std::function<void(u32 player_id)> on_player_disconnected;  // player lost connection
+    std::function<void(u32 player_id)> on_player_dropped;       // timeout expired, player removed
 
 private:
     Mode m_mode = Mode::Offline;
@@ -117,12 +127,24 @@ private:
     };
     std::vector<PeerInfo> m_peers;
     u32 m_next_player_slot = 1;  // 0 = host local player
-    std::unordered_set<u32> m_prev_tick_entities;  // entities that existed last tick (for new-creation detection)
+    std::unordered_set<u32> m_prev_tick_entities;
+
+    // Disconnected players awaiting reconnect
+    struct DisconnectedPlayer {
+        simulation::Player player;
+        std::unordered_set<u32> known_entities;  // preserved from PeerInfo
+        f32 timer = 0;                           // seconds remaining
+    };
+    std::vector<DisconnectedPlayer> m_disconnected;
+    f32 m_disconnect_timeout = 60.0f;
+    bool m_pause_on_disconnect = false;
+    bool m_paused = false;
 
     void host_on_connect(u32 peer_id);
     void host_on_disconnect(u32 peer_id);
     void host_on_receive(u32 peer_id, std::span<const u8> data);
     void host_send_spawn_burst(PeerInfo& peer);
+    void host_update_disconnected(f32 dt);
     bool is_visible_to(u32 entity_id, simulation::Player player) const;
 
     // ── Client-side ─────────────────────────────────────────────────────
