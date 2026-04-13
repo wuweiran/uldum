@@ -43,9 +43,9 @@ public:
     // Combines TerrainData::is_tile_passable() with MoveType (air/ground/amphibious).
     bool can_occupy(u32 tx, u32 ty, MoveType move_type) const;
 
-    // Can a unit on tile (src_tx, src_ty) with cliff_level move to adjacent tile (dst_tx, dst_ty)?
+    // Can a unit on tile (src_tx, src_ty) move to adjacent tile (dst_tx, dst_ty)?
     bool are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
-                       u8 cliff_level, MoveType move_type) const;
+                       MoveType move_type) const;
 
     // What cliff level should a unit have after entering this tile?
     u8 cliff_level_on_tile(u32 tx, u32 ty) const;

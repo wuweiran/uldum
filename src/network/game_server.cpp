@@ -1,4 +1,5 @@
 #include "network/game_server.h"
+#include "simulation/fog_of_war.h"
 #include "asset/asset.h"
 #include "map/map.h"
 #include "core/log.h"
@@ -34,6 +35,12 @@ bool GameServer::init_game(map::MapManager& map,
                                 simulation::Player{pa.slot},
                                 simulation::Player{pb.slot},
                                 true);
+                            if (team.shared_vision) {
+                                m_simulation.set_shared_vision(
+                                    simulation::Player{pa.slot},
+                                    simulation::Player{pb.slot},
+                                    true);
+                            }
                         }
                     }
                 }
@@ -45,6 +52,23 @@ bool GameServer::init_game(map::MapManager& map,
     // Terrain
     if (map.terrain().is_valid()) {
         m_simulation.set_terrain(&map.terrain());
+    }
+
+    // Fog of war
+    {
+        auto& manifest = map.manifest();
+        auto& terrain = map.terrain();
+        simulation::FogMode fog_mode = simulation::FogMode::None;
+        if (manifest.fog_of_war == "explored") fog_mode = simulation::FogMode::Explored;
+        else if (manifest.fog_of_war == "unexplored") fog_mode = simulation::FogMode::Unexplored;
+
+        m_simulation.fog().init(
+            terrain.tiles_x, terrain.tiles_y, terrain.tile_size,
+            static_cast<u32>(manifest.players.size()), fog_mode, &terrain);
+
+        if (fog_mode != simulation::FogMode::None) {
+            log::info(TAG, "Fog of war enabled (mode: {})", manifest.fog_of_war);
+        }
     }
 
     // Scripting

@@ -101,7 +101,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         combat.acquire_range    = def->acquire_range;
         world.combats.add(id, std::move(combat));
     }
-    world.visions.add(id, Vision{def->sight_range_day, def->sight_range_night});
+    world.visions.add(id, Vision{def->sight_range});
     world.order_queues.add(id, OrderQueue{});
     world.ability_sets.add(id, AbilitySet{});
     world.classifications.add(id, UnitClassificationComp{def->classifications});

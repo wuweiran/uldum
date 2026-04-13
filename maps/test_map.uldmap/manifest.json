@@ -6,6 +6,7 @@
     "engine_version": "0.1.0",
     "game_mode": "test",
     "suggested_players": "1",
+    "fog_of_war": "explored",
 
     "players": [
         { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" },

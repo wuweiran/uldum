@@ -44,8 +44,7 @@ struct UnitTypeDef {
     f32 acquire_range = 10.0f;
 
     // Vision
-    f32 sight_range_day = 1400;
-    f32 sight_range_night = 800;
+    f32 sight_range = 1400;
 
     // Selection
     f32 selection_radius = 1.0f;

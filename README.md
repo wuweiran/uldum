@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 13a complete. Local server refactor.
+Phase 13a complete. Local server refactor + fog of war.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -35,7 +35,13 @@ Phase 13a complete. Local server refactor.
 - Generic state system (HP engine-built-in, mana/energy/etc. map-defined)
 - Generic attribute system (string-based: armor, attack_type, strength, etc. all map-defined)
 - String-based classifications, attack/armor types (map declares valid values in manifest)
-- Alliance system: per-player-pair, asymmetric (allied, passive), loaded from manifest teams
+- Alliance system: per-player-pair, asymmetric (allied, passive, shared_vision), loaded from manifest teams
+- Fog of war: per-player tile-based visibility with three modes (none, explored, unexplored)
+  - Cliff-based line-of-sight blocking (high ground sees low, cliffs block vision)
+  - Shared vision via alliance flags (per-team configurable)
+  - Visual smoothing: temporal fade (fast reveal, slow fade), feathered vision edges, bilinear filtering
+  - Per-frame GPU fog texture, terrain shader darkening, enemy unit/shadow culling
+  - Lua API: reveal, unexplore, visibility queries
 - A* pathfinding on tile grid with 8-directional movement
 - Movement with committed-side local avoidance (steer around other units)
 - Per-unit collision radius (configurable per type in JSON)

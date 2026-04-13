@@ -347,10 +347,6 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     // Low center: 4 midpoints + 2 low corners form the remaining surface
                     u32 vl_a = corner_v((hi_a == 0) ? 1 : 0, low_z);  // the two low corners
                     u32 vl_b = corner_v((hi_a == 0) ? 2 : 3, low_z);
-                    u32 m_top  = mid_v(0, low_z);  // top edge midpoint
-                    u32 m_bot  = mid_v(1, low_z);  // bottom edge midpoint
-                    u32 m_left = mid_v(2, low_z);  // left edge midpoint
-                    u32 m_right = mid_v(3, low_z); // right edge midpoint
 
                     // Fan from center-ish. Two low corners + 4 midpoints form a hexagon.
                     // Triangulate from one low corner.

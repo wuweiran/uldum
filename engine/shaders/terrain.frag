@@ -1,10 +1,11 @@
 #version 450
 
-// Set 0: terrain material textures (4 ground layers)
+// Set 0: terrain material textures (4 ground layers + fog)
 layout(set = 0, binding = 0) uniform sampler2D layer0_tex;
 layout(set = 0, binding = 1) uniform sampler2D layer1_tex;
 layout(set = 0, binding = 2) uniform sampler2D layer2_tex;
 layout(set = 0, binding = 3) uniform sampler2D layer3_tex;
+layout(set = 0, binding = 4) uniform sampler2D fog_tex;
 
 // Set 1: shadow data
 layout(set = 1, binding = 0) uniform ShadowData {
@@ -12,11 +13,20 @@ layout(set = 1, binding = 0) uniform ShadowData {
 } shadow;
 layout(set = 1, binding = 1) uniform sampler2DShadow shadow_map;
 
+layout(push_constant) uniform PushConstants {
+    mat4 mvp;
+    mat4 model;
+    vec2 world_size;
+    float fog_enabled;
+    float _pad;
+} pc;
+
 layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
 layout(location = 2) in vec2 frag_tile_uv;
 layout(location = 3) in vec3 frag_world_pos;
 layout(location = 4) in vec4 frag_splat_weights;
+layout(location = 5) in vec2 frag_fog_uv;
 
 layout(location = 0) out vec4 out_color;
 
@@ -65,5 +75,14 @@ void main() {
     float ambient = 0.25;
     float lighting = ambient + (1.0 - ambient) * ndotl * shadow_factor;
 
-    out_color = vec4(albedo * lighting, 1.0);
+    vec3 lit_color = albedo * lighting;
+
+    // Fog of war
+    if (pc.fog_enabled > 0.5) {
+        // fog_tex stores brightness: 0=black (unexplored), 0.4=dim (explored), 1.0=visible
+        float fog = texture(fog_tex, frag_fog_uv).r;
+        lit_color *= fog;
+    }
+
+    out_color = vec4(lit_color, 1.0);
 }

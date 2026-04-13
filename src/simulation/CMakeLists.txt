@@ -6,6 +6,7 @@ add_library(uldum_simulation STATIC
     systems.cpp
     pathfinding.cpp
     spatial_query.cpp
+    fog_of_war.cpp
 )
 
 target_include_directories(uldum_simulation PUBLIC ${CMAKE_SOURCE_DIR}/src)

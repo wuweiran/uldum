@@ -130,8 +130,7 @@ struct DeadState {
 };
 
 struct Vision {
-    f32 sight_range_day   = 1400;
-    f32 sight_range_night = 800;
+    f32 sight_range = 1400;
 };
 
 struct OrderQueue {

@@ -322,8 +322,6 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
 void RtsPreset::handle_camera(const InputContext& ctx, f32 dt) {
     auto& input = ctx.input;
     auto& camera = ctx.camera;
-    f32 w = static_cast<f32>(ctx.screen_w);
-    f32 h = static_cast<f32>(ctx.screen_h);
 
     // Arrow keys: pan camera
     f32 pan_x = 0, pan_y = 0;

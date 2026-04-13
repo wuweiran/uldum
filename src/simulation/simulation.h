@@ -5,6 +5,7 @@
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
+#include "simulation/fog_of_war.h"
 
 #include <vector>
 
@@ -15,8 +16,9 @@ namespace uldum::simulation {
 
 // Per-pair alliance flags (asymmetric: A→B can differ from B→A)
 struct AllianceFlags {
-    bool allied  = false;   // won't auto-attack, friendly AoE won't hit
-    bool passive = false;   // won't fight back when attacked by this player
+    bool allied        = false;   // won't auto-attack, friendly AoE won't hit
+    bool passive       = false;   // won't fight back when attacked by this player
+    bool shared_vision = false;   // shares fog of war vision with this player
 };
 
 class Simulation {
@@ -47,6 +49,9 @@ public:
     SpatialGrid&       spatial_grid()       { return m_spatial_grid; }
     const SpatialGrid& spatial_grid() const { return m_spatial_grid; }
 
+    FogOfWar&       fog()       { return m_fog; }
+    const FogOfWar& fog() const { return m_fog; }
+
     // ── Alliance system ──────────────────────────────────────────────────
     // Initialize with player count (call after loading manifest).
     void init_alliances(u32 player_count);
@@ -63,6 +68,12 @@ public:
     // Query: does player_a consider player_b an enemy? (not allied and not same player)
     bool is_enemy(Player a, Player b) const;
 
+    // Set shared vision from player_a toward player_b.
+    void set_shared_vision(Player a, Player b, bool shared);
+
+    // Query: does player_a share vision with player_b?
+    bool has_shared_vision(Player a, Player b) const;
+
     const map::TerrainData* terrain() const { return m_terrain; }
 
 private:
@@ -71,6 +82,7 @@ private:
     AbilityRegistry m_abilities;
     Pathfinder      m_pathfinder;
     SpatialGrid     m_spatial_grid;
+    FogOfWar        m_fog;
     const map::TerrainData* m_terrain = nullptr;
 
     // Alliance table: m_alliances[a * m_player_count + b] = flags from a toward b

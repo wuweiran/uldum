@@ -32,7 +32,7 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
 }
 
 bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
-                                u8 cliff_level, MoveType move_type) const {
+                                MoveType move_type) const {
     if (!m_terrain) return false;
     if (move_type == MoveType::Air) return true;
 
@@ -134,7 +134,7 @@ bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
     if (src == dst) return true;  // same tile
     if (!can_occupy(dst.x, dst.y, move_type)) return false;
 
-    return are_connected(src.x, src.y, dst.x, dst.y, cliff_level, move_type);
+    return are_connected(src.x, src.y, dst.x, dst.y, move_type);
 }
 
 // ── A* on tile graph ─────────────────────────────────────────────────────
@@ -299,8 +299,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
 
             if (closed.contains(tile_key(ntx, nty))) continue;
 
-            if (!are_connected(current.tx, current.ty, ntx, nty,
-                               current.cliff_level, move_type))
+            if (!are_connected(current.tx, current.ty, ntx, nty, move_type))
                 continue;
 
             u8 new_cliff = cliff_level_on_tile(ntx, nty);

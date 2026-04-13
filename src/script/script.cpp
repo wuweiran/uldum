@@ -645,6 +645,40 @@ void ScriptEngine::bind_api() {
         else if (channel == "voice")   ch = audio::Channel::Voice;
         m_audio->set_volume(ch, volume);
     };
+
+    // ── Fog of War API ────────────────────────────────────────────────────
+
+    auto fog_table = lua.create_named_table("FogOfWar");
+
+    fog_table["reveal_all"] = [&sim](u32 player_id) {
+        sim.fog().reveal_all(simulation::Player{player_id});
+    };
+
+    fog_table["unexplore_all"] = [&sim](u32 player_id) {
+        sim.fog().unexplore_all(simulation::Player{player_id});
+    };
+
+    fog_table["is_visible"] = [&sim](u32 player_id, f32 x, f32 y) -> bool {
+        auto& fog = sim.fog();
+        if (!fog.enabled()) return true;
+        auto& terrain = *sim.terrain();
+        auto tile = terrain.world_to_tile(x, y);
+        return fog.is_visible(simulation::Player{player_id},
+                              static_cast<u32>(tile.x), static_cast<u32>(tile.y));
+    };
+
+    fog_table["is_explored"] = [&sim](u32 player_id, f32 x, f32 y) -> bool {
+        auto& fog = sim.fog();
+        if (!fog.enabled()) return true;
+        auto& terrain = *sim.terrain();
+        auto tile = terrain.world_to_tile(x, y);
+        return fog.is_explored(simulation::Player{player_id},
+                               static_cast<u32>(tile.x), static_cast<u32>(tile.y));
+    };
+
+    fog_table["is_enabled"] = [&sim]() -> bool {
+        return sim.fog().enabled();
+    };
 }
 
 // ── Trigger API Bindings ──────────────────────────────────────────────────

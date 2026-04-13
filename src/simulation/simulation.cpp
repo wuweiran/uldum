@@ -43,15 +43,17 @@ void Simulation::init_alliances(u32 player_count) {
     m_player_count = player_count;
     m_alliances.resize(player_count * player_count, AllianceFlags{});
 
-    // Each player is allied with themselves
+    // Each player is allied with themselves (with shared vision)
     for (u32 i = 0; i < player_count; ++i) {
-        m_alliances[i * player_count + i] = {true, false};
+        m_alliances[i * player_count + i] = {true, false, true};
     }
 }
 
 void Simulation::set_alliance(Player a, Player b, bool allied, bool passive) {
     if (a.id >= m_player_count || b.id >= m_player_count) return;
-    m_alliances[a.id * m_player_count + b.id] = {allied, passive};
+    auto& flags = m_alliances[a.id * m_player_count + b.id];
+    flags.allied = allied;
+    flags.passive = passive;
 }
 
 bool Simulation::is_allied(Player a, Player b) const {
@@ -68,6 +70,17 @@ bool Simulation::is_passive(Player a, Player b) const {
 bool Simulation::is_enemy(Player a, Player b) const {
     if (a.id == b.id) return false;
     return !is_allied(a, b);
+}
+
+void Simulation::set_shared_vision(Player a, Player b, bool shared) {
+    if (a.id >= m_player_count || b.id >= m_player_count) return;
+    m_alliances[a.id * m_player_count + b.id].shared_vision = shared;
+}
+
+bool Simulation::has_shared_vision(Player a, Player b) const {
+    if (a.id == b.id) return true;
+    if (a.id >= m_player_count || b.id >= m_player_count) return false;
+    return m_alliances[a.id * m_player_count + b.id].shared_vision;
 }
 
 void Simulation::tick(float dt) {
@@ -89,6 +102,8 @@ void Simulation::tick(float dt) {
     system_collision(m_world, m_spatial_grid, m_pathfinder);
     system_death(m_world);
     system_scale_pulse(m_world, dt);
+
+    m_fog.update(m_world, *this);
 }
 
 } // namespace uldum::simulation

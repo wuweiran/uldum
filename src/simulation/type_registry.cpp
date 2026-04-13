@@ -100,8 +100,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
 
         if (val.contains("vision")) {
             auto& v = val["vision"];
-            def.sight_range_day   = v.value("day", 1400.0f);
-            def.sight_range_night = v.value("night", 800.0f);
+            def.sight_range = v.value("range", 1400.0f);
         }
 
         if (val.contains("selection")) {

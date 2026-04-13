@@ -143,6 +143,10 @@ bool Engine::init() {
     m_bindings.load(m_map.manifest().input_bindings_json);
     m_bindings.apply_defaults(input::rts_default_bindings());
 
+    // Wire fog of war to renderer
+    m_renderer.set_simulation(&m_server.simulation());
+    m_renderer.set_local_player(0);  // local player = slot 0
+
     // Wire input to script engine
     m_server.script().set_input(&m_selection, &m_commands);
 
@@ -214,10 +218,20 @@ void Engine::run() {
         }
         m_audio.update();
 
+        // Update fog of war visual interpolation and upload to renderer
+        {
+            auto& fog = m_server.simulation().fog();
+            if (fog.enabled()) {
+                const f32* visual = fog.update_visual(simulation::Player{0}, frame_dt);
+                m_renderer.set_fog_grid(visual, fog.tiles_x(), fog.tiles_y());
+            }
+        }
+
         // Render (skip if window is minimized — extent would be zero)
         f32 alpha = accumulator / TICK_DT;  // interpolation factor (0..1)
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
+            m_renderer.upload_fog(cmd);
             m_renderer.draw_shadows(cmd, m_server.simulation().world(), alpha);
             m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), m_server.simulation().world(), alpha);

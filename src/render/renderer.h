@@ -21,7 +21,7 @@
 #include <unordered_set>
 
 namespace uldum::rhi { class VulkanRhi; }
-namespace uldum::simulation { struct World; }
+namespace uldum::simulation { struct World; struct Transform; class Simulation; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::map { struct TerrainData; }
 
@@ -52,6 +52,20 @@ public:
 
     // Set terrain data pointer for height/normal sampling (entity slope tilt).
     void set_terrain_data(const map::TerrainData* td) { m_terrain_data = td; }
+
+    // Set the fog of war visual grid for the local player. Called each frame before draw.
+    // values: tiles_x * tiles_y floats (0.0=black .. 1.0=fully visible).
+    // Pass nullptr to disable fog rendering.
+    void set_fog_grid(const f32* values, u32 tiles_x, u32 tiles_y);
+
+    // Set the simulation reference for fog visibility queries during draw.
+    void set_simulation(const simulation::Simulation* sim) { m_simulation = sim; }
+
+    // Set the local player for fog-based unit filtering.
+    void set_local_player(u32 player_id) { m_local_player_id = player_id; }
+
+    // Upload the fog texture to GPU. Must be called outside a render pass.
+    void upload_fog(VkCommandBuffer cmd);
 
     // Record shadow depth pass (must be called before begin_rendering).
     // alpha: interpolation factor between previous and current tick (0..1).
@@ -89,6 +103,9 @@ private:
     VkDescriptorSet allocate_bone_descriptor(VkBuffer bone_buffer, usize size);
 
     void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world, f32 alpha);
+
+    // Returns true if an entity should be hidden by fog of war (enemy in non-visible tile).
+    bool is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const;
 
     rhi::VulkanRhi* m_rhi = nullptr;
     const map::TerrainData* m_terrain_data = nullptr;
@@ -156,6 +173,20 @@ private:
     // Particle pipeline (alpha-blended, depth test on, depth write off)
     VkPipelineLayout m_particle_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_particle_pipeline        = VK_NULL_HANDLE;
+
+    // Fog of war texture (R8, tiles_x * tiles_y, updated per frame)
+    GpuTexture  m_fog_texture{};
+    VkBuffer    m_fog_staging_buffer = VK_NULL_HANDLE;
+    VmaAllocation m_fog_staging_alloc = VK_NULL_HANDLE;
+    void*       m_fog_staging_mapped = nullptr;
+    u32         m_fog_width = 0;
+    u32         m_fog_height = 0;
+    bool        m_fog_enabled = false;
+    bool        m_fog_dirty = false;
+
+    // Simulation reference for fog queries
+    const simulation::Simulation* m_simulation = nullptr;
+    u32 m_local_player_id = 0;
 
     // Terrain mesh
     TerrainMesh m_terrain{};

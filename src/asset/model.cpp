@@ -48,7 +48,7 @@ static glm::mat4 read_mat4(const cgltf_accessor* acc, cgltf_size index) {
 // Build a mapping from cgltf_node* to bone index
 using NodeToBoneMap = std::unordered_map<const cgltf_node*, u32>;
 
-static void extract_skeleton(const cgltf_data* data, const cgltf_skin& skin,
+static void extract_skeleton(const cgltf_skin& skin,
                               Skeleton& skeleton, NodeToBoneMap& node_to_bone) {
     skeleton.bones.resize(skin.joints_count);
 
@@ -243,7 +243,7 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
     NodeToBoneMap node_to_bone;
     bool has_skin = data->skins_count > 0;
     if (has_skin) {
-        extract_skeleton(data, data->skins[0], model.skeleton, node_to_bone);
+        extract_skeleton(data->skins[0], model.skeleton, node_to_bone);
         extract_animations(data, node_to_bone, model.animations);
     }
 

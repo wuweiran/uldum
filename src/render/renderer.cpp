@@ -2,6 +2,7 @@
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "map/terrain_data.h"
 #include "simulation/world.h"
+#include "simulation/simulation.h"
 #include "simulation/components.h"
 #include "simulation/type_registry.h"
 #include "asset/model.h"
@@ -9,6 +10,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -210,6 +212,13 @@ void Renderer::shutdown() {
         destroy_mesh(alloc, mesh);
     }
     m_mesh_cache.clear();
+
+    // Destroy fog resources
+    if (m_fog_texture.image) destroy_texture(*m_rhi, m_fog_texture);
+    if (m_fog_staging_buffer) {
+        // No need to unmap — VMA persistent mapping freed with buffer
+        vmaDestroyBuffer(alloc, m_fog_staging_buffer, m_fog_staging_alloc);
+    }
 
     // Destroy textures
     destroy_texture(*m_rhi, m_corpse_texture);
@@ -419,6 +428,199 @@ void Renderer::set_terrain(const map::TerrainData& terrain) {
     }
 }
 
+// ── Fog of war texture ────────────────────────────────────────────────────
+
+void Renderer::set_fog_grid(const f32* values, u32 tiles_x, u32 tiles_y) {
+    if (!values || tiles_x == 0 || tiles_y == 0) {
+        m_fog_enabled = false;
+        return;
+    }
+
+    VkDevice device = m_rhi->device();
+    VmaAllocator allocator = m_rhi->allocator();
+
+    // (Re)create fog texture if dimensions changed
+    if (tiles_x != m_fog_width || tiles_y != m_fog_height) {
+        // Destroy old resources
+        if (m_fog_texture.image) destroy_texture(*m_rhi, m_fog_texture);
+        if (m_fog_staging_buffer) {
+            if (m_fog_staging_mapped) vmaUnmapMemory(allocator, m_fog_staging_alloc);
+            vmaDestroyBuffer(allocator, m_fog_staging_buffer, m_fog_staging_alloc);
+            m_fog_staging_buffer = VK_NULL_HANDLE;
+            m_fog_staging_mapped = nullptr;
+        }
+
+        m_fog_width = tiles_x;
+        m_fog_height = tiles_y;
+
+        // Create persistent staging buffer (mapped once)
+        VkDeviceSize buf_size = static_cast<VkDeviceSize>(tiles_x) * tiles_y * 4; // RGBA
+        VkBufferCreateInfo buf_ci{};
+        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buf_ci.size  = buf_size;
+        buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo alloc_info{};
+        vmaCreateBuffer(allocator, &buf_ci, &alloc_ci,
+                        &m_fog_staging_buffer, &m_fog_staging_alloc, &alloc_info);
+        m_fog_staging_mapped = alloc_info.pMappedData;
+
+        // Create GPU image (R8G8B8A8_UNORM — we expand R8 to RGBA for compatibility)
+        VkImageCreateInfo img_ci{};
+        img_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        img_ci.imageType     = VK_IMAGE_TYPE_2D;
+        img_ci.format        = VK_FORMAT_R8G8B8A8_UNORM;
+        img_ci.extent        = {tiles_x, tiles_y, 1};
+        img_ci.mipLevels     = 1;
+        img_ci.arrayLayers   = 1;
+        img_ci.samples       = VK_SAMPLE_COUNT_1_BIT;
+        img_ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        img_ci.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo img_alloc_ci{};
+        img_alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+
+        m_fog_texture = {};
+        m_fog_texture.width = tiles_x;
+        m_fog_texture.height = tiles_y;
+        vmaCreateImage(allocator, &img_ci, &img_alloc_ci,
+                       &m_fog_texture.image, &m_fog_texture.alloc, nullptr);
+
+        // Image view
+        VkImageViewCreateInfo view_ci{};
+        view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image    = m_fog_texture.image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.format   = VK_FORMAT_R8G8B8A8_UNORM;
+        view_ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(device, &view_ci, nullptr, &m_fog_texture.view);
+
+        // Sampler (bilinear, clamp to edge for smooth fog borders)
+        VkSamplerCreateInfo sampler_ci{};
+        sampler_ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_ci.magFilter    = VK_FILTER_LINEAR;
+        sampler_ci.minFilter    = VK_FILTER_LINEAR;
+        sampler_ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_ci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_ci.maxLod       = 0.0f;
+        vkCreateSampler(device, &sampler_ci, nullptr, &m_fog_texture.sampler);
+
+        // Initial transition to SHADER_READ_ONLY (will transition to TRANSFER_DST each frame)
+        VkCommandBuffer cmd = m_rhi->begin_oneshot();
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+        barrier.srcAccessMask = VK_ACCESS_2_NONE;
+        barrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        barrier.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.image         = m_fog_texture.image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        VkDependencyInfo dep{};
+        dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers    = &barrier;
+        vkCmdPipelineBarrier2(cmd, &dep);
+        m_rhi->end_oneshot(cmd);
+
+        // Re-create terrain descriptor set with fog texture bound
+        if (m_terrain_material.layer_count > 0) {
+            m_terrain_material.descriptor_set = allocate_terrain_descriptor(m_terrain_material);
+        }
+    }
+
+    // Convert float brightness → RGBA staging buffer
+    if (m_fog_staging_mapped) {
+        auto* dst = static_cast<u8*>(m_fog_staging_mapped);
+        u32 count = tiles_x * tiles_y;
+        for (u32 i = 0; i < count; ++i) {
+            u8 brightness = static_cast<u8>(std::clamp(values[i], 0.0f, 1.0f) * 255.0f);
+            dst[i * 4]     = brightness;
+            dst[i * 4 + 1] = brightness;
+            dst[i * 4 + 2] = brightness;
+            dst[i * 4 + 3] = 255;
+        }
+    }
+
+    m_fog_enabled = true;
+    m_fog_dirty = true;
+}
+
+void Renderer::upload_fog(VkCommandBuffer cmd) {
+    if (!m_fog_dirty || !m_fog_texture.image || !m_fog_staging_buffer) return;
+
+    // Transition SHADER_READ_ONLY → TRANSFER_DST
+    VkImageMemoryBarrier2 to_transfer{};
+    to_transfer.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    to_transfer.srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_transfer.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_transfer.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_transfer.oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_transfer.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_transfer.image         = m_fog_texture.image;
+    to_transfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    VkDependencyInfo dep{};
+    dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers    = &to_transfer;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    // Copy staging → image
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent      = {m_fog_width, m_fog_height, 1};
+    vkCmdCopyBufferToImage(cmd, m_fog_staging_buffer, m_fog_texture.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition TRANSFER_DST → SHADER_READ_ONLY
+    VkImageMemoryBarrier2 to_shader{};
+    to_shader.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    to_shader.srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    to_shader.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_shader.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_shader.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_shader.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_shader.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_shader.image         = m_fog_texture.image;
+    to_shader.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    dep.pImageMemoryBarriers = &to_shader;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    m_fog_dirty = false;
+}
+
+bool Renderer::is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const {
+    if (!m_fog_enabled || !m_simulation) return false;
+    const auto& fog = m_simulation->fog();
+    if (!fog.enabled()) return false;
+
+    // Friendly units are always visible
+    const auto* owner = world.owners.get(id);
+    if (owner && owner->player.id == m_local_player_id) return false;
+    if (owner && m_simulation->is_allied(simulation::Player{m_local_player_id}, owner->player)) return false;
+
+    // Check fog state at entity tile
+    auto tile = m_terrain_data
+        ? m_terrain_data->world_to_tile(t.position.x, t.position.y)
+        : glm::ivec2{0, 0};
+    auto vis = fog.get(simulation::Player{m_local_player_id},
+                       static_cast<u32>(tile.x), static_cast<u32>(tile.y));
+    return vis != simulation::Visibility::Visible;
+}
+
 // ── Descriptor set layouts + pool ─────────────────────────────────────────
 
 bool Renderer::create_descriptor_layouts() {
@@ -443,10 +645,10 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Terrain descriptor set layout: 4 combined image samplers (ground texture layers)
+    // Terrain descriptor set layout: 4 ground layers + 1 fog texture = 5 samplers
     {
-        VkDescriptorSetLayoutBinding bindings[4]{};
-        for (u32 i = 0; i < 4; ++i) {
+        VkDescriptorSetLayoutBinding bindings[5]{};
+        for (u32 i = 0; i < 5; ++i) {
             bindings[i].binding         = i;
             bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[i].descriptorCount = 1;
@@ -455,7 +657,7 @@ bool Renderer::create_descriptor_layouts() {
 
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 4;
+        ci.bindingCount = 5;
         ci.pBindings    = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_terrain_desc_layout) != VK_SUCCESS) {
@@ -596,8 +798,8 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
-    VkDescriptorImageInfo img_infos[4]{};
-    VkWriteDescriptorSet writes[4]{};
+    VkDescriptorImageInfo img_infos[5]{};
+    VkWriteDescriptorSet writes[5]{};
 
     // Layer textures (bindings 0-3)
     for (u32 i = 0; i < 4; ++i) {
@@ -614,7 +816,20 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         writes[i].pImageInfo      = &img_infos[i];
     }
 
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    // Fog texture (binding 4) — use fog texture if available, otherwise default (fully lit)
+    const GpuTexture& fog_tex = m_fog_texture.image ? m_fog_texture : m_default_texture;
+    img_infos[4].sampler     = fog_tex.sampler;
+    img_infos[4].imageView   = fog_tex.view;
+    img_infos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet          = set;
+    writes[4].dstBinding      = 4;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].pImageInfo      = &img_infos[4];
+
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
     return set;
 }
 
@@ -1148,9 +1363,9 @@ bool Renderer::create_terrain_pipeline() {
     cfg.stages[1].pName  = "main";
 
     VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     push_range.offset     = 0;
-    push_range.size       = 2 * sizeof(glm::mat4);
+    push_range.size       = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32);  // mvp + model + world_size + fog_enabled + pad
 
     VkDescriptorSetLayout terrain_layouts[] = {m_terrain_desc_layout, m_shadow_desc_layout};
     VkPipelineLayoutCreateInfo layout_ci{};
@@ -1646,6 +1861,7 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
 
             const auto* transform = transforms.get(id);
             if (!transform) continue;
+            if (is_fog_hidden(world, id, *transform)) continue;
 
             auto it = m_anim_instances.find(id);
             if (it == m_anim_instances.end() || !it->second.bone_descriptor) continue;
@@ -1702,6 +1918,7 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
 
         const auto* transform = transforms.get(id);
         if (!transform) continue;
+        if (is_fog_hidden(world, id, *transform)) continue;
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
         if (!mesh.vertex_buffer) continue;
 
@@ -1781,8 +1998,20 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
         glm::mat4 terrain_model{1.0f};
         glm::mat4 terrain_mvp = vp * terrain_model;
-        struct { glm::mat4 mvp; glm::mat4 model; } terrain_push{terrain_mvp, terrain_model};
-        vkCmdPushConstants(cmd, m_terrain_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+        struct {
+            glm::mat4 mvp;
+            glm::mat4 model;
+            glm::vec2 world_size;
+            f32 fog_enabled;
+            f32 _pad;
+        } terrain_push{};
+        terrain_push.mvp = terrain_mvp;
+        terrain_push.model = terrain_model;
+        terrain_push.world_size = m_terrain_data
+            ? glm::vec2{m_terrain_data->world_width(), m_terrain_data->world_height()}
+            : glm::vec2{1.0f};
+        terrain_push.fog_enabled = m_fog_enabled ? 1.0f : 0.0f;
+        vkCmdPushConstants(cmd, m_terrain_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(terrain_push), &terrain_push);
 
         VkDeviceSize offset = 0;
@@ -1866,6 +2095,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             const auto* transform = transforms.get(id);
             if (!transform) continue;
 
+            // Skip enemies hidden by fog of war
+            if (is_fog_hidden(world, id, *transform)) continue;
+
             auto it = m_anim_instances.find(id);
             if (it == m_anim_instances.end()) continue;
             auto& anim = it->second;
@@ -1931,6 +2163,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
         const auto* transform = transforms.get(id);
         if (!transform) continue;
+
+        // Skip enemies hidden by fog of war
+        if (is_fog_hidden(world, id, *transform)) continue;
 
         // Use corpse material only for placeholder models (no real texture)
         bool is_corpse = world.dead_states.has(id);

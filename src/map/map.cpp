@@ -129,6 +129,9 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
         for (auto& a : j["attributes"]) m_manifest.attributes.push_back(a.get<std::string>());
     }
 
+    // Fog of war
+    m_manifest.fog_of_war = j.value("fog_of_war", "none");
+
     // Input configuration
     if (j.contains("input") && j["input"].is_object()) {
         auto& input = j["input"];

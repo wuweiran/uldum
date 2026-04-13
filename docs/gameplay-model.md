@@ -210,8 +210,7 @@ Combat {
 }
 
 Vision {
-    f32  sight_range_day
-    f32  sight_range_night
+    f32  sight_range          // vision radius in game units
 }
 
 OrderQueue {
@@ -993,3 +992,49 @@ void     set_charges(World& world, Item item, i32 charges);
 
 } // namespace uldum::simulation
 ```
+
+## 9. Fog of War
+
+Tile-based, per-player visibility. Configurable per map via `fog_of_war` in the manifest.
+
+### Modes
+
+| Manifest value | Behavior |
+|---|---|
+| `"none"` | No fog — everything visible |
+| `"explored"` | Map starts pre-explored (terrain dimmed), enemies hidden outside vision |
+| `"unexplored"` | Full black fog, areas discovered by units |
+
+### Visibility States
+
+Each tile is **Unexplored** (black), **Explored** (terrain visible, dimmed, enemies hidden), or **Visible** (full brightness, enemies shown).
+
+Each simulation tick: all Visible tiles decay to Explored, then vision circles are re-marked from units with Vision components.
+
+### Vision
+
+Each unit's `sight_range` (in game units) defines a circular vision area. Vision is granted to the owning player and to any allied player with `shared_vision` enabled.
+
+### Cliff LOS
+
+Vision is blocked by cliffs. A Bresenham line is traced from the viewer tile to each target tile. If any intermediate tile has a max corner cliff level higher than the viewer's cliff level, the target is blocked. High ground sees low ground; low ground cannot see past higher cliffs.
+
+### Shared Vision
+
+The `shared_vision` flag on `AllianceFlags` controls whether one player sees through another's units. Set from `TeamDef.shared_vision` in the manifest. Independent of the `allied` flag — you can be allied without sharing vision.
+
+### Visual Smoothing
+
+The logical grid updates per tick, but a separate float grid is interpolated per render frame for smooth transitions. Reveal is fast (~0.25s), fade is slower (~0.5s). Vision circle edges are feathered with a smoothstep falloff zone. The GPU fog texture uses bilinear filtering.
+
+### Rendering
+
+A per-frame fog texture (tiles_x * tiles_y, RGBA) is uploaded to the GPU and sampled in the terrain fragment shader. Enemy entities on non-visible tiles are skipped in both the main draw pass and the shadow pass.
+
+### Lua API
+
+- `FogOfWar.reveal_all(player)` — reveal everything for a player
+- `FogOfWar.unexplore_all(player)` — reset to unexplored
+- `FogOfWar.is_visible(player, x, y)` — check visibility at world position
+- `FogOfWar.is_explored(player, x, y)` — check if explored
+- `FogOfWar.is_enabled()` — whether fog is active

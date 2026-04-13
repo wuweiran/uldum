@@ -48,6 +48,9 @@ struct MapManifest {
     std::vector<std::string> armor_types;
     std::vector<std::string> attributes;
 
+    // Fog of war: "none" or "explored" (default: "none")
+    std::string fog_of_war = "none";
+
     // Input configuration
     std::string input_preset = "rts";
     nlohmann::json input_bindings_json;  // raw "bindings" object from manifest
