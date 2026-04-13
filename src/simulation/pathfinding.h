@@ -59,10 +59,10 @@ public:
 
     // ── Movement validation ─────────────────────────────────────────────
 
-    // Can a unit at (old_x, old_y) with cliff_level move to (new_x, new_y)?
+    // Can a unit at (old_x, old_y) move to (new_x, new_y)?
     // Convenience wrapper over are_connected for runtime movement checks.
     bool can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
-                     u8 cliff_level, MoveType move_type) const;
+                     MoveType move_type) const;
 
     // ── Pathfinding ───────────────────────────────────────────────────────
 

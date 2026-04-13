@@ -1,4 +1,4 @@
-#include "app/engine.h"
+#include "app/app.h"
 #include "core/log.h"
 
 #include <cstring>
@@ -14,6 +14,8 @@ static uldum::LaunchArgs parse_args(int argc, char* argv[]) {
             args.connect_address = argv[++i];
         } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             args.port = static_cast<uldum::u16>(std::stoi(argv[++i]));
+        } else if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
+            args.map_path = argv[++i];
         }
     }
     return args;
@@ -21,15 +23,15 @@ static uldum::LaunchArgs parse_args(int argc, char* argv[]) {
 
 int main(int argc, char* argv[]) {
     auto args = parse_args(argc, argv);
-    uldum::Engine engine;
+    uldum::App app;
 
-    if (!engine.init(args)) {
+    if (!app.init(args)) {
         uldum::log::error("Main", "Engine initialization failed");
         return 1;
     }
 
-    engine.run();
-    engine.shutdown();
+    app.run();
+    app.shutdown();
 
     return 0;
 }

@@ -242,6 +242,7 @@ struct ProjectileComp {
 struct Renderable {
     std::string model_path;
     bool        visible = true;
+    bool        skip_birth = false;  // skip birth animation (entity revealed, not newly created)
 };
 
 } // namespace uldum::simulation

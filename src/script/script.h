@@ -72,6 +72,10 @@ public:
 
     void set_attach_point_fn(AttachPointFn fn) { m_attach_fn = std::move(fn); }
 
+    // Callback fired when Lua calls EndGame(winner, stats_json).
+    using EndGameFn = std::function<void(u32 winner_id, std::string_view stats_json)>;
+    void set_end_game_fn(EndGameFn fn) { m_end_game_fn = std::move(fn); }
+
     // Connect input systems (call after input is initialized, before scripts run).
     void set_input(input::SelectionState* selection, input::CommandSystem* commands);
 
@@ -119,6 +123,7 @@ private:
     render::EffectManager*   m_effect_mgr = nullptr;
     audio::AudioEngine*      m_audio      = nullptr;
     AttachPointFn            m_attach_fn;
+    EndGameFn                m_end_game_fn;
 
     // Input (set via set_input)
     input::SelectionState*   m_selection = nullptr;

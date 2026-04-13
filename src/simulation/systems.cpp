@@ -54,7 +54,7 @@ static f32 angle_diff(f32 from, f32 to) {
 // Returns adjusted direction. If no blocker, returns original forward.
 static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const Pathfinder& pathfinder,
                               u32 self_id, glm::vec3 pos, glm::vec3 forward, f32 self_radius,
-                              u8 cliff_level, MoveType move_type) {
+                              MoveType move_type) {
     f32 look_ahead = self_radius * 4.0f;
     UnitFilter filter;
     filter.exclude_buildings = true;
@@ -107,12 +107,12 @@ static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const 
     f32 test_step = self_radius;
     f32 test_x = pos.x + steer.x * test_step;
     f32 test_y = pos.y + steer.y * test_step;
-    if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, cliff_level, move_type)) {
+    if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, move_type)) {
         // Try the other side
         steer = glm::normalize(-perp * 0.6f + forward * 0.4f);
         test_x = pos.x + steer.x * test_step;
         test_y = pos.y + steer.y * test_step;
-        if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, cliff_level, move_type)) {
+        if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, move_type)) {
             return forward;  // both sides blocked by terrain — just go forward
         }
     }
@@ -274,7 +274,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // Local steering: avoid nearby units
         glm::vec3 dir = local_steer(world, grid, pathfinder, id,
                                      transform->position, forward, mov.collision_radius,
-                                     mov.cliff_level, mov.type);
+                                     mov.type);
 
         // Turn toward movement direction
         f32 desired_facing = std::atan2(dir.y, dir.x);
@@ -295,16 +295,16 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             f32 new_x = transform->position.x + dir.x * step;
             f32 new_y = transform->position.y + dir.y * step;
 
-            if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.cliff_level, mov.type)) {
+            if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.type)) {
                 transform->position.x = new_x;
                 transform->position.y = new_y;
             } else {
                 bool slid = false;
-                if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.cliff_level, mov.type)) {
+                if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.type)) {
                     transform->position.x = new_x;
                     slid = true;
                 }
-                if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.cliff_level, mov.type)) {
+                if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.type)) {
                     transform->position.y = new_y;
                     slid = true;
                 }
@@ -906,13 +906,12 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
                     f32 bx = other_t->position.x - n.x * half;
                     f32 by = other_t->position.y - n.y * half;
                     // Only push if it doesn't cross a cliff
-                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, ax, ay, mov->cliff_level, mov->type)) {
+                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, ax, ay, mov->type)) {
                         transform->position.x = ax;
                         transform->position.y = ay;
                     }
                     MoveType other_type = other_mov ? other_mov->type : MoveType::Ground;
-                    u8 other_cliff = other_mov ? other_mov->cliff_level : 0;
-                    if (pathfinder.can_move_to(other_t->position.x, other_t->position.y, bx, by, other_cliff, other_type)) {
+                    if (pathfinder.can_move_to(other_t->position.x, other_t->position.y, bx, by, other_type)) {
                         other_t->position.x = bx;
                         other_t->position.y = by;
                     }

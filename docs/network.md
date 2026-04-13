@@ -79,6 +79,8 @@ All messages are binary with a 1-byte type header. No FlatBuffers — messages a
 | `S_DESTROY` | 0x21 | reliable | `u32 entity_id` |
 | `S_STATE` | 0x30 | unreliable | `u32 tick, u16 count, EntityState[]` — see below |
 | `S_SOUND` | 0x31 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
+| `S_START` | 0x40 | reliable | (empty) — all players connected, game begins |
+| `S_END` | 0x41 | reliable | `u32 winner_id, u16 stats_len, char[] stats_json` |
 
 ### EntityState (per-entity in S_STATE)
 
@@ -159,10 +161,31 @@ S_STATE broadcast → client receives → interpolate → render
 
 The remote client sees the result of its command after one round trip (~2 ticks on LAN).
 
+## Session Lifecycle
+
+```
+Host starts (--host)      → listening, simulation paused
+Clients connect (--connect) → C_JOIN → S_WELCOME → S_SPAWN burst
+All expected players joined → S_START broadcast → simulation begins ticking
+  ... gameplay ...
+Lua calls EndGame(winner, stats) → S_END broadcast → session over
+```
+
+The host reads expected player count from the map manifest. Simulation does not tick until all players connect. Offline mode skips all of this — simulation starts immediately.
+
+### EndGame
+
+```lua
+-- Map script calls this when a win condition is met
+EndGame(0, '{"kills": 15, "time": 302}')
+```
+
+The engine fires `on_game_end` event (for triggers), then broadcasts `S_END` with the winner ID and a JSON stats string. The stats format is entirely map-defined — the engine just passes it through.
+
 ## Future Work
 
 - **Delta compression**: only send entities that changed since last acknowledged snapshot
 - **Transport fallback**: TCP or QUIC for environments that block UDP
-- **Lobby** (Phase 13c): host/join flow, map selection, ready check
-- **Dedicated server**: headless mode with no renderer
+- **Reconnect** (Phase 13d): timeout window, full state catch-up, configurable pause
+- **Dedicated server**: headless mode with no renderer (Phase 15)
 - **Bandwidth optimization**: variable send rate, priority-based entity updates

@@ -494,13 +494,12 @@ Server-authoritative model with client-side interpolation. See [network.md](netw
 - Host mode (`--host`) and connect mode (`--connect <ip>`)
 - No client-side prediction — RTS command delay is acceptable
 
-**Phase 13c — Session Management**
-- Session config format (JSON): map, players, network settings
-- `--session session.json` launch mode
-- Ready handshake: server waits for all expected players before starting
-- Synchronized game start: server sends start signal, all clients begin at tick 0
-- Session end: Lua `EndGame()` → server collects results/statistics → returns to launcher
-- No lobby UI — that's a product-level concern built on top
+**Phase 13c — Session Management** ✓
+- `--map <path>` CLI arg (replaces hardcoded map path)
+- Server waits for expected player count before ticking simulation
+- `S_START` broadcast: all clients begin at the same moment
+- `EndGame(winner, stats_json)` Lua function → fires `on_game_end` event → broadcasts `S_END`
+- No lobby UI — that's a product-level concern (Phase 16)
 
 **Phase 13d — Reconnect**
 - Disconnected player's state kept alive during a configurable timeout window
@@ -544,7 +543,7 @@ The UI system is the **application shell** — it spans the entire app lifecycle
 App Launch → Menu/Lobby (game-defined) → Loading → Gameplay (3D + map-defined HUD) → Results → Menu
 ```
 
-All screens are rendered by the same engine UI framework. CLI args (`--host`, `--connect`, `--session`) are dev shortcuts that skip the menu screen. In production, the menu UI drives `start_session()`.
+All screens are rendered by the same engine UI framework. CLI args (`--host`, `--connect`, `--map`) are dev shortcuts that skip the menu screen. In production, the menu UI drives session start programmatically.
 
 **Phase 16a — UI Framework**
 - Engine-rendered UI framework (Vulkan) — same system for menus and in-game HUD

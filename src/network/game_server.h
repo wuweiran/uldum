@@ -37,9 +37,16 @@ public:
     script::ScriptEngine&         script()           { return m_script; }
     const script::ScriptEngine&   script() const     { return m_script; }
 
+    // Callback fired when Lua calls EndGame(winner, stats).
+    // Engine wires this to NetworkManager for broadcasting S_END.
+    using EndGameCallback = std::function<void(u32 winner_id, std::string_view stats_json)>;
+    void set_end_game_callback(EndGameCallback cb) { m_on_end_game = std::move(cb); }
+    EndGameCallback& end_game_callback() { return m_on_end_game; }
+
 private:
     simulation::Simulation  m_simulation;
     script::ScriptEngine    m_script;
+    EndGameCallback         m_on_end_game;
 };
 
 } // namespace uldum::network

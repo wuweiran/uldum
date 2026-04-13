@@ -124,7 +124,7 @@ f32 Pathfinder::tile_size() const {
 // ── Movement validation ──────────────────────────────────────────────────
 
 bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
-                              u8 cliff_level, MoveType move_type) const {
+                              MoveType move_type) const {
     if (!m_terrain || !m_terrain->is_valid()) return true;
     if (move_type == MoveType::Air) return true;
 

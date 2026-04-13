@@ -52,6 +52,22 @@ public:
     Mode mode() const { return m_mode; }
     bool is_connected() const { return m_connected; }
 
+    // Host: has the game started? (all expected players connected)
+    bool is_game_started() const { return m_game_started; }
+
+    // Host: set how many remote players to wait for before starting.
+    void set_expected_players(u32 count) { m_expected_players = count; }
+
+    // Host: signal game over. Broadcasts S_END to all clients.
+    void host_end_game(u32 winner_id, std::string_view stats_json);
+
+    // Client: has the game started? (S_START received)
+    bool client_game_started() const { return m_game_started; }
+
+    // Client: has the game ended? (S_END received)
+    bool client_game_ended() const { return m_game_ended; }
+    const EndData& client_end_data() const { return m_end_data; }
+
     // ── Client API ──────────────────────────────────────────────────────
     // Send a command to the server (called instead of local CommandSystem).
     void send_order(const input::GameCommand& cmd);
@@ -64,6 +80,7 @@ public:
 
     // Set the type registry for spawning entities on the client.
     void set_type_registry(const simulation::TypeRegistry* types) { m_client_types = types; }
+
 
     // Initialize client-side fog of war from map data.
     void init_client_fog(const map::TerrainData& terrain, const map::MapManager& map,
@@ -82,8 +99,12 @@ public:
 private:
     Mode m_mode = Mode::Offline;
     bool m_connected = false;
+    bool m_game_started = false;
+    bool m_game_ended = false;
     std::unique_ptr<Transport> m_transport;
     u32 m_map_hash = 0;
+    u32 m_expected_players = 0;  // host: how many remote players to wait for
+    EndData m_end_data;
 
     // ── Host-side ───────────────────────────────────────────────────────
     simulation::Simulation* m_simulation = nullptr;
@@ -96,6 +117,7 @@ private:
     };
     std::vector<PeerInfo> m_peers;
     u32 m_next_player_slot = 1;  // 0 = host local player
+    std::unordered_set<u32> m_prev_tick_entities;  // entities that existed last tick (for new-creation detection)
 
     void host_on_connect(u32 peer_id);
     void host_on_disconnect(u32 peer_id);
@@ -133,7 +155,8 @@ private:
     void client_apply_interpolation();
 
     void spawn_client_entity(u32 entity_id, std::string_view type_id,
-                             u8 owner, f32 x, f32 y, f32 facing);
+                             u8 owner, f32 x, f32 y, f32 facing,
+                             bool newly_created);
     void destroy_client_entity(u32 entity_id);
 };
 

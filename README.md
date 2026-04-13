@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 13b complete. Multiplayer networking + fog of war.
+Phase 13c complete. Multiplayer session management.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -133,6 +133,16 @@ Phase 13b complete. Multiplayer networking + fog of war.
   - Two-phase init: simulation before map load, game logic after
   - Zero-overhead local play: tick() is a direct function call, no threading or IPC
   - Clean client/server boundary: Engine holds GameServer + client modules (renderer, audio, input)
+- Networking — multiplayer (Phase 13b):
+  - Transport abstraction (ENet UDP, swappable for QUIC/TCP later)
+  - Binary protocol: commands (client → server), state snapshots (server → client)
+  - Server broadcasts fog-filtered state at 32 Hz, client interpolates between snapshots
+  - Host mode (`--host`) and connect mode (`--connect <ip>`)
+- Session management (Phase 13c):
+  - `--map <path>` CLI arg for map selection
+  - Server waits for expected players before starting simulation
+  - Synchronized start: `S_START` broadcast when all players connected
+  - Lua `EndGame(winner, stats_json)` → `on_game_end` event → `S_END` broadcast
 - Ninja build system for parallel compilation
 
 ## Prerequisites
@@ -182,7 +192,9 @@ uldum_dev.exe --host
 :: Terminal 2 — join
 uldum_dev.exe --connect 127.0.0.1
 ```
-Default port is 7777. Override with `--port <n>`. Without `--host` or `--connect`, the engine runs in single-player mode (same as before).
+Default port is 7777. Override with `--port <n>`. Specify map with `--map <path>` (default: `maps/test_map.uldmap`). Without `--host` or `--connect`, the engine runs in single-player mode (same as before).
+
+In host mode, the simulation waits for all expected players (from manifest) before starting. Lua scripts call `EndGame(winner, stats_json)` to end the session.
 
 **Controls (RTS preset):**
 - **Left click** — select unit

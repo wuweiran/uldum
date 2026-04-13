@@ -17,7 +17,7 @@ set(ULDUM_ENGINE_LIBS
 
 add_executable(uldum_dev
     dev_main.cpp
-    engine.cpp
+    app.cpp
 )
 target_include_directories(uldum_dev PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(uldum_dev PRIVATE ${ULDUM_ENGINE_LIBS})

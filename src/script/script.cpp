@@ -679,6 +679,15 @@ void ScriptEngine::bind_api() {
     fog_table["is_enabled"] = [&sim]() -> bool {
         return sim.fog().enabled();
     };
+
+    // ── Session API ───────────────────────────────────────────────────────
+
+    lua["EndGame"] = [this](u32 winner_id, sol::optional<std::string> stats_json) {
+        std::string stats = stats_json.value_or("{}");
+        log::info("Script", "EndGame called — winner: {}", winner_id);
+        fire_event("on_game_end");
+        if (m_end_game_fn) m_end_game_fn(winner_id, stats);
+    };
 }
 
 // ── Trigger API Bindings ──────────────────────────────────────────────────

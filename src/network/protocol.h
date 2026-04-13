@@ -28,6 +28,8 @@ enum class MsgType : u8 {
     S_DESTROY = 0x21,
     S_STATE   = 0x30,
     S_SOUND   = 0x31,
+    S_START   = 0x40,   // all players connected, game begins
+    S_END     = 0x41,   // game over, includes results
 };
 
 enum class RejectReason : u8 {
@@ -183,7 +185,8 @@ inline std::vector<u8> build_reject(RejectReason reason) {
 }
 
 inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
-                                    u8 owner, f32 x, f32 y, f32 facing) {
+                                    u8 owner, f32 x, f32 y, f32 facing,
+                                    bool newly_created = false) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SPAWN));
     w.write_u32(entity_id);
@@ -192,6 +195,7 @@ inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
     w.write_f32(x);
     w.write_f32(y);
     w.write_f32(facing);
+    w.write_bool(newly_created);
     return std::move(w.data());
 }
 
@@ -332,6 +336,7 @@ struct SpawnData {
     std::string type_id;
     u8 owner;
     f32 x, y, facing;
+    bool newly_created = false;
 };
 
 inline SpawnData parse_spawn(std::span<const u8> data) {
@@ -344,6 +349,7 @@ inline SpawnData parse_spawn(std::span<const u8> data) {
     s.x = r.read_f32();
     s.y = r.read_f32();
     s.facing = r.read_f32();
+    s.newly_created = r.read_bool();
     return s;
 }
 
@@ -391,6 +397,35 @@ inline SoundData parse_sound(std::span<const u8> data) {
     s.path = r.read_string();
     s.pos = r.read_vec3();
     return s;
+}
+
+// ── Session messages ─────────────────────────────────────────────────────
+
+inline std::vector<u8> build_start() {
+    return {static_cast<u8>(MsgType::S_START)};
+}
+
+// S_END carries a winner player ID and a Lua-defined stats table serialized as JSON string.
+inline std::vector<u8> build_end(u32 winner_id, std::string_view stats_json) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_END));
+    w.write_u32(winner_id);
+    w.write_string(stats_json);
+    return std::move(w.data());
+}
+
+struct EndData {
+    u32 winner_id;
+    std::string stats_json;
+};
+
+inline EndData parse_end(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    EndData e;
+    e.winner_id = r.read_u32();
+    e.stats_json = r.read_string();
+    return e;
 }
 
 } // namespace uldum::network

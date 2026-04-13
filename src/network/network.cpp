@@ -101,7 +101,17 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         m_peers.push_back(std::move(info));
         host_send_spawn_burst(m_peers.back());
 
-        log::info(TAG, "Player {} assigned to peer {}", slot, peer_id);
+        log::info(TAG, "Player {} assigned to peer {} ({}/{} players)",
+                  slot, peer_id, m_peers.size(), m_expected_players);
+
+        // Check if all expected players have joined → start the game
+        if (!m_game_started && m_expected_players > 0 &&
+            m_peers.size() >= m_expected_players) {
+            m_game_started = true;
+            auto msg = build_start();
+            m_transport->broadcast(msg, true);
+            log::info(TAG, "All players connected — game started");
+        }
         break;
     }
 
@@ -185,6 +195,13 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
     auto& world = m_simulation->world();
     auto& infos = world.handle_infos;
 
+    // Swap out last tick's entity set for new-creation detection
+    auto last_tick = std::move(m_prev_tick_entities);
+    m_prev_tick_entities.clear();
+    for (u32 i = 0; i < infos.count(); ++i) {
+        m_prev_tick_entities.insert(infos.ids()[i]);
+    }
+
     for (auto& peer : m_peers) {
         // Track which entities are visible this tick
         std::unordered_set<u32> visible_now;
@@ -204,9 +221,11 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
                 const auto* owner = world.owners.get(id);
                 u8 owner_id = owner ? static_cast<u8>(owner->player.id) : 0;
 
+                bool newly_created = !last_tick.contains(id);
+
                 auto msg = build_spawn(id, info.type_id, owner_id,
                                        transform->position.x, transform->position.y,
-                                       transform->facing);
+                                       transform->facing, newly_created);
                 m_transport->send(peer.peer_id, msg, true);
                 peer.known_entities.insert(id);
             }
@@ -257,8 +276,15 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
         }
     }
 
-    // Forward sounds to clients
-    // (sounds are wired via on_sound callback in engine — handled there)
+}
+
+void NetworkManager::host_end_game(u32 winner_id, std::string_view stats_json) {
+    if (m_mode != Mode::Host) return;
+    m_game_ended = true;
+    m_end_data = EndData{winner_id, std::string(stats_json)};
+    auto msg = build_end(winner_id, stats_json);
+    m_transport->broadcast(msg, true);
+    log::info(TAG, "Game ended — winner: player {}", winner_id);
 }
 
 // ── Client ───────────────────────────────────────────────────────────────
@@ -306,6 +332,16 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_DESTROY: client_handle_destroy(data); break;
     case MsgType::S_STATE:   client_handle_state(data); break;
     case MsgType::S_SOUND:   client_handle_sound(data); break;
+    case MsgType::S_START:
+        m_game_started = true;
+        log::info(TAG, "Game started!");
+        break;
+    case MsgType::S_END: {
+        m_end_data = parse_end(data);
+        m_game_ended = true;
+        log::info(TAG, "Game ended — winner: player {}", m_end_data.winner_id);
+        break;
+    }
     default:
         log::warn(TAG, "Client received unknown message type 0x{:02x}", static_cast<u8>(type));
         break;
@@ -322,7 +358,7 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
     auto s = parse_spawn(data);
-    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing);
+    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing, s.newly_created);
 }
 
 void NetworkManager::client_handle_destroy(std::span<const u8> data) {
@@ -418,14 +454,34 @@ void NetworkManager::client_apply_interpolation() {
         auto* hp = m_client_world.healths.get(e.entity_id);
         if (hp) hp->current = e.health_frac * hp->max;
 
-        // Update movement state (for animation)
+        // Update components from server flags
         auto* mov = m_client_world.movements.get(e.entity_id);
         if (mov) mov->moving = (e.flags & 0x01) != 0;
+
+        // Combat state
+        auto* combat = m_client_world.combats.get(e.entity_id);
+        if (combat) {
+            if (e.flags & 0x02) {
+                combat->attack_state = simulation::AttackState::WindUp;
+                combat->target = simulation::Unit{e.target_id, 0};
+            } else {
+                combat->attack_state = simulation::AttackState::Idle;
+                combat->target = simulation::Unit{};
+            }
+        }
+
+        // Dead state
+        if (e.flags & 0x08) {
+            if (!m_client_world.dead_states.has(e.entity_id)) {
+                m_client_world.dead_states.add(e.entity_id, simulation::DeadState{});
+            }
+        }
     }
 }
 
 void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id,
-                                          u8 owner, f32 x, f32 y, f32 facing) {
+                                          u8 owner, f32 x, f32 y, f32 facing,
+                                          bool newly_created) {
     auto& world = m_client_world;
 
     // Skip if already exists
@@ -472,10 +528,11 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
     t.scale = scale;
     world.transforms.add(entity_id, std::move(t));
     world.owners.add(entity_id, simulation::Owner{simulation::Player{owner}});
-    world.renderables.add(entity_id, simulation::Renderable{model_path, true});
+    world.renderables.add(entity_id, simulation::Renderable{model_path, true, !newly_created});
     world.healths.add(entity_id, simulation::Health{max_health, max_health, 0});
     world.movements.add(entity_id, simulation::Movement{});
     world.movements.get(entity_id)->collision_radius = collision_radius;
+    world.combats.add(entity_id, simulation::Combat{});
 
     if (sight_range > 0) {
         world.visions.add(entity_id, simulation::Vision{sight_range});

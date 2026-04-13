@@ -2067,6 +2067,14 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             if (!lm || !lm->is_skinned) continue;
 
             auto& anim = get_or_create_anim(id, *lm);
+
+            // Skip birth animation for revealed entities (not newly created)
+            if (renderable.skip_birth && anim.current_state == AnimState::Birth) {
+                anim.current_state = AnimState::Idle;
+                anim.looping = true;
+                anim.time = 0;
+            }
+
             auto anim_info = derive_anim_state(world, id, anim);
             set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
                            anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
