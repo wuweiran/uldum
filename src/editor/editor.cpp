@@ -200,18 +200,17 @@ bool Editor::init_imgui() {
     init_info.DescriptorPool = m_imgui_pool;
     init_info.MinImageCount  = 2;
     init_info.ImageCount     = 2;
-    init_info.MSAASamples    = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.UseDynamicRendering = true;
 
     VkFormat color_format = m_rhi.swapchain_format();
     VkFormat depth_format = m_rhi.depth_format();
-    init_info.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
-    init_info.PipelineRenderingCreateInfo.depthAttachmentFormat = depth_format;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat = depth_format;
 
     ImGui_ImplVulkan_Init(&init_info);
-    ImGui_ImplVulkan_CreateFontsTexture();
 
     log::info(TAG, "ImGui initialized (Vulkan + Win32, dynamic rendering)");
     return true;

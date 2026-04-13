@@ -9,7 +9,7 @@ endif()
 message(STATUS "Fetching glm...")
 FetchContent_Declare(glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG        1.0.1
+    GIT_TAG        1.0.3
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(glm)
@@ -17,8 +17,7 @@ FetchContent_MakeAvailable(glm)
 # ── nlohmann/json (JSON parser) ────────────────────────────────────────────
 message(STATUS "Fetching nlohmann/json...")
 FetchContent_Declare(json
-    URL      https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-    URL_HASH MD5=c23a33f04786d85c29fda8d16b5f0efd
+    URL      https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
 )
 set(JSON_BuildTests OFF CACHE BOOL "")
 FetchContent_MakeAvailable(json)
@@ -39,7 +38,7 @@ endif()
 # ── cgltf (glTF 2.0 loader) — header-only ─────────────────────────────────
 message(STATUS "Fetching cgltf...")
 FetchContent_Declare(cgltf
-    URL      https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.14.tar.gz
+    URL      https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.15.tar.gz
 )
 FetchContent_Populate(cgltf)
 
@@ -52,7 +51,7 @@ endif()
 # ── Lua 5.4 (scripting runtime) ────────────────────────────────────────────
 message(STATUS "Fetching Lua 5.4...")
 FetchContent_Declare(lua
-    URL      https://github.com/lua/lua/archive/refs/tags/v5.4.7.tar.gz
+    URL      https://github.com/lua/lua/archive/refs/tags/v5.4.8.tar.gz
 )
 FetchContent_Populate(lua)
 
@@ -75,7 +74,7 @@ FetchContent_MakeAvailable(sol2)
 # ── Dear ImGui (editor UI) ────────────────────────────────────────────────
 message(STATUS "Fetching Dear ImGui...")
 FetchContent_Declare(imgui
-    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.91.8.tar.gz
+    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
 )
 FetchContent_Populate(imgui)
 
@@ -97,7 +96,7 @@ endif()
 # ── miniaudio (audio playback) — header-only ──────────────────────────────
 message(STATUS "Fetching miniaudio...")
 FetchContent_Declare(miniaudio
-    URL      https://github.com/mackron/miniaudio/archive/refs/tags/0.11.21.tar.gz
+    URL      https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz
 )
 FetchContent_Populate(miniaudio)
 
@@ -112,7 +111,7 @@ endif()
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
 message(STATUS "Fetching VMA...")
 FetchContent_Declare(vma
-    URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.1.0.tar.gz
+    URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
 )
 FetchContent_Populate(vma)
 
