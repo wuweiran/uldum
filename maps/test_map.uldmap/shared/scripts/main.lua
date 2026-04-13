@@ -37,7 +37,7 @@ function main()
     -- Formula: reduction = armor * 0.06 / (1 + armor * 0.06)
     ---------------------------------------------------------------------------
     local armor_trig = CreateTrigger(TRIGGER_PRIORITY_HIGH)
-    TriggerRegisterEvent(armor_trig, "on_damage")
+    TriggerRegisterEvent(armor_trig, EVENT_GLOBAL_DAMAGE)
     TriggerAddCondition(armor_trig, function()
         return GetDamageType() == "attack"
     end)
@@ -56,7 +56,7 @@ function main()
     -- Cleave: when footman deals damage, deal 30% to nearby enemy ground units
     ---------------------------------------------------------------------------
     local cleave_trig = CreateTrigger()
-    TriggerRegisterEvent(cleave_trig, "on_damage")
+    TriggerRegisterEvent(cleave_trig, EVENT_GLOBAL_DAMAGE)
     TriggerAddCondition(cleave_trig, function()
         return GetDamageType() == "attack" and GetDamageSource() == footman
     end)
@@ -103,7 +103,10 @@ function main()
     -- Holy Light: on_ability_effect handler — heals the target
     ---------------------------------------------------------------------------
     local hl_effect_trig = CreateTrigger()
-    TriggerRegisterUnitAbilityEvent(hl_effect_trig, paladin, "holy_light", "on_ability_effect")
+    TriggerRegisterUnitEvent(hl_effect_trig, paladin, EVENT_UNIT_ABILITY_EFFECT)
+    TriggerAddCondition(hl_effect_trig, function()
+        return GetTriggerAbilityId() == "holy_light"
+    end)
     TriggerAddAction(hl_effect_trig, function()
         local caster = GetTriggerUnit()
         local target = GetSpellTargetUnit()
@@ -164,7 +167,7 @@ function main()
     -- VFX: hit sparks on attack damage (uses engine-defined "hit_spark" effect)
     ---------------------------------------------------------------------------
     local hit_vfx = CreateTrigger(TRIGGER_PRIORITY_LOW)
-    TriggerRegisterEvent(hit_vfx, "on_damage")
+    TriggerRegisterEvent(hit_vfx, EVENT_GLOBAL_DAMAGE)
     TriggerAddCondition(hit_vfx, function()
         return GetDamageType() == "attack" and GetDamageAmount() > 0
     end)
@@ -179,7 +182,7 @@ function main()
     -- Death logging + VFX (uses engine-defined "death_burst" effect)
     ---------------------------------------------------------------------------
     local death_trig = CreateTrigger()
-    TriggerRegisterEvent(death_trig, "on_death")
+    TriggerRegisterEvent(death_trig, EVENT_GLOBAL_DEATH)
     TriggerAddAction(death_trig, function()
         local unit = GetTriggerUnit()
         if unit then

@@ -188,10 +188,12 @@ bool App::start_session() {
             return m_renderer.get_attachment_point(entity_id, bone);
         });
         m_network.on_player_disconnected = [this](u32 player_id) {
-            m_server.script().fire_event("on_player_disconnected", UINT32_MAX, "", player_id);
+            m_server.script().fire_event("global_disconnect", UINT32_MAX, "", player_id);
+            m_server.script().fire_event("player_disconnect", UINT32_MAX, "", player_id);
         };
         m_network.on_player_dropped = [this](u32 player_id) {
-            m_server.script().fire_event("on_player_dropped", UINT32_MAX, "", player_id);
+            m_server.script().fire_event("global_leave", UINT32_MAX, "", player_id);
+            m_server.script().fire_event("player_leave", UINT32_MAX, "", player_id);
         };
         m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {

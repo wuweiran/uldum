@@ -81,6 +81,9 @@ bool GameServer::init_game(map::MapManager& map,
     m_simulation.sync_pathing_blockers();
     m_simulation.spatial_grid().update(m_simulation.world());
 
+    // Load engine constants (event names, priority levels)
+    m_script.load_script("engine/scripts/constants.lua");
+
     // Load and run map scripts
     {
         std::string main_script = map.map_root() + "/shared/scripts/main.lua";

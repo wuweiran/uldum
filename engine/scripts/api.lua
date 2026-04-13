@@ -1,26 +1,22 @@
 --------------------------------------------------------------------------------
--- api.lua — Uldum Engine API Declarations
+-- api.lua — Uldum Engine API Reference (DO NOT LOAD AT RUNTIME)
 --
--- This file is loaded by the engine before any map script. It declares all
--- engine functions available to map scripts. The actual implementations are
--- C++ functions bound via sol2.
+-- This file is documentation and IDE type reference only. It is NOT loaded
+-- by the engine. The actual implementations are C++ functions bound via sol2.
+-- Runtime constants (events, priorities) are in constants.lua.
 --
 -- Analogous to Warcraft III's "common.j".
 --------------------------------------------------------------------------------
 
--- NOTE: All functions below are implemented in C++ and bound to Lua by the engine.
--- This file serves as documentation and type reference for map makers.
--- Do not modify this file — it is part of the engine, not the map.
+-- NOTE: Function stubs below exist for documentation/IDE autocomplete only.
+-- They are NOT executed. Do not load this file — it would overwrite C++ bindings.
 
 --------------------------------------------------------------------------------
 -- Triggers
 --------------------------------------------------------------------------------
 
---- Trigger priority constants (higher fires first).
---- @type number
-TRIGGER_PRIORITY_LOW    = 0
-TRIGGER_PRIORITY_NORMAL = 1   -- default
-TRIGGER_PRIORITY_HIGH   = 2
+--- Constants (TRIGGER_PRIORITY_*, EVENT_*) are defined in constants.lua.
+--- See that file for all available event names and priority levels.
 
 --- Create a trigger — a lifecycle scope for events, conditions, actions, and data.
 --- @param priority? number   TRIGGER_PRIORITY_* constant. Default: TRIGGER_PRIORITY_NORMAL.
@@ -41,13 +37,6 @@ function TriggerRegisterEvent(trig, event_name) end
 --- @param unit unit
 --- @param event_name string
 function TriggerRegisterUnitEvent(trig, unit, event_name) end
-
---- Register an event scoped to a specific unit + ability.
---- @param trig trigger
---- @param unit unit
---- @param ability_id string
---- @param event_name string
-function TriggerRegisterUnitAbilityEvent(trig, unit, ability_id, event_name) end
 
 --- Register an event scoped to a specific player.
 --- @param trig trigger
@@ -131,21 +120,6 @@ function GetAttacker() end
 --- The target of the current attack event.
 --- @return unit
 function GetAttackTarget() end
-
---------------------------------------------------------------------------------
--- RegisterEvent (shorthand)
---------------------------------------------------------------------------------
-
---- Shorthand: create a trigger with one global event and one action.
---- Returns a handle for UnregisterEvent.
---- @param event_name string
---- @param handler function
---- @return event_handle
-function RegisterEvent(event_name, handler) end
-
---- Unregister a handler created by RegisterEvent.
---- @param handle event_handle
-function UnregisterEvent(handle) end
 
 --------------------------------------------------------------------------------
 -- Unit Creation & Lifecycle
@@ -406,11 +380,28 @@ function ResetAbilityCooldown(unit, ability_id) end
 --- @param damage_type? string  -- map-defined type (default: "spell"). Combat uses "attack".
 function DamageUnit(source, target, amount, damage_type) end
 
---- Heal a unit. Does not exceed max HP.
+--- Heal a unit. Does not exceed max HP. Fires EVENT_HEAL / EVENT_UNIT_HEAL.
+--- Triggers may call SetHealAmount() to modify the heal before it's applied.
 --- @param source unit
 --- @param target unit
 --- @param amount number
 function HealUnit(source, target, amount) end
+
+--- Source of the current heal event.
+--- @return unit
+function GetHealSource() end
+
+--- Target of the current heal event.
+--- @return unit
+function GetHealTarget() end
+
+--- Amount of the current heal event.
+--- @return number
+function GetHealAmount() end
+
+--- Modify heal amount before it's applied (call inside EVENT_HEAL trigger).
+--- @param amount number
+function SetHealAmount(amount) end
 
 --- Instantly kill a unit. Fires on_death event.
 --- @param unit unit

@@ -46,9 +46,8 @@ struct Trigger {
 
     struct EventBinding {
         std::string event_name;
-        u32         unit_id    = UINT32_MAX;  // UINT32_MAX = global
-        std::string ability_id;                // empty = any ability
-        u32         player_id  = UINT32_MAX;   // UINT32_MAX = any player
+        u32         unit_id    = UINT32_MAX;  // UINT32_MAX = any unit
+        u32         player_id  = UINT32_MAX;  // UINT32_MAX = any player
     };
 
     std::vector<EventBinding>            events;
@@ -96,7 +95,11 @@ public:
     f32  get_context_damage_amount() const { return m_ctx_damage_amount; }
     void set_context_damage_type(std::string_view t) { m_ctx_damage_type = t; }
     const std::string& get_context_damage_type() const { return m_ctx_damage_type; }
-    void set_context_killer(u32 id)   { m_ctx_killer = id; }
+    void set_context_killer(u32 id)        { m_ctx_killer = id; }
+    void set_context_heal_source(u32 id)   { m_ctx_heal_source = id; }
+    void set_context_heal_target(u32 id)   { m_ctx_heal_target = id; }
+    void set_context_heal_amount(f32 v)    { m_ctx_heal_amount = v; }
+    f32  get_context_heal_amount() const   { return m_ctx_heal_amount; }
     void set_context_spell_target_unit(u32 id) { m_ctx_spell_target_unit = id; }
     void set_context_spell_target_x(f32 x) { m_ctx_spell_target_x = x; }
     void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
@@ -156,6 +159,9 @@ private:
     f32  m_ctx_damage_amount     = 0;
     std::string m_ctx_damage_type;
     u32  m_ctx_killer            = UINT32_MAX;
+    u32  m_ctx_heal_source       = UINT32_MAX;
+    u32  m_ctx_heal_target       = UINT32_MAX;
+    f32  m_ctx_heal_amount       = 0;
     u32  m_ctx_spell_target_unit = UINT32_MAX;
     f32  m_ctx_spell_target_x    = 0;
     f32  m_ctx_spell_target_y    = 0;
