@@ -20,9 +20,14 @@ public:
     // Set a filter (e.g., Lua on_order hook). Only one active at a time.
     void set_order_filter(OrderFilter filter) { m_filter = std::move(filter); }
 
+    // If set, commands are sent to network instead of executed locally (client mode).
+    using NetworkSendFn = std::function<void(const GameCommand& cmd)>;
+    void set_network_send(NetworkSendFn fn) { m_network_send = std::move(fn); }
+
 private:
     simulation::World* m_world = nullptr;
     OrderFilter m_filter;
+    NetworkSendFn m_network_send;
 };
 
 } // namespace uldum::input

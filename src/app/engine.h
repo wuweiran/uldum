@@ -15,19 +15,31 @@
 #include "map/map.h"
 
 #include <memory>
+#include <string>
 
 namespace uldum {
+
+struct LaunchArgs {
+    network::Mode net_mode = network::Mode::Offline;
+    std::string connect_address;
+    u16 port = 7777;
+};
 
 class Engine {
 public:
     Engine() = default;
     ~Engine() = default;
 
-    bool init();
+    bool init(const LaunchArgs& args = {});
     void run();
     void shutdown();
 
 private:
+    // The World to render — server's world in offline/host, client world in client mode.
+    simulation::World& active_world();
+
+    LaunchArgs               m_args;
+
     // Modules (ordered by init dependency)
     std::unique_ptr<platform::Platform> m_platform;
     rhi::VulkanRhi           m_rhi;

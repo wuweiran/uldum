@@ -2,6 +2,7 @@
 #include "core/log.h"
 
 #include <chrono>
+#include <functional>
 
 namespace uldum {
 
@@ -9,8 +10,27 @@ static constexpr const char* TAG = "Engine";
 static constexpr float TICK_RATE = 32.0f;  // real-time ticks per second (always constant)
 static constexpr float TICK_DT  = 1.0f / TICK_RATE;  // real-time interval between ticks
 
-bool Engine::init() {
+// Simple FNV-1a hash for map identity
+static u32 hash_string(std::string_view s) {
+    u32 h = 2166136261u;
+    for (char c : s) { h ^= static_cast<u8>(c); h *= 16777619u; }
+    return h;
+}
+
+simulation::World& Engine::active_world() {
+    if (m_args.net_mode == network::Mode::Client)
+        return m_network.client_world();
+    return m_server.simulation().world();
+}
+
+bool Engine::init(const LaunchArgs& args) {
+    m_args = args;
     log::info(TAG, "=== Initializing Uldum Engine ===");
+
+    const char* mode_str = "Offline";
+    if (args.net_mode == network::Mode::Host) mode_str = "Host";
+    else if (args.net_mode == network::Mode::Client) mode_str = "Client";
+    log::info(TAG, "Network mode: {}", mode_str);
 
 #ifdef ULDUM_DEBUG
     log::set_level(log::Level::Trace);
@@ -77,7 +97,7 @@ bool Engine::init() {
         return false;
     }
 
-    // Simulation must init before map loading (map registers types/entities)
+    // Simulation init (all modes — client needs TypeRegistry for model lookups)
     if (!m_server.init_simulation(m_asset)) {
         log::error(TAG, "GameServer simulation init failed");
         return false;
@@ -93,6 +113,8 @@ bool Engine::init() {
         log::error(TAG, "Failed to load test map");
         return false;
     }
+
+    u32 map_hash = hash_string(m_map.manifest().name + m_map.manifest().version);
 
     // Set map root for asset path resolution
     m_renderer.set_map_root(m_map.map_root());
@@ -110,32 +132,74 @@ bool Engine::init() {
         m_renderer.set_terrain_data(&m_map.terrain());
     }
 
-    // Game server phase 2: alliances, terrain, scripting, map scripts
-    if (!m_server.init_game(m_map,
-                            &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio)) {
-        log::error(TAG, "GameServer game init failed");
-        return false;
+    bool is_client = (args.net_mode == network::Mode::Client);
+
+    // Game server phase 2 (offline/host only — client doesn't run the simulation)
+    if (!is_client) {
+        if (!m_server.init_game(m_map,
+                                &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio)) {
+            log::error(TAG, "GameServer game init failed");
+            return false;
+        }
     }
 
     // Network
-    if (!m_network.init(m_server.simulation())) {
-        log::error(TAG, "NetworkManager init failed");
-        return false;
+    m_network.set_map_hash(map_hash);
+    switch (args.net_mode) {
+    case network::Mode::Offline:
+        m_network.init_offline();
+        break;
+    case network::Mode::Host:
+        if (!m_network.init_host(args.port, 8, m_server.simulation(), m_commands)) {
+            log::error(TAG, "Failed to start host on port {}", args.port);
+            return false;
+        }
+        break;
+    case network::Mode::Client:
+        if (!m_network.init_client(args.connect_address, args.port)) {
+            log::error(TAG, "Failed to connect to {}:{}", args.connect_address, args.port);
+            return false;
+        }
+        m_network.set_type_registry(&m_server.simulation().types());
+        m_network.init_client_fog(m_map.terrain(), m_map, m_server.simulation());
+        break;
     }
 
     // Wire client-side callbacks
-    m_server.simulation().world().on_sound = [this](std::string_view path, glm::vec3 pos) {
-        m_audio.play_sfx(path, pos);
-    };
-    m_server.script().set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
-        return m_renderer.get_attachment_point(entity_id, bone);
-    });
+    if (!is_client) {
+        m_server.simulation().world().on_sound = [this](std::string_view path, glm::vec3 pos) {
+            m_audio.play_sfx(path, pos);
+            // Host: also forward sounds to remote clients
+            if (m_args.net_mode == network::Mode::Host) {
+                auto msg = network::build_sound(path, pos);
+                // broadcast is handled by transport
+                // (for now, sounds are sent as S_SOUND to all peers)
+            }
+        };
+        m_server.script().set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+            return m_renderer.get_attachment_point(entity_id, bone);
+        });
+    } else {
+        m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
+            m_audio.play_sfx(path, pos);
+        };
+    }
 
     // Input: command system, selection, picking, preset
-    m_commands.init(&m_server.simulation().world());
-    m_selection.set_player(simulation::Player{0});  // local player = slot 0
+    if (!is_client) {
+        m_commands.init(&m_server.simulation().world());
+    } else {
+        m_commands.init(nullptr);  // no local world
+        m_commands.set_network_send([this](const input::GameCommand& cmd) {
+            m_network.send_order(cmd);
+        });
+    }
+
+    u32 local_player_id = is_client ? UINT32_MAX : 0;  // client gets ID from S_WELCOME later
+    m_selection.set_player(simulation::Player{local_player_id});
+
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
-                  &m_server.simulation().world(),
+                  &active_world(),
                   m_platform->width(), m_platform->height());
 
     // Load input configuration from manifest
@@ -144,11 +208,19 @@ bool Engine::init() {
     m_bindings.apply_defaults(input::rts_default_bindings());
 
     // Wire fog of war to renderer
-    m_renderer.set_simulation(&m_server.simulation());
-    m_renderer.set_local_player(0);  // local player = slot 0
+    if (!is_client) {
+        m_renderer.set_simulation(&m_server.simulation());
+        m_renderer.set_local_player(0);
+    } else {
+        // Client: renderer doesn't need simulation ref for fog filtering
+        // (server already filters entities by fog)
+        m_renderer.set_simulation(nullptr);
+    }
 
-    // Wire input to script engine
-    m_server.script().set_input(&m_selection, &m_commands);
+    // Wire input to script engine (offline/host only)
+    if (!is_client) {
+        m_server.script().set_input(&m_selection, &m_commands);
+    }
 
     log::info(TAG, "=== All modules initialized ===");
     return true;
@@ -162,10 +234,10 @@ void Engine::run() {
     float game_speed = 1.0f;     // multiplier: 0 = paused, 1 = normal, 2 = fast
     float game_time = 0.0f;      // in-game elapsed time (affected by game_speed)
     u32 frame_count = 0;
+    u32 tick_counter = 0;
+    bool is_client = (m_args.net_mode == network::Mode::Client);
 
     while (m_platform->poll_events()) {
-        // (Escape handled by input preset for canceling orders/targeting)
-
         // Handle resize
         if (m_platform->was_resized()) {
             m_rhi.handle_resize(m_platform->width(), m_platform->height());
@@ -185,13 +257,31 @@ void Engine::run() {
         // Network: receive state / commands
         m_network.update();
 
-        // Fixed timestep simulation (32 real-time ticks/sec, game speed scales game_dt)
-        float game_dt = TICK_DT * game_speed;  // how much game time passes per tick
-        accumulator += frame_dt;
-        while (accumulator >= TICK_DT) {
-            m_server.tick(game_dt);
-            game_time += game_dt;
-            accumulator -= TICK_DT;
+        // Client: update local player after welcome
+        if (is_client && m_network.is_connected()) {
+            auto lp = m_network.local_player();
+            if (lp.is_valid() && lp.id != m_selection.player().id) {
+                m_selection.set_player(lp);
+                log::info(TAG, "Local player set to {}", lp.id);
+            }
+        }
+
+        // Fixed timestep simulation (offline/host only)
+        if (!is_client) {
+            float game_dt = TICK_DT * game_speed;
+            accumulator += frame_dt;
+            while (accumulator >= TICK_DT) {
+                m_server.tick(game_dt);
+                game_time += game_dt;
+                tick_counter++;
+
+                // Host: broadcast state to remote clients
+                if (m_args.net_mode == network::Mode::Host) {
+                    m_network.host_broadcast_tick(tick_counter);
+                }
+
+                accumulator -= TICK_DT;
+            }
         }
 
         // Input preset: selection, orders, camera
@@ -219,22 +309,29 @@ void Engine::run() {
         m_audio.update();
 
         // Update fog of war visual interpolation and upload to renderer
-        {
+        if (!is_client) {
             auto& fog = m_server.simulation().fog();
             if (fog.enabled()) {
                 const f32* visual = fog.update_visual(simulation::Player{0}, frame_dt);
                 m_renderer.set_fog_grid(visual, fog.tiles_x(), fog.tiles_y());
             }
+        } else {
+            const f32* visual = m_network.update_client_fog(frame_dt);
+            if (visual) {
+                m_renderer.set_fog_grid(visual, m_network.client_fog().tiles_x(),
+                                        m_network.client_fog().tiles_y());
+            }
         }
 
         // Render (skip if window is minimized — extent would be zero)
-        f32 alpha = accumulator / TICK_DT;  // interpolation factor (0..1)
+        auto& world = active_world();
+        f32 alpha = is_client ? 1.0f : (accumulator / TICK_DT);
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
             m_renderer.upload_fog(cmd);
-            m_renderer.draw_shadows(cmd, m_server.simulation().world(), alpha);
+            m_renderer.draw_shadows(cmd, world, alpha);
             m_rhi.begin_rendering();
-            m_renderer.draw(cmd, m_rhi.extent(), m_server.simulation().world(), alpha);
+            m_renderer.draw(cmd, m_rhi.extent(), world, alpha);
             m_rhi.end_frame();
         }
 

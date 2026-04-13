@@ -122,3 +122,20 @@ target_link_libraries(vma PUBLIC Vulkan::Vulkan)
 if(MSVC)
     target_compile_options(vma PRIVATE /W0)
 endif()
+
+# ── ENet (UDP networking) ─────────────────────────────────────────────────
+message(STATUS "Fetching ENet...")
+FetchContent_Declare(enet
+    URL      https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz
+)
+FetchContent_Populate(enet)
+
+file(GLOB ENET_SOURCES ${enet_SOURCE_DIR}/*.c)
+add_library(enet STATIC ${ENET_SOURCES})
+target_include_directories(enet SYSTEM PUBLIC ${enet_SOURCE_DIR}/include)
+if(WIN32)
+    target_link_libraries(enet PUBLIC ws2_32 winmm)
+endif()
+if(MSVC)
+    target_compile_options(enet PRIVATE /W0)
+endif()

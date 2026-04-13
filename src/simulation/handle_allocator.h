@@ -22,6 +22,15 @@ public:
         return {id, m_generations[id]};
     }
 
+    // Reserve a specific ID (for network-spawned entities).
+    // Grows internal storage if needed. Returns a Handle with the current generation.
+    Handle reserve(u32 id) {
+        while (id >= m_generations.size()) {
+            m_generations.push_back(0);
+        }
+        return {id, m_generations[id]};
+    }
+
     void free(Handle h) {
         if (!is_valid(h)) return;
         m_generations[h.id]++;

@@ -7,6 +7,12 @@ namespace uldum::input {
 static constexpr const char* TAG = "Command";
 
 void CommandSystem::submit(const GameCommand& cmd) {
+    // Client mode: send to server instead of executing locally
+    if (m_network_send) {
+        m_network_send(cmd);
+        return;
+    }
+
     if (!m_world) return;
 
     // Filter: let Lua (or other hooks) cancel the command

@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 13a complete. Local server refactor + fog of war.
+Phase 13b complete. Multiplayer networking + fog of war.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -174,6 +174,16 @@ uldum_dev.exe
 
 The engine loads the test map from `maps/test_map.uldmap/` automatically. The test scene spawns units with real glTF models, skeletal animation, combat, and abilities.
 
+**Multiplayer (LAN):**
+```cmd
+:: Terminal 1 — host
+uldum_dev.exe --host
+
+:: Terminal 2 — join
+uldum_dev.exe --connect 127.0.0.1
+```
+Default port is 7777. Override with `--port <n>`. Without `--host` or `--connect`, the engine runs in single-player mode (same as before).
+
 **Controls (RTS preset):**
 - **Left click** — select unit
 - **Left drag** — box select
@@ -224,6 +234,7 @@ src/
 - [docs/audio.md](docs/audio.md) — Audio system design
 - [docs/effects.md](docs/effects.md) — Particle and effect system
 - [docs/model-format.md](docs/model-format.md) — Model, animation, texture specifications
+- [docs/network.md](docs/network.md) — Network protocol, transport, state sync, interpolation
 - [docs/coordinates.md](docs/coordinates.md) — Coordinate system and unit conventions
 - [docs/build-targets.md](docs/build-targets.md) — Build targets and packaging
 

@@ -223,30 +223,13 @@ engine/
 
 ## 11. Networking
 
-### Server-Authoritative Model
+Server-authoritative with client-side interpolation. See [network.md](network.md) for full protocol design.
 
-- **Server** runs the authoritative simulation
-- **Clients** send player commands (move, attack, cast ability)
-- **Server** validates commands, advances simulation, broadcasts state deltas
-- **Clients** receive state, interpolate/predict for smooth visuals
-
-### Single Player
-
-- Same server simulation runs in-process (no sockets)
-- Client calls server functions directly via local interface
-- Identical game logic, zero network overhead
-
-### Transport
-
-- ENet for reliable/unreliable UDP channels
-- Reliable: commands, chat, game state critical updates
-- Unreliable: position interpolation hints, cosmetic state
-
-### Lobby
-
-- Host-based model (one player hosts, or dedicated server)
-- Map selection, player slots, team assignment
-- Ready check → synchronized game start
+- **Server** runs the authoritative simulation at 32 Hz, broadcasts state every tick
+- **Clients** send commands to server, receive state snapshots, interpolate for smooth visuals
+- **No client-side prediction** — acceptable for RTS (small command delay is expected)
+- **Single player** runs the same server in-process (direct function calls, no sockets)
+- **Transport** abstracted behind an interface; Phase 13b uses ENet (reliable/unreliable UDP)
 
 ## 12. Audio
 
@@ -495,34 +478,26 @@ maps configure keybinds and UI layout. Mobile UI deferred until Android builds w
 
 ### Phase 13 — Networking
 
-Server-authoritative model. Needs a working command system (Phase 12).
+Server-authoritative model with client-side interpolation. See [network.md](network.md).
 
-**Phase 13a — Local Server Refactor**
-- Extract simulation tick into a `Server` class
-- Server receives `GameCommand`s, validates, executes on simulation
+**Phase 13a — Local Server Refactor** ✓
+- GameServer class owns Simulation + ScriptEngine
 - Single player runs server in-process (direct function calls, no sockets)
 - Clean client/server separation — foundation for all networking
+- Fog of war: per-player visibility, cliff LOS, shared vision, visual smoothing
 
-**Phase 13b — ENet Transport**
-- ENet integration: reliable/unreliable UDP channels
-- Command serialization (FlatBuffers): client → server
-- State delta serialization (FlatBuffers): server → clients
-- Remote server: accept connections, validate commands, broadcast state
+**Phase 13b — Multiplayer**
+- Transport abstraction + ENet implementation (reliable/unreliable UDP)
+- Binary protocol: commands (client → server), state snapshots (server → client)
+- Server broadcasts entity state every tick (32 Hz), fog-filtered per player
+- Client interpolation: buffer two snapshots, render between them
+- Host mode (`--host`) and connect mode (`--connect <ip>`)
+- No client-side prediction — RTS command delay is acceptable
 
-**Phase 13c — Client Prediction & Reconciliation**
-- Client runs local simulation for responsiveness
-- Server sends authoritative state snapshots
-- Client reconciles local state with server state
-- Interpolation for remote entities
-
-**Phase 13d — Lobby**
+**Phase 13c — Lobby**
 - Host/join flow (one player hosts, or dedicated server)
 - Map selection, player slots, team assignment
 - Ready check → synchronized game start
-
-**Phase 13e — Desync Detection**
-- Periodic state checksums (server ↔ clients)
-- Debug logging for state divergence
 
 ### Phase 14 — GPU-Driven Rendering
 
