@@ -494,10 +494,19 @@ Server-authoritative model with client-side interpolation. See [network.md](netw
 - Host mode (`--host`) and connect mode (`--connect <ip>`)
 - No client-side prediction — RTS command delay is acceptable
 
-**Phase 13c — Lobby**
-- Host/join flow (one player hosts, or dedicated server)
-- Map selection, player slots, team assignment
-- Ready check → synchronized game start
+**Phase 13c — Session Management**
+- Session config format (JSON): map, players, network settings
+- `--session session.json` launch mode
+- Ready handshake: server waits for all expected players before starting
+- Synchronized game start: server sends start signal, all clients begin at tick 0
+- Session end: Lua `EndGame()` → server collects results/statistics → returns to launcher
+- No lobby UI — that's a product-level concern built on top
+
+**Phase 13d — Reconnect**
+- Disconnected player's state kept alive during a configurable timeout window
+- Reconnecting client receives full state snapshot to catch up
+- Game pause on disconnect (configurable per map/session)
+- Timeout expiry: player dropped, units become neutral or removed (map-defined behavior)
 
 ### Phase 14 — GPU-Driven Rendering
 
@@ -529,21 +538,31 @@ Build targets, cross-platform packaging, and asset baking. See [build-targets.md
 
 ### Phase 16 — UI System
 
-Runtime UI for gameplay. Desktop first; mobile after packaging enables Android builds.
+The UI system is the **application shell** — it spans the entire app lifecycle, not just in-game HUD. The engine owns the window from launch to exit; the game/product defines what each screen shows.
 
-**Phase 16a — Framework & Desktop UI**
-- **UI framework**: immediate-mode or retained-mode widget system rendered via Vulkan
-- **RTS command card**: grid layout showing commands (bottom row) + ability slots (top rows), icons, hotkey text, cooldown overlays, tooltips
-- **RPG action bar**: horizontal slot bar with ability icons, keybinding labels, cooldown display
-- **Unit info panel**: HP/mana bars, portrait, name, level
-- **Minimap**: terrain overview, unit dots, camera viewport indicator
-- **Resource display**: top-bar with game resources (gold, lumber, supply — map-defined)
-- **Lua UI hooks**: scripts can create/update/hide UI elements, respond to button clicks
-- **Theme/skinning**: UI layout and style configurable per map
+```
+App Launch → Menu/Lobby (game-defined) → Loading → Gameplay (3D + map-defined HUD) → Results → Menu
+```
 
-**Phase 16b — Mobile UI & Action/RPG Preset**
-- **Virtual joystick**: touch-drag for direct hero movement
-- **Ability touch buttons**: per-slot buttons with form-based targeting gestures (tap, drag-direction, drag-target)
-- **Touch selection**: tap to select/target units
-- **Adaptive layout**: auto-scale UI for different screen sizes and aspect ratios
-- **Mobile-specific UX**: larger hit targets, swipe gestures, haptic feedback
+All screens are rendered by the same engine UI framework. CLI args (`--host`, `--connect`, `--session`) are dev shortcuts that skip the menu screen. In production, the menu UI drives `start_session()`.
+
+**Phase 16a — UI Framework**
+- Engine-rendered UI framework (Vulkan) — same system for menus and in-game HUD
+- Screen manager: transitions between menu, loading, gameplay, results screens
+- Lua UI API: scripts create/update/hide UI elements, respond to events
+- Theme/skinning: layout and style configurable per game/map
+- Dev overlay: FPS, network latency, debug info
+
+**Phase 16b — Desktop Game UI**
+- Game-defined screens: main menu, lobby, settings, loading, results (product-level, not engine-built-in)
+- In-game HUD (map-defined via Lua):
+  - RTS command card, unit info panel, minimap, resource display
+  - RPG action bar (alternative layout for action/RPG maps)
+- Settings menu overlay (accessible during gameplay, same framework as lobby settings)
+
+**Phase 16c — Mobile UI & Action/RPG Preset**
+- Virtual joystick: touch-drag for direct hero movement
+- Ability touch buttons: per-slot with form-based targeting gestures
+- Touch selection: tap to select/target units
+- Adaptive layout: auto-scale for different screen sizes and aspect ratios
+- Mobile-specific UX: larger hit targets, swipe gestures, haptic feedback
