@@ -519,15 +519,23 @@ void NetworkManager::client_apply_interpolation() {
         auto* mov = m_client_world.movements.get(e.entity_id);
         if (mov) mov->moving = (e.flags & 0x01) != 0;
 
-        // Combat state
+        // Combat state: simulate server attack cycle on client.
+        // Server cycles: WindUp (dmg_time) → Backswing (backsw_time) → Cooldown → WindUp.
+        // Client receives a single "attacking" flag. We cycle attack_timer to match.
         auto* combat = m_client_world.combats.get(e.entity_id);
         if (combat) {
             if (e.flags & 0x02) {
-                combat->attack_state = simulation::AttackState::WindUp;
                 combat->target = simulation::Unit{e.target_id, 0};
+                if (combat->attack_state == simulation::AttackState::Idle) {
+                    // Start new attack cycle
+                    combat->attack_state = simulation::AttackState::WindUp;
+                    combat->attack_timer = combat->dmg_time;
+                }
+                // attack_timer is advanced per-frame below
             } else {
                 combat->attack_state = simulation::AttackState::Idle;
                 combat->target = simulation::Unit{};
+                combat->attack_timer = 0;
             }
         }
 
@@ -593,7 +601,19 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
     world.healths.add(entity_id, simulation::Health{max_health, max_health, 0});
     world.movements.add(entity_id, simulation::Movement{});
     world.movements.get(entity_id)->collision_radius = collision_radius;
-    world.combats.add(entity_id, simulation::Combat{});
+    {
+        simulation::Combat combat{};
+        if (m_client_types) {
+            auto* ud = m_client_types->get_unit_type(type_id);
+            if (ud) {
+                combat.dmg_pt = ud->dmg_pt;
+                combat.dmg_time = ud->dmg_time;
+                combat.backsw_time = ud->backsw_time;
+                combat.attack_cooldown = ud->attack_cooldown;
+            }
+        }
+        world.combats.add(entity_id, std::move(combat));
+    }
 
     if (sight_range > 0) {
         world.visions.add(entity_id, simulation::Vision{sight_range});
@@ -659,6 +679,38 @@ void NetworkManager::update(f32 dt) {
     // Client: apply interpolation each frame
     if (m_mode == Mode::Client && m_has_two_snaps) {
         client_apply_interpolation();
+    }
+
+    // Client: advance attack cycle timers
+    if (m_mode == Mode::Client && dt > 0) {
+        for (u32 i = 0; i < m_client_world.combats.count(); ++i) {
+            auto& combat = m_client_world.combats.data()[i];
+            if (combat.attack_state == simulation::AttackState::Idle) continue;
+
+            combat.attack_timer -= dt;
+            if (combat.attack_timer <= 0) {
+                if (combat.attack_state == simulation::AttackState::WindUp) {
+                    // WindUp finished → Backswing
+                    combat.attack_state = simulation::AttackState::Backswing;
+                    combat.attack_timer = combat.backsw_time;
+                } else if (combat.attack_state == simulation::AttackState::Backswing) {
+                    // Backswing finished → Cooldown
+                    f32 cooldown = combat.attack_cooldown - combat.dmg_time - combat.backsw_time;
+                    if (cooldown > 0) {
+                        combat.attack_state = simulation::AttackState::Cooldown;
+                        combat.attack_timer = cooldown;
+                    } else {
+                        // No cooldown gap → start next swing
+                        combat.attack_state = simulation::AttackState::WindUp;
+                        combat.attack_timer = combat.dmg_time;
+                    }
+                } else if (combat.attack_state == simulation::AttackState::Cooldown) {
+                    // Cooldown finished → next swing
+                    combat.attack_state = simulation::AttackState::WindUp;
+                    combat.attack_timer = combat.dmg_time;
+                }
+            }
+        }
     }
 }
 
