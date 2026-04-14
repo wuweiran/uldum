@@ -1200,6 +1200,7 @@ bool Renderer::create_mesh_pipeline() {
     }
 
     auto cfg = make_common_pipeline_state();
+    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
 
     cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1293,6 +1294,7 @@ bool Renderer::create_skinned_mesh_pipeline() {
     attrs[4] = {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(asset::SkinnedVertex, bone_weights)};
 
     auto cfg = make_common_pipeline_state();
+    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
     // Override vertex input with skinned format
     cfg.vertex_input.pVertexBindingDescriptions    = &binding;
     cfg.vertex_input.vertexAttributeDescriptionCount = 5;
@@ -1388,6 +1390,7 @@ bool Renderer::create_skinned_mesh_pipeline() {
         shadow_rendering.sType                = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         shadow_rendering.depthAttachmentFormat = m_rhi->depth_format();
 
+        cfg.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;  // shadow is 1x
         cfg.vertex_input.pVertexBindingDescriptions    = &binding;
         cfg.vertex_input.vertexAttributeDescriptionCount = 5;
         cfg.vertex_input.pVertexAttributeDescriptions  = attrs;
@@ -1467,7 +1470,7 @@ bool Renderer::create_particle_pipeline() {
 
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisample.rasterizationSamples = m_rhi->msaa_samples();
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil{};
     depth_stencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1583,6 +1586,7 @@ bool Renderer::create_terrain_pipeline() {
     terrain_attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(TerrainVertex, splat_weights)};
 
     auto cfg = make_common_pipeline_state();
+    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
     cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
     cfg.vertex_input.vertexAttributeDescriptionCount  = 4;
     cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;

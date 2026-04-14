@@ -46,6 +46,7 @@ public:
     VkExtent2D       extent()    const { return m_swapchain_extent; }
     VkFormat         swapchain_format() const { return m_swapchain_format; }
     VkFormat         depth_format()     const { return m_depth_format; }
+    VkSampleCountFlagBits msaa_samples() const { return m_msaa_samples; }
     u32              current_image_index() const { return m_current_image_index; }
     VkImageView      current_image_view() const { return m_swapchain_views[m_current_image_index]; }
     VkImage          current_image()      const { return m_swapchain_images[m_current_image_index]; }
@@ -88,7 +89,13 @@ private:
     std::vector<VkImage>     m_swapchain_images;
     std::vector<VkImageView> m_swapchain_views;
 
-    // Depth buffer
+    // MSAA color target (4x, transient — resolves to swapchain image)
+    VkImage       m_msaa_color_image = VK_NULL_HANDLE;
+    VmaAllocation m_msaa_color_alloc = VK_NULL_HANDLE;
+    VkImageView   m_msaa_color_view  = VK_NULL_HANDLE;
+    VkSampleCountFlagBits m_msaa_samples = VK_SAMPLE_COUNT_4_BIT;
+
+    // Depth buffer (matches MSAA sample count)
     VkImage       m_depth_image  = VK_NULL_HANDLE;
     VmaAllocation m_depth_alloc  = VK_NULL_HANDLE;
     VkImageView   m_depth_view   = VK_NULL_HANDLE;

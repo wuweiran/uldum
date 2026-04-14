@@ -200,7 +200,7 @@ bool Editor::init_imgui() {
     init_info.DescriptorPool = m_imgui_pool;
     init_info.MinImageCount  = 2;
     init_info.ImageCount     = 2;
-    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.MSAASamples = m_rhi.msaa_samples();
     init_info.UseDynamicRendering = true;
 
     VkFormat color_format = m_rhi.swapchain_format();

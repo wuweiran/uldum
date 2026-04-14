@@ -431,7 +431,44 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
         }
     }
 
-    // Create depth buffer
+    // Create MSAA color target (transient — GPU may use on-chip memory)
+    {
+        VkImageCreateInfo color_ci{};
+        color_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        color_ci.imageType     = VK_IMAGE_TYPE_2D;
+        color_ci.format        = m_swapchain_format;
+        color_ci.extent        = {extent.width, extent.height, 1};
+        color_ci.mipLevels     = 1;
+        color_ci.arrayLayers   = 1;
+        color_ci.samples       = m_msaa_samples;
+        color_ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        color_ci.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+        color_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        alloc_ci.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+
+        if (vmaCreateImage(m_allocator, &color_ci, &alloc_ci, &m_msaa_color_image, &m_msaa_color_alloc, nullptr) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create MSAA color image");
+            return false;
+        }
+
+        VkImageViewCreateInfo view_ci{};
+        view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image    = m_msaa_color_image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.format   = m_swapchain_format;
+        view_ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        if (vkCreateImageView(m_device, &view_ci, nullptr, &m_msaa_color_view) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create MSAA color image view");
+            return false;
+        }
+    }
+
+    // Create depth buffer (MSAA — matches color sample count)
     {
         VkImageCreateInfo depth_ci{};
         depth_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -440,7 +477,7 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
         depth_ci.extent        = {extent.width, extent.height, 1};
         depth_ci.mipLevels     = 1;
         depth_ci.arrayLayers   = 1;
-        depth_ci.samples       = VK_SAMPLE_COUNT_1_BIT;
+        depth_ci.samples       = m_msaa_samples;
         depth_ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
         depth_ci.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         depth_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -479,6 +516,8 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
 }
 
 void VulkanRhi::destroy_swapchain() {
+    if (m_msaa_color_view)  { vkDestroyImageView(m_device, m_msaa_color_view, nullptr); m_msaa_color_view = VK_NULL_HANDLE; }
+    if (m_msaa_color_image) { vmaDestroyImage(m_allocator, m_msaa_color_image, m_msaa_color_alloc); m_msaa_color_image = VK_NULL_HANDLE; m_msaa_color_alloc = VK_NULL_HANDLE; }
     if (m_depth_view)  { vkDestroyImageView(m_device, m_depth_view, nullptr); m_depth_view = VK_NULL_HANDLE; }
     if (m_depth_image) { vmaDestroyImage(m_allocator, m_depth_image, m_depth_alloc); m_depth_image = VK_NULL_HANDLE; m_depth_alloc = VK_NULL_HANDLE; }
 
@@ -641,8 +680,10 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &begin_info);
 
-    // Transition: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL (color)
-    VkImageMemoryBarrier2 barriers[2]{};
+    // Transition: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL (MSAA color + swapchain resolve target)
+    VkImageMemoryBarrier2 barriers[3]{};
+
+    // MSAA color image
     barriers[0].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barriers[0].srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
     barriers[0].srcAccessMask = VK_ACCESS_2_NONE;
@@ -650,23 +691,34 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     barriers[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     barriers[0].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
     barriers[0].newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    barriers[0].image         = m_swapchain_images[m_current_image_index];
+    barriers[0].image         = m_msaa_color_image;
     barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    // Transition: UNDEFINED → DEPTH_ATTACHMENT_OPTIMAL (depth)
+    // Swapchain image (resolve target)
     barriers[1].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barriers[1].srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
     barriers[1].srcAccessMask = VK_ACCESS_2_NONE;
-    barriers[1].dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    barriers[1].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barriers[1].dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     barriers[1].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    barriers[1].newLayout     = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    barriers[1].image         = m_depth_image;
-    barriers[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    barriers[1].newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barriers[1].image         = m_swapchain_images[m_current_image_index];
+    barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    // Depth (MSAA)
+    barriers[2].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barriers[2].srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    barriers[2].srcAccessMask = VK_ACCESS_2_NONE;
+    barriers[2].dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    barriers[2].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barriers[2].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[2].newLayout     = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    barriers[2].image         = m_depth_image;
+    barriers[2].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
 
     VkDependencyInfo dep{};
     dep.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount  = 2;
+    dep.imageMemoryBarrierCount  = 3;
     dep.pImageMemoryBarriers     = barriers;
     vkCmdPipelineBarrier2(cmd, &dep);
 
@@ -678,13 +730,17 @@ void VulkanRhi::begin_rendering() {
     if (!m_frame_active) return;
     VkCommandBuffer cmd = m_command_buffers[m_frame_index];
 
+    // Render to MSAA color target, resolve to swapchain image
     VkRenderingAttachmentInfo color_attachment{};
-    color_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    color_attachment.imageView   = m_swapchain_views[m_current_image_index];
-    color_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    color_attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
-    color_attachment.clearValue  = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
+    color_attachment.sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_attachment.imageView          = m_msaa_color_view;
+    color_attachment.imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_attachment.loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp            = VK_ATTACHMENT_STORE_OP_DONT_CARE;  // MSAA image is transient
+    color_attachment.clearValue         = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
+    color_attachment.resolveMode        = VK_RESOLVE_MODE_AVERAGE_BIT;
+    color_attachment.resolveImageView   = m_swapchain_views[m_current_image_index];
+    color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkRenderingAttachmentInfo depth_attachment{};
     depth_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
