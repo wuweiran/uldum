@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 14b complete. Mesh merging + bindless descriptors.
+Phase 14b complete. Mesh merging + bindless descriptors + frustum culling.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -153,6 +153,7 @@ Phase 14b complete. Mesh merging + bindless descriptors.
   - Mega vertex/index buffer — all static meshes share one VB+IB
   - Bindless texture array (VK_EXT_descriptor_indexing) — per-instance material index
   - Single multi-draw-indirect call for all static geometry
+  - CPU frustum culling: bounding sphere vs camera frustum, skips off-screen entities
 - Ninja build system for parallel compilation
 
 ## Prerequisites

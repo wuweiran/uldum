@@ -940,6 +940,14 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
     gpu.first_vertex  = m_mega_vb_used;
     gpu.first_index   = m_mega_ib_used;
 
+    // Compute bounding sphere radius (max distance from origin in model space)
+    f32 max_r2 = 0.0f;
+    for (const auto& v : mesh.vertices) {
+        f32 r2 = glm::dot(v.position, v.position);
+        if (r2 > max_r2) max_r2 = r2;
+    }
+    gpu.bounding_radius = std::sqrt(max_r2);
+
     auto* vb_dst = static_cast<u8*>(m_mega_vb_mapped) + m_mega_vb_used * sizeof(asset::Vertex);
     std::memcpy(vb_dst, mesh.vertices.data(), vc * sizeof(asset::Vertex));
     m_mega_vb_used += vc;
@@ -2191,6 +2199,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
 
     bool has_skinned = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
+    auto frustum = m_camera.frustum();
 
     // Key: mesh geometry identity (offsets into mega buffer) → group index
     struct GroupKey {
@@ -2231,6 +2240,13 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
         if (!mesh.vertex_buffer || !mesh.index_buffer) continue;
+
+        // Frustum cull: skip entities whose bounding sphere is entirely off-screen
+        {
+            glm::vec3 pos = lerp_position(*transform, alpha);
+            f32 radius = mesh.bounding_radius * transform->scale;
+            if (!frustum.is_sphere_visible(pos, radius)) continue;
+        }
 
         // Resolve bindless texture index
         bool is_corpse = world.dead_states.has(id);

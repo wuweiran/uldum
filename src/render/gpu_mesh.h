@@ -18,6 +18,7 @@ struct GpuMesh {
     u32           vertex_count  = 0;
     u32           first_vertex  = 0;    // offset into mega buffer (Phase 14b)
     u32           first_index   = 0;    // offset into mega buffer (Phase 14b)
+    f32           bounding_radius = 0.0f; // model-space bounding sphere radius (for frustum culling)
     bool          native_z_up   = false; // true = already in Z-up game coords, skip glTF rotation
     bool          is_skinned    = false;
     u32           bone_count    = 0;

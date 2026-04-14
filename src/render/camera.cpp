@@ -105,4 +105,44 @@ glm::mat4 Camera::view_projection() const {
     return projection_matrix() * view_matrix();
 }
 
+// ── Frustum culling ──────────────────────────────────────────────────────
+
+Camera::Frustum Camera::frustum() const {
+    // Gribb/Hartmann: extract 6 planes from the VP matrix.
+    glm::mat4 vp = view_projection();
+    Frustum f{};
+    // Left
+    f.planes[0] = {vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],
+                    vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]};
+    // Right
+    f.planes[1] = {vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],
+                    vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]};
+    // Bottom
+    f.planes[2] = {vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],
+                    vp[2][3] + vp[2][1], vp[3][3] + vp[3][1]};
+    // Top
+    f.planes[3] = {vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],
+                    vp[2][3] - vp[2][1], vp[3][3] - vp[3][1]};
+    // Near
+    f.planes[4] = {vp[0][2], vp[1][2], vp[2][2], vp[3][2]};
+    // Far
+    f.planes[5] = {vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],
+                    vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]};
+
+    // Normalize each plane
+    for (auto& p : f.planes) {
+        f32 len = glm::length(glm::vec3(p));
+        if (len > 0.0f) p /= len;
+    }
+    return f;
+}
+
+bool Camera::Frustum::is_sphere_visible(const glm::vec3& center, f32 radius) const {
+    for (const auto& p : planes) {
+        f32 dist = glm::dot(glm::vec3(p), center) + p.w;
+        if (dist < -radius) return false;
+    }
+    return true;
+}
+
 } // namespace uldum::render

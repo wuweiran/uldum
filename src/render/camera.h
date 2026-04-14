@@ -33,6 +33,14 @@ public:
     glm::vec3 position() const { return m_position; }
     glm::vec3 forward_dir() const;
 
+    // Frustum culling: 6 planes extracted from the VP matrix (Gribb/Hartmann).
+    // Each plane is (nx, ny, nz, d) — point visible if dot(n,p)+d >= 0.
+    struct Frustum {
+        glm::vec4 planes[6];
+        bool is_sphere_visible(const glm::vec3& center, f32 radius) const;
+    };
+    Frustum frustum() const;
+
 private:
     void recalculate();
 

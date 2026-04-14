@@ -508,9 +508,9 @@ Server-authoritative model with client-side interpolation. See [network.md](netw
 - Timeout expiry fires `on_player_dropped` Lua event (map decides what happens to units)
 - Client detects server disconnect and transitions to Results
 
-### Phase 14 — GPU-Driven Rendering
+### Phase 14 — Rendering Improvements
 
-Replace per-entity draw calls with indirect draws. Enables thousands of entities without CPU bottleneck.
+GPU-driven rendering, culling, anti-aliasing, and water.
 
 **Phase 14a — Instance Buffer + Indirect Draw**
 - Per-entity transforms in a GPU SSBO (instance buffer), indexed by instance ID
@@ -518,15 +518,24 @@ Replace per-entity draw calls with indirect draws. Enables thousands of entities
 - One indirect draw per unique mesh+material combination
 - Foundation for all subsequent GPU-driven work
 
-**Phase 14b — Mesh Merging + Bindless Descriptors**
-- Merge meshes with same pipeline into shared vertex/index buffers with draw offsets
-- All textures in one descriptor array (`VK_EXT_descriptor_indexing`), material index per instance
-- Eliminates descriptor set swapping between draws
+**Phase 14b — Mesh Merging + Bindless Descriptors + Frustum Culling**
+- Mega vertex/index buffer: all static meshes share one VB+IB with draw offsets
+- Bindless texture array (`VK_EXT_descriptor_indexing`), per-instance material index
+- Single multi-draw-indirect call for all static geometry (main pass + shadow pass)
+- CPU frustum culling: bounding sphere vs 6 frustum planes (Gribb/Hartmann extraction from VP matrix)
+- Entities fully outside camera view skipped before instance data upload
 
-**Phase 14c — GPU Frustum Culling**
-- Compute shader pass before rendering
-- Reads instance transforms, tests against view frustum
-- Writes visible instance indices to indirect draw buffer
+**Phase 14c — MSAA**
+- Multisample anti-aliasing (4x) for all geometry pipelines
+- Multisampled color + depth render targets, resolve to swapchain
+- Core Vulkan feature — works on all desktop and mobile GPUs
+
+**Phase 14d — Water Rendering**
+- Water surface mesh generated from terrain water tiles
+- Animated UV scrolling for wave/flow effect
+- Planar reflection: render scene mirrored across water plane into texture
+- Fresnel blend between reflection color and water tint based on view angle
+- Mobile-compatible (no screen-space techniques)
 
 ### Phase 15 — Packaging & Distribution
 
