@@ -559,6 +559,9 @@ void NetworkManager::client_apply_interpolation() {
             if (!m_client_world.dead_states.has(e.entity_id)) {
                 m_client_world.dead_states.add(e.entity_id, simulation::DeadState{});
             }
+        } else {
+            // Server says not dead — remove stale dead state if present
+            m_client_world.dead_states.remove(e.entity_id);
         }
     }
 }
@@ -797,6 +800,29 @@ void NetworkManager::update(f32 dt) {
                     combat.attack_timer = combat.dmg_time;
                 }
             }
+        }
+    }
+
+    // Client: tick corpse timers — hide then remove dead entities
+    if (m_mode == Mode::Client && dt > 0) {
+        std::vector<u32> to_remove;
+        for (u32 i = 0; i < m_client_world.dead_states.count(); ++i) {
+            u32 id = m_client_world.dead_states.ids()[i];
+            auto& dead = m_client_world.dead_states.data()[i];
+            dead.corpse_timer += dt;
+
+            if (dead.corpse_visible && dead.corpse_timer >= dead.corpse_duration) {
+                dead.corpse_visible = false;
+                auto* r = m_client_world.renderables.get(id);
+                if (r) r->visible = false;
+            }
+
+            if (dead.corpse_timer >= dead.cleanup_delay) {
+                to_remove.push_back(id);
+            }
+        }
+        for (u32 id : to_remove) {
+            destroy_client_entity(id);
         }
     }
 }
