@@ -1,10 +1,13 @@
 --------------------------------------------------------------------------------
--- Test Map — main.lua (Scene 02: Ability Test)
+-- Test Map — Scene 02: Ability Test
 -- Creeps spawn from edges and attack toward two heroes at the center.
 -- Footman has Cleave (30% AoE on attack), Paladin has Consecration (periodic
 -- AoE damage) and Holy Light (auto-heals Footman when HP is low).
 -- Coordinate scale: WC3-style (1 tile = 128 game units, map = 8192x8192)
 --------------------------------------------------------------------------------
+
+require("constants")
+require("combat")
 
 function main()
     Log("[Scene02] main() called — setting up ability test")
@@ -31,26 +34,10 @@ function main()
     AddAbility(paladin, "devotion_aura")
     AddAbility(paladin, "holy_light")
 
-    ---------------------------------------------------------------------------
-    -- Armor damage reduction: WC3 formula, applies to normal attacks only.
-    -- Runs at HIGH priority so cleave sees the reduced amount.
-    -- Formula: reduction = armor * 0.06 / (1 + armor * 0.06)
-    ---------------------------------------------------------------------------
-    local armor_trig = CreateTrigger(TRIGGER_PRIORITY_HIGH)
-    TriggerRegisterEvent(armor_trig, EVENT_GLOBAL_DAMAGE)
-    TriggerAddCondition(armor_trig, function()
-        return GetDamageType() == "attack"
-    end)
-    TriggerAddAction(armor_trig, function()
-        local target = GetDamageTarget()
-        local armor = GetUnitAttribute(target, "armor")
-        if armor > 0 then
-            local reduction = armor * 0.06 / (1 + armor * 0.06)
-            local dmg = GetDamageAmount() * (1 - reduction)
-            SetDamageAmount(dmg)
-        end
-    end)
-    Log("[Scene02] Armor damage reduction active (WC3 formula)")
+    -- Register standard combat systems (shared)
+    register_armor_system()
+    register_hit_vfx()
+    register_death_vfx()
 
     ---------------------------------------------------------------------------
     -- Cleave: when footman deals damage, deal 30% to nearby enemy ground units
@@ -162,34 +149,6 @@ function main()
         Log("[Wave " .. wave .. "] Spawned " .. count .. " creeps")
     end)
     Log("[Scene02] Creep spawner active (every " .. SPAWN_INTERVAL .. "s)")
-
-    ---------------------------------------------------------------------------
-    -- VFX: hit sparks on attack damage (uses engine-defined "hit_spark" effect)
-    ---------------------------------------------------------------------------
-    local hit_vfx = CreateTrigger(TRIGGER_PRIORITY_LOW)
-    TriggerRegisterEvent(hit_vfx, EVENT_GLOBAL_DAMAGE)
-    TriggerAddCondition(hit_vfx, function()
-        return GetDamageType() == "attack" and GetDamageAmount() > 0
-    end)
-    TriggerAddAction(hit_vfx, function()
-        local target = GetDamageTarget()
-        if target then
-            PlayEffectOnUnit("hit_spark", target, "chest")
-        end
-    end)
-
-    ---------------------------------------------------------------------------
-    -- Death logging + VFX (uses engine-defined "death_burst" effect)
-    ---------------------------------------------------------------------------
-    local death_trig = CreateTrigger()
-    TriggerRegisterEvent(death_trig, EVENT_GLOBAL_DEATH)
-    TriggerAddAction(death_trig, function()
-        local unit = GetTriggerUnit()
-        if unit then
-            PlayEffectOnUnit("death_burst", unit, "chest")
-            Log("[Death] " .. GetUnitTypeId(unit) .. " has died")
-        end
-    end)
 
     Log("[Scene02] Setup complete — heroes defending center against creep waves")
 end

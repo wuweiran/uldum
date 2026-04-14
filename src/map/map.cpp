@@ -82,6 +82,7 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
     }
 
     auto& j = doc->data;
+    m_manifest.id               = j.value("id", "");
     m_manifest.name             = j.value("name", "Unnamed");
     m_manifest.author           = j.value("author", "");
     m_manifest.description      = j.value("description", "");

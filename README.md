@@ -8,7 +8,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 - **Skeletal animation** — GPU skinning, animation state machine, glTF models
 - **Particle effects** — CPU-driven billboard particles, named effect system
 - **Unit-centric gameplay** — ECS internally, unit facade for scripting
-- **Lua 5.4 scripting** — trigger/event system, sandboxed map scripts
+- **Lua 5.4 scripting** — trigger/event system, per-scene scripts with `require()`, persistent save data
 - **Map system** — heightmap terrain, object placement, asset overrides
 - **Audio** — 3D positional SFX, music streaming, ambient loops (miniaudio)
 - **Server-authoritative multiplayer** — with single player via in-process local server

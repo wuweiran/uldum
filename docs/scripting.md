@@ -6,28 +6,63 @@ Maps define all gameplay logic via Lua 5.4 scripts. The engine provides a C++ AP
 exposed to Lua through sol2 bindings. This is analogous to WC3's JASS system, but
 using Lua instead of a custom language.
 
+### Script Directory Structure
+
+```
+my_map.uldmap/
+├── shared/scripts/           -- shared across all scenes
+│   ├── combat.lua            -- reusable combat systems
+│   └── utils.lua             -- helper functions
+└── scenes/
+    ├── scene_01/scripts/
+    │   └── main.lua          -- scene 01 entry point
+    └── scene_02/scripts/
+        ├── main.lua          -- scene 02 entry point
+        └── hero_setup.lua    -- scene-specific module
+```
+
+Each scene has its own `main.lua` entry point. Scripts use `require()` to include
+other files from the scene's scripts directory, the shared scripts directory, or the
+engine scripts directory.
+
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `engine/scripts/api.lua` | Engine API function declarations. Loaded before any map script. Defines all engine functions available to map scripts. |
-| `engine/scripts/helpers.lua` | Optional convenience library — helper functions built on top of the engine API. |
-| Map's `shared/scripts/main.lua` | Map entry point — runs after common.lua. Registers events, sets up gameplay. |
+| `engine/scripts/constants.lua` | Engine-defined constants (event names, priority levels). Available via `require("constants")`. |
+| `engine/scripts/api.lua` | API documentation stubs for IDE autocomplete. NOT loaded at runtime. |
+| `<map>/shared/scripts/*.lua` | Shared modules available to all scenes via `require()`. |
+| `<map>/scenes/<scene>/scripts/main.lua` | Per-scene entry point. Defines `main()` function. |
 
 ### Execution Order
 
-1. Engine initializes Lua VM (sandboxed — no os, io, require from filesystem)
-2. Engine loads and executes `engine/scripts/api.lua` (defines API)
-3. Engine loads and executes map's `shared/scripts/main.lua`
-4. Map's main.lua registers event handlers, creates initial game state
-5. Game loop begins — events fire, Lua handlers run synchronously within simulation ticks
+1. Engine initializes Lua VM (sandboxed — no os, io, dofile, loadfile)
+2. Engine configures `package.path`: scene scripts → shared scripts → engine scripts
+3. Engine configures save data path (`%APPDATA%/Uldum/saves/<map>/`)
+4. Engine loads `engine/scripts/constants.lua` (event constants)
+5. Engine loads and executes `scenes/<start_scene>/scripts/main.lua`
+6. Map's `main.lua` uses `require()` to include shared modules, then defines `main()`
+7. Engine calls `main()` — registers event handlers, creates initial game state
+8. Game loop begins — events fire, Lua handlers run synchronously within simulation ticks
+
+### require() Search Order
+
+When a script calls `require("combat")`, Lua searches these directories in order:
+
+1. `scenes/<active_scene>/scripts/combat.lua` — scene-specific
+2. `shared/scripts/combat.lua` — map-wide shared
+3. `engine/scripts/combat.lua` — engine-provided
+
+The first match wins. This lets a scene override a shared module if needed.
 
 ## Lua VM
 
 - **Lua 5.4** with **sol2** for C++ ↔ Lua binding
-- One VM per map (sandboxed)
-- **Disabled**: `os`, `io`, `loadfile`, `dofile`, `require` (filesystem access)
-- **Available**: `math`, `string`, `table`, `coroutine`, `print` (→ engine log)
+- One VM per scene (fresh state on scene change)
+- **Disabled**: `os`, `io`, `loadfile`, `dofile` (direct filesystem access)
+- **Enabled**: `require()` with controlled `package.path` (scene → shared → engine scripts only)
+- **Available**: `math`, `string`, `table`, `coroutine`, `package`, `print` (→ engine log)
+- Native C module loading disabled (`package.cpath = ""`)
 - Scripts run synchronously within the simulation tick — no threading
 - Errors in Lua are caught and logged, don't crash the engine
 
@@ -359,6 +394,30 @@ RandomInt(min, max) → int
 RandomFloat(min, max) → float
 ```
 
+### Save Data API (Cross-Scene Persistence)
+
+Data saved via `SaveData` persists to disk (`%APPDATA%/saves/<map_id>/save_data.json`).
+It survives scene changes, Lua VM resets, and game restarts. Use it for campaign progress,
+player choices, inventory carried between missions.
+
+```lua
+-- Save values (flushed to disk immediately)
+SaveData("boss_defeated", true)
+SaveData("gold_carried", 500)
+SaveData("player_name", "Arthas")
+SaveData("completion_time", 142.5)
+
+-- Load values (with default if key doesn't exist)
+local gold = LoadData("gold_carried", 0)
+local name = LoadData("player_name", "Unknown")
+local defeated = LoadData("boss_defeated", false)
+
+-- Clear all save data for this map
+ClearSaveData()
+```
+
+Supported types: boolean, integer, float, string.
+
 ### Region API
 
 ```lua
@@ -371,10 +430,12 @@ GetRegionCenter(region) → x, y
 ## Sandboxing
 
 Map scripts are sandboxed:
-- No filesystem access (no `io`, `os.execute`, `loadfile`)
-- No `require` — all map scripts are loaded by the engine from the map package
+- No filesystem access (no `io`, `os.execute`, `loadfile`, `dofile`)
+- `require()` only searches controlled directories (scene → shared → engine scripts)
+- No native C module loading (`package.cpath` is empty)
 - `print()` redirects to engine log
 - Engine API is the only way to interact with the game world
+- `SaveData`/`LoadData` provide controlled persistence via engine-managed JSON files
 - Infinite loop protection: engine counts instructions per Lua call, aborts if limit exceeded
 
 ## Error Handling

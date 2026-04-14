@@ -3,6 +3,7 @@
 #include "core/types.h"
 
 #include <glm/vec3.hpp>
+#include <nlohmann/json.hpp>
 
 #include <functional>
 #include <memory>
@@ -108,6 +109,15 @@ public:
     void set_context_spell_target_x(f32 x) { m_ctx_spell_target_x = x; }
     void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
 
+    // Configure Lua package.path so require() resolves from these directories.
+    // Searched in order: scene scripts, shared scripts, engine scripts.
+    void set_script_paths(std::string_view scene_scripts,
+                          std::string_view shared_scripts,
+                          std::string_view engine_scripts);
+
+    // Set the save data directory for SaveData/LoadData persistence.
+    void set_save_path(std::string_view save_dir);
+
     // Load and execute a Lua file
     bool load_script(std::string_view path);
 
@@ -119,6 +129,7 @@ private:
     void bind_trigger_api();
     void bind_timer_api();
     void bind_input_api();
+    void bind_save_api();
 
     u32 next_trigger_id() { return ++m_next_trigger; }
     u32 next_timer_id()   { return ++m_next_timer; }
@@ -136,6 +147,12 @@ private:
     // Input (set via set_input)
     input::SelectionState*   m_selection = nullptr;
     input::CommandSystem*    m_commands  = nullptr;
+
+    // Persistent save data (SaveData/LoadData)
+    std::string m_save_path;
+    nlohmann::json m_save_data;
+    bool m_save_dirty = false;
+    void flush_save_data();
 
     // Order event context
     std::string m_ctx_order_type;

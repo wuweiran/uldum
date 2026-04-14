@@ -19,6 +19,7 @@
 #include <glm/geometric.hpp>
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -55,16 +56,20 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     auto& lua = *m_lua;
 
 
-    // Open safe standard libraries
+    // Open safe standard libraries (including package for require())
     lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string,
-                       sol::lib::table, sol::lib::coroutine);
+                       sol::lib::table, sol::lib::coroutine, sol::lib::package);
 
-    // Sandbox: remove dangerous globals
+    // Sandbox: remove dangerous globals but keep require()
     lua["os"] = sol::nil;
     lua["io"] = sol::nil;
     lua["loadfile"] = sol::nil;
     lua["dofile"] = sol::nil;
-    lua["require"] = sol::nil;
+
+    // Disable native C module loading (security)
+    lua["package"]["cpath"] = "";
+    // Default empty package.path — set_script_paths() configures it before scripts run
+    lua["package"]["path"] = "";
 
     // Redirect print to engine log
     lua["print"] = [](sol::variadic_args va) {
@@ -92,6 +97,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     bind_trigger_api();
     bind_timer_api();
     bind_input_api();
+    bind_save_api();
 
     // Hook the world's damage callback so all damage (combat + script) fires on_damage events
     sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target, f32& amount, std::string_view damage_type) {
@@ -172,6 +178,112 @@ void ScriptEngine::call_function(std::string_view name) {
         sol::error err = result;
         log::error(TAG, "Error calling '{}': {}", name, err.what());
     }
+}
+
+// ── Script paths (require) ────────────────────────────────────────────────
+
+void ScriptEngine::set_script_paths(std::string_view scene_scripts,
+                                     std::string_view shared_scripts,
+                                     std::string_view engine_scripts) {
+    // Build Lua package.path: scene → shared → engine
+    // Lua searches these in order when require() is called.
+    std::string path;
+    auto append = [&](std::string_view dir) {
+        if (dir.empty()) return;
+        if (!path.empty()) path += ";";
+        path += dir;
+        path += "/?.lua";
+    };
+    append(scene_scripts);
+    append(shared_scripts);
+    append(engine_scripts);
+
+    (*m_lua)["package"]["path"] = path;
+    log::info(TAG, "Script package.path: {}", path);
+}
+
+// ── Save data persistence ────────────────────────────────────────────────
+
+void ScriptEngine::set_save_path(std::string_view save_dir) {
+    m_save_path = std::string(save_dir) + "/save_data.json";
+
+    // Create directory if needed
+    std::filesystem::path dir(save_dir);
+    if (!std::filesystem::exists(dir)) {
+        std::filesystem::create_directories(dir);
+    }
+
+    // Load existing save data
+    std::ifstream file(m_save_path);
+    if (file.is_open()) {
+        try {
+            m_save_data = nlohmann::json::parse(file);
+            log::info(TAG, "Loaded save data from '{}'", m_save_path);
+        } catch (const nlohmann::json::exception& e) {
+            log::warn(TAG, "Failed to parse save data: {}", e.what());
+            m_save_data = nlohmann::json::object();
+        }
+    } else {
+        m_save_data = nlohmann::json::object();
+    }
+}
+
+void ScriptEngine::flush_save_data() {
+    if (!m_save_dirty || m_save_path.empty()) return;
+
+    std::ofstream file(m_save_path);
+    if (file.is_open()) {
+        file << m_save_data.dump(2);
+        m_save_dirty = false;
+        log::trace(TAG, "Save data flushed to '{}'", m_save_path);
+    } else {
+        log::error(TAG, "Failed to write save data to '{}'", m_save_path);
+    }
+}
+
+void ScriptEngine::bind_save_api() {
+    auto& lua = *m_lua;
+
+    lua["SaveData"] = [this](const std::string& key, sol::object value) {
+        if (m_save_path.empty()) {
+            log::warn(TAG, "SaveData called but no save path configured");
+            return;
+        }
+        if (value.is<bool>()) {
+            m_save_data[key] = value.as<bool>();
+        } else if (value.is<i64>()) {
+            m_save_data[key] = value.as<i64>();
+        } else if (value.is<f64>()) {
+            m_save_data[key] = value.as<f64>();
+        } else if (value.is<std::string>()) {
+            m_save_data[key] = value.as<std::string>();
+        } else {
+            log::warn(TAG, "SaveData: unsupported type for key '{}'", key);
+            return;
+        }
+        m_save_dirty = true;
+        flush_save_data();
+    };
+
+    lua["LoadData"] = [this](const std::string& key, sol::optional<sol::object> default_val) -> sol::object {
+        auto it = m_save_data.find(key);
+        if (it == m_save_data.end()) {
+            return default_val.has_value() ? default_val.value() : sol::make_object(*m_lua, sol::nil);
+        }
+        auto& v = *it;
+        if (v.is_boolean())        return sol::make_object(*m_lua, v.get<bool>());
+        if (v.is_number_integer()) return sol::make_object(*m_lua, v.get<i64>());
+        if (v.is_number_float())   return sol::make_object(*m_lua, v.get<f64>());
+        if (v.is_string())         return sol::make_object(*m_lua, v.get<std::string>());
+        return default_val.has_value() ? default_val.value() : sol::make_object(*m_lua, sol::nil);
+    };
+
+    lua["ClearSaveData"] = [this]() {
+        m_save_data = nlohmann::json::object();
+        m_save_dirty = true;
+        flush_save_data();
+        log::info(TAG, "Save data cleared");
+    };
 }
 
 // ── Timer tick ────────────────────────────────────────────────────────────

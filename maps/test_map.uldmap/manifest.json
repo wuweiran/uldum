@@ -1,4 +1,5 @@
 {
+    "id": "test_map",
     "name": "Test Map",
     "author": "Uldum Engine",
     "description": "A test map for engine development and verification.",

@@ -4,6 +4,9 @@
 #include "map/map.h"
 #include "core/log.h"
 
+#include <cstdlib>
+#include <filesystem>
+
 namespace uldum::network {
 
 static constexpr const char* TAG = "GameServer";
@@ -81,13 +84,43 @@ bool GameServer::init_game(map::MapManager& map,
     m_simulation.sync_pathing_blockers();
     m_simulation.spatial_grid().update(m_simulation.world());
 
-    // Load engine constants (event names, priority levels)
+    // Configure Lua require() search paths: scene → shared → engine
+    {
+        std::string scene_scripts = map.map_root() + "/scenes/" + map.manifest().start_scene + "/scripts";
+        std::string shared_scripts = map.map_root() + "/shared/scripts";
+        std::string engine_scripts = "engine/scripts";
+        m_script.set_script_paths(scene_scripts, shared_scripts, engine_scripts);
+    }
+
+    // Configure save data directory (%APPDATA%/saves/<map_uuid>/)
+    {
+        std::string map_id = map.manifest().id;
+        if (map_id.empty()) map_id = map.manifest().name;  // fallback if no id
+
+        std::string save_dir;
+        char* appdata = nullptr;
+        size_t appdata_len = 0;
+        if (_dupenv_s(&appdata, &appdata_len, "APPDATA") == 0 && appdata) {
+            save_dir = std::string(appdata) + "/saves/" + map_id;
+            free(appdata);
+        } else {
+            save_dir = "saves/" + map_id;
+        }
+        m_script.set_save_path(save_dir);
+    }
+
+    // Load engine constants (available to all scripts via require("constants"))
     m_script.load_script("engine/scripts/constants.lua");
 
-    // Load and run map scripts
+    // Load and run per-scene main script
     {
-        std::string main_script = map.map_root() + "/shared/scripts/main.lua";
-        m_script.load_script(main_script);
+        std::string main_script = map.map_root() + "/scenes/" + map.manifest().start_scene
+                                + "/scripts/main.lua";
+        if (!m_script.load_script(main_script)) {
+            // Fallback to shared/scripts/main.lua for backwards compatibility
+            std::string fallback = map.map_root() + "/shared/scripts/main.lua";
+            m_script.load_script(fallback);
+        }
         m_script.call_function("main");
     }
 

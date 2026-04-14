@@ -29,6 +29,7 @@ struct TeamDef {
 };
 
 struct MapManifest {
+    std::string id;
     std::string name;
     std::string author;
     std::string description;
