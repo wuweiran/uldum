@@ -510,14 +510,23 @@ Server-authoritative model with client-side interpolation. See [network.md](netw
 
 ### Phase 14 — GPU-Driven Rendering
 
-Replace per-entity draw calls with a single indirect draw. Enables thousands of entities without CPU bottleneck.
+Replace per-entity draw calls with indirect draws. Enables thousands of entities without CPU bottleneck.
 
-- **Indirect draw buffer**: one `vkCmdDrawIndexedIndirect` per pipeline instead of per-entity draw calls
-- **Compute frustum culling**: GPU compute pass writes visible instances to indirect buffer
-- **Instance buffer**: per-entity transforms (model matrix) in a GPU SSBO, indexed by instance ID
-- **Bindless descriptors**: all textures in one descriptor array (`VK_EXT_descriptor_indexing`), material index per instance
-- **Mesh merging**: combine meshes with same pipeline into shared vertex/index buffers with draw offsets
-- **Occlusion culling** (optional): hierarchical Z-buffer or GPU-driven occlusion queries
+**Phase 14a — Instance Buffer + Indirect Draw**
+- Per-entity transforms in a GPU SSBO (instance buffer), indexed by instance ID
+- Replace per-entity `vkCmdDrawIndexed` with `vkCmdDrawIndexedIndirect`
+- One indirect draw per unique mesh+material combination
+- Foundation for all subsequent GPU-driven work
+
+**Phase 14b — Mesh Merging + Bindless Descriptors**
+- Merge meshes with same pipeline into shared vertex/index buffers with draw offsets
+- All textures in one descriptor array (`VK_EXT_descriptor_indexing`), material index per instance
+- Eliminates descriptor set swapping between draws
+
+**Phase 14c — GPU Frustum Culling**
+- Compute shader pass before rendering
+- Reads instance transforms, tests against view frustum
+- Writes visible instance indices to indirect draw buffer
 
 ### Phase 15 — Packaging & Distribution
 
