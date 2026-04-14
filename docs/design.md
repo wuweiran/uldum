@@ -537,6 +537,13 @@ GPU-driven rendering, culling, anti-aliasing, and water.
 - Fresnel blend between reflection color and water tint based on view angle
 - Mobile-compatible (no screen-space techniques)
 
+**Phase 14e — Lighting, Skybox & Day/Night**
+- Dynamic lighting: sun direction, sun color, ambient color as uniforms (currently hardcoded in shaders)
+- Skybox: cube or hemisphere rendered behind everything, per-tileset sky texture or procedural gradient
+- Emissive particles: effects like holy light, fire, magic skip scene lighting and glow at full brightness
+- Lua API for map-controlled atmosphere: `SetSunDirection`, `SetSunColor`, `SetAmbientColor`, `SetSkyColor`
+- Maps can drive day/night cycle with timers, set fixed time of day, or trigger dramatic lighting changes
+
 ### Phase 15 — Packaging & Distribution
 
 Build targets, cross-platform packaging, and asset baking. See [build-targets.md](build-targets.md) for the full target design.
