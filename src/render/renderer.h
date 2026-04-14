@@ -23,7 +23,7 @@
 namespace uldum::rhi { class VulkanRhi; }
 namespace uldum::simulation { struct World; struct Transform; class Simulation; }
 namespace uldum::platform { struct InputState; }
-namespace uldum::map { struct TerrainData; }
+namespace uldum::map { struct TerrainData; struct Tileset; }
 
 namespace uldum::render {
 
@@ -57,6 +57,9 @@ public:
 
     // Build (or rebuild) the terrain GPU mesh and splatmap from terrain data.
     void set_terrain(const map::TerrainData& terrain);
+
+    // Load terrain layer textures from tileset (call after set_map_root, before set_terrain).
+    void load_tileset_textures(const map::Tileset& tileset);
 
     // Set terrain data pointer for height/normal sampling (entity slope tilt).
     void set_terrain_data(const map::TerrainData* td) { m_terrain_data = td; }

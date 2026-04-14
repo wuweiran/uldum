@@ -530,12 +530,12 @@ GPU-driven rendering, culling, anti-aliasing, and water.
 - Multisampled color + depth render targets, resolve to swapchain
 - Core Vulkan feature — works on all desktop and mobile GPUs
 
-**Phase 14d — Water Rendering**
-- Water surface mesh generated from terrain water tiles
-- Animated UV scrolling for wave/flow effect
-- Planar reflection: render scene mirrored across water plane into texture
-- Fresnel blend between reflection color and water tint based on view angle
-- Mobile-compatible (no screen-space techniques)
+**Phase 14d — Tileset Textures + Terrain Blending + Water**
+- Load real diffuse textures from tileset JSON (map-provided PNGs)
+- Terrain type as `sampler2DArray`, per-vertex type index (up to 16 layers)
+- Blend-mask transitions between terrain types (engine presets: flat, noisy, blades, rocky, cracked)
+- Water as terrain layer types: shallow (transparent two-pass) and deep (opaque one-pass)
+- Water visuals: animated UV, tinted color, configurable opacity/wave_speed per tileset
 
 **Phase 14e — Lighting, Skybox & Day/Night**
 - Dynamic lighting: sun direction, sun color, ambient color as uniforms (currently hardcoded in shaders)

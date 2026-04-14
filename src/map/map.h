@@ -2,6 +2,7 @@
 
 #include "map/terrain_data.h"
 
+#include <glm/vec3.hpp>
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -26,6 +27,36 @@ struct TeamDef {
     std::string name;
     bool        allied = false;
     bool        shared_vision = false;
+};
+
+// Layer type — determines engine rendering behavior
+enum class LayerType : u8 { Ground, WaterShallow, WaterDeep, Grass };
+
+struct TilesetLayer {
+    u32         id = 0;
+    std::string name;
+    std::string diffuse_path;   // relative to map root
+    std::string blend_preset = "noisy";
+    LayerType   type = LayerType::Ground;
+
+    // Water properties (only used when type is WaterShallow or WaterDeep)
+    glm::vec3   water_color{0.1f, 0.3f, 0.5f};
+    f32         water_opacity = 0.6f;
+    f32         water_wave_speed = 0.4f;
+};
+
+struct Tileset {
+    std::string name;
+    std::vector<TilesetLayer> layers;
+
+    const TilesetLayer* get_layer(u32 id) const {
+        for (auto& l : layers) { if (l.id == id) return &l; }
+        return nullptr;
+    }
+    bool is_water(u32 layer_id) const {
+        auto* l = get_layer(layer_id);
+        return l && (l->type == LayerType::WaterShallow || l->type == LayerType::WaterDeep);
+    }
 };
 
 struct MapManifest {
@@ -109,6 +140,7 @@ public:
     bool is_loaded() const { return m_loaded; }
 
     const MapManifest& manifest() const { return m_manifest; }
+    const Tileset&     tileset()  const { return m_tileset; }
     const TerrainData& terrain()  const { return m_scene.terrain; }
     TerrainData&       terrain()        { return m_scene.terrain; }
     const SceneData&   scene()    const { return m_scene; }
@@ -123,6 +155,7 @@ public:
 
 private:
     bool load_manifest(asset::AssetManager& assets);
+    bool load_tileset(asset::AssetManager& assets);
     bool load_types(asset::AssetManager& assets, simulation::Simulation& sim);
     bool load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
     bool load_placements(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
@@ -130,6 +163,7 @@ private:
     bool        m_loaded = false;
     std::string m_map_root;
     MapManifest m_manifest;
+    Tileset     m_tileset;
     SceneData   m_scene;
 };
 

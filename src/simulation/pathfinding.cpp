@@ -65,8 +65,8 @@ bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
         for (u32 vx = min_vx; vx <= max_vx; ++vx) {
             u8 flags = td.pathing_at(vx, vy);
             bool walkable = (flags & map::PATHING_WALKABLE) != 0;
-            bool water = td.is_water(vx, vy);
-            if (move_type == MoveType::Ground && (!walkable || water)) return false;
+            bool deep = td.is_deep_water(vx, vy);
+            if (move_type == MoveType::Ground && (!walkable || deep)) return false;
             if (move_type == MoveType::Amphibious && !walkable) return false;
         }
     }

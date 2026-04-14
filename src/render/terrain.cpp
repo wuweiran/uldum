@@ -24,11 +24,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
     vertices.reserve(td.tile_count() * 4 + td.tile_count() * 2);
     indices.reserve(td.tile_count() * 6 + td.tile_count() * 6);
 
-    auto splat_at = [&](u32 ix, u32 iy) -> glm::vec4 {
-        u8 layer = td.tile_layer[iy * td.verts_x() + ix];
-        glm::vec4 w{0};
-        w[std::min(layer, u8(3))] = 1.0f;
-        return w;
+    auto layer_at = [&](u32 ix, u32 iy) -> u32 {
+        return td.tile_layer[iy * td.verts_x() + ix];
     };
 
     auto texcoord_at = [&](u32 ix, u32 iy) -> glm::vec2 {
@@ -38,12 +35,12 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         };
     };
 
-    auto add_vert = [&](f32 x, f32 y, f32 z, glm::vec2 uv, glm::vec4 splat) -> u32 {
+    auto add_vert = [&](f32 x, f32 y, f32 z, glm::vec2 uv, u32 layer) -> u32 {
         u32 idx = static_cast<u32>(vertices.size());
         TerrainVertex v;
         v.position = {x, y, z};
         v.texcoord = uv;
-        v.splat_weights = splat;
+        v.layer_index = layer;
         v.normal = {0, 0, 1};
         vertices.push_back(v);
         return idx;
@@ -84,13 +81,10 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         return td.height_at(ix, iy) * (1-lx)*(1-ly) + td.height_at(ix+1, iy) * lx*(1-ly)
              + td.height_at(ix, iy+1) * (1-lx)*ly + td.height_at(ix+1, iy+1) * lx*ly;
     };
-    auto lerp_splat = [&](f32 fx, f32 fy) -> glm::vec4 {
-        u32 ix = static_cast<u32>(fx), iy = static_cast<u32>(fy);
-        ix = std::min(ix, td.tiles_x - 1);
-        iy = std::min(iy, td.tiles_y - 1);
-        f32 lx = fx - static_cast<f32>(ix), ly = fy - static_cast<f32>(iy);
-        return splat_at(ix, iy) * (1-lx)*(1-ly) + splat_at(ix+1, iy) * lx*(1-ly)
-             + splat_at(ix, iy+1) * (1-lx)*ly + splat_at(ix+1, iy+1) * lx*ly;
+    auto nearest_layer = [&](f32 fx, f32 fy) -> u32 {
+        u32 ix = std::min(static_cast<u32>(fx + 0.5f), td.tiles_x);
+        u32 iy = std::min(static_cast<u32>(fy + 0.5f), td.tiles_y);
+        return layer_at(ix, iy);
     };
 
     // Check if the neighboring tile across an edge is a ramp.
@@ -160,7 +154,7 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     f32 x = static_cast<f32>(gx[i]) * td.tile_size;
                     f32 y = static_cast<f32>(gy[i]) * td.tile_size;
                     f32 z = static_cast<f32>(c[i]) * td.layer_height + td.height_at(gx[i], gy[i]);
-                    v[i] = add_vert(x, y, z, texcoord_at(gx[i], gy[i]), splat_at(gx[i], gy[i]));
+                    v[i] = add_vert(x, y, z, texcoord_at(gx[i], gy[i]), layer_at(gx[i], gy[i]));
                 }
                 add_tri(v[0], v[1], v[2]);
                 add_tri(v[1], v[3], v[2]);
@@ -174,7 +168,7 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 return add_vert(static_cast<f32>(ix) * td.tile_size,
                                 static_cast<f32>(iy) * td.tile_size,
                                 base_z + td.height_at(ix, iy),
-                                texcoord_at(ix, iy), splat_at(ix, iy));
+                                texcoord_at(ix, iy), layer_at(ix, iy));
             };
 
             // Helper: add a midpoint vertex on a tile edge
@@ -188,7 +182,7 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     default: mx = x1; my = ym; gfx = static_cast<f32>(tx + 1); gfy = ty + 0.5f; break;
                 }
                 return add_vert(mx, my, base_z + lerp_height(gfx, gfy),
-                                {gfx / td.tiles_x, gfy / td.tiles_y}, lerp_splat(gfx, gfy));
+                                {gfx / td.tiles_x, gfy / td.tiles_y}, nearest_layer(gfx, gfy));
             };
 
             if (cmin == cmax) {

@@ -29,6 +29,7 @@ bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, si
     // We'll load map files using absolute paths constructed from m_map_root
 
     if (!load_manifest(assets)) return false;
+    if (!load_tileset(assets)) return false;
     if (!load_types(assets, sim)) return false;
     if (!load_scene(m_manifest.start_scene, assets, sim)) return false;
 
@@ -153,6 +154,55 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
               m_manifest.name, m_manifest.author,
               m_manifest.players.size(), m_manifest.teams.size(),
               m_manifest.start_scene);
+    return true;
+}
+
+// ── Tileset ──────────────────────────────────────────────────────────────
+
+bool MapManager::load_tileset(asset::AssetManager& assets) {
+    if (m_manifest.tileset_path.empty()) {
+        log::info(TAG, "No tileset specified — using defaults");
+        return true;
+    }
+
+    std::string tileset_path = m_map_root + "/" + m_manifest.tileset_path;
+    auto handle = assets.load_config_absolute(tileset_path);
+    auto* doc = assets.get(handle);
+    if (!doc) {
+        log::warn(TAG, "Failed to load tileset from '{}' — using defaults", tileset_path);
+        return true;  // non-fatal
+    }
+
+    auto& j = doc->data;
+    m_tileset.name = j.value("name", "Default");
+
+    if (j.contains("layers")) {
+        for (auto& lj : j["layers"]) {
+            TilesetLayer layer;
+            layer.id           = lj.value("id", 0u);
+            layer.name         = lj.value("name", "");
+            layer.diffuse_path = lj.value("diffuse", "");
+            layer.blend_preset = lj.value("blend", "noisy");
+
+            std::string type_str = lj.value("type", "");
+            if (type_str == "water_shallow")   layer.type = LayerType::WaterShallow;
+            else if (type_str == "water_deep") layer.type = LayerType::WaterDeep;
+            else if (type_str == "grass")      layer.type = LayerType::Grass;
+            else                               layer.type = LayerType::Ground;
+
+            if (lj.contains("color") && lj["color"].is_array() && lj["color"].size() >= 3) {
+                layer.water_color = {lj["color"][0].get<f32>(),
+                                     lj["color"][1].get<f32>(),
+                                     lj["color"][2].get<f32>()};
+            }
+            layer.water_opacity    = lj.value("opacity", 0.6f);
+            layer.water_wave_speed = lj.value("wave_speed", 0.4f);
+
+            m_tileset.layers.push_back(std::move(layer));
+        }
+    }
+
+    log::info(TAG, "Tileset '{}' loaded — {} layers", m_tileset.name, m_tileset.layers.size());
     return true;
 }
 

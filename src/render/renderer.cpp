@@ -1,6 +1,8 @@
 #include "render/renderer.h"
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "map/terrain_data.h"
+#include "map/map.h"
+#include "asset/texture.h"
 #include "simulation/world.h"
 #include "simulation/simulation.h"
 #include "simulation/components.h"
@@ -303,8 +305,8 @@ void Renderer::shutdown() {
     // Destroy textures
     destroy_texture(*m_rhi, m_corpse_texture);
     destroy_texture(*m_rhi, m_default_texture);
-    for (u32 i = 0; i < m_terrain_material.layer_count; ++i) {
-        destroy_texture(*m_rhi, m_terrain_material.layers[i]);
+    if (m_terrain_material.layer_array.image) {
+        destroy_texture(*m_rhi, m_terrain_material.layer_array);
     }
 
     // Destroy shadow resources
@@ -725,19 +727,21 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Terrain descriptor set layout: 4 ground layers + 1 fog texture = 5 samplers
+    // Terrain descriptor set layout: binding 0 = layer array texture, binding 1 = fog texture
     {
-        VkDescriptorSetLayoutBinding bindings[5]{};
-        for (u32 i = 0; i < 5; ++i) {
-            bindings[i].binding         = i;
-            bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[i].descriptorCount = 1;
-            bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        }
+        VkDescriptorSetLayoutBinding bindings[2]{};
+        bindings[0].binding         = 0;
+        bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[1].binding         = 1;
+        bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 5;
+        ci.bindingCount = 2;
         ci.pBindings    = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_terrain_desc_layout) != VK_SUCCESS) {
@@ -878,38 +882,36 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
-    VkDescriptorImageInfo img_infos[5]{};
-    VkWriteDescriptorSet writes[5]{};
+    VkDescriptorImageInfo img_infos[2]{};
+    VkWriteDescriptorSet writes[2]{};
 
-    // Layer textures (bindings 0-3)
-    for (u32 i = 0; i < 4; ++i) {
-        const GpuTexture& tex = (i < mat.layer_count) ? mat.layers[i] : m_default_texture;
-        img_infos[i].sampler     = tex.sampler;
-        img_infos[i].imageView   = tex.view;
-        img_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Binding 0: terrain layer array texture
+    const GpuTexture& layer_tex = mat.layer_array.image ? mat.layer_array : m_default_texture;
+    img_infos[0].sampler     = layer_tex.sampler;
+    img_infos[0].imageView   = layer_tex.view;
+    img_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet          = set;
-        writes[i].dstBinding      = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo      = &img_infos[i];
-    }
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = set;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo      = &img_infos[0];
 
-    // Fog texture (binding 4) — use fog texture if available, otherwise default (fully lit)
+    // Binding 1: fog texture
     const GpuTexture& fog_tex = m_fog_texture.image ? m_fog_texture : m_default_texture;
-    img_infos[4].sampler     = fog_tex.sampler;
-    img_infos[4].imageView   = fog_tex.view;
-    img_infos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_infos[1].sampler     = fog_tex.sampler;
+    img_infos[1].imageView   = fog_tex.view;
+    img_infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet          = set;
-    writes[4].dstBinding      = 4;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].pImageInfo      = &img_infos[4];
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = set;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo      = &img_infos[1];
 
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
     return set;
 }
 
@@ -1089,29 +1091,85 @@ bool Renderer::create_default_texture() {
 }
 
 bool Renderer::create_terrain_textures() {
-    // Generate procedural ground textures (32x32 each)
+    // Create a default 1-layer terrain array (used before any map tileset is loaded)
     constexpr u32 TEX_SIZE = 32;
+    auto fallback = generate_solid_texture(TEX_SIZE, 100, 100, 100);
+    const u8* layer_data[] = {fallback.data()};
+    m_terrain_material.layer_array = upload_texture_array(*m_rhi, layer_data, 1, TEX_SIZE, TEX_SIZE);
+    m_terrain_material.layer_count = 1;
+    log::info(TAG, "Default terrain texture created (1 layer)");
+    return m_terrain_material.layer_array.image != VK_NULL_HANDLE;
+}
 
-    // Layer 0: grass (green)
-    auto grass = generate_solid_texture(TEX_SIZE, 60, 140, 40);
-    m_terrain_material.layers[0] = upload_texture_rgba(*m_rhi, grass.data(), TEX_SIZE, TEX_SIZE);
+void Renderer::load_tileset_textures(const map::Tileset& tileset) {
+    // Destroy old terrain layer array
+    if (m_terrain_material.layer_array.image) {
+        vkDeviceWaitIdle(m_rhi->device());
+        destroy_texture(*m_rhi, m_terrain_material.layer_array);
+    }
 
-    // Layer 1: dirt (brown)
-    auto dirt = generate_solid_texture(TEX_SIZE, 140, 100, 50);
-    m_terrain_material.layers[1] = upload_texture_rgba(*m_rhi, dirt.data(), TEX_SIZE, TEX_SIZE);
+    if (tileset.layers.empty()) {
+        create_terrain_textures();
+        return;
+    }
 
-    // Layer 2: stone (gray)
-    auto stone = generate_solid_texture(TEX_SIZE, 130, 130, 120);
-    m_terrain_material.layers[2] = upload_texture_rgba(*m_rhi, stone.data(), TEX_SIZE, TEX_SIZE);
+    // Procedural fallback colors per layer (used when diffuse PNG doesn't exist)
+    static const struct { u8 r, g, b; } fallback_colors[] = {
+        {60, 140, 40},   // 0: grass green
+        {140, 100, 50},  // 1: dirt brown
+        {130, 130, 120}, // 2: stone gray
+        {30, 70, 150},   // 3: water blue
+        {180, 170, 130}, // 4: sand beige
+        {200, 200, 200}, // 5: snow white
+        {80, 60, 40},    // 6: mud dark brown
+        {100, 100, 100}, // 7: default gray
+    };
 
-    // Layer 3: water (blue) — also used for water surface quads
-    auto sand = generate_solid_texture(TEX_SIZE, 30, 70, 150);
-    m_terrain_material.layers[3] = upload_texture_rgba(*m_rhi, sand.data(), TEX_SIZE, TEX_SIZE);
+    constexpr u32 TEX_SIZE = 64;
+    u32 layer_count = static_cast<u32>(tileset.layers.size());
+    std::vector<std::vector<u8>> layer_pixels(layer_count);
+    std::vector<const u8*> layer_ptrs(layer_count);
 
-    m_terrain_material.layer_count = 4;
+    for (u32 i = 0; i < layer_count; ++i) {
+        auto& tl = tileset.layers[i];
 
-    log::info(TAG, "Terrain textures created (4 layers)");
-    return true;
+        // Try loading diffuse PNG from map
+        bool loaded = false;
+        if (!tl.diffuse_path.empty()) {
+            std::string abs_path = m_map_root + "/" + tl.diffuse_path;
+            auto tex_result = asset::load_texture(abs_path);
+            if (tex_result) {
+                auto& tex_data = *tex_result;
+                // Resize to TEX_SIZE if needed (simple: just use as-is if same size,
+                // or generate fallback if different — proper resize is a future improvement)
+                if (tex_data.width == TEX_SIZE && tex_data.height == TEX_SIZE && tex_data.channels == 4) {
+                    layer_pixels[i] = std::move(tex_data.pixels);
+                    loaded = true;
+                    log::info(TAG, "Loaded terrain texture '{}' for layer {} ({})",
+                              tl.diffuse_path, tl.id, tl.name);
+                } else {
+                    // Convert to RGBA and use (even if size differs — array requires uniform size)
+                    // For now, fall back to procedural if size doesn't match
+                    log::warn(TAG, "Terrain texture '{}' size {}x{} != {}x{}, using fallback",
+                              tl.diffuse_path, tex_data.width, tex_data.height, TEX_SIZE, TEX_SIZE);
+                }
+            }
+        }
+
+        if (!loaded) {
+            u32 ci = std::min(i, static_cast<u32>(std::size(fallback_colors) - 1));
+            layer_pixels[i] = generate_solid_texture(TEX_SIZE, fallback_colors[ci].r,
+                                                     fallback_colors[ci].g, fallback_colors[ci].b);
+        }
+
+        layer_ptrs[i] = layer_pixels[i].data();
+    }
+
+    m_terrain_material.layer_array = upload_texture_array(*m_rhi, layer_ptrs.data(),
+                                                          layer_count, TEX_SIZE, TEX_SIZE);
+    m_terrain_material.layer_count = layer_count;
+
+    log::info(TAG, "Tileset '{}' textures loaded — {} layers", tileset.name, layer_count);
 }
 
 // ── Pipeline creation helpers ─────────────────────────────────────────────
@@ -1583,7 +1641,7 @@ bool Renderer::create_terrain_pipeline() {
     terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, position)};
     terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, normal)};
     terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(TerrainVertex, texcoord)};
-    terrain_attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(TerrainVertex, splat_weights)};
+    terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, layer_index)};
 
     auto cfg = make_common_pipeline_state();
     cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
@@ -1876,7 +1934,7 @@ bool Renderer::create_shadow_pipeline() {
         terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, position)};
         terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, normal)};
         terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(TerrainVertex, texcoord)};
-        terrain_attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(TerrainVertex, splat_weights)};
+        terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, layer_index)};
 
         auto tcfg = make_common_pipeline_state();
         tcfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;

@@ -135,7 +135,20 @@ bool App::start_session() {
         m_renderer.effect_registry().load_from_json(effects_path);
     }
 
-    // Feed terrain data to renderer
+    // Set water layer IDs on terrain from tileset
+    {
+        std::vector<u8> shallow, deep;
+        for (auto& layer : m_map.tileset().layers) {
+            if (layer.type == map::LayerType::WaterShallow)
+                shallow.push_back(static_cast<u8>(layer.id));
+            else if (layer.type == map::LayerType::WaterDeep)
+                deep.push_back(static_cast<u8>(layer.id));
+        }
+        m_map.terrain().set_water_layers(shallow, deep);
+    }
+
+    // Load tileset textures and feed terrain data to renderer
+    m_renderer.load_tileset_textures(m_map.tileset());
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
         m_renderer.set_terrain_data(&m_map.terrain());

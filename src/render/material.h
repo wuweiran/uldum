@@ -14,10 +14,10 @@ struct MeshMaterial {
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
 };
 
-// Terrain material: up to 4 ground layer textures. Splatmap weights are per-vertex attributes.
+// Terrain material: layer textures as a sampler2DArray.
 struct TerrainMaterial {
-    static constexpr u32 MAX_LAYERS = 4;
-    GpuTexture    layers[MAX_LAYERS]{};  // ground textures (grass, dirt, stone, sand)
+    static constexpr u32 MAX_LAYERS = 16;
+    GpuTexture    layer_array{};    // sampler2DArray with all layer diffuse textures
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
     u32           layer_count = 0;
 };

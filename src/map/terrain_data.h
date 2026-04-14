@@ -20,10 +20,8 @@ enum PathingFlag : u8 {
 
 static constexpr u8 PATHING_DEFAULT = PATHING_WALKABLE | PATHING_FLYABLE;
 
-// Splatmap layer indices. Water is a tile type, not a separate data layer.
-// The engine checks if the dominant splatmap layer at a vertex is WATER_LAYER
-// to determine water pathfinding and rendering behavior.
-static constexpr u32 WATER_LAYER = 3;
+// Water layer IDs are determined by the tileset, not hardcoded.
+// Call set_water_layers() after tileset is parsed.
 
 
 // Terrain data: heightmap + cliff levels + splatmap + pathing.
@@ -70,9 +68,28 @@ struct TerrainData {
         return static_cast<f32>(cliff_level[idx]) * layer_height + heightmap[idx];
     }
 
-    // Check if a vertex is water
+    // Water layer IDs (set from tileset after parsing)
+    std::vector<u8> shallow_water_layers;  // walkable (ground units can traverse)
+    std::vector<u8> deep_water_layers;     // impassable for ground units
+
+    void set_water_layers(const std::vector<u8>& shallow, const std::vector<u8>& deep) {
+        shallow_water_layers = shallow;
+        deep_water_layers = deep;
+    }
+
+    // Check if a vertex is any kind of water (for rendering)
     bool is_water(u32 ix, u32 iy) const {
-        return tile_layer[iy * verts_x() + ix] == WATER_LAYER;
+        u8 layer = tile_layer[iy * verts_x() + ix];
+        for (u8 wl : shallow_water_layers) { if (layer == wl) return true; }
+        for (u8 wl : deep_water_layers)    { if (layer == wl) return true; }
+        return false;
+    }
+
+    // Check if a vertex is deep water (blocks ground units)
+    bool is_deep_water(u32 ix, u32 iy) const {
+        u8 layer = tile_layer[iy * verts_x() + ix];
+        for (u8 wl : deep_water_layers) { if (layer == wl) return true; }
+        return false;
     }
 
     bool is_valid() const { return tiles_x > 0 && tiles_y > 0 && !heightmap.empty(); }

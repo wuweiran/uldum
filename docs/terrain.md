@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tile-based heightmap terrain inspired by Warcraft III. The terrain is the foundational surface for all gameplay — units walk on it, buildings sit on it, the camera looks at it. The engine provides heightmap sculpting, cliff layers, texture blending, water, and per-vertex pathing.
+Tile-based heightmap terrain inspired by Warcraft III. The terrain is the foundational surface for all gameplay — units walk on it, buildings sit on it, the camera looks at it. The engine provides heightmap sculpting, cliff layers, texture painting, water, and per-vertex pathing.
 
 ## Data Model
 
@@ -17,7 +17,7 @@ TerrainData
 └── Per-vertex data — (tiles_x+1) * (tiles_y+1) entries
     ├── heightmap: f32[]    — smooth height offset within cliff layer
     ├── cliff_level: u8[]   — discrete elevation layer (0-15)
-    ├── tile_layer: u8[]    — terrain type (0-3, index into texture layers)
+    ├── tile_layer: u8[]    — terrain type index (0-255, into tileset layers)
     └── pathing: u8[]       — flag bits (walkable, flyable, ramp)
 ```
 
@@ -65,7 +65,7 @@ Each vertex has a discrete cliff level (0-15). Cliff levels create sharp impassa
 
 ### Cliff Wall Rendering
 
-Where adjacent vertices differ in cliff level, the renderer generates vertical wall geometry connecting the two plateaus. The wall uses a cliff-face texture (rock, stone) rather than ground splatmap textures.
+Where adjacent vertices differ in cliff level, the renderer generates vertical wall geometry connecting the two plateaus. The wall uses a cliff-face texture (rock, stone) rather than ground textures.
 
 ### Ramps
 
@@ -76,39 +76,100 @@ Ramp constraints:
 - Must form a contiguous strip of ramp-flagged vertices
 - Heightmap values on ramp vertices interpolate between the two layer base heights
 
-## Tile Layers (Ground Textures)
+## Tileset & Terrain Textures
 
-Each vertex stores a single terrain type index (0-3) selecting one of 4 ground
-texture layers. No blending — each vertex is 100% one type, like WC3.
+Each map defines a **tileset** in `tileset.json`. The tileset lists all terrain layer types available in that map. Each layer has a diffuse texture and a blend mode for transitions.
 
-### Texture Layers
+### Tileset Format
 
-A map's tileset defines which textures occupy each layer slot (0-3). Typical setup:
+```json
+{
+    "name": "Ashenvale",
+    "layers": [
+        { "id": 0, "name": "grass",  "diffuse": "textures/grass.png",  "blend": "blades" },
+        { "id": 1, "name": "dirt",   "diffuse": "textures/dirt.png",   "blend": "noisy" },
+        { "id": 2, "name": "stone",  "diffuse": "textures/stone.png",  "blend": "rocky" },
+        { "id": 3, "name": "mud",    "diffuse": "textures/mud.png",    "blend": "cracked" },
+        { "id": 4, "name": "shallow_water", "type": "water_shallow",
+          "color": [0.15, 0.35, 0.45], "opacity": 0.5, "wave_speed": 0.3 },
+        { "id": 5, "name": "deep_water", "type": "water_deep",
+          "color": [0.05, 0.12, 0.25], "opacity": 0.9, "wave_speed": 0.6 }
+    ]
+}
+```
 
-| Layer | Example    |
-|-------|------------|
-| 0     | Grass      |
-| 1     | Dirt       |
-| 2     | Stone      |
-| 3     | Water      |
+- **`diffuse`**: Path to diffuse color texture (PNG). Relative to map root.
+- **`blend`**: Blend mask preset name for transitions (see below). Ground layers only.
+- **`type`**: Optional. Marks special layer types the engine handles differently.
 
-The tileset is defined in the map's `tileset.json`, not by the engine.
+### Layer Count
+
+Maps can define up to **16 layers** (stored as `u8` per vertex, shader uses `sampler2DArray`). Most maps use 4-8. The engine imposes no minimum.
+
+### Special Layer Types
+
+| Type | Engine behavior |
+|------|----------------|
+| (none) | Standard ground. Opaque, receives shadows, units walk on it. |
+| `water_shallow` | Transparent water surface rendered on top of ground below. |
+| `water_deep` | Opaque water surface. Ground not visible. |
+| `grass` | Standard ground + geometry grass rendered on top (future). |
+
+### Diffuse Textures
+
+One diffuse texture per layer, provided by the map as PNG. Tiles once per terrain tile (128 game units). The engine generates procedural fallback textures if files are missing.
+
+Per-layer normal maps are not supported yet. Terrain uses vertex normals for lighting. An optional `"normal"` field per layer can be added later for surface detail.
+
+### Blend Masks
+
+At tile boundaries where two terrain types meet, the shader uses blend-mask blending to create natural-looking transitions instead of hard sawtooth edges along triangle geometry.
+
+Each ground layer has a **blend mask** — a grayscale pattern that controls the shape of the transition edge. Where the mask is bright, this terrain type shows. Where it's dark, the neighboring type shows. At a transition tile, the **dominant layer's mask** (whichever type occupies more corners) determines the edge shape.
+
+Engine-defined presets (generated procedurally at startup, no texture files):
+
+| Preset | Pattern | Good for |
+|--------|---------|----------|
+| `flat` | Uniform 0.5 | Smooth transitions (sand, snow) |
+| `noisy` | Perlin noise | General purpose (dirt, mud) |
+| `blades` | Vertical streaks | Grass, crops, reeds |
+| `rocky` | Large irregular chunks | Rock, cobblestone, ice |
+| `cracked` | Web pattern with gaps | Dried earth, lava, brick |
+| `scattered` | Small isolated patches | Gravel, fallen leaves, sparse grass |
+
+Water layers don't use blend masks (rendered as a separate pass).
 
 ### Painting
 
-The editor's paint brush sets the tile layer at vertices within the brush radius.
-Click and drag to paint. Each vertex becomes 100% the selected layer.
+The editor's paint brush sets `tile_layer` at vertices within the brush radius. Each vertex is exactly one terrain type — no blending weights.
 
 ## Water
 
-Water is tile layer 3 (`WATER_LAYER`). The engine checks `tile_layer == 3` to
-determine water behavior.
+Water is a terrain layer type, not a separate data structure. The editor paints water the same way as any terrain type. The engine renders water layers differently.
 
-### Water as a Tile Type
+### Shallow Water
 
-- **Painting**: Use the editor's Paint tool with layer 3 (Water), same as other ground types.
-- **Pathing**: Ground units cannot traverse water vertices. Amphibious units can. Air units ignore water.
-- **Rendering**: Currently renders as an opaque blue tile. Translucent water rendering with waves is a future improvement.
+- **Rendering**: Two-pass. Ground terrain is rendered normally first (the riverbed/lakebed is visible). Then a transparent water surface is drawn slightly above the ground height.
+- **Surface height**: Ground Z + small fixed offset (e.g., 8 game units). The water surface sits just above the terrain.
+- **Visuals**: Animated UV scrolling, wave distortion, tinted color, configurable opacity. Map defines color/opacity/wave_speed in tileset.
+- **Pathing**: Ground units cannot traverse. Amphibious units can. Air units can fly over.
+- **Interactions**: Future — unit splashes, ripple effects at unit positions.
+
+### Deep Water (Sea)
+
+- **Rendering**: One-pass. Opaque water surface, ground below is not visible.
+- **Surface height**: Same as shallow — ground Z + offset.
+- **Visuals**: Same animated surface as shallow but with higher opacity (~0.9) and darker color.
+- **Pathing**: Same as shallow water.
+
+### Water Properties (from Tileset)
+
+| Property | Description | Default |
+|----------|-------------|---------|
+| `color` | RGB tint of the water surface | [0.1, 0.3, 0.5] |
+| `opacity` | Surface transparency (0=invisible, 1=opaque) | 0.6 |
+| `wave_speed` | UV animation speed | 0.4 |
 
 ## Pathing
 
@@ -131,7 +192,8 @@ Default: all vertices are `WALKABLE | FLYABLE` (0x03).
 | Condition | Ground unit | Air unit |
 |-----------|------------|----------|
 | All 4 corners WALKABLE, not water | Can walk | Can fly |
-| Water (tile_layer == 3) | Blocked (amphibious can walk) | Can fly |
+| Shallow water | Can walk (ground visible below) | Can fly |
+| Deep water | Blocked (amphibious can walk) | Can fly |
 | Any corner not WALKABLE | Blocked | Can fly (if FLYABLE) |
 | Adjacent cliff levels differ | Blocked | Can fly |
 | Adjacent cliff levels differ + all 4 RAMP | Can walk (slope) | Can fly |
@@ -146,36 +208,47 @@ this by setting/clearing ramp per-tile, not per-vertex.
 
 | Module       | Responsibility                                               |
 |--------------|--------------------------------------------------------------|
-| `map`        | Owns `TerrainData`. Loads/saves from map file                |
-| `render`     | Reads `TerrainData`, builds GPU mesh, draws terrain           |
+| `map`        | Owns `TerrainData`. Loads/saves from map file. Parses tileset. |
+| `render`     | Reads `TerrainData` + tileset, builds GPU mesh, draws terrain + water |
 | `simulation` | Reads heightmap for unit Z, pathing + tile_layer for movement  |
 | `editor`     | Writes to `TerrainData` (sculpt, paint, cliff, ramp, pathing) |
 
 ## Rendering
 
-### Terrain Mesh
+### Terrain Mesh (Ground Pass)
 
 The renderer builds a GPU mesh from the terrain data:
-- One vertex per grid intersection with position, normal, texcoord, and texture layer weights
+- One vertex per grid intersection: position, normal, texcoord, terrain type index
 - Normal computed from cross product of adjacent edge vectors
 - Two triangles per tile
-- Tile layer converted to 4-channel weights at mesh build time; shader blends 4 texture samples
+- Texcoord maps once per tile (1 tile = 1 texture repeat)
 - Terrain mesh re-uploaded when modified (editor sculpt/paint)
+
+### Terrain Shader
+
+- Terrain type index per vertex selects into a `sampler2DArray` (all diffuse textures stacked)
+- At tile boundaries (where adjacent vertices have different types), blend-mask blending:
+  1. Sample both layers' diffuse textures and blend masks
+  2. Compare blend mask values to decide which layer wins at each fragment
+  3. Produces natural-looking transition edges (jagged grass border, scattered dirt patches)
+- Vertex normals used for lighting (per-layer normal maps can be added later)
 
 ### Cliff Walls
 
 At cliff edges, the renderer generates vertical quad strips:
 - Connects the top edge (higher cliff level) to the bottom edge (lower level)
-- Uses a cliff texture (rock/stone), not splatmap blending
+- Uses a cliff texture (rock/stone), not ground layer blending
 - Normals face outward from the cliff face
 
-### Water Surface
+### Water Pass
 
-Rendered as a separate translucent pass:
-- One quad per water tile, positioned at `water_height`
-- Alpha varies by depth (shallow = more transparent)
-- Simple vertex-based wave animation
-- Depth test on, depth write off (like particles)
+Rendered as a separate pass after the ground terrain:
+- Water surface mesh: one quad per water tile, at ground Z + small offset
+- Depth test on, depth write off (transparent surface)
+- Animated UV scrolling for wave effect
+- Color and opacity from tileset water properties
+- Shallow water: alpha blend over the ground below (ground visible through surface)
+- Deep water: near-opaque, ground not visible
 
 ### Shadow
 
@@ -185,8 +258,9 @@ Terrain receives shadows from the shadow map. Cliff walls and water also receive
 
 - LOD: reduce triangle count for distant terrain chunks
 - Chunked updates: only re-upload modified sections on edit
-- Water reflections (planar or screen-space)
+- Planar water reflections
 - Terrain holes (per-vertex flag to cut geometry for cave entrances)
+- Geometry grass: billboard quads on grass-type tiles, wind animation, unit push-away
 
 ## Serialization
 
