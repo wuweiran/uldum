@@ -110,6 +110,7 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     if (!create_shadow_resources()) return false;
     if (!create_default_texture()) return false;
     if (!create_terrain_textures()) return false;
+    if (!create_transition_noise()) return false;
     if (!create_mesh_pipeline()) return false;
     if (!create_skinned_mesh_pipeline()) return false;
     if (!create_particle_pipeline()) return false;
@@ -308,6 +309,7 @@ void Renderer::shutdown() {
     if (m_terrain_material.layer_array.image) {
         destroy_texture(*m_rhi, m_terrain_material.layer_array);
     }
+    if (m_transition_noise.image) destroy_texture(*m_rhi, m_transition_noise);
 
     // Destroy shadow resources
     destroy_shadow_map(*m_rhi, m_shadow_map);
@@ -503,8 +505,7 @@ void Renderer::set_terrain(const map::TerrainData& terrain) {
     destroy_terrain_mesh(alloc, m_terrain);
     m_terrain = build_terrain_mesh(alloc, terrain);
 
-    // Splatmap weights are baked into terrain vertex attributes — no splatmap texture needed.
-    // Re-allocate terrain descriptor set (layer textures only).
+    // Re-allocate terrain descriptor set.
     if (terrain.is_valid()) {
         m_terrain_material.descriptor_set = allocate_terrain_descriptor(m_terrain_material);
     }
@@ -727,21 +728,25 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Terrain descriptor set layout: binding 0 = layer array texture, binding 1 = fog texture
+    // Terrain descriptor set layout: layers array + fog + blend masks
     {
-        VkDescriptorSetLayoutBinding bindings[2]{};
-        bindings[0].binding         = 0;
+        VkDescriptorSetLayoutBinding bindings[3]{};
+        bindings[0].binding         = 0;  // terrain layer array
         bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[0].descriptorCount = 1;
         bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[1].binding         = 1;
+        bindings[1].binding         = 1;  // fog texture
         bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[1].descriptorCount = 1;
         bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[2].binding         = 2;  // transition noise
+        bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 2;
+        ci.bindingCount = 3;
         ci.pBindings    = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_terrain_desc_layout) != VK_SUCCESS) {
@@ -882,8 +887,8 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
-    VkDescriptorImageInfo img_infos[2]{};
-    VkWriteDescriptorSet writes[2]{};
+    VkDescriptorImageInfo img_infos[3]{};
+    VkWriteDescriptorSet writes[3]{};
 
     // Binding 0: terrain layer array texture
     const GpuTexture& layer_tex = mat.layer_array.image ? mat.layer_array : m_default_texture;
@@ -911,7 +916,20 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo      = &img_infos[1];
 
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    // Binding 2: transition noise texture
+    const GpuTexture& mask_tex = m_transition_noise.image ? m_transition_noise : m_default_texture;
+    img_infos[2].sampler     = mask_tex.sampler;
+    img_infos[2].imageView   = mask_tex.view;
+    img_infos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = set;
+    writes[2].dstBinding      = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo      = &img_infos[2];
+
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
     return set;
 }
 
@@ -1099,6 +1117,40 @@ bool Renderer::create_terrain_textures() {
     m_terrain_material.layer_count = 1;
     log::info(TAG, "Default terrain texture created (1 layer)");
     return m_terrain_material.layer_array.image != VK_NULL_HANDLE;
+}
+
+// Simple hash noise for procedural texture generation
+static f32 hash_noise(u32 x, u32 y) {
+    u32 h = x * 374761393u + y * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= (h >> 16);
+    return static_cast<f32>(h & 0xFFFF) / 65535.0f;
+}
+
+bool Renderer::create_transition_noise() {
+    constexpr u32 SIZE = 128;
+    std::vector<u8> pixels(SIZE * SIZE * 4);
+
+    for (u32 y = 0; y < SIZE; ++y) {
+        for (u32 x = 0; x < SIZE; ++x) {
+            // Multi-octave noise for organic variation
+            f32 v = hash_noise(x, y) * 0.4f
+                  + hash_noise(x / 3, y / 3) * 0.35f
+                  + hash_noise(x / 7, y / 7) * 0.25f;
+            v = std::clamp(v, 0.0f, 1.0f);
+            u8 b = static_cast<u8>(v * 255.0f);
+            u32 i = (y * SIZE + x) * 4;
+            pixels[i] = b; pixels[i+1] = b; pixels[i+2] = b; pixels[i+3] = 255;
+        }
+    }
+
+    m_transition_noise = upload_texture_rgba(*m_rhi, pixels.data(), SIZE, SIZE);
+    if (!m_transition_noise.image) {
+        log::error(TAG, "Failed to create transition noise texture");
+        return false;
+    }
+    log::info(TAG, "Transition noise texture created ({}x{})", SIZE, SIZE);
+    return true;
 }
 
 void Renderer::load_tileset_textures(const map::Tileset& tileset) {
@@ -1637,16 +1689,17 @@ bool Renderer::create_terrain_pipeline() {
     terrain_binding.stride    = sizeof(TerrainVertex);
     terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription terrain_attrs[4]{};
-    terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, position)};
-    terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, normal)};
-    terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(TerrainVertex, texcoord)};
-    terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, layer_index)};
+    VkVertexInputAttributeDescription terrain_attrs[5]{};
+    terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
+    terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal)};
+    terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(TerrainVertex, texcoord)};
+    terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, layer_corners)};
+    terrain_attrs[4] = {4, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, case_info)};
 
     auto cfg = make_common_pipeline_state();
     cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
     cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
-    cfg.vertex_input.vertexAttributeDescriptionCount  = 4;
+    cfg.vertex_input.vertexAttributeDescriptionCount  = 5;
     cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
 
     cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1930,15 +1983,16 @@ bool Renderer::create_shadow_pipeline() {
         terrain_binding.stride    = sizeof(TerrainVertex);
         terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        VkVertexInputAttributeDescription terrain_attrs[4]{};
-        terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, position)};
-        terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(TerrainVertex, normal)};
-        terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(TerrainVertex, texcoord)};
-        terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT, offsetof(TerrainVertex, layer_index)};
+        VkVertexInputAttributeDescription terrain_attrs[5]{};
+        terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
+        terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal)};
+        terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(TerrainVertex, texcoord)};
+        terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, layer_corners)};
+        terrain_attrs[4] = {4, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, case_info)};
 
         auto tcfg = make_common_pipeline_state();
         tcfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
-        tcfg.vertex_input.vertexAttributeDescriptionCount  = 4;
+        tcfg.vertex_input.vertexAttributeDescriptionCount  = 5;
         tcfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
 
         tcfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

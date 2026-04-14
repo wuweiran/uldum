@@ -12,12 +12,13 @@ namespace uldum::map { struct TerrainData; }
 
 namespace uldum::render {
 
-// Terrain vertex with terrain type index (36 bytes).
+// Terrain vertex with blend data for tile transitions (40 bytes).
 struct TerrainVertex {
-    glm::vec3 position{0.0f};   // world XYZ (Z = cliff_level * layer_height + heightmap)
-    glm::vec3 normal{0.0f, 0.0f, 1.0f};
-    glm::vec2 texcoord{0.0f};   // UV across entire terrain (0-1)
-    u32       layer_index = 0;  // terrain type index (into tileset layers / sampler2DArray)
+    glm::vec3 position{0.0f};           // 12 — world XYZ
+    glm::vec3 normal{0.0f, 0.0f, 1.0f}; // 12
+    glm::vec2 texcoord{0.0f};           // 8  — UV across entire terrain (0-1)
+    u32       layer_corners = 0;        // 4  — packed: c0|(c1<<8)|(c2<<16)|(c3<<24)
+    u32       case_info = 0;            // 4  — reserved for future use
 };
 
 // GPU-side terrain mesh built from map::TerrainData.

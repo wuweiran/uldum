@@ -36,7 +36,6 @@ struct TilesetLayer {
     u32         id = 0;
     std::string name;
     std::string diffuse_path;   // relative to map root
-    std::string blend_preset = "noisy";
     LayerType   type = LayerType::Ground;
 
     // Water properties (only used when type is WaterShallow or WaterDeep)
@@ -56,6 +55,12 @@ struct Tileset {
     bool is_water(u32 layer_id) const {
         auto* l = get_layer(layer_id);
         return l && (l->type == LayerType::WaterShallow || l->type == LayerType::WaterDeep);
+    }
+    void get_water_layer_ids(std::vector<u8>& shallow, std::vector<u8>& deep) const {
+        for (auto& l : layers) {
+            if (l.type == LayerType::WaterShallow) shallow.push_back(static_cast<u8>(l.id));
+            else if (l.type == LayerType::WaterDeep) deep.push_back(static_cast<u8>(l.id));
+        }
     }
 };
 

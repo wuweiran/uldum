@@ -182,8 +182,6 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
             layer.id           = lj.value("id", 0u);
             layer.name         = lj.value("name", "");
             layer.diffuse_path = lj.value("diffuse", "");
-            layer.blend_preset = lj.value("blend", "noisy");
-
             std::string type_str = lj.value("type", "");
             if (type_str == "water_shallow")   layer.type = LayerType::WaterShallow;
             else if (type_str == "water_deep") layer.type = LayerType::WaterDeep;

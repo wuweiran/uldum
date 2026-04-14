@@ -35,12 +35,28 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         };
     };
 
-    auto add_vert = [&](f32 x, f32 y, f32 z, glm::vec2 uv, u32 layer) -> u32 {
+    struct TileVertexInfo {
+        u32 layer_corners;  // c0|(c1<<8)|(c2<<16)|(c3<<24)
+        u32 case_info;      // reserved
+    };
+
+    auto compute_tile_info = [&](u32 tx, u32 ty) -> TileVertexInfo {
+        u32 c[4] = {layer_at(tx, ty), layer_at(tx+1, ty),
+                     layer_at(tx, ty+1), layer_at(tx+1, ty+1)};
+
+        u32 layer_corners = (c[0] & 0xFF) | ((c[1] & 0xFF) << 8)
+                          | ((c[2] & 0xFF) << 16) | ((c[3] & 0xFF) << 24);
+        return {layer_corners, 0};
+    };
+
+    auto add_vert = [&](f32 x, f32 y, f32 z, glm::vec2 uv,
+                         const TileVertexInfo& ti) -> u32 {
         u32 idx = static_cast<u32>(vertices.size());
         TerrainVertex v;
         v.position = {x, y, z};
         v.texcoord = uv;
-        v.layer_index = layer;
+        v.layer_corners = ti.layer_corners;
+        v.case_info = ti.case_info;
         v.normal = {0, 0, 1};
         vertices.push_back(v);
         return idx;
@@ -81,12 +97,6 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         return td.height_at(ix, iy) * (1-lx)*(1-ly) + td.height_at(ix+1, iy) * lx*(1-ly)
              + td.height_at(ix, iy+1) * (1-lx)*ly + td.height_at(ix+1, iy+1) * lx*ly;
     };
-    auto nearest_layer = [&](f32 fx, f32 fy) -> u32 {
-        u32 ix = std::min(static_cast<u32>(fx + 0.5f), td.tiles_x);
-        u32 iy = std::min(static_cast<u32>(fy + 0.5f), td.tiles_y);
-        return layer_at(ix, iy);
-    };
-
     // Check if the neighboring tile across an edge is a ramp.
     // edge: 0=top(y-1), 1=bottom(y+1), 2=left(x-1), 3=right(x+1)
     auto neighbor_is_ramp = [&](u32 tx, u32 ty, u32 edge) -> bool {
@@ -145,6 +155,9 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP) &&
                 (cmax - cmin == 1);  // ramps only between adjacent levels
 
+            // Compute packed tile vertex info
+            auto ti = compute_tile_info(tx, ty);
+
             if (is_ramp) {
                 // Ramp tile: each vertex at its own cliff level, creating a slope
                 u32 v[4];
@@ -154,7 +167,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     f32 x = static_cast<f32>(gx[i]) * td.tile_size;
                     f32 y = static_cast<f32>(gy[i]) * td.tile_size;
                     f32 z = static_cast<f32>(c[i]) * td.layer_height + td.height_at(gx[i], gy[i]);
-                    v[i] = add_vert(x, y, z, texcoord_at(gx[i], gy[i]), layer_at(gx[i], gy[i]));
+                    v[i] = add_vert(x, y, z, texcoord_at(gx[i], gy[i]),
+                                    ti);
                 }
                 add_tri(v[0], v[1], v[2]);
                 add_tri(v[1], v[3], v[2]);
@@ -168,11 +182,10 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 return add_vert(static_cast<f32>(ix) * td.tile_size,
                                 static_cast<f32>(iy) * td.tile_size,
                                 base_z + td.height_at(ix, iy),
-                                texcoord_at(ix, iy), layer_at(ix, iy));
+                                texcoord_at(ix, iy), ti);
             };
 
             // Helper: add a midpoint vertex on a tile edge
-            // edge 0=top(TL-TR), 1=bottom(BL-BR), 2=left(TL-BL), 3=right(TR-BR)
             auto mid_v = [&](u32 edge, f32 base_z) -> u32 {
                 f32 mx, my, gfx, gfy;
                 switch (edge) {
@@ -182,7 +195,7 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     default: mx = x1; my = ym; gfx = static_cast<f32>(tx + 1); gfy = ty + 0.5f; break;
                 }
                 return add_vert(mx, my, base_z + lerp_height(gfx, gfy),
-                                {gfx / td.tiles_x, gfy / td.tiles_y}, nearest_layer(gfx, gfy));
+                                {gfx / td.tiles_x, gfy / td.tiles_y}, ti);
             };
 
             if (cmin == cmax) {

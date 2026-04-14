@@ -138,12 +138,7 @@ bool App::start_session() {
     // Set water layer IDs on terrain from tileset
     {
         std::vector<u8> shallow, deep;
-        for (auto& layer : m_map.tileset().layers) {
-            if (layer.type == map::LayerType::WaterShallow)
-                shallow.push_back(static_cast<u8>(layer.id));
-            else if (layer.type == map::LayerType::WaterDeep)
-                deep.push_back(static_cast<u8>(layer.id));
-        }
+        m_map.tileset().get_water_layer_ids(shallow, deep);
         m_map.terrain().set_water_layers(shallow, deep);
     }
 

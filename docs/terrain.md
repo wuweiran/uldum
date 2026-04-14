@@ -86,10 +86,10 @@ Each map defines a **tileset** in `tileset.json`. The tileset lists all terrain 
 {
     "name": "Ashenvale",
     "layers": [
-        { "id": 0, "name": "grass",  "diffuse": "textures/grass.png",  "blend": "blades" },
-        { "id": 1, "name": "dirt",   "diffuse": "textures/dirt.png",   "blend": "noisy" },
-        { "id": 2, "name": "stone",  "diffuse": "textures/stone.png",  "blend": "rocky" },
-        { "id": 3, "name": "mud",    "diffuse": "textures/mud.png",    "blend": "cracked" },
+        { "id": 0, "name": "grass",  "diffuse": "textures/grass.png" },
+        { "id": 1, "name": "dirt",   "diffuse": "textures/dirt.png" },
+        { "id": 2, "name": "stone",  "diffuse": "textures/stone.png" },
+        { "id": 3, "name": "mud",    "diffuse": "textures/mud.png" },
         { "id": 4, "name": "shallow_water", "type": "water_shallow",
           "color": [0.15, 0.35, 0.45], "opacity": 0.5, "wave_speed": 0.3 },
         { "id": 5, "name": "deep_water", "type": "water_deep",
@@ -99,7 +99,6 @@ Each map defines a **tileset** in `tileset.json`. The tileset lists all terrain 
 ```
 
 - **`diffuse`**: Path to diffuse color texture (PNG). Relative to map root.
-- **`blend`**: Blend mask preset name for transitions (see below). Ground layers only.
 - **`type`**: Optional. Marks special layer types the engine handles differently.
 
 ### Layer Count
@@ -121,24 +120,23 @@ One diffuse texture per layer, provided by the map as PNG. Tiles once per terrai
 
 Per-layer normal maps are not supported yet. Terrain uses vertex normals for lighting. An optional `"normal"` field per layer can be added later for surface detail.
 
-### Blend Masks
+### Transition Noise
 
-At tile boundaries where two terrain types meet, the shader uses blend-mask blending to create natural-looking transitions instead of hard sawtooth edges along triangle geometry.
+A single procedural noise texture (generated at engine startup) adds organic variation to terrain transition curves. Without it, transitions would be perfectly smooth mathematical shapes. The noise perturbs the curve position per-pixel, creating natural-looking irregular edges.
 
-Each ground layer has a **blend mask** — a grayscale pattern that controls the shape of the transition edge. Where the mask is bright, this terrain type shows. Where it's dark, the neighboring type shows. At a transition tile, the **dominant layer's mask** (whichever type occupies more corners) determines the edge shape.
+### Transition Curves
 
-Engine-defined presets (generated procedurally at startup, no texture files):
+At tile boundaries, the engine computes curved transitions using signed-distance-field (SDF) math, similar to marching squares. Each tile's 4 corners are classified as dominant or secondary type, creating cases:
 
-| Preset | Pattern | Good for |
-|--------|---------|----------|
-| `flat` | Uniform 0.5 | Smooth transitions (sand, snow) |
-| `noisy` | Perlin noise | General purpose (dirt, mud) |
-| `blades` | Vertical streaks | Grass, crops, reeds |
-| `rocky` | Large irregular chunks | Rock, cobblestone, ice |
-| `cracked` | Web pattern with gaps | Dried earth, lava, brick |
-| `scattered` | Small isolated patches | Gravel, fallen leaves, sparse grass |
+| Case | Pattern | Curve shape |
+|------|---------|-------------|
+| 4-0 | AAAA | No transition |
+| 3-1 | AAAB | Quarter-circle arc in the minority corner |
+| 2-2 edge | AABB | Straight line across tile middle |
+| 2-2 diagonal | ABAB | Two quarter-circle arcs at secondary corners |
+| 1-3 | ABBB | Inverse quarter-circle (dominant corner "island") |
 
-Water layers don't use blend masks (rendered as a separate pass).
+Curves pass through the **midpoints of edges where types change**, ensuring adjacent tiles' curves connect seamlessly. The per-layer blend mask adds organic variation to the curve position.
 
 ### Painting
 

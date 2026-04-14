@@ -165,8 +165,10 @@ private:
     GpuTexture      m_corpse_texture{};
     MeshMaterial    m_corpse_material{};
 
-    // Terrain material (ground layer textures + splatmap)
+    // Terrain material (layer array texture + transition noise)
     TerrainMaterial m_terrain_material{};
+    GpuTexture      m_transition_noise{};  // single noise texture for curve perturbation
+    bool create_transition_noise();
 
     // Cached loaded models (model_path → LoadedModel)
     std::unordered_map<std::string, LoadedModel> m_model_cache;
