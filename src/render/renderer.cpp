@@ -117,6 +117,45 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     m_effect_manager.set_particles(&m_particles);
     m_effect_manager.set_registry(&m_effect_registry);
 
+    // Instance SSBO for static mesh instancing (Phase 14a)
+    {
+        VkBufferCreateInfo buf_ci{};
+        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(glm::mat4);
+        buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo alloc_info{};
+        vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
+                        &m_instance_buffer, &m_instance_alloc, &alloc_info);
+        m_instance_mapped = alloc_info.pMappedData;
+
+        m_instance_desc_set = allocate_bone_descriptor(m_instance_buffer,
+                                                        MAX_STATIC_INSTANCES * sizeof(glm::mat4));
+    }
+
+    // Indirect draw command buffer
+    {
+        VkBufferCreateInfo buf_ci{};
+        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(VkDrawIndexedIndirectCommand);
+        buf_ci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo alloc_info{};
+        vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
+                        &m_indirect_buffer, &m_indirect_alloc, &alloc_info);
+        m_indirect_mapped = alloc_info.pMappedData;
+    }
+
     // Create a placeholder box mesh for entities without a real model.
     // Defined directly in Z-up game coordinates: base at Z=0, top at Z=2.
     asset::MeshData placeholder;
@@ -212,6 +251,10 @@ void Renderer::shutdown() {
         destroy_mesh(alloc, mesh);
     }
     m_mesh_cache.clear();
+
+    // Destroy instance/indirect buffers
+    if (m_instance_buffer) vmaDestroyBuffer(alloc, m_instance_buffer, m_instance_alloc);
+    if (m_indirect_buffer) vmaDestroyBuffer(alloc, m_indirect_buffer, m_indirect_alloc);
 
     // Destroy fog resources
     if (m_fog_texture.image) destroy_texture(*m_rhi, m_fog_texture);
@@ -980,12 +1023,12 @@ bool Renderer::create_mesh_pipeline() {
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     push_range.offset     = 0;
-    push_range.size       = 2 * sizeof(glm::mat4);
+    push_range.size       = sizeof(glm::mat4);  // just vp
 
-    VkDescriptorSetLayout mesh_layouts[] = {m_mesh_desc_layout, m_shadow_desc_layout};
+    VkDescriptorSetLayout mesh_layouts[] = {m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout};
     VkPipelineLayoutCreateInfo layout_ci{};
     layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 2;
+    layout_ci.setLayoutCount         = 3;
     layout_ci.pSetLayouts            = mesh_layouts;
     layout_ci.pushConstantRangeCount = 1;
     layout_ci.pPushConstantRanges    = &push_range;
@@ -1575,8 +1618,11 @@ bool Renderer::create_shadow_pipeline() {
     push_range.offset     = 0;
     push_range.size       = sizeof(glm::mat4);
 
+    VkDescriptorSetLayout shadow_instance_layout[] = {m_bone_desc_layout};  // set 0 = instance SSBO
     VkPipelineLayoutCreateInfo layout_ci{};
     layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_ci.setLayoutCount         = 1;
+    layout_ci.pSetLayouts            = shadow_instance_layout;
     layout_ci.pushConstantRangeCount = 1;
     layout_ci.pPushConstantRanges    = &push_range;
 
@@ -1899,54 +1945,38 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         }
     }
 
-    // Pass B: non-skinned entities (projectiles, static meshes, etc.)
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    // Pass B: non-skinned entities via indirect draw (Phase 14a)
+    // Build instance batches (reused by main pass)
+    build_static_draw_batches(world, alpha);
 
-    for (u32 i = 0; i < renderables.count(); ++i) {
-        u32 id = renderables.ids()[i];
-        const auto& renderable = renderables.data()[i];
-        if (!renderable.visible) continue;
+    if (m_shadow_pipeline && !m_draw_groups.empty()) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        auto* info = handle_infos.get(id);
-        // Skip skinned units (already drawn in Pass A)
-        if (has_skinned_shadow && info && info->category == simulation::Category::Unit) {
-            auto* lm = get_or_load_model(renderable.model_path);
-            if (lm && lm->is_skinned) continue;
-        }
+        vkCmdPushConstants(cmd, m_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(glm::mat4), &light_vp);
 
-        const auto* transform = transforms.get(id);
-        if (!transform) continue;
-        if (is_fog_hidden(world, id, *transform)) continue;
-        GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
-        if (!mesh.vertex_buffer) continue;
+        // Bind instance SSBO at set 0
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_shadow_pipeline_layout, 0, 1, &m_instance_desc_set, 0, nullptr);
 
-        glm::vec3 vis_pos = lerp_position(*transform, alpha);
-        f32 vis_facing = lerp_facing(*transform, alpha);
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-        if (m_terrain_data) {
-            glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
-            model = model * slope_tilt_matrix(normal);
-        }
-        f32 facing = vis_facing;
-        if (!mesh.native_z_up) facing += glm::half_pi<f32>();
-        model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
-        model = glm::scale(model, glm::vec3{transform->scale});
-        if (!mesh.native_z_up) {
-            // glTF Y-up → game Z-up
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
-        }
-
-        glm::mat4 light_mvp = light_vp * model;
-        vkCmdPushConstants(cmd, m_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &light_mvp);
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex_buffer, &offset);
-        if (mesh.index_buffer) {
-            vkCmdBindIndexBuffer(cmd, mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0);
-        } else {
-            vkCmdDraw(cmd, mesh.vertex_count, 1, 0, 0);
+        VkBuffer prev_vb = VK_NULL_HANDLE;
+        VkBuffer prev_ib = VK_NULL_HANDLE;
+        for (u32 i = 0; i < m_draw_groups.size(); ++i) {
+            auto& dg = m_draw_groups[i];
+            if (dg.vertex_buffer != prev_vb) {
+                VkDeviceSize offset = 0;
+                vkCmdBindVertexBuffers(cmd, 0, 1, &dg.vertex_buffer, &offset);
+                prev_vb = dg.vertex_buffer;
+            }
+            if (dg.index_buffer != prev_ib) {
+                vkCmdBindIndexBuffer(cmd, dg.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+                prev_ib = dg.index_buffer;
+            }
+            VkDeviceSize indirect_offset = i * sizeof(VkDrawIndexedIndirectCommand);
+            vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, indirect_offset, 1,
+                                     sizeof(VkDrawIndexedIndirectCommand));
         }
     }
 
@@ -1972,6 +2002,125 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
 
 void Renderer::draw_shadows(VkCommandBuffer cmd, const simulation::World& world, f32 alpha) {
     draw_shadow_pass(cmd, world, alpha);
+}
+
+// ── Instance batching for static meshes (Phase 14a) ──────────────────────
+
+void Renderer::build_static_draw_batches(const simulation::World& world, f32 alpha) {
+    m_draw_groups.clear();
+    m_static_instance_count = 0;
+
+    auto& renderables = world.renderables;
+    auto& transforms = world.transforms;
+    auto& handle_infos = world.handle_infos;
+
+    bool has_skinned = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
+
+    // Key: (vertex_buffer, index_buffer, material_descriptor) → group index
+    struct GroupKey {
+        VkBuffer vb; VkBuffer ib; VkDescriptorSet mat;
+        bool operator==(const GroupKey& o) const { return vb == o.vb && ib == o.ib && mat == o.mat; }
+    };
+    struct GroupKeyHash {
+        size_t operator()(const GroupKey& k) const {
+            size_t h = std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.vb));
+            h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.ib)) * 2654435761u;
+            h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.mat)) * 40503u;
+            return h;
+        }
+    };
+    std::unordered_map<GroupKey, u32, GroupKeyHash> group_map;
+
+    // CPU staging for instance matrices
+    std::vector<glm::mat4> instance_matrices;
+    instance_matrices.reserve(256);
+
+    for (u32 i = 0; i < renderables.count(); ++i) {
+        u32 id = renderables.ids()[i];
+        const auto& renderable = renderables.data()[i];
+        if (!renderable.visible) continue;
+
+        auto* info = handle_infos.get(id);
+        // Skip skinned units (drawn separately)
+        if (has_skinned && info && info->category == simulation::Category::Unit) {
+            auto* lm = get_or_load_model(renderable.model_path);
+            if (lm && lm->is_skinned) continue;
+        }
+
+        const auto* transform = transforms.get(id);
+        if (!transform) continue;
+        if (is_fog_hidden(world, id, *transform)) continue;
+
+        GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
+        if (!mesh.vertex_buffer || !mesh.index_buffer) continue;  // skip non-indexed meshes
+
+        // Resolve material
+        bool is_corpse = world.dead_states.has(id);
+        auto* lm_static = get_or_load_model(renderable.model_path);
+        bool has_own_tex = lm_static && lm_static->diffuse_texture.image != VK_NULL_HANDLE;
+        auto& mat = (is_corpse && !has_own_tex)
+                    ? m_corpse_material
+                    : (lm_static ? lm_static->material : m_default_material);
+        if (!mat.descriptor_set) continue;
+
+        // Compute model matrix
+        glm::vec3 vis_pos = lerp_position(*transform, alpha);
+        f32 vis_facing = lerp_facing(*transform, alpha);
+        glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
+        if (m_terrain_data) {
+            glm::vec3 normal = map::sample_normal(*m_terrain_data, vis_pos.x, vis_pos.y);
+            model = model * slope_tilt_matrix(normal);
+        }
+        f32 facing = vis_facing;
+        if (!mesh.native_z_up) facing += glm::half_pi<f32>();
+        model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
+        model = glm::scale(model, glm::vec3{transform->scale});
+        if (!mesh.native_z_up) {
+            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+        }
+
+        // Find or create draw group
+        GroupKey key{mesh.vertex_buffer, mesh.index_buffer, mat.descriptor_set};
+        auto git = group_map.find(key);
+        if (git == group_map.end()) {
+            u32 gi = static_cast<u32>(m_draw_groups.size());
+            group_map[key] = gi;
+            DrawGroup dg{};
+            dg.vertex_buffer = mesh.vertex_buffer;
+            dg.index_buffer = mesh.index_buffer;
+            dg.material_desc = mat.descriptor_set;
+            dg.index_count = mesh.index_count;
+            dg.first_instance = static_cast<u32>(instance_matrices.size());
+            dg.instance_count = 0;
+            dg.native_z_up = mesh.native_z_up;
+            m_draw_groups.push_back(dg);
+            git = group_map.find(key);
+        }
+
+        m_draw_groups[git->second].instance_count++;
+        instance_matrices.push_back(model);
+    }
+
+    m_static_instance_count = static_cast<u32>(instance_matrices.size());
+
+    // Upload instance matrices to GPU
+    if (m_static_instance_count > 0 && m_instance_mapped) {
+        u32 upload_count = std::min(m_static_instance_count, MAX_STATIC_INSTANCES);
+        std::memcpy(m_instance_mapped, instance_matrices.data(), upload_count * sizeof(glm::mat4));
+    }
+
+    // Build indirect commands and upload
+    if (!m_draw_groups.empty() && m_indirect_mapped) {
+        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(m_indirect_mapped);
+        for (u32 i = 0; i < m_draw_groups.size(); ++i) {
+            auto& dg = m_draw_groups[i];
+            cmds[i].indexCount    = dg.index_count;
+            cmds[i].instanceCount = dg.instance_count;
+            cmds[i].firstIndex    = 0;
+            cmds[i].vertexOffset  = 0;
+            cmds[i].firstInstance = dg.first_instance;
+        }
+    }
 }
 
 void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world, f32 alpha) {
@@ -2152,74 +2301,46 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         }
     }
 
-    // Pass 2: Draw non-skinned entities (static meshes, projectiles, etc.)
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    // Pass 2: Draw non-skinned entities via indirect draw (Phase 14a)
+    if (m_mesh_pipeline && !m_draw_groups.empty()) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    for (u32 i = 0; i < renderables.count(); ++i) {
-        u32 id = renderables.ids()[i];
-        const auto& renderable = renderables.data()[i];
-        if (!renderable.visible) continue;
-
-        auto* info = handle_infos.get(id);
-        // Skip skinned units (already drawn in Pass 1)
-        if (has_skinned_pipeline && info && info->category == simulation::Category::Unit) {
-            auto* lm = get_or_load_model(renderable.model_path);
-            if (lm && lm->is_skinned) continue;
-        }
-
-        const auto* transform = transforms.get(id);
-        if (!transform) continue;
-
-        // Skip enemies hidden by fog of war
-        if (is_fog_hidden(world, id, *transform)) continue;
-
-        // Use corpse material only for placeholder models (no real texture)
-        bool is_corpse = world.dead_states.has(id);
-        auto* lm_static = get_or_load_model(renderable.model_path);
-        bool has_own_tex = lm_static && lm_static->diffuse_texture.image != VK_NULL_HANDLE;
-        auto& mat = (is_corpse && !has_own_tex)
-                    ? m_corpse_material
-                    : (lm_static ? lm_static->material : m_default_material);
-        if (mat.descriptor_set && m_shadow_desc_set) {
-            VkDescriptorSet mesh_sets[] = {mat.descriptor_set, m_shadow_desc_set};
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    m_mesh_pipeline_layout, 0, 2, mesh_sets, 0, nullptr);
-        }
-
-        GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
-        if (!mesh.vertex_buffer) continue;
-
-        glm::vec3 vis_pos = lerp_position(*transform, alpha);
-        f32 vis_facing = lerp_facing(*transform, alpha);
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-        if (m_terrain_data) {
-            glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
-            model = model * slope_tilt_matrix(normal);
-        }
-        f32 facing = vis_facing;
-        if (!mesh.native_z_up) facing += glm::half_pi<f32>();
-        model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
-        model = glm::scale(model, glm::vec3{transform->scale});
-        if (!mesh.native_z_up) {
-            // glTF Y-up → game Z-up
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
-        }
-
-        glm::mat4 mvp = vp * model;
-        struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
+        // Push vp matrix (same for all instances)
         vkCmdPushConstants(cmd, m_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(push), &push);
+                           0, sizeof(glm::mat4), &vp);
 
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &mesh.vertex_buffer, &offset);
+        VkBuffer prev_vb = VK_NULL_HANDLE;
+        VkBuffer prev_ib = VK_NULL_HANDLE;
+        VkDescriptorSet prev_mat = VK_NULL_HANDLE;
 
-        if (mesh.index_buffer) {
-            vkCmdBindIndexBuffer(cmd, mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0);
-        } else {
-            vkCmdDraw(cmd, mesh.vertex_count, 1, 0, 0);
+        for (u32 i = 0; i < m_draw_groups.size(); ++i) {
+            auto& dg = m_draw_groups[i];
+
+            // Bind vertex/index buffers (skip if same as previous group)
+            if (dg.vertex_buffer != prev_vb) {
+                VkDeviceSize offset = 0;
+                vkCmdBindVertexBuffers(cmd, 0, 1, &dg.vertex_buffer, &offset);
+                prev_vb = dg.vertex_buffer;
+            }
+            if (dg.index_buffer != prev_ib) {
+                vkCmdBindIndexBuffer(cmd, dg.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+                prev_ib = dg.index_buffer;
+            }
+
+            // Bind material (set 0) + shadow (set 1) + instance SSBO (set 2)
+            if (dg.material_desc != prev_mat) {
+                VkDescriptorSet sets[] = {dg.material_desc, m_shadow_desc_set, m_instance_desc_set};
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        m_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
+                prev_mat = dg.material_desc;
+            }
+
+            // One indirect draw for this group
+            VkDeviceSize indirect_offset = i * sizeof(VkDrawIndexedIndirectCommand);
+            vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, indirect_offset, 1,
+                                     sizeof(VkDrawIndexedIndirectCommand));
         }
     }
 

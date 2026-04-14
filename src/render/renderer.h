@@ -170,6 +170,35 @@ private:
     // Small projectile mesh
     GpuMesh m_projectile_mesh{};
 
+    // ── Instanced drawing (Phase 14a) ────────────────────────────────────
+    static constexpr u32 MAX_STATIC_INSTANCES = 4096;
+
+    // Per-frame instance SSBO (model matrices for all static-mesh entities)
+    VkBuffer        m_instance_buffer = VK_NULL_HANDLE;
+    VmaAllocation   m_instance_alloc  = VK_NULL_HANDLE;
+    void*           m_instance_mapped = nullptr;
+    VkDescriptorSet m_instance_desc_set = VK_NULL_HANDLE;
+
+    // Per-frame indirect draw command buffer
+    VkBuffer        m_indirect_buffer = VK_NULL_HANDLE;
+    VmaAllocation   m_indirect_alloc  = VK_NULL_HANDLE;
+    void*           m_indirect_mapped = nullptr;
+
+    // Draw group: one indirect draw per unique mesh+material combination
+    struct DrawGroup {
+        VkBuffer        vertex_buffer;
+        VkBuffer        index_buffer;
+        VkDescriptorSet material_desc;
+        u32             index_count;
+        u32             first_instance;   // offset into instance SSBO
+        u32             instance_count;
+        bool            native_z_up;
+    };
+    std::vector<DrawGroup>  m_draw_groups;
+    u32                     m_static_instance_count = 0;
+
+    void build_static_draw_batches(const simulation::World& world, f32 alpha);
+
     // Particle pipeline (alpha-blended, depth test on, depth write off)
     VkPipelineLayout m_particle_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_particle_pipeline        = VK_NULL_HANDLE;
