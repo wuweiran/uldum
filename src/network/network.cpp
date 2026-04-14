@@ -288,8 +288,13 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             if (mov && mov->moving) flags |= 0x01;
             const auto* combat = world.combats.get(id);
             if (combat && combat->target.id != UINT32_MAX) {
-                flags |= 0x02;
                 es.target_id = combat->target.id;
+                // Only set attacking flag during actual attack (not while moving to target)
+                if (combat->attack_state == simulation::AttackState::WindUp ||
+                    combat->attack_state == simulation::AttackState::Backswing ||
+                    combat->attack_state == simulation::AttackState::Cooldown) {
+                    flags |= 0x02;
+                }
             }
             if (world.dead_states.has(id)) flags |= 0x08;
             es.flags = flags;
@@ -336,6 +341,15 @@ void NetworkManager::host_update_disconnected(f32 dt) {
     if (m_paused && m_disconnected.empty()) {
         m_paused = false;
         log::info(TAG, "All disconnected players dropped — game resumed");
+    }
+}
+
+void NetworkManager::host_broadcast_update(u32 entity_id, std::span<const u8> update_packet) {
+    if (m_mode != Mode::Host || m_peers.empty()) return;
+    for (auto& peer : m_peers) {
+        if (peer.known_entities.contains(entity_id)) {
+            m_transport->send(peer.peer_id, update_packet, true);
+        }
     }
 }
 
@@ -393,6 +407,7 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_DESTROY: client_handle_destroy(data); break;
     case MsgType::S_STATE:   client_handle_state(data); break;
     case MsgType::S_SOUND:   client_handle_sound(data); break;
+    case MsgType::S_UPDATE: client_handle_update(data); break;
     case MsgType::S_START:
         m_game_started = true;
         log::info(TAG, "Game started!");
@@ -545,6 +560,78 @@ void NetworkManager::client_apply_interpolation() {
                 m_client_world.dead_states.add(e.entity_id, simulation::DeadState{});
             }
         }
+    }
+}
+
+void NetworkManager::client_handle_update(std::span<const u8> data) {
+    auto u = parse_update(data);
+    auto& world = m_client_world;
+
+    switch (u.type) {
+    case UpdateType::Attribute: {
+        auto* attrs = world.attribute_blocks.get(u.entity_id);
+        if (!attrs) {
+            world.attribute_blocks.add(u.entity_id, simulation::AttributeBlock{});
+            attrs = world.attribute_blocks.get(u.entity_id);
+        }
+        attrs->numeric[u.key] = u.value;
+        break;
+    }
+    case UpdateType::StringAttribute: {
+        auto* attrs = world.attribute_blocks.get(u.entity_id);
+        if (!attrs) {
+            world.attribute_blocks.add(u.entity_id, simulation::AttributeBlock{});
+            attrs = world.attribute_blocks.get(u.entity_id);
+        }
+        attrs->string_attrs[u.key] = u.str_value;
+        break;
+    }
+    case UpdateType::State: {
+        auto* states = world.state_blocks.get(u.entity_id);
+        if (!states) {
+            world.state_blocks.add(u.entity_id, simulation::StateBlock{});
+            states = world.state_blocks.get(u.entity_id);
+        }
+        auto& state = states->states[u.key];
+        state.current = u.value;
+        state.max = u.value2;
+        break;
+    }
+    case UpdateType::AbilityAdd: {
+        // Add to ability set if the client tracks abilities
+        auto* aset = world.ability_sets.get(u.entity_id);
+        if (!aset) {
+            world.ability_sets.add(u.entity_id, simulation::AbilitySet{});
+            aset = world.ability_sets.get(u.entity_id);
+        }
+        // Check if already present
+        bool found = false;
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == u.key) { a.level = u.uint_value; found = true; break; }
+        }
+        if (!found) {
+            simulation::AbilityInstance inst;
+            inst.ability_id = u.key;
+            inst.level = u.uint_value;
+            aset->abilities.push_back(std::move(inst));
+        }
+        break;
+    }
+    case UpdateType::AbilityRemove: {
+        auto* aset = world.ability_sets.get(u.entity_id);
+        if (aset) {
+            auto& abs = aset->abilities;
+            abs.erase(std::remove_if(abs.begin(), abs.end(),
+                [&](const simulation::AbilityInstance& a) { return a.ability_id == u.key; }),
+                abs.end());
+        }
+        break;
+    }
+    case UpdateType::Owner: {
+        auto* owner = world.owners.get(u.entity_id);
+        if (owner) owner->player.id = u.uint_value;
+        break;
+    }
     }
 }
 

@@ -28,6 +28,7 @@ enum class MsgType : u8 {
     S_DESTROY = 0x21,
     S_STATE   = 0x30,
     S_SOUND   = 0x31,
+    S_UPDATE  = 0x32,   // on-change: attribute, state, or ability update
     S_START   = 0x40,   // all players connected, game begins
     S_END     = 0x41,   // game over, includes results
 };
@@ -426,6 +427,120 @@ inline EndData parse_end(std::span<const u8> data) {
     e.winner_id = r.read_u32();
     e.stats_json = r.read_string();
     return e;
+}
+
+// ── On-change unit updates ───────────────────────────────────────────────
+
+enum class UpdateType : u8 {
+    Attribute      = 0,   // numeric attribute changed (armor, strength, etc.)
+    StringAttribute = 1,  // string attribute changed (armor_type, etc.)
+    State          = 2,   // state current/max changed (mana, energy, etc.)
+    AbilityAdd     = 3,   // ability added
+    AbilityRemove  = 4,   // ability removed
+    Owner          = 5,   // ownership changed
+};
+
+inline std::vector<u8> build_update_attr(u32 entity_id, std::string_view key, f32 value) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::Attribute));
+    w.write_string(key);
+    w.write_f32(value);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_update_str_attr(u32 entity_id, std::string_view key, std::string_view value) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::StringAttribute));
+    w.write_string(key);
+    w.write_string(value);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_update_state(u32 entity_id, std::string_view state_id, f32 current, f32 max) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::State));
+    w.write_string(state_id);
+    w.write_f32(current);
+    w.write_f32(max);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_update_ability_add(u32 entity_id, std::string_view ability_id, u32 level) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::AbilityAdd));
+    w.write_string(ability_id);
+    w.write_u32(level);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_update_ability_remove(u32 entity_id, std::string_view ability_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::AbilityRemove));
+    w.write_string(ability_id);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_update_owner(u32 entity_id, u8 new_owner) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::Owner));
+    w.write_u8(new_owner);
+    return std::move(w.data());
+}
+
+struct UpdateData {
+    u32 entity_id;
+    UpdateType type;
+    std::string key;
+    f32 value = 0;
+    f32 value2 = 0;    // max for State
+    std::string str_value;
+    u32 uint_value = 0; // level for AbilityAdd, owner for Owner
+};
+
+inline UpdateData parse_update(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();  // skip MsgType
+    UpdateData u;
+    u.entity_id = r.read_u32();
+    u.type = static_cast<UpdateType>(r.read_u8());
+    switch (u.type) {
+    case UpdateType::Attribute:
+        u.key = r.read_string();
+        u.value = r.read_f32();
+        break;
+    case UpdateType::StringAttribute:
+        u.key = r.read_string();
+        u.str_value = r.read_string();
+        break;
+    case UpdateType::State:
+        u.key = r.read_string();
+        u.value = r.read_f32();
+        u.value2 = r.read_f32();
+        break;
+    case UpdateType::AbilityAdd:
+        u.key = r.read_string();
+        u.uint_value = r.read_u32();
+        break;
+    case UpdateType::AbilityRemove:
+        u.key = r.read_string();
+        break;
+    case UpdateType::Owner:
+        u.uint_value = r.read_u8();
+        break;
+    }
+    return u;
 }
 
 } // namespace uldum::network

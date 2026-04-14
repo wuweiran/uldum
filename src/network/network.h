@@ -101,6 +101,9 @@ public:
     // Host: is the game paused due to a disconnected player?
     bool is_paused() const { return m_paused; }
 
+    // Host: broadcast an S_UPDATE to all clients that can see this entity.
+    void host_broadcast_update(u32 entity_id, std::span<const u8> update_packet);
+
     // ── Callbacks ───────────────────────────────────────────────────────
     std::function<void(std::string_view path, glm::vec3 pos)> on_sound;
     std::function<void(u32 player_id)> on_player_disconnected;  // player lost connection
@@ -174,6 +177,7 @@ private:
     void client_handle_destroy(std::span<const u8> data);
     void client_handle_state(std::span<const u8> data);
     void client_handle_sound(std::span<const u8> data);
+    void client_handle_update(std::span<const u8> data);
     void client_apply_interpolation();
 
     void spawn_client_entity(u32 entity_id, std::string_view type_id,

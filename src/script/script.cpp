@@ -10,6 +10,7 @@
 #include "map/map.h"
 #include "render/effect.h"
 #include "audio/audio.h"
+#include "network/protocol.h"
 #include "core/log.h"
 
 #define SOL_ALL_SAFETIES_ON 1
@@ -365,7 +366,13 @@ void ScriptEngine::bind_api() {
 
     lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
         auto* ab = sim.world().attribute_blocks.get(u.id);
-        if (ab) ab->numeric[name] = value;
+        if (ab) {
+            ab->numeric[name] = value;
+            if (m_unit_update_fn) {
+                auto pkt = network::build_update_attr(u.id, name, value);
+                m_unit_update_fn(u.id, pkt);
+            }
+        }
     };
 
     lua["GetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name) -> std::string {
@@ -430,11 +437,16 @@ void ScriptEngine::bind_api() {
     // ── Ability API ───────────────────────────────────────────────────
 
     lua["AddAbility"] = [&](simulation::Unit unit, const std::string& ability_id, sol::optional<u32> level) -> bool {
-        bool ok = simulation::add_ability(sim.world(), sim.abilities(), unit, ability_id, level.value_or(1));
+        u32 lvl = level.value_or(1);
+        bool ok = simulation::add_ability(sim.world(), sim.abilities(), unit, ability_id, lvl);
         if (ok) {
             set_context_unit(unit.id); set_context_ability(ability_id);
             fire_event("global_ability_added", unit.id, ability_id);
             fire_event("unit_ability_added", unit.id, ability_id);
+            if (m_unit_update_fn) {
+                auto pkt = network::build_update_ability_add(unit.id, ability_id, lvl);
+                m_unit_update_fn(unit.id, pkt);
+            }
         }
         return ok;
     };
@@ -445,6 +457,10 @@ void ScriptEngine::bind_api() {
             set_context_unit(unit.id); set_context_ability(ability_id);
             fire_event("global_ability_removed", unit.id, ability_id);
             fire_event("unit_ability_removed", unit.id, ability_id);
+            if (m_unit_update_fn) {
+                auto pkt = network::build_update_ability_remove(unit.id, ability_id);
+                m_unit_update_fn(unit.id, pkt);
+            }
         }
         return ok;
     };

@@ -75,6 +75,10 @@ public:
     using EndGameFn = std::function<void(u32 winner_id, std::string_view stats_json)>;
     void set_end_game_fn(EndGameFn fn) { m_end_game_fn = std::move(fn); }
 
+    // Callback fired when a unit's attribute/state/ability changes (for network sync).
+    using UnitUpdateFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
+    void set_unit_update_fn(UnitUpdateFn fn) { m_unit_update_fn = std::move(fn); }
+
     // Connect input systems (call after input is initialized, before scripts run).
     void set_input(input::SelectionState* selection, input::CommandSystem* commands);
 
@@ -127,6 +131,7 @@ private:
     audio::AudioEngine*      m_audio      = nullptr;
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
+    UnitUpdateFn             m_unit_update_fn;
 
     // Input (set via set_input)
     input::SelectionState*   m_selection = nullptr;

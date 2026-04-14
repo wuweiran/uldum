@@ -195,6 +195,9 @@ bool App::start_session() {
             m_server.script().fire_event("global_leave", UINT32_MAX, "", player_id);
             m_server.script().fire_event("player_leave", UINT32_MAX, "", player_id);
         };
+        m_server.script().set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
+            m_network.host_broadcast_update(entity_id, pkt);
+        });
         m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {
                 m_network.host_end_game(winner_id, stats);
