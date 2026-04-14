@@ -274,9 +274,20 @@ bool VulkanRhi::create_device() {
     features_13.dynamicRendering = VK_TRUE;
     features_13.synchronization2 = VK_TRUE;
 
+    // Enable Vulkan 1.2 features (descriptor indexing for bindless textures)
+    VkPhysicalDeviceVulkan12Features features_12{};
+    features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features_12.pNext = &features_13;
+    features_12.descriptorIndexing                         = VK_TRUE;
+    features_12.shaderSampledImageArrayNonUniformIndexing  = VK_TRUE;
+    features_12.runtimeDescriptorArray                     = VK_TRUE;
+    features_12.descriptorBindingPartiallyBound            = VK_TRUE;
+    features_12.descriptorBindingVariableDescriptorCount   = VK_TRUE;
+    features_12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features2.pNext = &features_13;
+    features2.pNext = &features_12;
 
     std::array device_extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,

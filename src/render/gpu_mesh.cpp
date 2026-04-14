@@ -139,9 +139,10 @@ GpuMesh upload_skinned_mesh(VmaAllocator allocator, const asset::SkinnedMeshData
 }
 
 void destroy_mesh(VmaAllocator allocator, GpuMesh& mesh) {
-    if (mesh.bone_buffer)   vmaDestroyBuffer(allocator, mesh.bone_buffer, mesh.bone_alloc);
-    if (mesh.index_buffer)  vmaDestroyBuffer(allocator, mesh.index_buffer, mesh.index_alloc);
-    if (mesh.vertex_buffer) vmaDestroyBuffer(allocator, mesh.vertex_buffer, mesh.vertex_alloc);
+    if (mesh.bone_buffer) vmaDestroyBuffer(allocator, mesh.bone_buffer, mesh.bone_alloc);
+    // Skip VB/IB destruction for mega-buffer meshes (alloc is null)
+    if (mesh.index_buffer  && mesh.index_alloc)  vmaDestroyBuffer(allocator, mesh.index_buffer, mesh.index_alloc);
+    if (mesh.vertex_buffer && mesh.vertex_alloc) vmaDestroyBuffer(allocator, mesh.vertex_buffer, mesh.vertex_alloc);
     mesh = {};
 }
 

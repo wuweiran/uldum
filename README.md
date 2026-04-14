@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 13d complete. Multiplayer reconnect.
+Phase 14b complete. Mesh merging + bindless descriptors.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -148,6 +148,11 @@ Phase 13d complete. Multiplayer reconnect.
   - Reconnecting client receives full state snapshot to catch up
   - Optional game pause on disconnect (configurable per map)
   - Timeout fires `on_player_dropped` Lua event, client disconnect transitions to Results
+- GPU-driven rendering (Phase 14a/b):
+  - Instance SSBO + indirect draw for all static meshes
+  - Mega vertex/index buffer — all static meshes share one VB+IB
+  - Bindless texture array (VK_EXT_descriptor_indexing) — per-instance material index
+  - Single multi-draw-indirect call for all static geometry
 - Ninja build system for parallel compilation
 
 ## Prerequisites

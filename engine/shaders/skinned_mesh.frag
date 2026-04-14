@@ -1,8 +1,9 @@
 #version 450
-#extension GL_EXT_nonuniform_qualifier : require
 
-// Set 0: bindless texture array (Phase 14b)
-layout(set = 0, binding = 0) uniform sampler2D textures[];
+// Fragment shader for skinned meshes — single diffuse texture per model.
+
+// Set 0: material textures
+layout(set = 0, binding = 0) uniform sampler2D diffuse_tex;
 
 // Set 1: shadow data
 layout(set = 1, binding = 0) uniform ShadowData {
@@ -13,7 +14,6 @@ layout(set = 1, binding = 1) uniform sampler2DShadow shadow_map;
 layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
 layout(location = 2) in vec3 frag_world_pos;
-layout(location = 3) flat in uint frag_material_index;
 
 layout(location = 0) out vec4 out_color;
 
@@ -33,8 +33,8 @@ float shadow_pcf(vec3 light_ndc) {
 void main() {
     vec3 normal = normalize(frag_world_normal);
 
-    // Sample diffuse texture from bindless array using per-instance material index
-    vec3 albedo = texture(textures[nonuniformEXT(frag_material_index)], frag_texcoord).rgb;
+    // Sample diffuse texture
+    vec3 albedo = texture(diffuse_tex, frag_texcoord).rgb;
 
     // Directional sun light (game coords: X=right, Y=forward, Z=up)
     vec3 light_dir = normalize(vec3(0.3, -0.5, 0.8));

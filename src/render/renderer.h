@@ -32,8 +32,16 @@ struct LoadedModel {
     asset::ModelData data;
     GpuMesh          mesh{};             // first mesh (skinned or static)
     GpuTexture       diffuse_texture{};  // from model or default
-    MeshMaterial     material{};
+    MeshMaterial     material{};         // per-model descriptor (skinned pipeline only)
     bool             is_skinned = false;
+    u32              texture_index = 0;  // index into bindless texture array (Phase 14b)
+};
+
+// Per-instance data for static mesh SSBO (80 bytes, std430 aligned)
+struct InstanceData {
+    glm::mat4 model;          // 64 bytes
+    u32       material_index; // 4 bytes — index into bindless texture array
+    u32       _pad[3];        // 12 bytes — align to 16
 };
 
 class Renderer {
@@ -170,13 +178,37 @@ private:
     // Small projectile mesh
     GpuMesh m_projectile_mesh{};
 
-    // ── Instanced drawing (Phase 14a) ────────────────────────────────────
+    // ── GPU-driven rendering (Phase 14a/b) ──────────────────────────────
     static constexpr u32 MAX_STATIC_INSTANCES = 4096;
 
-    // Per-frame instance SSBO (model matrices for all static-mesh entities)
-    VkBuffer        m_instance_buffer = VK_NULL_HANDLE;
-    VmaAllocation   m_instance_alloc  = VK_NULL_HANDLE;
-    void*           m_instance_mapped = nullptr;
+    // Mega vertex/index buffers — all static meshes share one VB+IB (Phase 14b)
+    static constexpr u32 MEGA_MAX_VERTICES = 512 * 1024;
+    static constexpr u32 MEGA_MAX_INDICES  = 2 * 1024 * 1024;
+    VkBuffer        m_mega_vb        = VK_NULL_HANDLE;
+    VmaAllocation   m_mega_vb_alloc  = VK_NULL_HANDLE;
+    void*           m_mega_vb_mapped = nullptr;
+    u32             m_mega_vb_used   = 0;   // next free vertex slot
+    VkBuffer        m_mega_ib        = VK_NULL_HANDLE;
+    VmaAllocation   m_mega_ib_alloc  = VK_NULL_HANDLE;
+    void*           m_mega_ib_mapped = nullptr;
+    u32             m_mega_ib_used   = 0;   // next free index slot
+    GpuMesh upload_to_mega(const asset::MeshData& mesh);
+
+    // Bindless texture array (Phase 14b)
+    static constexpr u32 MAX_BINDLESS_TEXTURES = 256;
+    VkDescriptorSetLayout m_bindless_layout  = VK_NULL_HANDLE;
+    VkDescriptorPool      m_bindless_pool    = VK_NULL_HANDLE;
+    VkDescriptorSet       m_bindless_set     = VK_NULL_HANDLE;
+    u32                   m_bindless_count    = 0;
+    u32                   m_default_tex_idx  = 0;
+    u32                   m_corpse_tex_idx   = 0;
+    bool create_bindless_resources();
+    u32  register_bindless_texture(const GpuTexture& tex);
+
+    // Per-frame instance SSBO (InstanceData for all static-mesh entities)
+    VkBuffer        m_instance_buffer   = VK_NULL_HANDLE;
+    VmaAllocation   m_instance_alloc    = VK_NULL_HANDLE;
+    void*           m_instance_mapped   = nullptr;
     VkDescriptorSet m_instance_desc_set = VK_NULL_HANDLE;
 
     // Per-frame indirect draw command buffer
@@ -184,15 +216,13 @@ private:
     VmaAllocation   m_indirect_alloc  = VK_NULL_HANDLE;
     void*           m_indirect_mapped = nullptr;
 
-    // Draw group: one indirect draw per unique mesh+material combination
+    // Draw group: one indirect draw per unique mesh geometry
     struct DrawGroup {
-        VkBuffer        vertex_buffer;
-        VkBuffer        index_buffer;
-        VkDescriptorSet material_desc;
-        u32             index_count;
-        u32             first_instance;   // offset into instance SSBO
-        u32             instance_count;
-        bool            native_z_up;
+        u32 first_index;      // into mega index buffer
+        u32 index_count;
+        i32 vertex_offset;    // into mega vertex buffer
+        u32 first_instance;   // offset into instance SSBO
+        u32 instance_count;
     };
     std::vector<DrawGroup>  m_draw_groups;
     u32                     m_static_instance_count = 0;

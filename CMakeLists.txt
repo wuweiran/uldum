@@ -22,7 +22,7 @@ function(compile_shaders TARGET SHADER_DIR OUTPUT_DIR)
         add_custom_command(
             OUTPUT ${SPV_OUTPUT}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${OUTPUT_DIR}
-            COMMAND Vulkan::glslc ${SHADER} -o ${SPV_OUTPUT}
+            COMMAND Vulkan::glslc --target-env=vulkan1.2 ${SHADER} -o ${SPV_OUTPUT}
             DEPENDS ${SHADER}
             COMMENT "Compiling shader ${SHADER_NAME}"
         )

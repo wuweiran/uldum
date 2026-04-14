@@ -104,6 +104,7 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     m_camera.init(aspect);
 
     if (!create_descriptor_layouts()) return false;
+    if (!create_bindless_resources()) return false;
     if (!create_shadow_resources()) return false;
     if (!create_default_texture()) return false;
     if (!create_terrain_textures()) return false;
@@ -117,11 +118,40 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     m_effect_manager.set_particles(&m_particles);
     m_effect_manager.set_registry(&m_effect_registry);
 
-    // Instance SSBO for static mesh instancing (Phase 14a)
+    // Mega vertex/index buffers — all static meshes share one VB + IB (Phase 14b)
+    {
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VkBufferCreateInfo vb_ci{};
+        vb_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        vb_ci.size  = MEGA_MAX_VERTICES * sizeof(asset::Vertex);
+        vb_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        VmaAllocationInfo vb_info{};
+        vmaCreateBuffer(rhi.allocator(), &vb_ci, &alloc_ci,
+                        &m_mega_vb, &m_mega_vb_alloc, &vb_info);
+        m_mega_vb_mapped = vb_info.pMappedData;
+
+        VkBufferCreateInfo ib_ci{};
+        ib_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        ib_ci.size  = MEGA_MAX_INDICES * sizeof(u32);
+        ib_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        VmaAllocationInfo ib_info{};
+        vmaCreateBuffer(rhi.allocator(), &ib_ci, &alloc_ci,
+                        &m_mega_ib, &m_mega_ib_alloc, &ib_info);
+        m_mega_ib_mapped = ib_info.pMappedData;
+
+        log::info(TAG, "Mega buffers created: VB {} verts, IB {} indices",
+                  MEGA_MAX_VERTICES, MEGA_MAX_INDICES);
+    }
+
+    // Instance SSBO for static mesh instancing (Phase 14b: InstanceData with material_index)
     {
         VkBufferCreateInfo buf_ci{};
         buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(glm::mat4);
+        buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(InstanceData);
         buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
         VmaAllocationCreateInfo alloc_ci{};
@@ -135,7 +165,7 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
         m_instance_mapped = alloc_info.pMappedData;
 
         m_instance_desc_set = allocate_bone_descriptor(m_instance_buffer,
-                                                        MAX_STATIC_INSTANCES * sizeof(glm::mat4));
+                                                        MAX_STATIC_INSTANCES * sizeof(InstanceData));
     }
 
     // Indirect draw command buffer
@@ -191,7 +221,7 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
         16,18,17, 16,19,18,   // right  (+X)
         20,22,21, 20,23,22,   // left   (-X)
     };
-    m_placeholder_mesh = upload_mesh(m_rhi->allocator(), placeholder);
+    m_placeholder_mesh = upload_to_mega(placeholder);
     m_placeholder_mesh.native_z_up = true;
 
     // Create a small projectile mesh (elongated diamond shape in Z-up game coords)
@@ -217,7 +247,7 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
             0,2,4,  0,4,3,  0,3,5,  0,5,2,  // front 4 faces
             1,4,2,  1,3,4,  1,5,3,  1,2,5,  // back 4 faces
         };
-        m_projectile_mesh = upload_mesh(m_rhi->allocator(), proj);
+        m_projectile_mesh = upload_to_mega(proj);
         m_projectile_mesh.native_z_up = true;
     }
 
@@ -252,9 +282,16 @@ void Renderer::shutdown() {
     }
     m_mesh_cache.clear();
 
-    // Destroy instance/indirect buffers
+    // Destroy instance/indirect/mega buffers
     if (m_instance_buffer) vmaDestroyBuffer(alloc, m_instance_buffer, m_instance_alloc);
     if (m_indirect_buffer) vmaDestroyBuffer(alloc, m_indirect_buffer, m_indirect_alloc);
+    if (m_mega_vb) vmaDestroyBuffer(alloc, m_mega_vb, m_mega_vb_alloc);
+    if (m_mega_ib) vmaDestroyBuffer(alloc, m_mega_ib, m_mega_ib_alloc);
+
+    // Destroy bindless resources
+    if (m_bindless_set)    { /* freed when pool is destroyed */ }
+    if (m_bindless_pool)   vkDestroyDescriptorPool(device, m_bindless_pool, nullptr);
+    if (m_bindless_layout) vkDestroyDescriptorSetLayout(device, m_bindless_layout, nullptr);
 
     // Destroy fog resources
     if (m_fog_texture.image) destroy_texture(*m_rhi, m_fog_texture);
@@ -876,6 +913,144 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
     return set;
 }
 
+// ── Mega buffer upload (Phase 14b) ───────────────────────────────────────
+
+GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
+    GpuMesh gpu{};
+    if (mesh.vertices.empty()) return gpu;
+
+    u32 vc = static_cast<u32>(mesh.vertices.size());
+    u32 ic = static_cast<u32>(mesh.indices.size());
+
+    if (m_mega_vb_used + vc > MEGA_MAX_VERTICES) {
+        log::error(TAG, "Mega vertex buffer full ({}/{})", m_mega_vb_used, MEGA_MAX_VERTICES);
+        return gpu;
+    }
+    if (m_mega_ib_used + ic > MEGA_MAX_INDICES) {
+        log::error(TAG, "Mega index buffer full ({}/{})", m_mega_ib_used, MEGA_MAX_INDICES);
+        return gpu;
+    }
+
+    gpu.vertex_buffer = m_mega_vb;
+    gpu.index_buffer  = m_mega_ib;
+    gpu.vertex_alloc  = VK_NULL_HANDLE;  // not individually allocated
+    gpu.index_alloc   = VK_NULL_HANDLE;
+    gpu.vertex_count  = vc;
+    gpu.index_count   = ic;
+    gpu.first_vertex  = m_mega_vb_used;
+    gpu.first_index   = m_mega_ib_used;
+
+    auto* vb_dst = static_cast<u8*>(m_mega_vb_mapped) + m_mega_vb_used * sizeof(asset::Vertex);
+    std::memcpy(vb_dst, mesh.vertices.data(), vc * sizeof(asset::Vertex));
+    m_mega_vb_used += vc;
+
+    auto* ib_dst = static_cast<u8*>(m_mega_ib_mapped) + m_mega_ib_used * sizeof(u32);
+    std::memcpy(ib_dst, mesh.indices.data(), ic * sizeof(u32));
+    m_mega_ib_used += ic;
+
+    return gpu;
+}
+
+// ── Bindless texture array (Phase 14b) ───────────────────────────────────
+
+bool Renderer::create_bindless_resources() {
+    VkDevice device = m_rhi->device();
+
+    // Descriptor set layout: variable-size sampler2D array
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding         = 0;
+    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = MAX_BINDLESS_TEXTURES;
+    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorBindingFlags bindless_flags =
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci{};
+    flags_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    flags_ci.bindingCount  = 1;
+    flags_ci.pBindingFlags = &bindless_flags;
+
+    VkDescriptorSetLayoutCreateInfo layout_ci{};
+    layout_ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_ci.pNext        = &flags_ci;
+    layout_ci.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    layout_ci.bindingCount = 1;
+    layout_ci.pBindings    = &binding;
+
+    if (vkCreateDescriptorSetLayout(device, &layout_ci, nullptr, &m_bindless_layout) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create bindless descriptor set layout");
+        return false;
+    }
+
+    // Dedicated pool for the one bindless set
+    VkDescriptorPoolSize pool_size{};
+    pool_size.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    pool_size.descriptorCount = MAX_BINDLESS_TEXTURES;
+
+    VkDescriptorPoolCreateInfo pool_ci{};
+    pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+    pool_ci.maxSets       = 1;
+    pool_ci.poolSizeCount = 1;
+    pool_ci.pPoolSizes    = &pool_size;
+
+    if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &m_bindless_pool) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create bindless descriptor pool");
+        return false;
+    }
+
+    // Allocate the bindless set with variable descriptor count
+    u32 variable_count = MAX_BINDLESS_TEXTURES;
+    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_ci{};
+    variable_ci.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    variable_ci.descriptorSetCount = 1;
+    variable_ci.pDescriptorCounts  = &variable_count;
+
+    VkDescriptorSetAllocateInfo alloc_ci{};
+    alloc_ci.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_ci.pNext              = &variable_ci;
+    alloc_ci.descriptorPool     = m_bindless_pool;
+    alloc_ci.descriptorSetCount = 1;
+    alloc_ci.pSetLayouts        = &m_bindless_layout;
+
+    if (vkAllocateDescriptorSets(device, &alloc_ci, &m_bindless_set) != VK_SUCCESS) {
+        log::error(TAG, "Failed to allocate bindless descriptor set");
+        return false;
+    }
+
+    log::info(TAG, "Bindless texture array created (max {} textures)", MAX_BINDLESS_TEXTURES);
+    return true;
+}
+
+u32 Renderer::register_bindless_texture(const GpuTexture& tex) {
+    if (m_bindless_count >= MAX_BINDLESS_TEXTURES) {
+        log::error(TAG, "Bindless texture array full ({}/{})", m_bindless_count, MAX_BINDLESS_TEXTURES);
+        return 0;  // fallback to default texture
+    }
+
+    u32 idx = m_bindless_count++;
+
+    VkDescriptorImageInfo img_info{};
+    img_info.sampler     = tex.sampler;
+    img_info.imageView   = tex.view;
+    img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = m_bindless_set;
+    write.dstBinding      = 0;
+    write.dstArrayElement = idx;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo      = &img_info;
+
+    vkUpdateDescriptorSets(m_rhi->device(), 1, &write, 0, nullptr);
+    return idx;
+}
+
 // ── Default + terrain textures ────────────────────────────────────────────
 
 bool Renderer::create_default_texture() {
@@ -887,6 +1062,9 @@ bool Renderer::create_default_texture() {
     m_default_material.diffuse = m_default_texture;
     m_default_material.descriptor_set = allocate_mesh_descriptor(m_default_texture);
 
+    // Register in bindless array
+    m_default_tex_idx = register_bindless_texture(m_default_texture);
+
     // Corpse texture (dark gray)
     auto corpse_pixels = generate_solid_texture(4, 50, 50, 50);
     m_corpse_texture = upload_texture_rgba(*m_rhi, corpse_pixels.data(), 4, 4);
@@ -894,7 +1072,11 @@ bool Renderer::create_default_texture() {
     m_corpse_material.diffuse = m_corpse_texture;
     m_corpse_material.descriptor_set = allocate_mesh_descriptor(m_corpse_texture);
 
-    log::info(TAG, "Default + corpse textures created");
+    // Register in bindless array
+    m_corpse_tex_idx = register_bindless_texture(m_corpse_texture);
+
+    log::info(TAG, "Default + corpse textures created (bindless idx: {}, {})",
+              m_default_tex_idx, m_corpse_tex_idx);
     return true;
 }
 
@@ -1025,7 +1207,8 @@ bool Renderer::create_mesh_pipeline() {
     push_range.offset     = 0;
     push_range.size       = sizeof(glm::mat4);  // just vp
 
-    VkDescriptorSetLayout mesh_layouts[] = {m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout};
+    // Set 0 = bindless textures, set 1 = shadow, set 2 = instance SSBO (Phase 14b)
+    VkDescriptorSetLayout mesh_layouts[] = {m_bindless_layout, m_shadow_desc_layout, m_bone_desc_layout};
     VkPipelineLayoutCreateInfo layout_ci{};
     layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_ci.setLayoutCount         = 3;
@@ -1080,7 +1263,7 @@ bool Renderer::create_skinned_mesh_pipeline() {
     VkDevice device = m_rhi->device();
 
     VkShaderModule vert = load_shader(device, "engine/shaders/skinned_mesh.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/mesh.frag.spv");  // reuse mesh frag
+    VkShaderModule frag = load_shader(device, "engine/shaders/skinned_mesh.frag.spv");
     if (!vert || !frag) {
         log::error(TAG, "Failed to load skinned mesh shaders");
         if (vert) vkDestroyShaderModule(device, vert, nullptr);
@@ -1518,7 +1701,7 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
                   model_path, lm.data.skinned_meshes.size(), lm.mesh.vertex_count,
                   bone_count, lm.data.animations.size());
     } else if (!lm.data.meshes.empty()) {
-        // Merge all static mesh primitives into one
+        // Merge all static mesh primitives into one → mega buffer (Phase 14b)
         asset::MeshData merged;
         for (auto& m : lm.data.meshes) {
             u32 base_vertex = static_cast<u32>(merged.vertices.size());
@@ -1527,10 +1710,11 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
                 merged.indices.push_back(base_vertex + idx);
             }
         }
-        lm.mesh = upload_mesh(alloc, merged);
+        lm.mesh = upload_to_mega(merged);
         lm.is_skinned = false;
-        log::info(TAG, "Loaded static model '{}': {} meshes merged, {} verts",
-                  model_path, lm.data.meshes.size(), lm.mesh.vertex_count);
+        log::info(TAG, "Loaded static model '{}': {} meshes merged, {} verts (mega @{}/{})",
+                  model_path, lm.data.meshes.size(), lm.mesh.vertex_count,
+                  lm.mesh.first_vertex, lm.mesh.first_index);
     } else {
         log::warn(TAG, "Model '{}' has no meshes", model_path);
         m_model_failed.insert(model_path);
@@ -1545,9 +1729,13 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             lm.data.textures[0].height);
         lm.material.diffuse = lm.diffuse_texture;
         lm.material.descriptor_set = allocate_mesh_descriptor(lm.diffuse_texture);
-        log::info(TAG, "  Texture: {}x{}", lm.data.textures[0].width, lm.data.textures[0].height);
+        // Register in bindless array for static pipeline
+        lm.texture_index = register_bindless_texture(lm.diffuse_texture);
+        log::info(TAG, "  Texture: {}x{} (bindless idx: {})",
+                  lm.data.textures[0].width, lm.data.textures[0].height, lm.texture_index);
     } else {
         lm.material = m_default_material;
+        lm.texture_index = m_default_tex_idx;
     }
 
     auto [inserted, _] = m_model_cache.emplace(model_path, std::move(lm));
@@ -1885,7 +2073,7 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
     // Entities — skinned units use skinned shadow pipeline, others use regular
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
-    auto& handle_infos = world.handle_infos;
+
 
     bool has_skinned_shadow = m_skinned_shadow_pipeline != VK_NULL_HANDLE;
 
@@ -1899,8 +2087,6 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
             u32 id = renderables.ids()[i];
             const auto& renderable = renderables.data()[i];
             if (!renderable.visible) continue;
-            auto* info = handle_infos.get(id);
-            if (!info || info->category != simulation::Category::Unit) continue;
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
@@ -1957,27 +2143,17 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
         vkCmdPushConstants(cmd, m_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(glm::mat4), &light_vp);
 
-        // Bind instance SSBO at set 0
+        // Bind mega VB/IB + instance SSBO once
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_mega_vb, &offset);
+        vkCmdBindIndexBuffer(cmd, m_mega_ib, 0, VK_INDEX_TYPE_UINT32);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 m_shadow_pipeline_layout, 0, 1, &m_instance_desc_set, 0, nullptr);
 
-        VkBuffer prev_vb = VK_NULL_HANDLE;
-        VkBuffer prev_ib = VK_NULL_HANDLE;
-        for (u32 i = 0; i < m_draw_groups.size(); ++i) {
-            auto& dg = m_draw_groups[i];
-            if (dg.vertex_buffer != prev_vb) {
-                VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &dg.vertex_buffer, &offset);
-                prev_vb = dg.vertex_buffer;
-            }
-            if (dg.index_buffer != prev_ib) {
-                vkCmdBindIndexBuffer(cmd, dg.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-                prev_ib = dg.index_buffer;
-            }
-            VkDeviceSize indirect_offset = i * sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, indirect_offset, 1,
-                                     sizeof(VkDrawIndexedIndirectCommand));
-        }
+        // Multi-draw indirect for all static mesh shadows
+        u32 draw_count = static_cast<u32>(m_draw_groups.size());
+        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, 0, draw_count,
+                                 sizeof(VkDrawIndexedIndirectCommand));
     }
 
     vkCmdEndRendering(cmd);
@@ -2012,37 +2188,39 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
     auto& renderables = world.renderables;
     auto& transforms = world.transforms;
-    auto& handle_infos = world.handle_infos;
+
 
     bool has_skinned = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
 
-    // Key: (vertex_buffer, index_buffer, material_descriptor) → group index
+    // Key: mesh geometry identity (offsets into mega buffer) → group index
     struct GroupKey {
-        VkBuffer vb; VkBuffer ib; VkDescriptorSet mat;
-        bool operator==(const GroupKey& o) const { return vb == o.vb && ib == o.ib && mat == o.mat; }
+        u32 first_index; u32 index_count; i32 vertex_offset;
+        bool operator==(const GroupKey& o) const {
+            return first_index == o.first_index && index_count == o.index_count
+                && vertex_offset == o.vertex_offset;
+        }
     };
     struct GroupKeyHash {
         size_t operator()(const GroupKey& k) const {
-            size_t h = std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.vb));
-            h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.ib)) * 2654435761u;
-            h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.mat)) * 40503u;
+            size_t h = std::hash<u32>{}(k.first_index);
+            h ^= std::hash<u32>{}(k.index_count) * 2654435761u;
+            h ^= std::hash<i32>{}(k.vertex_offset) * 40503u;
             return h;
         }
     };
     std::unordered_map<GroupKey, u32, GroupKeyHash> group_map;
 
-    // CPU staging for instance matrices
-    std::vector<glm::mat4> instance_matrices;
-    instance_matrices.reserve(256);
+    // CPU staging for instance data (model matrix + material index)
+    std::vector<InstanceData> instances;
+    instances.reserve(256);
 
     for (u32 i = 0; i < renderables.count(); ++i) {
         u32 id = renderables.ids()[i];
         const auto& renderable = renderables.data()[i];
         if (!renderable.visible) continue;
 
-        auto* info = handle_infos.get(id);
-        // Skip skinned units (drawn separately)
-        if (has_skinned && info && info->category == simulation::Category::Unit) {
+        // Skip skinned entities (drawn separately via skinned pipeline)
+        if (has_skinned) {
             auto* lm = get_or_load_model(renderable.model_path);
             if (lm && lm->is_skinned) continue;
         }
@@ -2052,16 +2230,19 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         if (is_fog_hidden(world, id, *transform)) continue;
 
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
-        if (!mesh.vertex_buffer || !mesh.index_buffer) continue;  // skip non-indexed meshes
+        if (!mesh.vertex_buffer || !mesh.index_buffer) continue;
 
-        // Resolve material
+        // Resolve bindless texture index
         bool is_corpse = world.dead_states.has(id);
         auto* lm_static = get_or_load_model(renderable.model_path);
-        bool has_own_tex = lm_static && lm_static->diffuse_texture.image != VK_NULL_HANDLE;
-        auto& mat = (is_corpse && !has_own_tex)
-                    ? m_corpse_material
-                    : (lm_static ? lm_static->material : m_default_material);
-        if (!mat.descriptor_set) continue;
+        u32 tex_idx;
+        if (is_corpse && !(lm_static && lm_static->diffuse_texture.image != VK_NULL_HANDLE)) {
+            tex_idx = m_corpse_tex_idx;
+        } else if (lm_static) {
+            tex_idx = lm_static->texture_index;
+        } else {
+            tex_idx = m_default_tex_idx;
+        }
 
         // Compute model matrix
         glm::vec3 vis_pos = lerp_position(*transform, alpha);
@@ -2079,34 +2260,36 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
         }
 
-        // Find or create draw group
-        GroupKey key{mesh.vertex_buffer, mesh.index_buffer, mat.descriptor_set};
+        // Find or create draw group keyed by mesh geometry (Phase 14b)
+        GroupKey key{mesh.first_index, mesh.index_count,
+                     static_cast<i32>(mesh.first_vertex)};
         auto git = group_map.find(key);
         if (git == group_map.end()) {
             u32 gi = static_cast<u32>(m_draw_groups.size());
             group_map[key] = gi;
             DrawGroup dg{};
-            dg.vertex_buffer = mesh.vertex_buffer;
-            dg.index_buffer = mesh.index_buffer;
-            dg.material_desc = mat.descriptor_set;
-            dg.index_count = mesh.index_count;
-            dg.first_instance = static_cast<u32>(instance_matrices.size());
+            dg.first_index    = mesh.first_index;
+            dg.index_count    = mesh.index_count;
+            dg.vertex_offset  = static_cast<i32>(mesh.first_vertex);
+            dg.first_instance = static_cast<u32>(instances.size());
             dg.instance_count = 0;
-            dg.native_z_up = mesh.native_z_up;
             m_draw_groups.push_back(dg);
             git = group_map.find(key);
         }
 
         m_draw_groups[git->second].instance_count++;
-        instance_matrices.push_back(model);
+        InstanceData inst{};
+        inst.model = model;
+        inst.material_index = tex_idx;
+        instances.push_back(inst);
     }
 
-    m_static_instance_count = static_cast<u32>(instance_matrices.size());
+    m_static_instance_count = static_cast<u32>(instances.size());
 
-    // Upload instance matrices to GPU
+    // Upload instance data to GPU
     if (m_static_instance_count > 0 && m_instance_mapped) {
         u32 upload_count = std::min(m_static_instance_count, MAX_STATIC_INSTANCES);
-        std::memcpy(m_instance_mapped, instance_matrices.data(), upload_count * sizeof(glm::mat4));
+        std::memcpy(m_instance_mapped, instances.data(), upload_count * sizeof(InstanceData));
     }
 
     // Build indirect commands and upload
@@ -2116,8 +2299,8 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             auto& dg = m_draw_groups[i];
             cmds[i].indexCount    = dg.index_count;
             cmds[i].instanceCount = dg.instance_count;
-            cmds[i].firstIndex    = 0;
-            cmds[i].vertexOffset  = 0;
+            cmds[i].firstIndex    = dg.first_index;
+            cmds[i].vertexOffset  = dg.vertex_offset;
             cmds[i].firstInstance = dg.first_instance;
         }
     }
@@ -2174,7 +2357,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
-    auto& handle_infos = world.handle_infos;
+
 
     // Determine frame dt for animation (approximate from last frame)
     static auto last_time = std::chrono::steady_clock::now();
@@ -2208,13 +2391,11 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         }
     }
 
-    // Update animations for skinned units
+    // Update animations for all skinned entities
     if (has_skinned_pipeline) {
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
             const auto& renderable = renderables.data()[i];
-            auto* info = handle_infos.get(id);
-            if (!info || info->category != simulation::Category::Unit) continue;
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
@@ -2246,9 +2427,6 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             u32 id = renderables.ids()[i];
             const auto& renderable = renderables.data()[i];
             if (!renderable.visible) continue;
-
-            auto* info = handle_infos.get(id);
-            if (!info || info->category != simulation::Category::Unit) continue;
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
@@ -2305,7 +2483,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         }
     }
 
-    // Pass 2: Draw non-skinned entities via indirect draw (Phase 14a)
+    // Pass 2: Draw non-skinned entities via mega buffer + bindless + indirect draw (Phase 14b)
     if (m_mesh_pipeline && !m_draw_groups.empty()) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
         vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -2315,37 +2493,20 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         vkCmdPushConstants(cmd, m_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(glm::mat4), &vp);
 
-        VkBuffer prev_vb = VK_NULL_HANDLE;
-        VkBuffer prev_ib = VK_NULL_HANDLE;
-        VkDescriptorSet prev_mat = VK_NULL_HANDLE;
+        // Bind mega vertex/index buffers once (all static meshes share them)
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_mega_vb, &offset);
+        vkCmdBindIndexBuffer(cmd, m_mega_ib, 0, VK_INDEX_TYPE_UINT32);
 
-        for (u32 i = 0; i < m_draw_groups.size(); ++i) {
-            auto& dg = m_draw_groups[i];
+        // Bind all descriptor sets once: bindless textures + shadow + instance SSBO
+        VkDescriptorSet sets[] = {m_bindless_set, m_shadow_desc_set, m_instance_desc_set};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
 
-            // Bind vertex/index buffers (skip if same as previous group)
-            if (dg.vertex_buffer != prev_vb) {
-                VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &dg.vertex_buffer, &offset);
-                prev_vb = dg.vertex_buffer;
-            }
-            if (dg.index_buffer != prev_ib) {
-                vkCmdBindIndexBuffer(cmd, dg.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-                prev_ib = dg.index_buffer;
-            }
-
-            // Bind material (set 0) + shadow (set 1) + instance SSBO (set 2)
-            if (dg.material_desc != prev_mat) {
-                VkDescriptorSet sets[] = {dg.material_desc, m_shadow_desc_set, m_instance_desc_set};
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        m_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
-                prev_mat = dg.material_desc;
-            }
-
-            // One indirect draw for this group
-            VkDeviceSize indirect_offset = i * sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, indirect_offset, 1,
-                                     sizeof(VkDrawIndexedIndirectCommand));
-        }
+        // Multi-draw indirect: one command per unique mesh geometry
+        u32 draw_count = static_cast<u32>(m_draw_groups.size());
+        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, 0, draw_count,
+                                 sizeof(VkDrawIndexedIndirectCommand));
     }
 
     // ── Pass 3: Particles (alpha-blended, drawn last) ────────────────────
