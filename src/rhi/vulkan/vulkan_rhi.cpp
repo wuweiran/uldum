@@ -324,13 +324,17 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
         }
     }
 
-    // Pick extent
+    // Pick extent — skip if zero (window minimized or during display switch)
     VkExtent2D extent;
     if (caps.currentExtent.width != std::numeric_limits<u32>::max()) {
         extent = caps.currentExtent;
     } else {
         extent.width  = std::clamp(width, caps.minImageExtent.width, caps.maxImageExtent.width);
         extent.height = std::clamp(height, caps.minImageExtent.height, caps.maxImageExtent.height);
+    }
+    if (extent.width == 0 || extent.height == 0) {
+        m_swapchain_extent = {0, 0};
+        return true;  // defer until window has a valid size
     }
 
     u32 image_count = caps.minImageCount + 1;
@@ -603,6 +607,9 @@ VkCommandBuffer VulkanRhi::begin_frame() {
         vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_image_available[m_frame_index]);
 
         create_swapchain(m_swapchain_extent.width, m_swapchain_extent.height);
+        if (m_swapchain_extent.width == 0 || m_swapchain_extent.height == 0) {
+            m_swapchain_dirty = true;  // retry next frame
+        }
         return VK_NULL_HANDLE;
     }
 

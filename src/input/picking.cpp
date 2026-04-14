@@ -156,7 +156,11 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         f32 ray_t;
         f32 dist = ray_cylinder_dist(origin, dir, transform->position, sel.selection_height, ray_t);
 
-        if (dist > sel.selection_radius) continue;
+
+        // Pick radius covers both the ground circle and the visual model body.
+        // transform->scale approximates the model's visual width.
+        f32 pick_radius = std::max(sel.selection_radius, transform->scale);
+        if (dist > pick_radius) continue;
 
         // Prefer higher priority, then closer along the ray
         if (sel.priority > best_priority ||

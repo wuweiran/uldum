@@ -2193,6 +2193,10 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
                 stale.push_back(eid);
             }
         }
+        if (!stale.empty()) {
+            // Wait for GPU to finish using the bone buffers before destroying
+            vkDeviceWaitIdle(m_rhi->device());
+        }
         for (u32 eid : stale) {
             auto it = m_anim_instances.find(eid);
             if (it != m_anim_instances.end()) {
