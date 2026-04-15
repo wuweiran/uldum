@@ -102,6 +102,7 @@ private:
     bool create_skinned_mesh_pipeline();
     bool create_particle_pipeline();
     bool create_terrain_pipeline();
+    bool create_water_pipeline();
     bool create_shadow_pipeline();
     bool create_shadow_resources();
     bool create_default_texture();
@@ -139,6 +140,10 @@ private:
     VkPipelineLayout m_terrain_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_terrain_pipeline        = VK_NULL_HANDLE;
 
+    // Water surface pipeline (transparent overlay, same mesh as terrain)
+    VkPipelineLayout m_water_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_water_pipeline        = VK_NULL_HANDLE;
+
     // Skinned mesh pipeline (set 0 = material, set 1 = shadow, set 2 = bones SSBO)
     VkDescriptorSetLayout m_bone_desc_layout          = VK_NULL_HANDLE;  // set 2: 1 SSBO
     VkPipelineLayout m_skinned_mesh_pipeline_layout   = VK_NULL_HANDLE;
@@ -168,7 +173,18 @@ private:
     // Terrain material (layer array texture + transition noise)
     TerrainMaterial m_terrain_material{};
     GpuTexture      m_transition_noise{};  // single noise texture for curve perturbation
+    GpuTexture      m_water_normal{};      // tileable water normal map for ripples
     bool create_transition_noise();
+    bool create_water_normal();
+
+    // Water surface rendering data (computed from tileset)
+    struct WaterParams {
+        glm::vec3 shallow_color{0.18f, 0.45f, 0.55f};
+        glm::vec3 deep_color{0.05f, 0.12f, 0.25f};
+        u32 water_mask = 0;   // bitmask: which layer IDs are any water
+        u32 deep_mask  = 0;   // bitmask: which layer IDs are deep water
+    } m_water_params{};
+    f32 m_elapsed_time = 0.0f;
 
     // Cached loaded models (model_path → LoadedModel)
     std::unordered_map<std::string, LoadedModel> m_model_cache;

@@ -103,8 +103,8 @@ struct TerrainData {
     // Does NOT check water or MoveType — caller handles that.
     bool is_tile_passable(u32 tx, u32 ty) const;
 
-    // Is any corner of this tile water?
-    bool is_tile_water(u32 tx, u32 ty) const;
+    // Is any corner of this tile deep water?
+    bool is_tile_deep_water(u32 tx, u32 ty) const;
 
     // Convert world position to tile coordinates (clamped to valid range).
     glm::ivec2 world_to_tile(f32 x, f32 y) const;

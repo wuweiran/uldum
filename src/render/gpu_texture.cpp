@@ -180,7 +180,7 @@ GpuTexture upload_texture(rhi::VulkanRhi& rhi, const asset::TextureData& data) {
 }
 
 GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32 layer_count,
-                                u32 width, u32 height) {
+                                u32 width, u32 height, bool srgb) {
     VkDevice device = rhi.device();
     VmaAllocator allocator = rhi.allocator();
     VkDeviceSize layer_size = static_cast<VkDeviceSize>(width) * height * 4;
@@ -217,10 +217,12 @@ GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32
     tex.width  = width;
     tex.height = height;
 
+    VkFormat fmt = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
     VkImageCreateInfo img_ci{};
     img_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     img_ci.imageType     = VK_IMAGE_TYPE_2D;
-    img_ci.format        = VK_FORMAT_R8G8B8A8_SRGB;
+    img_ci.format        = fmt;
     img_ci.extent        = {width, height, 1};
     img_ci.mipLevels     = 1;
     img_ci.arrayLayers   = layer_count;
@@ -292,7 +294,7 @@ GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32
     view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_ci.image    = tex.image;
     view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    view_ci.format   = VK_FORMAT_R8G8B8A8_SRGB;
+    view_ci.format   = fmt;
     view_ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layer_count};
 
     if (vkCreateImageView(device, &view_ci, nullptr, &tex.view) != VK_SUCCESS) {

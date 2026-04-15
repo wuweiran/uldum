@@ -14,12 +14,14 @@ struct MeshMaterial {
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
 };
 
-// Terrain material: layer textures as a sampler2DArray.
+// Terrain material: layer textures as sampler2DArrays.
 struct TerrainMaterial {
     static constexpr u32 MAX_LAYERS = 16;
-    GpuTexture    layer_array{};    // sampler2DArray with all layer diffuse textures
+    GpuTexture    layer_array{};     // sampler2DArray: all layer diffuse textures
+    GpuTexture    normal_array{};    // sampler2DArray: all layer normal maps (optional)
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
     u32           layer_count = 0;
+    bool          has_normals = false;
 };
 
 } // namespace uldum::render

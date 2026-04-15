@@ -182,6 +182,7 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
             layer.id           = lj.value("id", 0u);
             layer.name         = lj.value("name", "");
             layer.diffuse_path = lj.value("diffuse", "");
+            layer.normal_path  = lj.value("normal", "");
             std::string type_str = lj.value("type", "");
             if (type_str == "water_shallow")   layer.type = LayerType::WaterShallow;
             else if (type_str == "water_deep") layer.type = LayerType::WaterDeep;
@@ -193,7 +194,6 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
                                      lj["color"][1].get<f32>(),
                                      lj["color"][2].get<f32>()};
             }
-            layer.water_opacity    = lj.value("opacity", 0.6f);
             layer.water_wave_speed = lj.value("wave_speed", 0.4f);
 
             m_tileset.layers.push_back(std::move(layer));

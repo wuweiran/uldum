@@ -47,9 +47,10 @@ bool TerrainData::is_tile_passable(u32 tx, u32 ty) const {
     return true;
 }
 
-bool TerrainData::is_tile_water(u32 tx, u32 ty) const {
+bool TerrainData::is_tile_deep_water(u32 tx, u32 ty) const {
     if (tx >= tiles_x || ty >= tiles_y) return false;
-    return is_water(tx, ty) || is_water(tx+1, ty) || is_water(tx, ty+1) || is_water(tx+1, ty+1);
+    return is_deep_water(tx, ty) || is_deep_water(tx+1, ty) ||
+           is_deep_water(tx, ty+1) || is_deep_water(tx+1, ty+1);
 }
 
 glm::ivec2 TerrainData::world_to_tile(f32 x, f32 y) const {

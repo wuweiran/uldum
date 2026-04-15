@@ -81,12 +81,34 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
         return idx;
     };
 
+    // ── Shared vertex grid (lazy creation) ─────────────────────────────
+    // Flat and ramp tiles share vertices. Each grid vertex stores the tile
+    // data for tile (ix, iy) — used when it's the provoking vertex.
+    // Cliff wall tiles create their own duplicate vertices instead.
+    std::vector<u32> grid(td.verts_x() * td.verts_y(), UINT32_MAX);
+    auto grid_vert = [&](u32 ix, u32 iy) -> u32 {
+        u32& idx = grid[iy * td.verts_x() + ix];
+        if (idx == UINT32_MAX) {
+            idx = static_cast<u32>(vertices.size());
+            TerrainVertex v;
+            v.position = {
+                static_cast<f32>(ix) * td.tile_size,
+                static_cast<f32>(iy) * td.tile_size,
+                td.world_z_at(ix, iy)
+            };
+            v.texcoord = texcoord_at(ix, iy);
+            v.normal = {0, 0, 1};
+            if (ix < td.tiles_x && iy < td.tiles_y) {
+                auto ti = compute_tile_info(ix, iy);
+                v.layer_corners = ti.layer_corners;
+                v.case_info = ti.case_info;
+            }
+            vertices.push_back(v);
+        }
+        return idx;
+    };
+
     // ── Surface tiles ────────────────────────────────────────────────────
-    // Each tile has its own 4 vertices. Each corner's Z uses that corner's
-    // own cliff_level * layer_height + heightmap. This means at a cliff
-    // boundary, the high-side tile's corner is at high Z and the adjacent
-    // low-side tile's corner at the same XY position is at low Z.
-    // The sheer drop between them is filled by cliff wall quads.
 
     // Helper: interpolate heightmap, texcoord, splatmap at fractional grid position
     auto lerp_height = [&](f32 fx, f32 fy) -> f32 {
@@ -147,33 +169,26 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
             for (u32 i = 0; i < 4; ++i) { if (c[i] == cmax) high_count++; }
 
 
-            // Check if this tile is a ramp: different cliff levels + all corners have RAMP flag
+            // Flat or ramp tile: use shared grid vertices
             bool is_ramp = (cmin != cmax) &&
                 (td.pathing_at(tx, ty) & map::PATHING_RAMP) &&
                 (td.pathing_at(tx+1, ty) & map::PATHING_RAMP) &&
                 (td.pathing_at(tx, ty+1) & map::PATHING_RAMP) &&
                 (td.pathing_at(tx+1, ty+1) & map::PATHING_RAMP) &&
-                (cmax - cmin == 1);  // ramps only between adjacent levels
+                (cmax - cmin == 1);
 
-            // Compute packed tile vertex info
-            auto ti = compute_tile_info(tx, ty);
-
-            if (is_ramp) {
-                // Ramp tile: each vertex at its own cliff level, creating a slope
-                u32 v[4];
-                u32 gx[4] = {tx, tx+1, tx, tx+1};
-                u32 gy[4] = {ty, ty, ty+1, ty+1};
-                for (u32 i = 0; i < 4; ++i) {
-                    f32 x = static_cast<f32>(gx[i]) * td.tile_size;
-                    f32 y = static_cast<f32>(gy[i]) * td.tile_size;
-                    f32 z = static_cast<f32>(c[i]) * td.layer_height + td.height_at(gx[i], gy[i]);
-                    v[i] = add_vert(x, y, z, texcoord_at(gx[i], gy[i]),
-                                    ti);
-                }
-                add_tri(v[0], v[1], v[2]);
-                add_tri(v[1], v[3], v[2]);
-                continue;  // skip cliff logic
+            if (cmin == cmax || is_ramp) {
+                u32 v0 = grid_vert(tx, ty);
+                u32 v1 = grid_vert(tx + 1, ty);
+                u32 v2 = grid_vert(tx, ty + 1);
+                u32 v3 = grid_vert(tx + 1, ty + 1);
+                add_tri(v0, v3, v2);
+                add_tri(v0, v1, v3);
+                continue;
             }
+
+            // ── Cliff wall tile: duplicate vertices below ────────────────
+            auto ti = compute_tile_info(tx, ty);
 
             // Helper: add a corner vertex at grid position
             auto corner_v = [&](u32 ci, f32 base_z) -> u32 {
@@ -198,13 +213,7 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                                 {gfx / td.tiles_x, gfy / td.tiles_y}, ti);
             };
 
-            if (cmin == cmax) {
-                // All same: full quad
-                u32 v0 = corner_v(0, high_z), v1 = corner_v(1, high_z);
-                u32 v2 = corner_v(2, high_z), v3 = corner_v(3, high_z);
-                add_tri(v0, v1, v2);
-                add_tri(v1, v3, v2);
-            } else if (high_count == 1) {
+            if (high_count == 1) {
                 // 1 high corner: small triangle at high, rest at low.
                 u32 hi = 0;
                 for (u32 i = 0; i < 4; ++i) { if (c[i] == cmax) { hi = i; break; } }

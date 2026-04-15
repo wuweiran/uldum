@@ -20,7 +20,7 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
     if (!m_terrain) return false;
     if (move_type == MoveType::Air) return true;
     if (!m_terrain->is_tile_passable(tx, ty)) return false;
-    if (move_type == MoveType::Ground && m_terrain->is_tile_water(tx, ty)) return false;
+    if (move_type == MoveType::Ground && m_terrain->is_tile_deep_water(tx, ty)) return false;
 
     // Runtime blocks (buildings): all 4 corners must be unblocked
     if (!m_runtime_blocked.empty()) {

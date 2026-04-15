@@ -22,9 +22,12 @@ layout(location = 4) flat out uint frag_layer_corners;
 layout(location = 5) flat out uint frag_case_info;
 layout(location = 6) out vec2 frag_fog_uv;
 
+const float WATER_Z_OFFSET = 2.0;  // water surface sits above riverbed
+
 void main() {
-    vec4 world_pos = pc.model * vec4(in_position, 1.0);
-    gl_Position = pc.mvp * vec4(in_position, 1.0);
+    vec3 pos = in_position + vec3(0.0, 0.0, WATER_Z_OFFSET);
+    vec4 world_pos = pc.model * vec4(pos, 1.0);
+    gl_Position = pc.mvp * vec4(pos, 1.0);
     frag_world_normal = mat3(pc.model) * in_normal;
     frag_texcoord = in_texcoord;
     frag_tile_uv = in_position.xy / 128.0;

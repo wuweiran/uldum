@@ -27,8 +27,9 @@ GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width,
 
 // Upload an array of RGBA layers as a sampler2DArray. Each layer must be width*height*4 bytes.
 // layers_data: array of pointers to RGBA pixel data, one per layer.
+// srgb: true for color textures (default), false for data textures (normal maps).
 GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32 layer_count,
-                                u32 width, u32 height);
+                                u32 width, u32 height, bool srgb = true);
 
 void destroy_texture(rhi::VulkanRhi& rhi, GpuTexture& tex);
 

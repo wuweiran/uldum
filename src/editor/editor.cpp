@@ -627,7 +627,8 @@ void Editor::brush_flatten(f32 strength, f32 dt) {
 void Editor::brush_paint(f32 /*strength*/, f32 /*dt*/) {
     auto& td = m_map.terrain();
     auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    u8 layer = static_cast<u8>(std::clamp(m_paint_layer, 0, 3));
+    u32 max_layer = m_map.tileset().layers.empty() ? 3 : static_cast<u32>(m_map.tileset().layers.size()) - 1;
+    u8 layer = static_cast<u8>(std::clamp(m_paint_layer, 0, static_cast<int>(max_layer)));
 
     for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
         for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
@@ -1314,8 +1315,20 @@ void Editor::draw_ui() {
     }
 
     if (m_tool == Tool::Paint) {
-        const char* layers[] = {"Layer 0 (Grass)", "Layer 1 (Dirt)", "Layer 2 (Stone)", "Layer 3 (Water)"};
-        ImGui::Combo("Layer", &m_paint_layer, layers, 4);
+        auto& tl = m_map.tileset().layers;
+        if (!tl.empty()) {
+            // Build combo from tileset layer names
+            std::string combo_str;
+            for (auto& l : tl) {
+                combo_str += std::to_string(l.id) + ": " + l.name;
+                combo_str += '\0';
+            }
+            combo_str += '\0';
+            ImGui::Combo("Layer", &m_paint_layer, combo_str.c_str());
+        } else {
+            const char* fallback[] = {"Layer 0", "Layer 1", "Layer 2", "Layer 3"};
+            ImGui::Combo("Layer", &m_paint_layer, fallback, 4);
+        }
     }
 
     ImGui::Separator();

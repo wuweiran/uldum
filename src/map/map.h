@@ -36,11 +36,11 @@ struct TilesetLayer {
     u32         id = 0;
     std::string name;
     std::string diffuse_path;   // relative to map root
+    std::string normal_path;    // optional normal map (GL convention, relative to map root)
     LayerType   type = LayerType::Ground;
 
     // Water properties (only used when type is WaterShallow or WaterDeep)
     glm::vec3   water_color{0.1f, 0.3f, 0.5f};
-    f32         water_opacity = 0.6f;
     f32         water_wave_speed = 0.4f;
 };
 

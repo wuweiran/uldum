@@ -111,10 +111,12 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     if (!create_default_texture()) return false;
     if (!create_terrain_textures()) return false;
     if (!create_transition_noise()) return false;
+    if (!create_water_normal()) return false;
     if (!create_mesh_pipeline()) return false;
     if (!create_skinned_mesh_pipeline()) return false;
     if (!create_particle_pipeline()) return false;
     if (!create_terrain_pipeline()) return false;
+    if (!create_water_pipeline()) return false;
     if (!create_shadow_pipeline()) return false;
     if (!m_particles.init(rhi)) return false;
     m_effect_registry.register_defaults();
@@ -306,10 +308,10 @@ void Renderer::shutdown() {
     // Destroy textures
     destroy_texture(*m_rhi, m_corpse_texture);
     destroy_texture(*m_rhi, m_default_texture);
-    if (m_terrain_material.layer_array.image) {
-        destroy_texture(*m_rhi, m_terrain_material.layer_array);
-    }
+    if (m_terrain_material.layer_array.image) destroy_texture(*m_rhi, m_terrain_material.layer_array);
+    if (m_terrain_material.normal_array.image) destroy_texture(*m_rhi, m_terrain_material.normal_array);
     if (m_transition_noise.image) destroy_texture(*m_rhi, m_transition_noise);
+    if (m_water_normal.image) destroy_texture(*m_rhi, m_water_normal);
 
     // Destroy shadow resources
     destroy_shadow_map(*m_rhi, m_shadow_map);
@@ -326,6 +328,8 @@ void Renderer::shutdown() {
     // m_terrain_shadow_pipeline_layout is shared with m_shadow_pipeline_layout, don't destroy twice
     if (m_shadow_pipeline)         vkDestroyPipeline(device, m_shadow_pipeline, nullptr);
     if (m_shadow_pipeline_layout)  vkDestroyPipelineLayout(device, m_shadow_pipeline_layout, nullptr);
+    if (m_water_pipeline)          vkDestroyPipeline(device, m_water_pipeline, nullptr);
+    if (m_water_pipeline_layout)   vkDestroyPipelineLayout(device, m_water_pipeline_layout, nullptr);
     if (m_terrain_pipeline)        vkDestroyPipeline(device, m_terrain_pipeline, nullptr);
     if (m_terrain_pipeline_layout) vkDestroyPipelineLayout(device, m_terrain_pipeline_layout, nullptr);
     if (m_mesh_pipeline)           vkDestroyPipeline(device, m_mesh_pipeline, nullptr);
@@ -728,9 +732,9 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Terrain descriptor set layout: layers array + fog + blend masks
+    // Terrain descriptor set layout: layers + fog + noise + normals
     {
-        VkDescriptorSetLayoutBinding bindings[3]{};
+        VkDescriptorSetLayoutBinding bindings[5]{};
         bindings[0].binding         = 0;  // terrain layer array
         bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[0].descriptorCount = 1;
@@ -743,10 +747,18 @@ bool Renderer::create_descriptor_layouts() {
         bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[2].descriptorCount = 1;
         bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[3].binding         = 3;  // normal map array
+        bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[4].binding         = 4;  // water normal map
+        bindings[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[4].descriptorCount = 1;
+        bindings[4].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 3;
+        ci.bindingCount = 5;
         ci.pBindings    = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_terrain_desc_layout) != VK_SUCCESS) {
@@ -887,8 +899,8 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
         if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
 
-    VkDescriptorImageInfo img_infos[3]{};
-    VkWriteDescriptorSet writes[3]{};
+    VkDescriptorImageInfo img_infos[5]{};
+    VkWriteDescriptorSet writes[5]{};
 
     // Binding 0: terrain layer array texture
     const GpuTexture& layer_tex = mat.layer_array.image ? mat.layer_array : m_default_texture;
@@ -929,7 +941,33 @@ VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].pImageInfo      = &img_infos[2];
 
-    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    // Binding 3: normal map array (use default texture if no normals loaded)
+    const GpuTexture& norm_tex = mat.normal_array.image ? mat.normal_array : m_default_texture;
+    img_infos[3].sampler     = norm_tex.sampler;
+    img_infos[3].imageView   = norm_tex.view;
+    img_infos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet          = set;
+    writes[3].dstBinding      = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo      = &img_infos[3];
+
+    // Binding 4: water normal map
+    const GpuTexture& water_norm = m_water_normal.image ? m_water_normal : m_default_texture;
+    img_infos[4].sampler     = water_norm.sampler;
+    img_infos[4].imageView   = water_norm.view;
+    img_infos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet          = set;
+    writes[4].dstBinding      = 4;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].pImageInfo      = &img_infos[4];
+
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
     return set;
 }
 
@@ -1153,12 +1191,57 @@ bool Renderer::create_transition_noise() {
     return true;
 }
 
-void Renderer::load_tileset_textures(const map::Tileset& tileset) {
-    // Destroy old terrain layer array
-    if (m_terrain_material.layer_array.image) {
-        vkDeviceWaitIdle(m_rhi->device());
-        destroy_texture(*m_rhi, m_terrain_material.layer_array);
+bool Renderer::create_water_normal() {
+    constexpr u32 SIZE = 128;
+
+    // Generate tileable height field from multi-octave hash noise
+    std::vector<f32> heights(SIZE * SIZE);
+    for (u32 y = 0; y < SIZE; ++y) {
+        for (u32 x = 0; x < SIZE; ++x) {
+            // Wrapping coordinates for tileability
+            f32 v = hash_noise(x % SIZE, y % SIZE) * 0.5f
+                  + hash_noise((x * 2) % SIZE, (y * 2) % SIZE) * 0.3f
+                  + hash_noise((x * 4) % SIZE, (y * 4) % SIZE) * 0.2f;
+            heights[y * SIZE + x] = v;
+        }
     }
+
+    // Convert height field to normal map via finite differences
+    std::vector<u8> pixels(SIZE * SIZE * 4);
+    constexpr f32 strength = 1.5f;
+    for (u32 y = 0; y < SIZE; ++y) {
+        for (u32 x = 0; x < SIZE; ++x) {
+            f32 hL = heights[y * SIZE + (x + SIZE - 1) % SIZE];
+            f32 hR = heights[y * SIZE + (x + 1) % SIZE];
+            f32 hD = heights[((y + SIZE - 1) % SIZE) * SIZE + x];
+            f32 hU = heights[((y + 1) % SIZE) * SIZE + x];
+            f32 dx = (hL - hR) * strength;
+            f32 dy = (hD - hU) * strength;
+            f32 dz = 1.0f;
+            f32 len = std::sqrt(dx * dx + dy * dy + dz * dz);
+            dx /= len; dy /= len; dz /= len;
+            u32 i = (y * SIZE + x) * 4;
+            pixels[i]     = static_cast<u8>(std::clamp((dx * 0.5f + 0.5f) * 255.0f, 0.0f, 255.0f));
+            pixels[i + 1] = static_cast<u8>(std::clamp((dy * 0.5f + 0.5f) * 255.0f, 0.0f, 255.0f));
+            pixels[i + 2] = static_cast<u8>(std::clamp((dz * 0.5f + 0.5f) * 255.0f, 0.0f, 255.0f));
+            pixels[i + 3] = 255;
+        }
+    }
+
+    m_water_normal = upload_texture_rgba(*m_rhi, pixels.data(), SIZE, SIZE);
+    if (!m_water_normal.image) {
+        log::error(TAG, "Failed to create water normal map");
+        return false;
+    }
+    log::info(TAG, "Water normal map created ({}x{})", SIZE, SIZE);
+    return true;
+}
+
+void Renderer::load_tileset_textures(const map::Tileset& tileset) {
+    vkDeviceWaitIdle(m_rhi->device());
+    if (m_terrain_material.layer_array.image) destroy_texture(*m_rhi, m_terrain_material.layer_array);
+    if (m_terrain_material.normal_array.image) destroy_texture(*m_rhi, m_terrain_material.normal_array);
+    m_terrain_material.has_normals = false;
 
     if (tileset.layers.empty()) {
         create_terrain_textures();
@@ -1177,7 +1260,7 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
         {100, 100, 100}, // 7: default gray
     };
 
-    constexpr u32 TEX_SIZE = 64;
+    constexpr u32 TEX_SIZE = 256;
     u32 layer_count = static_cast<u32>(tileset.layers.size());
     std::vector<std::vector<u8>> layer_pixels(layer_count);
     std::vector<const u8*> layer_ptrs(layer_count);
@@ -1209,9 +1292,17 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
         }
 
         if (!loaded) {
-            u32 ci = std::min(i, static_cast<u32>(std::size(fallback_colors) - 1));
-            layer_pixels[i] = generate_solid_texture(TEX_SIZE, fallback_colors[ci].r,
-                                                     fallback_colors[ci].g, fallback_colors[ci].b);
+            // Water layers: use tileset color as fallback
+            if (tl.type == map::LayerType::WaterShallow || tl.type == map::LayerType::WaterDeep) {
+                u8 r = static_cast<u8>(std::clamp(tl.water_color.x * 255.0f, 0.0f, 255.0f));
+                u8 g = static_cast<u8>(std::clamp(tl.water_color.y * 255.0f, 0.0f, 255.0f));
+                u8 b = static_cast<u8>(std::clamp(tl.water_color.z * 255.0f, 0.0f, 255.0f));
+                layer_pixels[i] = generate_solid_texture(TEX_SIZE, r, g, b);
+            } else {
+                u32 ci = std::min(i, static_cast<u32>(std::size(fallback_colors) - 1));
+                layer_pixels[i] = generate_solid_texture(TEX_SIZE, fallback_colors[ci].r,
+                                                         fallback_colors[ci].g, fallback_colors[ci].b);
+            }
         }
 
         layer_ptrs[i] = layer_pixels[i].data();
@@ -1221,7 +1312,73 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
                                                           layer_count, TEX_SIZE, TEX_SIZE);
     m_terrain_material.layer_count = layer_count;
 
-    log::info(TAG, "Tileset '{}' textures loaded — {} layers", tileset.name, layer_count);
+    // Load normal maps (optional — layers without normals get a flat default)
+    {
+        // Flat normal: (0.5, 0.5, 1.0) in tangent space = straight up
+        std::vector<u8> flat_normal(TEX_SIZE * TEX_SIZE * 4);
+        for (u32 p = 0; p < TEX_SIZE * TEX_SIZE; ++p) {
+            flat_normal[p * 4]     = 128;  // X = 0
+            flat_normal[p * 4 + 1] = 128;  // Y = 0
+            flat_normal[p * 4 + 2] = 255;  // Z = 1 (up)
+            flat_normal[p * 4 + 3] = 255;
+        }
+
+        std::vector<std::vector<u8>> normal_pixels(layer_count);
+        std::vector<const u8*> normal_ptrs(layer_count);
+        bool any_loaded = false;
+
+        for (u32 i = 0; i < layer_count; ++i) {
+            auto& tl = tileset.layers[i];
+            bool loaded = false;
+
+            if (!tl.normal_path.empty()) {
+                std::string abs_path = m_map_root + "/" + tl.normal_path;
+                auto tex_result = asset::load_texture(abs_path);
+                if (tex_result) {
+                    auto& tex_data = *tex_result;
+                    if (tex_data.width == TEX_SIZE && tex_data.height == TEX_SIZE && tex_data.channels == 4) {
+                        normal_pixels[i] = std::move(tex_data.pixels);
+                        loaded = true;
+                        any_loaded = true;
+                        log::info(TAG, "Loaded normal map '{}' for layer {} ({})",
+                                  tl.normal_path, tl.id, tl.name);
+                    } else {
+                        log::warn(TAG, "Normal map '{}' size {}x{} != {}x{}, using flat",
+                                  tl.normal_path, tex_data.width, tex_data.height, TEX_SIZE, TEX_SIZE);
+                    }
+                }
+            }
+
+            if (!loaded) {
+                normal_pixels[i] = flat_normal;
+            }
+            normal_ptrs[i] = normal_pixels[i].data();
+        }
+
+        if (any_loaded) {
+            m_terrain_material.normal_array = upload_texture_array(*m_rhi, normal_ptrs.data(),
+                                                                    layer_count, TEX_SIZE, TEX_SIZE, false);
+            m_terrain_material.has_normals = true;
+            log::info(TAG, "Terrain normal maps loaded");
+        }
+    }
+
+    // Compute water layer masks for water surface rendering
+    m_water_params = {};
+    for (u32 i = 0; i < layer_count; ++i) {
+        auto& tl = tileset.layers[i];
+        if (tl.type == map::LayerType::WaterShallow) {
+            m_water_params.water_mask |= (1u << tl.id);
+            m_water_params.shallow_color = tl.water_color;
+        } else if (tl.type == map::LayerType::WaterDeep) {
+            m_water_params.water_mask |= (1u << tl.id);
+            m_water_params.deep_mask  |= (1u << tl.id);
+            m_water_params.deep_color = tl.water_color;
+        }
+    }
+
+    log::info(TAG, "Tileset '{}' textures loaded — {} layers (water_mask=0x{:X})",
+              tileset.name, layer_count, m_water_params.water_mask);
 }
 
 // ── Pipeline creation helpers ─────────────────────────────────────────────
@@ -1764,6 +1921,118 @@ bool Renderer::create_terrain_pipeline() {
     vkDestroyShaderModule(device, vert, nullptr);
     vkDestroyShaderModule(device, frag, nullptr);
     log::info(TAG, "Terrain pipeline created (splatmap + shadow)");
+    return true;
+}
+
+bool Renderer::create_water_pipeline() {
+    VkDevice device = m_rhi->device();
+
+    VkShaderModule vert = load_shader(device, "engine/shaders/water.vert.spv");
+    VkShaderModule frag = load_shader(device, "engine/shaders/water.frag.spv");
+    if (!vert || !frag) {
+        log::error(TAG, "Failed to load water shaders");
+        if (vert) vkDestroyShaderModule(device, vert, nullptr);
+        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    // Same vertex layout as terrain
+    VkVertexInputBindingDescription terrain_binding{};
+    terrain_binding.binding   = 0;
+    terrain_binding.stride    = sizeof(TerrainVertex);
+    terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription terrain_attrs[5]{};
+    terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
+    terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal)};
+    terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(TerrainVertex, texcoord)};
+    terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, layer_corners)};
+    terrain_attrs[4] = {4, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, case_info)};
+
+    auto cfg = make_common_pipeline_state();
+    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
+    cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
+    cfg.vertex_input.vertexAttributeDescriptionCount  = 5;
+    cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
+
+    // Alpha blending: src_alpha, one_minus_src_alpha
+    cfg.blend_attachment.blendEnable         = VK_TRUE;
+    cfg.blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    cfg.blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cfg.blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
+    cfg.blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cfg.blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cfg.blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
+    // Re-point after copy (make_common_pipeline_state returns by value)
+    cfg.color_blend.pAttachments = &cfg.blend_attachment;
+
+    // Depth test ON, depth write OFF (don't occlude things behind water)
+    cfg.depth_stencil.depthWriteEnable = VK_FALSE;
+
+    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    cfg.stages[0].module = vert;
+    cfg.stages[0].pName  = "main";
+    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    cfg.stages[1].module = frag;
+    cfg.stages[1].pName  = "main";
+
+    // Water push constants: terrain base (144) + water params (48)
+    VkPushConstantRange push_range{};
+    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push_range.offset     = 0;
+    push_range.size       = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32)  // terrain base: 144
+                          + 2 * sizeof(glm::vec4) + 2 * sizeof(u32);                       // water: +40 = 184
+
+    VkDescriptorSetLayout water_layouts[] = {m_terrain_desc_layout, m_shadow_desc_layout};
+    VkPipelineLayoutCreateInfo layout_ci{};
+    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_ci.setLayoutCount         = 2;
+    layout_ci.pSetLayouts            = water_layouts;
+    layout_ci.pushConstantRangeCount = 1;
+    layout_ci.pPushConstantRanges    = &push_range;
+
+    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_water_pipeline_layout) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create water pipeline layout");
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    VkFormat color_format = m_rhi->swapchain_format();
+    VkFormat depth_format = m_rhi->depth_format();
+    VkPipelineRenderingCreateInfo rendering_ci{};
+    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering_ci.colorAttachmentCount    = 1;
+    rendering_ci.pColorAttachmentFormats = &color_format;
+    rendering_ci.depthAttachmentFormat   = depth_format;
+
+    VkGraphicsPipelineCreateInfo pipeline_ci{};
+    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.pNext               = &rendering_ci;
+    pipeline_ci.stageCount          = 2;
+    pipeline_ci.pStages             = cfg.stages;
+    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
+    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
+    pipeline_ci.pViewportState      = &cfg.viewport_state;
+    pipeline_ci.pRasterizationState = &cfg.rasterizer;
+    pipeline_ci.pMultisampleState   = &cfg.multisample;
+    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
+    pipeline_ci.pColorBlendState    = &cfg.color_blend;
+    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
+    pipeline_ci.layout              = m_water_pipeline_layout;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_water_pipeline) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create water pipeline");
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    vkDestroyShaderModule(device, vert, nullptr);
+    vkDestroyShaderModule(device, frag, nullptr);
+    log::info(TAG, "Water surface pipeline created");
     return true;
 }
 
@@ -2451,6 +2720,12 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
     glm::mat4 vp = m_camera.view_projection();
 
     // ── Draw terrain with splatmap pipeline ──────────────────────────────
+    glm::mat4 terrain_model{1.0f};
+    glm::mat4 terrain_mvp = vp * terrain_model;
+    glm::vec2 world_size = m_terrain_data
+        ? glm::vec2{m_terrain_data->world_width(), m_terrain_data->world_height()}
+        : glm::vec2{1.0f};
+
     if (m_terrain_pipeline && m_terrain.gpu_mesh.vertex_buffer && m_terrain_material.descriptor_set) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_terrain_pipeline);
         vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -2460,24 +2735,62 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 m_terrain_pipeline_layout, 0, 2, terrain_sets, 0, nullptr);
 
-        glm::mat4 terrain_model{1.0f};
-        glm::mat4 terrain_mvp = vp * terrain_model;
         struct {
             glm::mat4 mvp;
             glm::mat4 model;
             glm::vec2 world_size;
             f32 fog_enabled;
-            f32 _pad;
+            f32 time;
         } terrain_push{};
         terrain_push.mvp = terrain_mvp;
         terrain_push.model = terrain_model;
-        terrain_push.world_size = m_terrain_data
-            ? glm::vec2{m_terrain_data->world_width(), m_terrain_data->world_height()}
-            : glm::vec2{1.0f};
+        terrain_push.world_size = world_size;
         terrain_push.fog_enabled = m_fog_enabled ? 1.0f : 0.0f;
+        terrain_push.time = m_elapsed_time;
         vkCmdPushConstants(cmd, m_terrain_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(terrain_push), &terrain_push);
 
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
+    }
+
+    // ── Draw water surface (transparent overlay on terrain) ─────────────
+    if (m_water_pipeline && m_water_params.water_mask != 0 &&
+        m_terrain.gpu_mesh.vertex_buffer && m_terrain_material.descriptor_set) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_water_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        VkDescriptorSet terrain_sets[] = {m_terrain_material.descriptor_set, m_shadow_desc_set};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_water_pipeline_layout, 0, 2, terrain_sets, 0, nullptr);
+
+        struct {
+            glm::mat4 mvp;
+            glm::mat4 model;
+            glm::vec2 world_size;
+            f32 fog_enabled;
+            f32 time;
+            glm::vec4 shallow_color;
+            glm::vec4 deep_color;
+            u32 water_mask;
+            u32 deep_mask;
+        } water_push{};
+        water_push.mvp = terrain_mvp;
+        water_push.model = terrain_model;
+        water_push.world_size = world_size;
+        water_push.fog_enabled = m_fog_enabled ? 1.0f : 0.0f;
+        water_push.time = m_elapsed_time;
+        water_push.shallow_color = glm::vec4(m_water_params.shallow_color, 0.0f);
+        water_push.deep_color = glm::vec4(m_water_params.deep_color, 0.0f);
+        water_push.water_mask = m_water_params.water_mask;
+        water_push.deep_mask = m_water_params.deep_mask;
+        vkCmdPushConstants(cmd, m_water_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(water_push), &water_push);
+
+        // Same mesh as terrain — water shader discards non-water fragments
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
         vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -2497,6 +2810,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
     f32 frame_dt = std::chrono::duration<f32>(now - last_time).count();
     frame_dt = std::min(frame_dt, 0.1f);  // clamp to avoid huge jumps
     last_time = now;
+    m_elapsed_time += frame_dt;
 
     bool has_skinned_pipeline = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
 
@@ -2647,6 +2961,48 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         glm::mat4 view = m_camera.view_matrix();
         glm::vec3 cam_right{view[0][0], view[1][0], view[2][0]};
         glm::vec3 cam_up{view[0][1], view[1][1], view[2][1]};
+
+        // ── Water splash particles for units on shallow water ──────────
+        if (m_terrain_data && m_water_params.water_mask != 0) {
+            static f32 splash_timer = 0.0f;
+            splash_timer += frame_dt;
+            if (splash_timer >= 0.15f) {  // emit every ~150ms
+                splash_timer = 0.0f;
+                auto t_ids = transforms.ids();
+                auto t_data = transforms.data();
+                for (u32 i = 0; i < transforms.count(); ++i) {
+                    u32 id = t_ids[i];
+                    auto& tf = t_data[i];
+                    // Skip units hidden by fog of war
+                    if (is_fog_hidden(world, id, tf)) continue;
+                    // Check if unit is moving
+                    glm::vec3 delta = tf.position - tf.prev_position;
+                    f32 speed_sq = delta.x * delta.x + delta.y * delta.y;
+                    if (speed_sq < 1.0f) continue;  // standing still
+
+                    // Check if on shallow water tile
+                    auto tile = m_terrain_data->world_to_tile(tf.position.x, tf.position.y);
+                    u32 tx = static_cast<u32>(tile.x);
+                    u32 ty = static_cast<u32>(tile.y);
+                    if (tx >= m_terrain_data->tiles_x || ty >= m_terrain_data->tiles_y) continue;
+
+                    bool on_shallow = true;
+                    for (u32 vy = ty; vy <= ty + 1 && on_shallow; ++vy)
+                        for (u32 vx = tx; vx <= tx + 1 && on_shallow; ++vx) {
+                            u8 layer = m_terrain_data->tile_layer[vy * m_terrain_data->verts_x() + vx];
+                            on_shallow = (m_water_params.water_mask & (1u << layer)) != 0
+                                      && (m_water_params.deep_mask & (1u << layer)) == 0;
+                        }
+
+                    if (on_shallow) {
+                        glm::vec3 splash_pos = tf.position + glm::vec3{0, 0, 3.0f};
+                        m_particles.burst(splash_pos, 5,
+                            glm::vec4{0.7f, 0.78f, 0.85f, 0.3f},  // subtle blue-white
+                            60.0f, 0.5f, 10.0f, -100.0f);
+                    }
+                }
+            }
+        }
 
         // Update effect instances (follow units, continuous emission, expiry)
         m_effect_manager.update(frame_dt, [](simulation::Unit u, void* ctx) -> glm::vec3 {
