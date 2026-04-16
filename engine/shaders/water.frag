@@ -44,29 +44,45 @@ void main() {
     uint c3 = (frag_layer_corners >> 24u) & 0xFFu;
 
     float w0 = is_water(c0), w1 = is_water(c1), w2 = is_water(c2), w3 = is_water(c3);
+    float water_sum = w0 + w1 + w2 + w3;
 
     // No water on this tile at all
-    if (w0 + w1 + w2 + w3 == 0.0) discard;
+    if (water_sum == 0.0) discard;
 
-    // Compute water alpha by mirroring exact terrain blending logic
+    float d0 = is_deep(c0) ? 1.0 : 0.0;
+    float d1 = is_deep(c1) ? 1.0 : 0.0;
+    float d2 = is_deep(c2) ? 1.0 : 0.0;
+    float d3 = is_deep(c3) ? 1.0 : 0.0;
+
+    // Whether any corner is deep — for choosing noise at water/land edges
+    bool has_deep = (d0 + d1 + d2 + d3) > 0.0;
+    // Whether this tile has non-water corners (water/land boundary)
+    bool has_land = water_sum < 4.0;
+
+    // Compute water alpha + deep_blend (0=shallow, 1=deep) from same blending
     float water_alpha;
-    bool any_deep = false;
+    float deep_blend;
 
     if (c0 == c1 && c1 == c2 && c2 == c3) {
         // Uniform tile
         water_alpha = 1.0;
-        any_deep = is_deep(c0);
+        deep_blend = d0;
     } else {
         vec2 uv = fract(frag_tile_uv);
         uint ct[4] = uint[4](c0, c1, c2, c3);
 
-        // Water uses its OWN noise — different UV so the water edge
-        // follows a distinct curve from the terrain blend.
-        float noise = texture(transition_noise, frag_tile_uv * 1.4 + vec2(0.37, 0.71)).r;
-        float perturb = (noise - 0.5) * 0.28;
+        // When deep water touches land: match terrain noise exactly.
+        // When only shallow water touches land: puddle-like edges.
+        // When only water types meet (no land): match terrain noise.
+        float noise, perturb;
+        if (has_deep || !has_land) {
+            noise = texture(transition_noise, frag_tile_uv).r;
+            perturb = (noise - 0.5) * 0.22;  // identical to terrain.frag
+        } else {
+            noise = texture(transition_noise, frag_tile_uv * 1.4 + vec2(0.37, 0.71)).r;
+            perturb = (noise - 0.5) * 0.28;
+        }
 
-        // Base radius must be 0.5 so adjacent quarter-circles meet at tile edges.
-        // Different noise perturbation gives a distinct curve shape.
         vec2 cp[4] = vec2[4](vec2(0,0), vec2(1,0), vec2(0,1), vec2(1,1));
         float r = 0.5 + perturb;
         float sdf[4];
@@ -88,19 +104,23 @@ void main() {
         bool is_edge_h = (c0 == c1 && c2 == c3 && c0 != c2);
         bool is_edge_v = (c0 == c2 && c1 == c3 && c0 != c1);
 
+        // Edge style: deep/land → terrain-matching, shallow-only/land → puddle
+        float edge_freq = (has_deep || !has_land) ? 6.28318 : 12.56637;
+        float edge_amp = (has_deep || !has_land) ? 0.15 : 0.12;
+        float edge_smooth = (has_deep || !has_land) ? 0.06 : 0.05;
+
         if (is_edge_h) {
-            // Different curve shape: 4pi = two bumps per tile (terrain uses 2pi = one)
-            float curve = (1.0 - cos(uv.x * 12.56637)) * 0.5;
-            float wave = 0.5 + curve * 0.12 + perturb;
-            float t = smoothstep(-0.05, 0.05, uv.y - wave);
+            float curve = (1.0 - cos(uv.x * edge_freq)) * 0.5;
+            float wave = 0.5 + curve * edge_amp + perturb;
+            float t = smoothstep(-edge_smooth, edge_smooth, uv.y - wave);
             water_alpha = mix(w0, w2, t);
-            any_deep = is_deep(t < 0.5 ? c0 : c2);
+            deep_blend = mix(d0, d2, t);
         } else if (is_edge_v) {
-            float curve = (1.0 - cos(uv.y * 12.56637)) * 0.5;
-            float wave = 0.5 + curve * 0.12 + perturb;
-            float t = smoothstep(-0.05, 0.05, uv.x - wave);
+            float curve = (1.0 - cos(uv.y * edge_freq)) * 0.5;
+            float wave = 0.5 + curve * edge_amp + perturb;
+            float t = smoothstep(-edge_smooth, edge_smooth, uv.x - wave);
             water_alpha = mix(w0, w1, t);
-            any_deep = is_deep(t < 0.5 ? c0 : c1);
+            deep_blend = mix(d0, d1, t);
         } else {
             float best_sdf = 999.0;
             uint best_type = bg;
@@ -113,54 +133,88 @@ void main() {
                 if (ct[i] == best_type && sdf[i] < best_sdf) best_sdf = sdf[i];
             }
 
+            float bg_deep = is_deep(bg) ? 1.0 : 0.0;
+            float fg_deep = is_deep(best_type) ? 1.0 : 0.0;
+
             if (best_type == bg) {
                 water_alpha = is_water(bg);
-                any_deep = is_deep(bg);
+                deep_blend = bg_deep;
             } else {
-                float t = 1.0 - smoothstep(-0.05, 0.05, best_sdf);
+                float sdf_smooth = (has_deep || !has_land) ? 0.06 : 0.05;
+                float t = 1.0 - smoothstep(-sdf_smooth, sdf_smooth, best_sdf);
                 water_alpha = mix(is_water(bg), is_water(best_type), t);
-                any_deep = is_deep(t < 0.5 ? bg : best_type);
+                deep_blend = mix(bg_deep, fg_deep, t);
             }
         }
     }
 
-    // Shore strip: shrink water inward so dry riverbed is visible between
-    // the terrain blend edge and the water surface edge.
-    float shore = 0.3;
-    water_alpha = smoothstep(shore, shore + 0.15, water_alpha);
+    // Shore strip: only at water/land boundaries with no deep water.
+    // Deep water and shallow/deep transitions don't get shore shrink.
+    if (has_land && !has_deep) {
+        float shore = 0.3;
+        water_alpha = smoothstep(shore, shore + 0.15, water_alpha);
+    }
 
     if (water_alpha < 0.01) discard;
 
-    // Pick color based on water type (opacity no longer used — waves drive visibility)
-    vec3 tint_color = any_deep ? pc.deep_color.rgb : pc.shallow_color.rgb;
+    // Blend color between shallow and deep based on smooth deep_blend
+    vec3 tint_color = mix(pc.shallow_color.rgb, pc.deep_color.rgb, deep_blend);
 
-    // ── Water normal mapping: world-space, two layers at non-repeating scales ──
-    vec2 uv1 = frag_world_pos.xy * 0.0008 + pc.time * vec2(0.012, 0.007);
-    vec2 uv2 = frag_world_pos.xy * 0.0013 + pc.time * vec2(-0.009, 0.011);
+    vec2 wpos = frag_world_pos.xy;
+    float wt = pc.time;
+    vec3 water_n;
+    float wh = 0.0;
+    float pnoise = texture(transition_noise, wpos * 0.002).r * 6.28;
 
-    vec3 n1 = texture(water_normal_map, uv1).rgb * 2.0 - 1.0;
-    vec3 n2 = texture(water_normal_map, uv2).rgb * 2.0 - 1.0;
+    if (deep_blend < 0.5) {
+        // ── Shallow: hash noise normal map, two scrolling layers ─────────
+        vec2 uv1 = wpos * 0.0008 + wt * vec2(0.006, 0.0035);
+        vec2 uv2 = wpos * 0.0013 + wt * vec2(-0.0045, 0.0055);
+        vec3 n1 = texture(water_normal_map, uv1).rgb * 2.0 - 1.0;
+        vec3 n2 = texture(water_normal_map, uv2).rgb * 2.0 - 1.0;
+        water_n = normalize(vec3(n1.xy + n2.xy, n1.z + n2.z));
+        wh = (n1.x + n1.y + n2.x + n2.y) * 0.25;
+    } else {
+        // ── Deep: Gerstner waves (GPU Gems Ch.1) ────────────────────────
+        float nx = 0.0, ny = 0.0, nz = 0.0;
 
-    vec3 water_n = normalize(vec3(n1.xy + n2.xy, n1.z + n2.z));
+        // Wave 1: broad swell — very sparse
+        {
+            vec2 D = normalize(vec2(0.85, 0.5));
+            float w = 0.012, A = 0.8, phi = 0.5, Q = 0.85;
+            float phase = dot(D, wpos) * w + wt * phi + pnoise;
+            float S = sin(phase), C = cos(phase);
+            nx += D.x * w * A * C; ny += D.y * w * A * C; nz += Q * w * A * S; wh += A * S;
+        }
+        // Wave 2: medium cross wave
+        {
+            vec2 D = normalize(vec2(-0.5, 0.87));
+            float w = 0.03, A = 0.5, phi = 0.9, Q = 0.75;
+            float phase = dot(D, wpos) * w + wt * phi + pnoise * 0.8;
+            float S = sin(phase), C = cos(phase);
+            nx += D.x * w * A * C; ny += D.y * w * A * C; nz += Q * w * A * S; wh += A * S;
+        }
+        // Wave 3: fine ripple
+        {
+            vec2 D = normalize(vec2(0.3, -0.95));
+            float w = 0.06, A = 0.3, phi = 1.5, Q = 0.6;
+            float phase = dot(D, wpos) * w + wt * phi + pnoise * 1.1;
+            float S = sin(phase), C = cos(phase);
+            nx += D.x * w * A * C; ny += D.y * w * A * C; nz += Q * w * A * S; wh += A * S;
+        }
+        water_n = normalize(vec3(-nx, -ny, 1.0 - nz));
+    }
 
     // ── Specular highlights ─────────────────────────────────────────────
     vec3 light_dir = normalize(vec3(0.3, -0.5, 0.8));
     vec3 view_dir = normalize(vec3(0.0, -0.6, 1.0));
-    vec3 surface_normal = normalize(vec3(water_n.xy * 0.4, 1.0));
+    vec3 surface_normal = normalize(vec3(water_n.xy * 0.6, 1.0));
     vec3 half_vec = normalize(light_dir + view_dir);
-    float spec = pow(max(dot(surface_normal, half_vec), 0.0), 48.0);
+    float ndoth = max(dot(surface_normal, half_vec), 0.0);
+    float spec = pow(ndoth, 48.0);
 
     // Wave crest tint
-    float wave_intensity = max(water_n.x + water_n.y, 0.0) * 0.3;
-
-    // ── Spindrift: foam at shoreline driven by wave crests ─────────────
-    float foam = 0.0;
-    float edge_band = smoothstep(0.0, 0.4, water_alpha) * (1.0 - smoothstep(0.6, 1.0, water_alpha));
-    if (edge_band > 0.01) {
-        // Wave crest from both normal layers — foam where waves peak
-        float crest = max(n1.x + n1.y, 0.0) * max(n2.x + n2.y, 0.0);
-        foam = edge_band * smoothstep(0.02, 0.12, crest);
-    }
+    float wave_intensity = max(water_n.x + water_n.y, 0.0) * 0.5;
 
     // Fog
     float fog = 1.0;
@@ -168,22 +222,37 @@ void main() {
         fog = texture(fog_tex, frag_fog_uv).r;
     }
 
-    vec3 final_color;
-    float final_alpha;
+    // Shallow: crystal clear (waves + specular drive alpha)
+    vec3 shallow_color = mix(tint_color, vec3(1.0), spec / max(spec + wave_intensity, 0.01));
+    float shallow_alpha = (spec * 1.0 + wave_intensity * 0.4) * water_alpha;
 
-    if (any_deep) {
-        // Deep water: opaque, dark base + wave variation + specular
-        final_color = tint_color + vec3(wave_intensity * 0.1) + vec3(spec * 0.4);
-        final_alpha = water_alpha;
-    } else {
-        // Shallow water: crystal clear, only waves and specular visible
-        final_color = mix(tint_color, vec3(1.0), spec / max(spec + wave_intensity, 0.01));
-        final_alpha = (spec * 0.5 + wave_intensity * 0.15) * water_alpha;
+    // Fresnel edge brightening: thin water at shore catches more light
+    float fresnel = (1.0 - smoothstep(0.0, 0.5, water_alpha)) * water_alpha * 2.0;
+    shallow_color = mix(shallow_color, vec3(0.85, 0.9, 0.95), fresnel * 0.6);
+    shallow_alpha = clamp(shallow_alpha + fresnel * 0.3, 0.0, 1.0);
 
-        // Spindrift foam at shoreline
-        final_color = mix(final_color, vec3(0.9, 0.92, 0.88), foam);
-        final_alpha = clamp(final_alpha + foam * 0.7, 0.0, 1.0);
+    // Noise-driven shade: organic base variation
+    float shade1 = texture(transition_noise, wpos * 0.001 + wt * vec2(0.004, 0.003)).r;
+    float shade2 = texture(transition_noise, wpos * 0.0015 + wt * vec2(-0.003, 0.005)).r;
+    float shade = (shade1 + shade2) - 1.0;
+
+    // 1 Gerstner wave with noise-modulated amplitude (patchy, not uniform)
+    // and strong phase perturbation (bends the ridge)
+    float amp_mod = texture(transition_noise, wpos * 0.0008 + wt * vec2(0.002, 0.001)).r;
+    {
+        vec2 D = normalize(vec2(0.8, 0.55));
+        float w = 0.015, A = 0.6 * amp_mod, phi = 0.5, Q = 0.8;
+        float phase = dot(D, wpos) * w + wt * phi + pnoise * 2.0;
+        float S = sin(phase);
+        wh += A * S;
     }
+
+    vec3 deep_color = tint_color * (1.0 + shade * 0.35 + wh * 0.25) + vec3(spec * 0.15);
+    float deep_alpha = water_alpha;
+
+    // Smooth blend between shallow and deep
+    vec3 final_color = mix(shallow_color, deep_color, deep_blend);
+    float final_alpha = mix(shallow_alpha, deep_alpha, deep_blend);
 
     out_color = vec4(final_color * fog, final_alpha * fog);
 }

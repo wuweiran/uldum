@@ -41,7 +41,6 @@ struct TilesetLayer {
 
     // Water properties (only used when type is WaterShallow or WaterDeep)
     glm::vec3   water_color{0.1f, 0.3f, 0.5f};
-    f32         water_wave_speed = 0.4f;
 };
 
 struct Tileset {

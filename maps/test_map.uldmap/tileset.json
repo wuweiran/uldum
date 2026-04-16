@@ -7,8 +7,8 @@
         { "id": 3, "name": "shallow_water", "type": "water_shallow",
           "diffuse": "shared/assets/textures/terrain/riverbed.png",
           "normal": "shared/assets/textures/terrain/riverbed_normal.png",
-          "color": [0.18, 0.45, 0.55], "wave_speed": 0.2 },
+          "color": [0.18, 0.45, 0.55] },
         { "id": 4, "name": "deep_water", "type": "water_deep",
-          "color": [0.05, 0.12, 0.25], "wave_speed": 0.6 }
+          "color": [0.05, 0.12, 0.25] }
     ]
 }

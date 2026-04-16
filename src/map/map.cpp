@@ -194,7 +194,7 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
                                      lj["color"][1].get<f32>(),
                                      lj["color"][2].get<f32>()};
             }
-            layer.water_wave_speed = lj.value("wave_speed", 0.4f);
+            // wave_speed removed — unified across all water types
 
             m_tileset.layers.push_back(std::move(layer));
         }
