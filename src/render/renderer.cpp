@@ -3081,7 +3081,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             if (p.texture_id == ParticleSystem::SHAPE_GLOW && p.life > 0) {
                 f32 life_frac = p.life / p.max_life;
                 glm::vec3 color{p.start_color.r, p.start_color.g, p.start_color.b};
-                add_point_light(p.position, color, p.size * 20.0f, 3.0f * life_frac);
+                add_point_light(p.position, color, p.size * 20.0f, 0.6f * life_frac);
             }
         }
     }
