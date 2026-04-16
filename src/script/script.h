@@ -17,7 +17,7 @@ namespace sol { class state; }
 
 namespace uldum::simulation { class Simulation; struct World; class AbilityRegistry; }
 namespace uldum::map { class MapManager; }
-namespace uldum::render { class EffectRegistry; class EffectManager; }
+namespace uldum::render { class EffectRegistry; class EffectManager; class Renderer; }
 namespace uldum::audio { class AudioEngine; }
 namespace uldum::input { class SelectionState; class CommandSystem; }
 
@@ -68,7 +68,8 @@ public:
     bool init(simulation::Simulation& sim, map::MapManager& map,
               render::EffectRegistry* effects = nullptr,
               render::EffectManager* effect_mgr = nullptr,
-              audio::AudioEngine* audio = nullptr);
+              audio::AudioEngine* audio = nullptr,
+              render::Renderer* renderer = nullptr);
 
     void set_attach_point_fn(AttachPointFn fn) { m_attach_fn = std::move(fn); }
 
@@ -140,6 +141,7 @@ private:
     render::EffectRegistry*  m_effects    = nullptr;
     render::EffectManager*   m_effect_mgr = nullptr;
     audio::AudioEngine*      m_audio      = nullptr;
+    render::Renderer*        m_renderer   = nullptr;
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
     UnitUpdateFn             m_unit_update_fn;

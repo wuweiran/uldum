@@ -50,7 +50,7 @@ bool ParticleSystem::init(rhi::VulkanRhi& rhi) {
     m_vertex_mapped = info.pMappedData;
 
     m_particles.reserve(1024);
-    log::info(TAG, "Particle system initialized (max {} particles)", MAX_PARTICLES);
+    log::info(TAG, "Particle system initialized (max {} particles, procedural shapes)", MAX_PARTICLES);
     return true;
 }
 
@@ -77,10 +77,11 @@ void ParticleSystem::remove_emitter(u32 id) {
     std::erase_if(m_emitters, [id](const ParticleEmitter& e) { return e.id == id; });
 }
 
-void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity) {
+void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity, u32 texture_id, f32 spread) {
     ParticleEmitter e;
     e.position       = position;
-    e.shape          = EmitterShape::Sphere;
+    e.shape          = spread >= 0.9f ? EmitterShape::Sphere : EmitterShape::Point;
+    e.spread         = spread;
     e.particle_speed = speed;
     e.particle_life  = life;
     e.particle_size  = size;
@@ -89,7 +90,8 @@ void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 s
     e.gravity        = gravity;
     e.burst_count    = count;
     e.active         = true;
-    e.duration       = 0;  // dies immediately after burst
+    e.duration       = 0;
+    e.texture_id     = texture_id;
     m_emitters.push_back(e);
 }
 
@@ -118,6 +120,7 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
             });
         }
         p.velocity = dir * emitter.particle_speed;
+        p.texture_id = emitter.texture_id;
 
         m_particles.push_back(p);
     }
@@ -201,12 +204,13 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
 
         // Two triangles (6 vertices)
         u32 base = i * 6;
-        verts[base + 0] = {bl, color, {0, 0}};
-        verts[base + 1] = {br, color, {1, 0}};
-        verts[base + 2] = {tr, color, {1, 1}};
-        verts[base + 3] = {bl, color, {0, 0}};
-        verts[base + 4] = {tr, color, {1, 1}};
-        verts[base + 5] = {tl, color, {0, 1}};
+        u32 tid = p.texture_id;
+        verts[base + 0] = {bl, color, {0, 0}, tid};
+        verts[base + 1] = {br, color, {1, 0}, tid};
+        verts[base + 2] = {tr, color, {1, 1}, tid};
+        verts[base + 3] = {bl, color, {0, 0}, tid};
+        verts[base + 4] = {tr, color, {1, 1}, tid};
+        verts[base + 5] = {tl, color, {0, 1}, tid};
     }
 
     m_quad_count = max_quads;

@@ -23,7 +23,7 @@
 namespace uldum::rhi { class VulkanRhi; }
 namespace uldum::simulation { struct World; struct Transform; class Simulation; }
 namespace uldum::platform { struct InputState; }
-namespace uldum::map { struct TerrainData; struct Tileset; }
+namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentConfig; }
 
 namespace uldum::render {
 
@@ -63,6 +63,12 @@ public:
 
     // Set terrain data pointer for height/normal sampling (entity slope tilt).
     void set_terrain_data(const map::TerrainData* td) { m_terrain_data = td; }
+
+    // Set environment (sun, ambient, fog, skybox) from map config.
+    void set_environment(const map::EnvironmentConfig& env);
+
+    // Add a point light for this frame. Call before draw(). Cleared each frame.
+    void add_point_light(glm::vec3 position, glm::vec3 color, f32 radius, f32 intensity);
 
     // Set the fog of war visual grid for the local player. Called each frame before draw.
     // values: tiles_x * tiles_y floats (0.0=black .. 1.0=fully visible).
@@ -151,6 +157,17 @@ private:
     VkPipelineLayout m_skinned_shadow_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_skinned_shadow_pipeline        = VK_NULL_HANDLE;
 
+    // Skybox pipeline (set 0 = cubemap, push constant = VP without translation)
+    VkDescriptorSetLayout m_skybox_desc_layout = VK_NULL_HANDLE;
+    VkPipelineLayout m_skybox_pipeline_layout  = VK_NULL_HANDLE;
+    VkPipeline       m_skybox_pipeline         = VK_NULL_HANDLE;
+    VkDescriptorSet  m_skybox_desc_set         = VK_NULL_HANDLE;
+    GpuTexture       m_skybox_cubemap{};
+    GpuMesh          m_skybox_mesh{};
+    bool             m_has_skybox = false;
+    bool create_skybox_pipeline();
+    bool create_skybox_mesh();
+
     // Shadow depth pass pipeline (push constant = light MVP, depth-only)
     VkPipelineLayout m_shadow_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_shadow_pipeline        = VK_NULL_HANDLE;
@@ -161,6 +178,29 @@ private:
     ShadowMap       m_shadow_map{};
     ShadowBuffer    m_shadow_ubo{};
     VkDescriptorSet m_shadow_desc_set = VK_NULL_HANDLE;
+
+    // Environment lighting (UBO at set 1 binding 2, cubemap at set 1 binding 3)
+    static constexpr u32 MAX_POINT_LIGHTS = 8;
+
+    struct PointLight {
+        glm::vec4 position;  // xyz = world pos, w = radius
+        glm::vec4 color;     // rgb = color, a = intensity
+    };
+
+    struct EnvironmentUBO {
+        glm::vec4 sun_direction{-0.4f, -0.5f, 0.8f, 1.0f};  // xyz = dir, w = intensity
+        glm::vec4 sun_color{1.0f, 1.0f, 0.9f, 0.0f};       // rgb, a = unused
+        glm::vec4 ambient_color{0.15f, 0.15f, 0.2f, 0.25f}; // rgb, a = intensity
+        glm::vec4 fog_color{0.5f, 0.5f, 0.6f, 0.0f};       // rgb, a = density
+        glm::ivec4 light_count{0, 0, 0, 0};                 // x = active point light count
+        PointLight lights[MAX_POINT_LIGHTS]{};
+    };
+    VkBuffer      m_env_ubo_buffer = VK_NULL_HANDLE;
+    VmaAllocation m_env_ubo_alloc  = VK_NULL_HANDLE;
+    void*         m_env_ubo_mapped = nullptr;
+    GpuTexture    m_default_cubemap{};  // 1x1 fallback when no skybox
+    glm::vec3     m_sun_direction{-0.4f, -0.5f, 0.8f};  // cached for shadow pass
+    EnvironmentUBO m_env_data{};  // cached, updated with point lights each frame
 
     // Default texture for untextured meshes
     GpuTexture      m_default_texture{};

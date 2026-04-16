@@ -46,7 +46,9 @@ void EffectRegistry::load_from_json(const std::string& path) {
         def.size      = val.value("size", 8.0f);
         def.gravity   = val.value("gravity", -200.0f);
         def.emit_rate = val.value("emit_rate", 0.0f);
+        def.spread    = val.value("spread", 1.0f);
 
+        def.texture = val.value("texture", "");
         if (val.contains("start_color")) {
             auto& c = val["start_color"];
             def.start_color = {c.value("r", 1.0f), c.value("g", 1.0f), c.value("b", 1.0f), c.value("a", 1.0f)};
@@ -63,6 +65,16 @@ void EffectRegistry::load_from_json(const std::string& path) {
     if (count > 0) log::info(TAG, "Loaded {} effects from '{}'", count, path);
 }
 
+void EffectRegistry::resolve_textures(const ParticleSystem&) {
+    for (auto& [name, def] : m_defs) {
+        if (def.texture == "spark")        def.texture_id = ParticleSystem::SHAPE_SPARK;
+        else if (def.texture == "blood")   def.texture_id = ParticleSystem::SHAPE_BLOOD;
+        else if (def.texture == "glow")    def.texture_id = ParticleSystem::SHAPE_GLOW;
+        else if (def.texture == "droplet") def.texture_id = ParticleSystem::SHAPE_DROPLET;
+        else                               def.texture_id = ParticleSystem::SHAPE_DEFAULT;
+    }
+}
+
 // ── EffectManager ─────────────────────────────────────────────────────────
 
 u32 EffectManager::create(const std::string& name, glm::vec3 position) {
@@ -77,7 +89,7 @@ u32 EffectManager::create(const std::string& name, glm::vec3 position) {
 
     // If burst-only, spawn initial burst
     if (def->count > 0 && def->emit_rate <= 0 && m_particles) {
-        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity);
+        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
     }
 
     m_instances.push_back(std::move(inst));
@@ -97,7 +109,7 @@ u32 EffectManager::create_on_unit(const std::string& name, simulation::Unit unit
     inst.duration      = -1;
 
     if (def->count > 0 && def->emit_rate <= 0 && m_particles) {
-        m_particles->burst(inst.position, def->count, def->start_color, def->speed, def->life, def->size);
+        m_particles->burst(inst.position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
     }
 
     m_instances.push_back(std::move(inst));
@@ -109,7 +121,7 @@ void EffectManager::play(const std::string& name, glm::vec3 position) {
     if (!def) { log::warn(TAG, "Unknown effect '{}'", name); return; }
 
     if (m_particles) {
-        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity);
+        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
     }
     // No instance needed for fire-and-forget with no continuous emission
     if (def->emit_rate > 0) {
@@ -129,7 +141,7 @@ void EffectManager::play_on_unit(const std::string& name, simulation::Unit unit,
     glm::vec3 pos = unit_pos;
     pos.z += 32.0f;
     if (m_particles) {
-        m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size, def->gravity);
+        m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
     }
     if (def->emit_rate > 0) {
         EffectInstance inst;

@@ -1,21 +1,25 @@
 {
     "hit_spark": {
         "count": 5, "speed": 80, "life": 0.3, "size": 6, "gravity": -100,
+        "texture": "spark",
         "start_color": { "r": 1, "g": 0.7, "b": 0.2, "a": 1 },
         "end_color": { "r": 1, "g": 0.3, "b": 0, "a": 0 }
     },
     "death_burst": {
         "count": 20, "speed": 150, "life": 0.6, "size": 10, "gravity": -200,
+        "texture": "blood",
         "start_color": { "r": 0.8, "g": 0.1, "b": 0.1, "a": 1 },
         "end_color": { "r": 0.3, "g": 0, "b": 0, "a": 0 }
     },
     "heal_glow": {
-        "count": 25, "speed": 50, "life": 1.2, "size": 12, "gravity": 120,
+        "count": 15, "speed": 120, "life": 1.2, "size": 25, "gravity": 0, "spread": 0.03,
+        "texture": "glow",
         "start_color": { "r": 1, "g": 0.85, "b": 0.2, "a": 1 },
         "end_color": { "r": 1, "g": 0.7, "b": 0.1, "a": 0 }
     },
     "spell_cast": {
         "count": 15, "speed": 100, "life": 0.4, "size": 7, "gravity": -50,
+        "texture": "spark",
         "start_color": { "r": 0.3, "g": 0.5, "b": 1, "a": 1 },
         "end_color": { "r": 0.1, "g": 0.2, "b": 0.8, "a": 0 }
     }

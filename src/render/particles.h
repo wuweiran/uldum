@@ -6,6 +6,7 @@
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
+#include <span>
 #include <vector>
 
 // Forward declare Vulkan types to avoid pulling vulkan.h into script module
@@ -22,6 +23,7 @@ struct ParticleVertex {
     glm::vec3 position;
     glm::vec4 color;
     glm::vec2 texcoord;
+    u32       texture_id = 0;  // index into particle texture array
 };
 
 // Single particle state (CPU)
@@ -34,6 +36,7 @@ struct Particle {
     f32 max_life = 1;
     f32 size     = 8;
     f32 gravity  = -200.0f;
+    u32 texture_id = 0;
 };
 
 // Emitter shapes
@@ -59,6 +62,7 @@ struct ParticleEmitter {
     u32          burst_count  = 0;         // >0: spawn this many immediately, then deactivate
 
     u32          id           = 0;         // for external tracking
+    u32          texture_id   = 0;         // particle texture (0 = default soft circle)
 };
 
 // The particle system — manages emitters, particles, and GPU buffer
@@ -74,7 +78,7 @@ public:
     void remove_emitter(u32 id);
 
     // Spawn a one-shot burst at a position
-    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f);
+    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f, u32 texture_id = 0, f32 spread = 1.0f);
 
     // Update particles (spawn, simulate, kill dead). Call once per frame.
     void update(f32 dt);
@@ -88,6 +92,14 @@ public:
 
     u32 particle_count() const { return static_cast<u32>(m_particles.size()); }
     u32 quad_count()     const { return m_quad_count; }
+    std::span<const Particle> particle_data() const { return m_particles; }
+
+    // Procedural shape IDs (computed in fragment shader, no textures needed)
+    static constexpr u32 SHAPE_DEFAULT = 0;  // soft circle
+    static constexpr u32 SHAPE_SPARK   = 1;  // 4-pointed star
+    static constexpr u32 SHAPE_BLOOD   = 2;  // irregular splatter
+    static constexpr u32 SHAPE_GLOW    = 3;  // gaussian orb
+    static constexpr u32 SHAPE_DROPLET = 4;  // teardrop
 
 private:
     void spawn_from_emitter(ParticleEmitter& emitter, u32 count);

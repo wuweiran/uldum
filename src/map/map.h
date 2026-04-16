@@ -63,6 +63,28 @@ struct Tileset {
     }
 };
 
+// Environment settings — drives skybox, lighting, fog
+struct EnvironmentConfig {
+    // Sun / directional light
+    glm::vec3 sun_direction{-0.4f, -0.5f, 0.8f};  // WC3-style: shadows to upper-right
+    glm::vec3 sun_color{1.0f, 1.0f, 0.9f};
+    f32       sun_intensity = 1.0f;
+
+    // Ambient fill light
+    glm::vec3 ambient_color{0.15f, 0.15f, 0.2f};
+    f32       ambient_intensity = 0.25f;
+
+    // Fog (matches skybox horizon)
+    glm::vec3 fog_color{0.5f, 0.5f, 0.6f};
+
+    // Skybox cubemap face paths (relative to map root). Empty = no skybox.
+    std::string skybox_right, skybox_left;
+    std::string skybox_top, skybox_bottom;
+    std::string skybox_front, skybox_back;
+
+    bool has_skybox() const { return !skybox_right.empty(); }
+};
+
 struct MapManifest {
     std::string id;
     std::string name;
@@ -94,6 +116,9 @@ struct MapManifest {
     // Input configuration
     std::string input_preset = "rts";
     nlohmann::json input_bindings_json;  // raw "bindings" object from manifest
+
+    // Environment (skybox, lighting, fog)
+    EnvironmentConfig environment;
 };
 
 struct PlacedUnit {

@@ -9,6 +9,23 @@
     "suggested_players": "1",
     "fog_of_war": "explored",
 
+    "environment": {
+        "sun_direction": [0.3, -0.5, 0.8],
+        "sun_color": [1.0, 1.0, 0.9],
+        "sun_intensity": 1.0,
+        "ambient_color": [0.15, 0.15, 0.2],
+        "ambient_intensity": 0.25,
+        "fog_color": [0.5, 0.5, 0.6],
+        "skybox": {
+            "right":  "shared/assets/textures/skybox/right.png",
+            "left":   "shared/assets/textures/skybox/left.png",
+            "top":    "shared/assets/textures/skybox/top.png",
+            "bottom": "shared/assets/textures/skybox/bottom.png",
+            "front":  "shared/assets/textures/skybox/front.png",
+            "back":   "shared/assets/textures/skybox/back.png"
+        }
+    },
+
     "players": [
         { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" },
         { "slot": 1, "type": "computer", "team": 1, "name": "Creeps", "color": "green" }

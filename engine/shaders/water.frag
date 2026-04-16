@@ -6,6 +6,14 @@ layout(set = 0, binding = 2) uniform sampler2D transition_noise;
 layout(set = 0, binding = 3) uniform sampler2DArray terrain_normals;
 layout(set = 0, binding = 4) uniform sampler2D water_normal_map;
 
+layout(set = 1, binding = 2) uniform EnvironmentData {
+    vec4 sun_direction;
+    vec4 sun_color;
+    vec4 ambient_color;
+    vec4 fog_color;
+} env;
+layout(set = 1, binding = 3) uniform samplerCube env_cubemap;
+
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
     mat4 model;
@@ -206,7 +214,7 @@ void main() {
     }
 
     // ── Specular highlights ─────────────────────────────────────────────
-    vec3 light_dir = normalize(vec3(0.3, -0.5, 0.8));
+    vec3 light_dir = normalize(env.sun_direction.xyz);
     vec3 view_dir = normalize(vec3(0.0, -0.6, 1.0));
     vec3 surface_normal = normalize(vec3(water_n.xy * 0.6, 1.0));
     vec3 half_vec = normalize(light_dir + view_dir);
@@ -216,15 +224,20 @@ void main() {
     // Wave crest tint
     float wave_intensity = max(water_n.x + water_n.y, 0.0) * 0.5;
 
+    // Cubemap reflection: reflect view off water surface
+    vec3 reflected = reflect(-view_dir, surface_normal);
+    vec3 env_reflect = texture(env_cubemap, reflected).rgb;
+
     // Fog
     float fog = 1.0;
     if (pc.fog_enabled > 0.5) {
         fog = texture(fog_tex, frag_fog_uv).r;
     }
 
-    // Shallow: crystal clear (waves + specular drive alpha)
-    vec3 shallow_color = mix(tint_color, vec3(1.0), spec / max(spec + wave_intensity, 0.01));
-    float shallow_alpha = (spec * 1.0 + wave_intensity * 0.4) * water_alpha;
+    // Shallow: crystal clear + wave-varying reflection
+    float reflect_strength = 0.1 + wave_intensity * 0.3;  // stronger on crests
+    vec3 shallow_color = mix(tint_color, env_reflect, reflect_strength) + vec3(spec * 0.3);
+    float shallow_alpha = (spec * 0.8 + wave_intensity * 0.4 + 0.1) * water_alpha;
 
     // Fresnel edge brightening: thin water at shore catches more light
     float fresnel = (1.0 - smoothstep(0.0, 0.5, water_alpha)) * water_alpha * 2.0;
@@ -247,7 +260,10 @@ void main() {
         wh += A * S;
     }
 
-    vec3 deep_color = tint_color * (1.0 + shade * 0.35 + wh * 0.25) + vec3(spec * 0.15);
+    // Deep: base color + noise shade + Gerstner + wave-varying reflection
+    vec3 deep_base = tint_color * (1.0 + shade * 0.35 + wh * 0.25);
+    float deep_reflect = 0.1 + wave_intensity * 0.35;  // stronger on crests
+    vec3 deep_color = mix(deep_base, env_reflect, deep_reflect) + vec3(spec * 0.15);
     float deep_alpha = water_alpha;
 
     // Smooth blend between shallow and deep

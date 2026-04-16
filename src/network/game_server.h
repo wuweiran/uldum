@@ -5,7 +5,7 @@
 
 namespace uldum::asset { class AssetManager; }
 namespace uldum::map { class MapManager; }
-namespace uldum::render { class EffectRegistry; class EffectManager; }
+namespace uldum::render { class EffectRegistry; class EffectManager; class Renderer; }
 namespace uldum::audio { class AudioEngine; }
 
 namespace uldum::network {
@@ -23,7 +23,8 @@ public:
     bool init_game(map::MapManager& map,
                    render::EffectRegistry* effects = nullptr,
                    render::EffectManager* effect_mgr = nullptr,
-                   audio::AudioEngine* audio = nullptr);
+                   audio::AudioEngine* audio = nullptr,
+                   render::Renderer* renderer = nullptr);
 
     void shutdown();
 

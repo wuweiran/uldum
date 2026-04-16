@@ -23,7 +23,8 @@ bool GameServer::init_simulation(asset::AssetManager& assets) {
 bool GameServer::init_game(map::MapManager& map,
                            render::EffectRegistry* effects,
                            render::EffectManager* effect_mgr,
-                           audio::AudioEngine* audio) {
+                           audio::AudioEngine* audio,
+                           render::Renderer* renderer) {
     // Alliances from manifest
     {
         auto& manifest = map.manifest();
@@ -75,7 +76,7 @@ bool GameServer::init_game(map::MapManager& map,
     }
 
     // Scripting
-    if (!m_script.init(m_simulation, map, effects, effect_mgr, audio)) {
+    if (!m_script.init(m_simulation, map, effects, effect_mgr, audio, renderer)) {
         log::error(TAG, "ScriptEngine init failed");
         return false;
     }

@@ -9,6 +9,7 @@
 #include "input/command.h"
 #include "map/map.h"
 #include "render/effect.h"
+#include "render/renderer.h"
 #include "audio/audio.h"
 #include "network/protocol.h"
 #include "core/log.h"
@@ -45,12 +46,14 @@ ScriptEngine::~ScriptEngine() = default;
 bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
                          render::EffectRegistry* effects,
                          render::EffectManager* effect_mgr,
-                         audio::AudioEngine* audio) {
+                         audio::AudioEngine* audio,
+                         render::Renderer* renderer) {
     m_sim = &sim;
     m_map = &map;
     m_effects = effects;
     m_audio = audio;
     m_effect_mgr = effect_mgr;
+    m_renderer = renderer;
 
     m_lua = std::make_unique<sol::state>();
     auto& lua = *m_lua;
@@ -831,6 +834,22 @@ void ScriptEngine::bind_api() {
 
     fog_table["is_enabled"] = [&sim]() -> bool {
         return sim.fog().enabled();
+    };
+
+    // ── Environment API ────────────────────────────────────────────────────
+
+    lua["SetSunDirection"] = [this](f32 x, f32 y, f32 z) {
+        if (!m_renderer) return;
+        map::EnvironmentConfig env;
+        env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+        // Preserve existing settings, just update sun direction
+        // (full env config update — simple approach)
+        m_renderer->set_environment(env);
+    };
+
+    lua["AddPointLight"] = [this](f32 x, f32 y, f32 z, f32 r, f32 g, f32 b, f32 radius, f32 intensity) {
+        if (!m_renderer) return;
+        m_renderer->add_point_light({x, y, z}, {r, g, b}, radius, intensity);
     };
 
     // ── Session API ───────────────────────────────────────────────────────

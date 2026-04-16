@@ -10,6 +10,18 @@ layout(set = 1, binding = 0) uniform ShadowData {
     mat4 light_vp;
 } shadow;
 layout(set = 1, binding = 1) uniform sampler2DShadow shadow_map;
+struct PointLight {
+    vec4 position;
+    vec4 color;
+};
+layout(set = 1, binding = 2) uniform EnvironmentData {
+    vec4 sun_direction;
+    vec4 sun_color;
+    vec4 ambient_color;
+    vec4 fog_color;
+    ivec4 light_count;
+    PointLight lights[8];
+} env;
 
 layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
@@ -37,7 +49,7 @@ void main() {
     vec3 albedo = texture(diffuse_tex, frag_texcoord).rgb;
 
     // Directional sun light (game coords: X=right, Y=forward, Z=up)
-    vec3 light_dir = normalize(vec3(0.3, -0.5, 0.8));
+    vec3 light_dir = normalize(env.sun_direction.xyz);
     float ndotl = max(dot(normal, light_dir), 0.0);
 
     // Shadow
@@ -53,8 +65,22 @@ void main() {
         shadow_factor = shadow_pcf(light_ndc);
     }
 
-    float ambient = 0.25;
-    float lighting = ambient + (1.0 - ambient) * ndotl * shadow_factor;
+    float ambient = env.ambient_color.a;
+    vec3 lighting = env.ambient_color.rgb * ambient
+                  + env.sun_color.rgb * (1.0 - ambient) * ndotl * shadow_factor;
 
-    out_color = vec4(albedo * lighting, 1.0);
+    vec3 lit = albedo * lighting;
+
+    for (int i = 0; i < env.light_count.x; i++) {
+        vec3 lv = env.lights[i].position.xyz - frag_world_pos;
+        float d = length(lv);
+        float r = env.lights[i].position.w;
+        if (d < r) {
+            float atten = (1.0 - d / r); atten *= atten;
+            float nl = max(dot(normal, normalize(lv)), 0.0);
+            lit += albedo * env.lights[i].color.rgb * env.lights[i].color.a * nl * atten;
+        }
+    }
+
+    out_color = vec4(lit, 1.0);
 }

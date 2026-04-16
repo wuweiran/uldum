@@ -31,6 +31,11 @@ GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width,
 GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32 layer_count,
                                 u32 width, u32 height, bool srgb = true);
 
+// Upload 6 RGBA faces as a samplerCube. Face order: +X, -X, +Y, -Y, +Z, -Z.
+// Each face must be width*height*4 bytes.
+GpuTexture upload_texture_cubemap(rhi::VulkanRhi& rhi, const u8* faces[6],
+                                  u32 width, u32 height);
+
 void destroy_texture(rhi::VulkanRhi& rhi, GpuTexture& tex);
 
 } // namespace uldum::render

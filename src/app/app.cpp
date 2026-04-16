@@ -129,10 +129,11 @@ bool App::start_session() {
     m_renderer.set_map_root(m_map.map_root());
     m_audio.set_map_root(m_map.map_root());
 
-    // Load map-defined effects
+    // Load map-defined effects and resolve particle textures
     {
         std::string effects_path = m_map.map_root() + "/types/effects.json";
         m_renderer.effect_registry().load_from_json(effects_path);
+        m_renderer.effect_registry().resolve_textures(m_renderer.particles());
     }
 
     // Set water layer IDs on terrain from tileset
@@ -144,6 +145,7 @@ bool App::start_session() {
 
     // Load tileset textures and feed terrain data to renderer
     m_renderer.load_tileset_textures(m_map.tileset());
+    m_renderer.set_environment(m_map.manifest().environment);
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(m_map.terrain());
         m_renderer.set_terrain_data(&m_map.terrain());
@@ -154,7 +156,7 @@ bool App::start_session() {
     // Game server phase 2 (offline/host only — client doesn't run the simulation)
     if (!is_client) {
         if (!m_server.init_game(m_map,
-                                &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio)) {
+                                &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio, &m_renderer)) {
             log::error(TAG, "GameServer game init failed");
             return false;
         }

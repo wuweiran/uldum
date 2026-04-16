@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 14c complete. MSAA anti-aliasing.
+Phase 14f complete. Skybox, environment lighting, water rendering, particle shapes, point lights.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -155,6 +155,26 @@ Phase 14c complete. MSAA anti-aliasing.
   - Single multi-draw-indirect call for all static geometry
   - CPU frustum culling: bounding sphere vs camera frustum, skips off-screen entities
   - 4x MSAA anti-aliasing (multisampled color + depth, resolve to swapchain)
+- Water rendering (Phase 14d/e):
+  - Tileset-driven terrain textures (sampler2DArray, 256x256)
+  - SDF curve-based terrain type transitions with noise perturbation
+  - Terrain normal maps (UNORM format)
+  - Shallow water: transparent surface, riverbed visible, Fresnel edge glow
+  - Deep water: opaque with Gerstner wave normals + noise-driven shade
+  - Smooth shallow/deep transition via `deep_blend`
+  - Shore shrink for shallow water edges
+  - Cubemap environment reflection on water surface
+  - Splash particles on units walking through shallow water (fog-aware)
+  - Pathfinding: ground units walk on shallow water, blocked by deep water
+- Skybox and environment lighting (Phase 14f):
+  - Map-defined cubemap skybox (6 PNG faces, optional)
+  - EXR-to-cubemap converter script (`scripts/convert_skybox.py`)
+  - Environment config in manifest.json (sun direction/color, ambient, fog)
+  - Environment UBO replacing hardcoded lighting in all shaders
+  - Dynamic point light system (8 lights, quadratic falloff)
+  - Glow particle effects cast point lights on surrounding surfaces
+  - Procedural particle shapes: soft circle, spark, blood splatter, glow beam, water droplet
+  - Lua API: SetSunDirection, AddPointLight
 - Ninja build system for parallel compilation
 
 ## Prerequisites

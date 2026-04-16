@@ -28,8 +28,11 @@ struct EffectDef {
     f32       size        = 8;
     f32       gravity     = -200;
     f32       emit_rate   = 0;       // >0: continuous emission (particles/sec), 0: burst only
+    f32       spread      = 1.0f;   // 0 = straight up, 1 = full sphere
     glm::vec4 start_color{1, 0.8f, 0.2f, 1};
     glm::vec4 end_color{1, 0.2f, 0, 0};
+    std::string texture;       // texture name: "spark", "blood", "glow", "droplet" (empty = default)
+    u32       texture_id = 0;  // resolved particle texture ID (0 = default soft circle)
 };
 
 // ── Effect instance ───────────────────────────────────────────────────────
@@ -56,6 +59,9 @@ public:
     void define(const std::string& name, const EffectDef& def);
     const EffectDef* get(const std::string& name) const;
     void load_from_json(const std::string& path);
+
+    // Resolve texture names to particle system texture IDs
+    void resolve_textures(const ParticleSystem& ps);
 
 private:
     std::unordered_map<std::string, EffectDef> m_defs;
@@ -84,6 +90,9 @@ public:
     // unit_pos_fn: callback to get current unit position (avoids depending on World).
     using UnitPosFn = glm::vec3(*)(simulation::Unit, void* ctx);
     void update(f32 dt, UnitPosFn get_pos, void* ctx);
+
+    // Access live instances for point light collection
+    const std::vector<EffectInstance>& instances() const { return m_instances; }
 
 private:
     ParticleSystem*  m_particles = nullptr;

@@ -45,13 +45,13 @@ private:
     void recalculate();
 
     // Game coordinates: X=right, Y=forward, Z=up
-    glm::vec3 m_position{2880.0f, 1920.0f, 1600.0f};
-    f32 m_pitch = -0.8f;   // radians, negative = looking down
+    glm::vec3 m_position{2880.0f, 1920.0f, 1650.0f};  // WC3 default height
+    f32 m_pitch = -0.98f;  // ~56 degrees down (WC3 angle of attack ~304)
     f32 m_yaw   = 0.0f;    // 0 = looking toward +Y (forward)
 
     f32 m_move_speed   = 1280.0f;
     f32 m_height_speed = 640.0f;
-    f32 m_fov    = 0.785f;  // ~45 degrees
+    f32 m_fov    = 1.22f;   // ~70 degrees (WC3-like)
     f32 m_aspect = 16.0f / 9.0f;
     f32 m_near   = 1.0f;
     f32 m_far    = 64000.0f;

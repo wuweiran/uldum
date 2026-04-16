@@ -107,18 +107,20 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
 
     if (!create_descriptor_layouts()) return false;
     if (!create_bindless_resources()) return false;
-    if (!create_shadow_resources()) return false;
     if (!create_default_texture()) return false;
+    if (!create_shadow_resources()) return false;
     if (!create_terrain_textures()) return false;
     if (!create_transition_noise()) return false;
     if (!create_water_normal()) return false;
     if (!create_mesh_pipeline()) return false;
     if (!create_skinned_mesh_pipeline()) return false;
+    if (!m_particles.init(rhi)) return false;  // must be before particle pipeline (creates desc layout)
     if (!create_particle_pipeline()) return false;
     if (!create_terrain_pipeline()) return false;
     if (!create_water_pipeline()) return false;
+    if (!create_skybox_pipeline()) return false;
+    if (!create_skybox_mesh()) return false;
     if (!create_shadow_pipeline()) return false;
-    if (!m_particles.init(rhi)) return false;
     m_effect_registry.register_defaults();
     m_effect_manager.set_particles(&m_particles);
     m_effect_manager.set_registry(&m_effect_registry);
@@ -316,6 +318,11 @@ void Renderer::shutdown() {
     // Destroy shadow resources
     destroy_shadow_map(*m_rhi, m_shadow_map);
     destroy_shadow_buffer(*m_rhi, m_shadow_ubo);
+    if (m_env_ubo_buffer) {
+        vmaDestroyBuffer(m_rhi->allocator(), m_env_ubo_buffer, m_env_ubo_alloc);
+        m_env_ubo_buffer = VK_NULL_HANDLE;
+    }
+    if (m_default_cubemap.image) destroy_texture(*m_rhi, m_default_cubemap);
 
     // Destroy pipelines
     if (m_particle_pipeline)              vkDestroyPipeline(device, m_particle_pipeline, nullptr);
@@ -330,6 +337,11 @@ void Renderer::shutdown() {
     if (m_shadow_pipeline_layout)  vkDestroyPipelineLayout(device, m_shadow_pipeline_layout, nullptr);
     if (m_water_pipeline)          vkDestroyPipeline(device, m_water_pipeline, nullptr);
     if (m_water_pipeline_layout)   vkDestroyPipelineLayout(device, m_water_pipeline_layout, nullptr);
+    if (m_skybox_pipeline)         vkDestroyPipeline(device, m_skybox_pipeline, nullptr);
+    if (m_skybox_pipeline_layout)  vkDestroyPipelineLayout(device, m_skybox_pipeline_layout, nullptr);
+    if (m_skybox_desc_layout)      vkDestroyDescriptorSetLayout(device, m_skybox_desc_layout, nullptr);
+    if (m_skybox_cubemap.image)    destroy_texture(*m_rhi, m_skybox_cubemap);
+    destroy_mesh(m_rhi->allocator(), m_skybox_mesh);
     if (m_terrain_pipeline)        vkDestroyPipeline(device, m_terrain_pipeline, nullptr);
     if (m_terrain_pipeline_layout) vkDestroyPipelineLayout(device, m_terrain_pipeline_layout, nullptr);
     if (m_mesh_pipeline)           vkDestroyPipeline(device, m_mesh_pipeline, nullptr);
@@ -502,6 +514,110 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
     }
 
     return {AnimState::Idle, 0, false};
+}
+
+void Renderer::set_environment(const map::EnvironmentConfig& env) {
+    if (!m_env_ubo_mapped) return;
+
+    EnvironmentUBO ubo{};
+    m_sun_direction = glm::normalize(env.sun_direction);
+    m_env_data = {};
+    m_env_data.sun_direction = glm::vec4(m_sun_direction, env.sun_intensity);
+    m_env_data.sun_color     = glm::vec4(env.sun_color, 0.0f);
+    m_env_data.ambient_color = glm::vec4(env.ambient_color, env.ambient_intensity);
+    m_env_data.fog_color     = glm::vec4(env.fog_color, 0.0f);
+    std::memcpy(m_env_ubo_mapped, &m_env_data, sizeof(m_env_data));
+
+    // Load skybox cubemap if specified
+    m_has_skybox = false;
+    if (env.has_skybox() && !m_map_root.empty()) {
+        if (m_skybox_cubemap.image) destroy_texture(*m_rhi, m_skybox_cubemap);
+
+        // Vulkan cubemap layers: +X, -X, +Y, -Y, +Z, -Z
+        // Game coords: X=right, Y=forward, Z=up
+        std::string paths[6] = {
+            m_map_root + "/" + env.skybox_right,   // +X
+            m_map_root + "/" + env.skybox_left,    // -X
+            m_map_root + "/" + env.skybox_front,   // +Y (forward)
+            m_map_root + "/" + env.skybox_back,    // -Y (backward)
+            m_map_root + "/" + env.skybox_top,     // +Z (up = sky)
+            m_map_root + "/" + env.skybox_bottom,  // -Z (down = ground)
+        };
+
+        // Load all 6 faces
+        const u8* face_data[6] = {};
+        std::vector<std::vector<u8>> face_pixels(6);
+        u32 face_w = 0, face_h = 0;
+        bool all_loaded = true;
+
+        for (u32 i = 0; i < 6; ++i) {
+            auto result = asset::load_texture(paths[i]);
+            if (!result || result->channels != 4) {
+                log::warn(TAG, "Failed to load skybox face '{}' — skipping skybox", paths[i]);
+                all_loaded = false;
+                break;
+            }
+            if (i == 0) { face_w = result->width; face_h = result->height; }
+            if (result->width != face_w || result->height != face_h) {
+                log::warn(TAG, "Skybox face '{}' size mismatch — skipping skybox", paths[i]);
+                all_loaded = false;
+                break;
+            }
+            face_pixels[i] = std::move(result->pixels);
+            face_data[i] = face_pixels[i].data();
+        }
+
+        if (all_loaded && face_w > 0) {
+            m_skybox_cubemap = upload_texture_cubemap(*m_rhi, face_data, face_w, face_h);
+            if (m_skybox_cubemap.image) {
+                // Allocate descriptor set for skybox
+                VkDescriptorSetAllocateInfo alloc_info{};
+                alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                alloc_info.descriptorPool     = m_descriptor_pools.back();
+                alloc_info.descriptorSetCount = 1;
+                alloc_info.pSetLayouts        = &m_skybox_desc_layout;
+
+                if (vkAllocateDescriptorSets(m_rhi->device(), &alloc_info, &m_skybox_desc_set) != VK_SUCCESS) {
+                    allocate_or_grow_pool();
+                    alloc_info.descriptorPool = m_descriptor_pools.back();
+                    vkAllocateDescriptorSets(m_rhi->device(), &alloc_info, &m_skybox_desc_set);
+                }
+
+                VkDescriptorImageInfo img_info{};
+                img_info.sampler     = m_skybox_cubemap.sampler;
+                img_info.imageView   = m_skybox_cubemap.view;
+                img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                VkWriteDescriptorSet write{};
+                write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet          = m_skybox_desc_set;
+                write.dstBinding      = 0;
+                write.descriptorCount = 1;
+                write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo      = &img_info;
+
+                vkUpdateDescriptorSets(m_rhi->device(), 1, &write, 0, nullptr);
+                m_has_skybox = true;
+                log::info(TAG, "Skybox loaded ({}x{})", face_w, face_h);
+            }
+        }
+    }
+
+    // Update default cubemap for water reflection (uses skybox or fog color)
+    // Re-allocate shadow descriptor set so binding 3 uses the skybox cubemap
+    m_shadow_desc_set = allocate_shadow_descriptor();
+
+    log::info(TAG, "Environment set — sun dir ({:.2f},{:.2f},{:.2f}), intensity {:.1f}, skybox: {}",
+              env.sun_direction.x, env.sun_direction.y, env.sun_direction.z, env.sun_intensity,
+              m_has_skybox ? "yes" : "no");
+}
+
+void Renderer::add_point_light(glm::vec3 position, glm::vec3 color, f32 radius, f32 intensity) {
+    u32 count = static_cast<u32>(m_env_data.light_count.x);
+    if (count >= MAX_POINT_LIGHTS) return;
+    m_env_data.lights[count].position = glm::vec4(position, radius);
+    m_env_data.lights[count].color    = glm::vec4(color, intensity);
+    m_env_data.light_count.x = static_cast<i32>(count + 1);
 }
 
 void Renderer::set_terrain(const map::TerrainData& terrain) {
@@ -767,9 +883,13 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Shadow descriptor set layout: UBO (binding 0) + shadow map sampler (binding 1)
+    // Global lighting descriptor set layout (set 1):
+    //   binding 0: shadow UBO (mat4 light_vp)
+    //   binding 1: shadow map sampler
+    //   binding 2: environment UBO (sun, ambient, fog)
+    //   binding 3: environment cubemap (skybox / fallback)
     {
-        VkDescriptorSetLayoutBinding bindings[2]{};
+        VkDescriptorSetLayoutBinding bindings[4]{};
         bindings[0].binding         = 0;
         bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         bindings[0].descriptorCount = 1;
@@ -780,9 +900,19 @@ bool Renderer::create_descriptor_layouts() {
         bindings[1].descriptorCount = 1;
         bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        bindings[2].binding         = 2;  // environment UBO
+        bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        bindings[3].binding         = 3;  // environment cubemap
+        bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 2;
+        ci.bindingCount = 4;
         ci.pBindings    = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_shadow_desc_layout) != VK_SUCCESS) {
@@ -1701,22 +1831,23 @@ bool Renderer::create_particle_pipeline() {
         return false;
     }
 
-    // Vertex input: position(vec3) + color(vec4) + texcoord(vec2)
+    // Vertex input: position(vec3) + color(vec4) + texcoord(vec2) + texture_id(uint)
     VkVertexInputBindingDescription binding{};
     binding.binding   = 0;
     binding.stride    = sizeof(ParticleVertex);
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attrs[3]{};
+    VkVertexInputAttributeDescription attrs[4]{};
     attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(ParticleVertex, position)};
     attrs[1] = {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,  offsetof(ParticleVertex, color)};
     attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,        offsetof(ParticleVertex, texcoord)};
+    attrs[3] = {3, 0, VK_FORMAT_R32_UINT,             offsetof(ParticleVertex, texture_id)};
 
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount   = 1;
     vertex_input.pVertexBindingDescriptions      = &binding;
-    vertex_input.vertexAttributeDescriptionCount = 3;
+    vertex_input.vertexAttributeDescriptionCount = 4;
     vertex_input.pVertexAttributeDescriptions    = attrs;
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly{};
@@ -2036,6 +2167,175 @@ bool Renderer::create_water_pipeline() {
     return true;
 }
 
+bool Renderer::create_skybox_mesh() {
+    // Unit cube: 8 corners, 36 indices (12 triangles)
+    static const float verts[] = {
+        -1, -1, -1,   1, -1, -1,   1,  1, -1,  -1,  1, -1,
+        -1, -1,  1,   1, -1,  1,   1,  1,  1,  -1,  1,  1,
+    };
+    static const u32 idx[] = {
+        0,1,2, 2,3,0,  // -Z
+        4,6,5, 6,4,7,  // +Z
+        0,4,5, 5,1,0,  // -Y
+        2,6,7, 7,3,2,  // +Y
+        0,3,7, 7,4,0,  // -X
+        1,5,6, 6,2,1,  // +X
+    };
+
+    VmaAllocator allocator = m_rhi->allocator();
+
+    VkBufferCreateInfo buf_ci{};
+    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buf_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    buf_ci.size  = sizeof(verts);
+
+    VmaAllocationCreateInfo alloc_ci{};
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &m_skybox_mesh.vertex_buffer, &m_skybox_mesh.vertex_alloc, nullptr);
+    void* mapped = nullptr;
+    vmaMapMemory(allocator, m_skybox_mesh.vertex_alloc, &mapped);
+    std::memcpy(mapped, verts, sizeof(verts));
+    vmaUnmapMemory(allocator, m_skybox_mesh.vertex_alloc);
+
+    buf_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    buf_ci.size  = sizeof(idx);
+    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &m_skybox_mesh.index_buffer, &m_skybox_mesh.index_alloc, nullptr);
+    vmaMapMemory(allocator, m_skybox_mesh.index_alloc, &mapped);
+    std::memcpy(mapped, idx, sizeof(idx));
+    vmaUnmapMemory(allocator, m_skybox_mesh.index_alloc);
+
+    m_skybox_mesh.index_count = 36;
+    m_skybox_mesh.vertex_count = 8;
+    return true;
+}
+
+bool Renderer::create_skybox_pipeline() {
+    VkDevice device = m_rhi->device();
+
+    VkShaderModule vert = load_shader(device, "engine/shaders/skybox.vert.spv");
+    VkShaderModule frag = load_shader(device, "engine/shaders/skybox.frag.spv");
+    if (!vert || !frag) {
+        log::error(TAG, "Failed to load skybox shaders");
+        if (vert) vkDestroyShaderModule(device, vert, nullptr);
+        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    // Descriptor set layout: one cubemap sampler
+    {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding         = 0;
+        binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo ci{};
+        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        ci.bindingCount = 1;
+        ci.pBindings    = &binding;
+
+        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_skybox_desc_layout) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create skybox descriptor set layout");
+            vkDestroyShaderModule(device, vert, nullptr);
+            vkDestroyShaderModule(device, frag, nullptr);
+            return false;
+        }
+    }
+
+    // Vertex input: vec3 position only
+    VkVertexInputBindingDescription binding{};
+    binding.binding   = 0;
+    binding.stride    = sizeof(float) * 3;
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attr{};
+    attr.location = 0;
+    attr.binding  = 0;
+    attr.format   = VK_FORMAT_R32G32B32_SFLOAT;
+    attr.offset   = 0;
+
+    auto cfg = make_common_pipeline_state();
+    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
+    cfg.vertex_input.pVertexBindingDescriptions      = &binding;
+    cfg.vertex_input.vertexAttributeDescriptionCount  = 1;
+    cfg.vertex_input.pVertexAttributeDescriptions     = &attr;
+
+    // Skybox at z=1.0 (far plane), terrain overwrites with LESS
+    cfg.depth_stencil.depthWriteEnable = VK_TRUE;
+    cfg.depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+    // Cull front faces (we're inside the cube, render back faces)
+    cfg.rasterizer.cullMode = VK_CULL_MODE_NONE;  // inside cube, render all faces
+
+    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+    cfg.stages[0].module = vert;
+    cfg.stages[0].pName  = "main";
+    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+    cfg.stages[1].module = frag;
+    cfg.stages[1].pName  = "main";
+
+    VkPushConstantRange push_range{};
+    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_range.offset     = 0;
+    push_range.size       = sizeof(glm::mat4);
+
+    VkPipelineLayoutCreateInfo layout_ci{};
+    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_ci.setLayoutCount         = 1;
+    layout_ci.pSetLayouts            = &m_skybox_desc_layout;
+    layout_ci.pushConstantRangeCount = 1;
+    layout_ci.pPushConstantRanges    = &push_range;
+
+    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_skybox_pipeline_layout) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create skybox pipeline layout");
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    VkFormat color_format = m_rhi->swapchain_format();
+    VkFormat depth_format = m_rhi->depth_format();
+    VkPipelineRenderingCreateInfo rendering_ci{};
+    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering_ci.colorAttachmentCount    = 1;
+    rendering_ci.pColorAttachmentFormats = &color_format;
+    rendering_ci.depthAttachmentFormat   = depth_format;
+
+    // Fix pAttachments pointer after copy from make_common_pipeline_state
+    cfg.color_blend.pAttachments = &cfg.blend_attachment;
+
+    VkGraphicsPipelineCreateInfo pipeline_ci{};
+    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_ci.pNext               = &rendering_ci;
+    pipeline_ci.stageCount          = 2;
+    pipeline_ci.pStages             = cfg.stages;
+    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
+    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
+    pipeline_ci.pViewportState      = &cfg.viewport_state;
+    pipeline_ci.pRasterizationState = &cfg.rasterizer;
+    pipeline_ci.pMultisampleState   = &cfg.multisample;
+    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
+    pipeline_ci.pColorBlendState    = &cfg.color_blend;
+    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
+    pipeline_ci.layout              = m_skybox_pipeline_layout;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_skybox_pipeline) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create skybox pipeline");
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+        return false;
+    }
+
+    vkDestroyShaderModule(device, vert, nullptr);
+    vkDestroyShaderModule(device, frag, nullptr);
+    log::info(TAG, "Skybox pipeline created");
+    return true;
+}
+
 // ── Model loading + mesh cache ────────────────────────────────────────────
 
 LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
@@ -2309,6 +2609,43 @@ bool Renderer::create_shadow_pipeline() {
 bool Renderer::create_shadow_resources() {
     if (!create_shadow_map(*m_rhi, m_shadow_map)) return false;
     if (!create_shadow_buffer(*m_rhi, m_shadow_ubo)) return false;
+
+    // Create environment UBO (persistently mapped)
+    {
+        VkBufferCreateInfo buf_ci{};
+        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buf_ci.size  = sizeof(EnvironmentUBO);
+        buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+
+        VmaAllocationCreateInfo alloc_ci{};
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo alloc_info{};
+        if (vmaCreateBuffer(m_rhi->allocator(), &buf_ci, &alloc_ci,
+                            &m_env_ubo_buffer, &m_env_ubo_alloc, &alloc_info) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create environment UBO");
+            return false;
+        }
+        m_env_ubo_mapped = alloc_info.pMappedData;
+
+        // Write default values
+        EnvironmentUBO defaults{};
+        std::memcpy(m_env_ubo_mapped, &defaults, sizeof(defaults));
+    }
+
+    // Create default 1x1 cubemap (gray, used when no skybox loaded)
+    {
+        u8 gray[4] = {128, 128, 140, 255};
+        const u8* faces[6] = {gray, gray, gray, gray, gray, gray};
+        m_default_cubemap = upload_texture_cubemap(*m_rhi, faces, 1, 1);
+        if (!m_default_cubemap.image) {
+            log::error(TAG, "Failed to create default cubemap");
+            return false;
+        }
+    }
+
     m_shadow_desc_set = allocate_shadow_descriptor();
     return m_shadow_desc_set != VK_NULL_HANDLE;
 }
@@ -2339,7 +2676,20 @@ VkDescriptorSet Renderer::allocate_shadow_descriptor() {
     img_info.imageView   = m_shadow_map.depth_view;
     img_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet writes[2]{};
+    // Binding 2: environment UBO
+    VkDescriptorBufferInfo env_buf_info{};
+    env_buf_info.buffer = m_env_ubo_buffer;
+    env_buf_info.offset = 0;
+    env_buf_info.range  = sizeof(EnvironmentUBO);
+
+    // Binding 3: environment cubemap (use default texture as placeholder until cubemap is loaded)
+    VkDescriptorImageInfo cubemap_info{};
+    const GpuTexture& cube_tex = (m_has_skybox && m_skybox_cubemap.image) ? m_skybox_cubemap : m_default_cubemap;
+    cubemap_info.sampler     = cube_tex.sampler;
+    cubemap_info.imageView   = cube_tex.view;
+    cubemap_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet writes[4]{};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet          = set;
     writes[0].dstBinding      = 0;
@@ -2354,7 +2704,21 @@ VkDescriptorSet Renderer::allocate_shadow_descriptor() {
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo      = &img_info;
 
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet          = set;
+    writes[2].dstBinding      = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[2].pBufferInfo     = &env_buf_info;
+
+    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet          = set;
+    writes[3].dstBinding      = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo      = &cubemap_info;
+
+    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
     log::info(TAG, "Shadow descriptor set allocated");
     return set;
 }
@@ -2397,7 +2761,7 @@ VkDescriptorSet Renderer::allocate_bone_descriptor(VkBuffer bone_buffer, usize s
 void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world, f32 alpha) {
     if (!m_shadow_pipeline) return;
 
-    glm::vec3 light_dir{0.3f, -0.5f, 0.8f};
+    glm::vec3 light_dir = m_sun_direction;
     glm::vec3 scene_center{4096.0f, 4096.0f, 160.0f};
     f32 scene_radius = 5120.0f;
     glm::mat4 light_vp = compute_light_vp(light_dir, scene_center, scene_radius);
@@ -2710,6 +3074,24 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world, f32 alpha) {
     if (extent.width == 0 || extent.height == 0) return;
 
+    // Collect point lights from active glow particles
+    {
+        auto particles = m_particles.particle_data();
+        for (auto& p : particles) {
+            if (p.texture_id == ParticleSystem::SHAPE_GLOW && p.life > 0) {
+                f32 life_frac = p.life / p.max_life;
+                glm::vec3 color{p.start_color.r, p.start_color.g, p.start_color.b};
+                add_point_light(p.position, color, p.size * 20.0f, 3.0f * life_frac);
+            }
+        }
+    }
+
+    // Flush point lights to environment UBO and reset for next frame
+    if (m_env_ubo_mapped) {
+        std::memcpy(m_env_ubo_mapped, &m_env_data, sizeof(m_env_data));
+        m_env_data.light_count.x = 0;
+    }
+
     VkViewport viewport{};
     viewport.width    = static_cast<float>(extent.width);
     viewport.height   = static_cast<float>(extent.height);
@@ -2718,6 +3100,27 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
     VkRect2D scissor{{0, 0}, extent};
     glm::mat4 vp = m_camera.view_projection();
+
+    // ── Draw skybox (first, at far plane) ───────────────────────────────
+    if (m_has_skybox && m_skybox_pipeline && m_skybox_desc_set) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skybox_pipeline);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_skybox_pipeline_layout, 0, 1, &m_skybox_desc_set, 0, nullptr);
+
+        // Strip translation from view matrix so camera position doesn't affect skybox
+        glm::mat4 view_no_translate = glm::mat4(glm::mat3(m_camera.view_matrix()));
+        glm::mat4 skybox_vp = m_camera.projection_matrix() * view_no_translate;
+        vkCmdPushConstants(cmd, m_skybox_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(glm::mat4), &skybox_vp);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_skybox_mesh.vertex_buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, m_skybox_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, m_skybox_mesh.index_count, 1, 0, 0, 0);
+    }
 
     // ── Draw terrain with splatmap pipeline ──────────────────────────────
     glm::mat4 terrain_model{1.0f};
@@ -2998,7 +3401,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
                         glm::vec3 splash_pos = tf.position + glm::vec3{0, 0, 3.0f};
                         m_particles.burst(splash_pos, 5,
                             glm::vec4{0.7f, 0.78f, 0.85f, 0.3f},  // subtle blue-white
-                            60.0f, 0.5f, 10.0f, -100.0f);
+                            60.0f, 0.5f, 10.0f, -100.0f, ParticleSystem::SHAPE_DROPLET);
                     }
                 }
             }

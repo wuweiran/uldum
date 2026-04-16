@@ -150,6 +150,34 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
         }
     }
 
+    // Environment (skybox, lighting, fog)
+    if (j.contains("environment") && j["environment"].is_object()) {
+        auto& env = j["environment"];
+        auto& ec = m_manifest.environment;
+
+        auto read_vec3 = [](const nlohmann::json& arr, glm::vec3& out) {
+            if (arr.is_array() && arr.size() >= 3)
+                out = {arr[0].get<f32>(), arr[1].get<f32>(), arr[2].get<f32>()};
+        };
+
+        if (env.contains("sun_direction")) read_vec3(env["sun_direction"], ec.sun_direction);
+        if (env.contains("sun_color"))     read_vec3(env["sun_color"], ec.sun_color);
+        ec.sun_intensity     = env.value("sun_intensity", ec.sun_intensity);
+        if (env.contains("ambient_color")) read_vec3(env["ambient_color"], ec.ambient_color);
+        ec.ambient_intensity = env.value("ambient_intensity", ec.ambient_intensity);
+        if (env.contains("fog_color"))     read_vec3(env["fog_color"], ec.fog_color);
+
+        if (env.contains("skybox") && env["skybox"].is_object()) {
+            auto& sky = env["skybox"];
+            ec.skybox_right  = sky.value("right", "");
+            ec.skybox_left   = sky.value("left", "");
+            ec.skybox_top    = sky.value("top", "");
+            ec.skybox_bottom = sky.value("bottom", "");
+            ec.skybox_front  = sky.value("front", "");
+            ec.skybox_back   = sky.value("back", "");
+        }
+    }
+
     log::info(TAG, "Manifest: '{}' by {} — {} players, {} teams, scene '{}'",
               m_manifest.name, m_manifest.author,
               m_manifest.players.size(), m_manifest.teams.size(),
