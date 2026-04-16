@@ -5,6 +5,7 @@
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
+#include <chrono>
 
 #include <algorithm>
 #include <cmath>
@@ -157,6 +158,55 @@ static u64 tile_key(u32 tx, u32 ty) {
     return (static_cast<u64>(ty) << 32) | tx;
 }
 
+// 8 directions matching the A* neighbor order
+static constexpr i32 s_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+static constexpr i32 s_dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
+
+void Pathfinder::build_cache() {
+    if (!m_terrain || !m_terrain->is_valid()) return;
+    auto& td = *m_terrain;
+    u32 w = td.tiles_x, h = td.tiles_y;
+    m_cache_w = w;
+    m_cache_h = h;
+    u32 count = w * h;
+
+    m_occupiable.assign(count, false);
+    m_effective_level.assign(count, -2);
+    m_cliff_level.resize(count);
+    m_connectivity.assign(count, 0);
+
+    // Pass 1: per-tile properties
+    for (u32 ty = 0; ty < h; ++ty) {
+        for (u32 tx = 0; tx < w; ++tx) {
+            u32 idx = ty * w + tx;
+            m_occupiable[idx] = can_occupy(tx, ty, MoveType::Ground);
+            m_effective_level[idx] = static_cast<i8>(td.tile_effective_level(tx, ty));
+            m_cliff_level[idx] = cliff_level_on_tile(tx, ty);
+        }
+    }
+
+    // Pass 2: per-tile 8-direction connectivity
+    for (u32 ty = 0; ty < h; ++ty) {
+        for (u32 tx = 0; tx < w; ++tx) {
+            u32 idx = ty * w + tx;
+            if (!m_occupiable[idx]) continue;
+
+            u8 conn = 0;
+            for (u32 d = 0; d < 8; ++d) {
+                i32 nx = static_cast<i32>(tx) + s_dx[d];
+                i32 ny = static_cast<i32>(ty) + s_dy[d];
+                if (nx < 0 || ny < 0 || static_cast<u32>(nx) >= w || static_cast<u32>(ny) >= h)
+                    continue;
+                if (are_connected(tx, ty, static_cast<u32>(nx), static_cast<u32>(ny), MoveType::Ground))
+                    conn |= (1u << d);
+            }
+            m_connectivity[idx] = conn;
+        }
+    }
+
+    log::info("Pathfind", "Connectivity cache built: {}x{} tiles", w, h);
+}
+
 // Build a set of tiles occupied by units (for A* cost penalty).
 // Returns a set of tile keys where non-self units are standing.
 static std::unordered_set<u64> build_unit_tile_set(const World* world, u32 self_id, f32 tile_size, u32 tiles_x, u32 tiles_y) {
@@ -192,6 +242,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
 
     // Build unit occupancy for cost penalty
     auto unit_tiles = build_unit_tile_set(world, self_id, td.tile_size, td.tiles_x, td.tiles_y);
+
     static constexpr f32 UNIT_COST_PENALTY = 5.0f;
 
     glm::ivec2 s = world_to_tile(start.x, start.y);
@@ -228,7 +279,9 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     }
 
     std::priority_queue<AStarNode, std::vector<AStarNode>, NodeCompare> open;
-    std::unordered_set<u64> closed;
+    // Flat closed set: O(1) with no hash overhead
+    std::vector<bool> closed(td.tiles_x * td.tiles_y, false);
+    auto closed_key = [&](u32 tx, u32 ty) -> u32 { return ty * td.tiles_x + tx; };
     std::vector<AStarNode> all_nodes;
     all_nodes.reserve(256);
 
@@ -246,7 +299,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     static constexpr i32 dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     static constexpr f32 cost[] = {1.414f, 1.0f, 1.414f, 1.0f, 1.0f, 1.414f, 1.0f, 1.414f};
 
-    u32 max_iterations = td.tiles_x * td.tiles_y;
+    static constexpr u32 max_iterations = 128;
     u32 iterations = 0;
 
     // Track the closest reachable node to the goal (fallback if goal is unreachable)
@@ -257,9 +310,9 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
         AStarNode current = open.top();
         open.pop();
 
-        u64 key = tile_key(current.tx, current.ty);
-        if (closed.contains(key)) continue;
-        closed.insert(key);
+        u32 ck = closed_key(current.tx, current.ty);
+        if (closed[ck]) continue;
+        closed[ck] = true;
 
         u32 current_idx = static_cast<u32>(all_nodes.size());
         all_nodes.push_back(current);
@@ -284,8 +337,14 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
             return result;
         }
 
-        // Expand neighbors
+        // Expand neighbors using pre-computed connectivity cache
+        u32 cur_idx_cache = current.ty * m_cache_w + current.tx;
+        u8 conn = (m_cache_w > 0) ? m_connectivity[cur_idx_cache] : 0xFF;
+
         for (u32 i = 0; i < 8; ++i) {
+            // Fast cache check: is this direction connected?
+            if (m_cache_w > 0 && !(conn & (1u << i))) continue;
+
             i32 nx = static_cast<i32>(current.tx) + dx[i];
             i32 ny = static_cast<i32>(current.ty) + dy[i];
 
@@ -297,16 +356,15 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
             u32 ntx = static_cast<u32>(nx);
             u32 nty = static_cast<u32>(ny);
 
-            if (closed.contains(tile_key(ntx, nty))) continue;
+            if (closed[closed_key(ntx, nty)]) continue;
 
-            if (!are_connected(current.tx, current.ty, ntx, nty, move_type))
-                continue;
-
-            u8 new_cliff = cliff_level_on_tile(ntx, nty);
-            i32 eff = m_terrain->tile_effective_level(ntx, nty);
+            // Use cached cliff level and effective level
+            u32 n_idx = nty * m_cache_w + ntx;
+            u8 new_cliff = m_cliff_level[n_idx];
+            i8 eff = m_effective_level[n_idx];
             if (eff == -1) {
                 new_cliff = current.cliff_level;
-                u8 ramp_min = cliff_level_on_tile(ntx, nty);
+                u8 ramp_min = m_cliff_level[n_idx];
                 u8 ramp_max = ramp_min + 1;
                 if (current.cliff_level == ramp_min) new_cliff = ramp_max;
                 else if (current.cliff_level == ramp_max) new_cliff = ramp_min;

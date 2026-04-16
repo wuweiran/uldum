@@ -8,6 +8,7 @@
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
+#include <chrono>
 #include <glm/gtc/constants.hpp>
 
 #include <cmath>
@@ -193,8 +194,11 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // ── Re-path: compute corridor + straight-line waypoint ──────────
         mov.repath_timer -= dt;
         f32 dest_drift = glm::length(goal2d - mov.path_dest);
-        bool need_repath = mov.corridor.empty() || mov.repath_timer <= 0 ||
-                           !mov.has_waypoint || dest_drift > pathfinder.tile_size();
+        bool rp_empty = mov.corridor.empty();
+        bool rp_timer = mov.repath_timer <= 0;
+        bool rp_no_wp = !mov.has_waypoint;
+        bool rp_drift = dest_drift > pathfinder.tile_size();
+        bool need_repath = rp_empty || rp_timer || rp_no_wp || rp_drift;
 
         if (need_repath) {
             mov.repath_timer = Movement::REPATH_INTERVAL;

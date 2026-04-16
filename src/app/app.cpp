@@ -365,7 +365,14 @@ void App::run() {
                 float game_dt = TICK_DT * game_speed;
                 accumulator += frame_dt;
                 while (accumulator >= TICK_DT) {
+                    auto t0 = std::chrono::steady_clock::now();
                     m_server.tick(game_dt);
+                    auto t1 = std::chrono::steady_clock::now();
+                    f32 tick_ms = std::chrono::duration<f32, std::milli>(t1 - t0).count();
+                    if (tick_ms > 5.0f) {
+                        log::warn(TAG, "Slow tick: {:.1f}ms (units: {})",
+                                  tick_ms, active_world().transforms.count());
+                    }
                     game_time += game_dt;
                     tick_counter++;
                     if (m_args.net_mode == network::Mode::Host)
@@ -416,6 +423,7 @@ void App::run() {
             auto& world = active_world();
             bool is_client = (m_args.net_mode == network::Mode::Client);
             f32 alpha = is_client ? 1.0f : (accumulator / TICK_DT);
+            auto r0 = std::chrono::steady_clock::now();
             VkCommandBuffer cmd = m_rhi.begin_frame();
             if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_renderer.upload_fog(cmd);
@@ -423,6 +431,15 @@ void App::run() {
                 m_rhi.begin_rendering();
                 m_renderer.draw(cmd, m_rhi.extent(), world, alpha);
                 m_rhi.end_frame();
+            }
+            auto r1 = std::chrono::steady_clock::now();
+            f32 render_ms = std::chrono::duration<f32, std::milli>(r1 - r0).count();
+            static f32 render_log_timer = 0;
+            render_log_timer += frame_dt;
+            if (render_log_timer >= 3.0f) {
+                render_log_timer = 0;
+                log::info(TAG, "Frame: {:.1f}ms, Render: {:.1f}ms, Units: {}",
+                          frame_dt * 1000.0f, render_ms, world.transforms.count());
             }
         }
         // TODO (Phase 16): Menu, Loading, Results screens render here

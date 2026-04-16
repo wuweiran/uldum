@@ -34,7 +34,7 @@ struct Corridor {
 // Z coordinates are NEVER used for pathfinding. Z is for visual/height only.
 class Pathfinder {
 public:
-    void set_terrain(const map::TerrainData* terrain) { m_terrain = terrain; }
+    void set_terrain(const map::TerrainData* terrain) { m_terrain = terrain; build_cache(); }
     const map::TerrainData* terrain() const { return m_terrain; }
 
     // ── Tile queries (delegate to TerrainData + MoveType logic) ─────────
@@ -93,9 +93,19 @@ public:
     void unblock_vertices(const std::vector<glm::ivec2>& verts);
     bool is_vertex_blocked(u32 vx, u32 vy) const;
 
+    // Build connectivity cache from terrain data. Call after set_terrain().
+    void build_cache();
+
 private:
     const map::TerrainData* m_terrain = nullptr;
     std::vector<u8> m_runtime_blocked;  // per-vertex refcount (multiple buildings can overlap)
+
+    // Pre-computed terrain cache (built once at terrain load)
+    std::vector<bool> m_occupiable;       // can_occupy(tx, ty, Ground) per tile
+    std::vector<i8>   m_effective_level;  // tile_effective_level per tile
+    std::vector<u8>   m_cliff_level;      // cliff_level_on_tile per tile
+    std::vector<u8>   m_connectivity;     // 8 bits: which directions are connected (Ground)
+    u32 m_cache_w = 0, m_cache_h = 0;
 };
 
 } // namespace uldum::simulation

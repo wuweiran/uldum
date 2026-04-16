@@ -249,6 +249,18 @@ void issue_order(World& world, Unit unit, Order order) {
     auto* oq = world.order_queues.get(unit.id);
     if (!oq) return;
 
+    // Reject cast orders if ability is on cooldown (don't interrupt current order)
+    if (auto* cast = std::get_if<orders::Cast>(&order.payload)) {
+        auto* aset = world.ability_sets.get(unit.id);
+        if (aset) {
+            for (auto& a : aset->abilities) {
+                if (a.ability_id == cast->ability_id && a.cooldown_remaining > 0) {
+                    return;  // on cooldown — ignore order, keep current activity
+                }
+            }
+        }
+    }
+
     if (order.queued) {
         oq->queued.push_back(std::move(order));
     } else {
