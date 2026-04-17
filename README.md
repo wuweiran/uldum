@@ -22,7 +22,7 @@ Phase 15b complete. Build targets + packaging.
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
 - VMA for GPU memory, GLSL shaders compiled to SPIR-V at build time
-- Asset pipeline: PNG textures (stb_image), glTF models with skeleton + animation (cgltf), JSON configs (nlohmann/json)
+- Asset pipeline: KTX2 + Basis Universal textures (libktx), glTF models with skeleton + animation (cgltf), JSON configs (nlohmann/json)
 - Handle-based AssetManager with path caching + absolute path loading
 - Real glTF model loading: mesh merging, embedded texture extraction, per-model material
 - ECS simulation: sparse set storage, generational typed handles (Unit, Destructable, Item)
@@ -167,7 +167,7 @@ Phase 15b complete. Build targets + packaging.
   - Splash particles on units walking through shallow water (fog-aware)
   - Pathfinding: ground units walk on shallow water, blocked by deep water
 - Skybox and environment lighting (Phase 14f):
-  - Map-defined cubemap skybox (6 PNG faces, optional)
+  - Map-defined cubemap skybox (6 KTX2 faces, optional)
   - EXR-to-cubemap converter script (`scripts/convert_skybox.py`)
   - Environment config in manifest.json (sun direction/color, ambient, fog)
   - Environment UBO replacing hardcoded lighting in all shaders
@@ -278,7 +278,7 @@ src/
 ├── core/           Types, logging, math, allocators
 ├── platform/       Window, input, filesystem (Win32 / Android)
 ├── rhi/            Vulkan 1.3 abstraction
-├── asset/          Resource manager, format loaders (glTF, PNG, JSON)
+├── asset/          Resource manager, format loaders (glTF, KTX2, JSON)
 ├── render/         Pipelines, camera, terrain, animation, particles, effects
 ├── audio/          3D positional audio, music, ambient (miniaudio)
 ├── script/         Lua 5.4 VM, engine API bindings, triggers
@@ -304,6 +304,8 @@ src/
 - [docs/network.md](docs/network.md) — Network protocol, transport, state sync, interpolation
 - [docs/coordinates.md](docs/coordinates.md) — Coordinate system and unit conventions
 - [docs/build-targets.md](docs/build-targets.md) — Build targets and packaging
+- [docs/packaging.md](docs/packaging.md) — `.uldpak` / `.uldmap` archive format, mounts, texture baking
+- [docs/editor.md](docs/editor.md) — Editor modes (normal / source-folder), authoring lifecycle
 
 ## License
 

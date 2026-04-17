@@ -1087,6 +1087,97 @@ static std::string pick_folder(HWND hwnd) {
     return result;
 }
 
+// Run uldum_pack.exe (sibling of this exe) with the given argument tail.
+// Returns the subprocess exit code, or -1 if launch failed.
+static int run_uldum_pack(const std::string& args) {
+    wchar_t exe_path[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    std::filesystem::path pack = std::filesystem::path(exe_path).parent_path() / "uldum_pack.exe";
+
+    std::string cmd = "\"" + pack.string() + "\" " + args;
+
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD rc = 0;
+    GetExitCodeProcess(pi.hProcess, &rc);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return static_cast<int>(rc);
+}
+
+// Win32 open-file picker (for opening a packed .uldmap).
+static std::string pick_open_file(HWND hwnd, const wchar_t* title,
+                                  const wchar_t* filter_label, const wchar_t* filter_pattern) {
+    std::string result;
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    IFileOpenDialog* dialog = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+                                   IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog)))) {
+        dialog->SetTitle(title);
+        COMDLG_FILTERSPEC spec = { filter_label, filter_pattern };
+        dialog->SetFileTypes(1, &spec);
+
+        if (SUCCEEDED(dialog->Show(hwnd))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR path_w = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path_w))) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, path_w, -1, nullptr, 0, nullptr, nullptr);
+                    result.resize(len - 1);
+                    WideCharToMultiByte(CP_UTF8, 0, path_w, -1, result.data(), len, nullptr, nullptr);
+                    CoTaskMemFree(path_w);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+
+    CoUninitialize();
+    return result;
+}
+
+// Win32 save-file picker. Returns selected path (may lack extension).
+static std::string pick_save_file(HWND hwnd, const wchar_t* title, const wchar_t* default_name,
+                                  const wchar_t* filter_label, const wchar_t* filter_pattern) {
+    std::string result;
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    IFileSaveDialog* dialog = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_ALL,
+                                   IID_IFileSaveDialog, reinterpret_cast<void**>(&dialog)))) {
+        dialog->SetTitle(title);
+        if (default_name && *default_name) dialog->SetFileName(default_name);
+        COMDLG_FILTERSPEC spec = { filter_label, filter_pattern };
+        dialog->SetFileTypes(1, &spec);
+        dialog->SetDefaultExtension(L"uldmap");
+
+        if (SUCCEEDED(dialog->Show(hwnd))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR path_w = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path_w))) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, path_w, -1, nullptr, 0, nullptr, nullptr);
+                    result.resize(len - 1);
+                    WideCharToMultiByte(CP_UTF8, 0, path_w, -1, result.data(), len, nullptr, nullptr);
+                    CoTaskMemFree(path_w);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+
+    CoUninitialize();
+    return result;
+}
+
 // ── Overlays (grid, brush cursor) ────────────────────────────────────────
 
 bool Editor::world_to_screen(glm::vec3 world_pos, ImVec2& screen_pos) const {
@@ -1231,18 +1322,75 @@ void Editor::draw_ui() {
     // Main menu bar
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Map...")) {
+            if (ImGui::MenuItem("Open Map Folder...")) {
                 std::string path = pick_folder(static_cast<HWND>(m_platform->native_window_handle()));
                 if (!path.empty()) {
                     open_map(path);
                 }
             }
-            if (ImGui::MenuItem("Save Map")) {
-                if (m_map_loaded) {
+            if (ImGui::MenuItem("Open Packed Map...")) {
+                std::string path = pick_open_file(
+                    static_cast<HWND>(m_platform->native_window_handle()),
+                    L"Open Packed Map", L"Uldum map package (*.uldmap)", L"*.uldmap");
+                if (!path.empty()) {
+                    open_map(path);
+                }
+            }
+            if (ImGui::MenuItem("Save Map", nullptr, false, m_map_loaded)) {
+                namespace fs = std::filesystem;
+                std::string map_root_abs = fs::absolute(m_map.map_root()).string();
+
+                if (fs::is_directory(m_map.map_root())) {
+                    // Source-folder mode: write terrain.bin directly into the source tree.
                     std::string terrain_path = m_map.map_root() + "/scenes/" +
                         m_current_scene + "/terrain.bin";
                     map::save_terrain(m_map.terrain(), terrain_path);
                     log::info(TAG, "Saved terrain to {}", terrain_path);
+                } else {
+                    // Normal mode (packed .uldmap): unpack → overwrite terrain.bin → repack → reload.
+                    fs::path staging = fs::temp_directory_path() /
+                        ("uldum_save_" + std::to_string(GetCurrentProcessId()));
+                    std::error_code ec;
+                    fs::remove_all(staging, ec);
+                    fs::create_directories(staging, ec);
+
+                    int rc = run_uldum_pack("unpack \"" + map_root_abs + "\" \"" + staging.string() + "\"");
+                    if (rc != 0) {
+                        log::error(TAG, "Save: unpack failed (exit {})", rc);
+                    } else {
+                        std::string terrain_path = (staging / "scenes" / m_current_scene / "terrain.bin").string();
+                        if (!map::save_terrain(m_map.terrain(), terrain_path)) {
+                            log::error(TAG, "Save: failed to write terrain to '{}'", terrain_path);
+                        } else {
+                            rc = run_uldum_pack("pack \"" + staging.string() + "\" \"" + map_root_abs + "\"");
+                            if (rc != 0) {
+                                log::error(TAG, "Save: pack failed (exit {})", rc);
+                            } else {
+                                log::info(TAG, "Saved packed map '{}'", map_root_abs);
+                                // Reload so in-memory package entries match the new file.
+                                open_map(map_root_abs);
+                            }
+                        }
+                    }
+                    fs::remove_all(staging, ec);
+                }
+            }
+            // Export to packed .uldmap — only meaningful when editing a source folder.
+            bool can_export = m_map_loaded && std::filesystem::is_directory(m_map.map_root());
+            if (ImGui::MenuItem("Export Packed Map...", nullptr, false, can_export)) {
+                std::filesystem::path src(m_map.map_root());
+                std::wstring default_name = src.filename().wstring();
+                if (!default_name.ends_with(L".uldmap")) default_name += L".uldmap";
+
+                std::string out = pick_save_file(
+                    static_cast<HWND>(m_platform->native_window_handle()),
+                    L"Export Packed Map", default_name.c_str(),
+                    L"Uldum map package (*.uldmap)", L"*.uldmap");
+                if (!out.empty()) {
+                    int rc = run_uldum_pack("pack \"" + std::filesystem::absolute(m_map.map_root()).string()
+                                            + "\" \"" + out + "\"");
+                    if (rc == 0) log::info(TAG, "Exported packed map to '{}'", out);
+                    else         log::error(TAG, "Export failed (exit {})", rc);
                 }
             }
             ImGui::Separator();
@@ -1340,11 +1488,15 @@ void Editor::draw_ui() {
 
     // Info panel
     ImGui::SetNextWindowPos(ImVec2(10, 440), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(220, 120), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 160), ImGuiCond_FirstUseEver);
     ImGui::Begin("Info");
     if (m_map_loaded) {
         auto& td = m_map.terrain();
         ImGui::Text("Map: %s", m_map.manifest().name.c_str());
+        std::string abs_path = std::filesystem::absolute(m_map.map_root()).string();
+        bool is_dir = std::filesystem::is_directory(m_map.map_root());
+        ImGui::TextWrapped("Path: %s", abs_path.c_str());
+        ImGui::Text("Mode: %s", is_dir ? "source folder" : "packed .uldmap");
         ImGui::Text("Scene: %s", m_current_scene.c_str());
         ImGui::Text("Terrain: %ux%u tiles", td.tiles_x, td.tiles_y);
     }

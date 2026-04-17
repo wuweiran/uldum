@@ -175,7 +175,7 @@ A minimal ability definition only needs `form`:
 {
     "holy_light": {
         "name": "Holy Light",
-        "icon": "icons/holy_light.png",
+        "icon": "icons/holy_light.ktx2",
         "form": "target_unit",
         "hotkey": "T",
         "stackable": false,
@@ -189,7 +189,7 @@ A minimal ability definition only needs `form`:
     },
     "devotion_aura": {
         "name": "Devotion Aura",
-        "icon": "icons/devotion_aura.png",
+        "icon": "icons/devotion_aura.ktx2",
         "form": "aura",
         "max_level": 3,
         "target_filter": { "ally": true },

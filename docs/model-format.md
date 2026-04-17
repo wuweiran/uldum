@@ -2,7 +2,7 @@
 
 ## Overview
 
-All models use **glTF 2.0** (`.gltf` or `.glb`). The engine extracts geometry, skeleton, and animation data via cgltf. Textures are **PNG**. Audio is **OGG Opus** (music) or **WAV** (SFX).
+All models use **glTF 2.0** (`.gltf` or `.glb`). The engine extracts geometry, skeleton, and animation data via cgltf. Standalone textures are **KTX2 + Basis Universal** (authored externally from PNG via `toktx` — see [packaging.md](packaging.md)). Audio is **OGG Opus** (music) or **WAV** (SFX).
 
 ## Coordinate System
 
@@ -171,17 +171,20 @@ Defined in a sidecar JSON file alongside the glTF model (e.g. `footman.effects.j
 
 ## Textures
 
-- **Format**: PNG (development), KTX2 with BC7/ASTC (shipping — Phase 13)
-- **Unit textures**: Referenced by glTF material (not yet implemented — engine uses placeholder colors)
-- **Terrain textures**: 4-layer splatmap, defined in `tileset.json`
+- **Format**: KTX2 + Basis Universal (one format, every target, every mount)
+- **Loader**: [KTX-Software](https://github.com/KhronosGroup/KTX-Software) (`libktx`). Basis Universal supercompression transcodes to BC7 on desktop or ASTC on Android at GPU upload time.
+- **Unit textures**: referenced by glTF material (standalone KTX2 files; embedded glTF textures are a separate deferred item)
+- **Terrain textures**: 4-layer splatmap; each layer points to a KTX2 in `tileset.json`
 
-### Texture Pipeline (Future)
+### Texture Pipeline
 
 | Stage | Format | Tool |
 |-------|--------|------|
-| Authoring | PNG / TGA | Any image editor |
-| Development | PNG | Loaded via stb_image |
-| Shipping | KTX2 (BC7 desktop, ASTC mobile) | Asset baking pipeline (Phase 13) |
+| Authoring | PNG / TGA / source format of choice | Any image editor |
+| Import step (author-side, outside the engine) | PNG → KTX2 | `toktx` / `scripts/png_to_ktx2.bat` |
+| In-tree / shipping | KTX2 + Basis Universal | — (runtime reads KTX2 directly) |
+
+See [packaging.md](packaging.md) and [editor.md](editor.md) for the full authoring workflow.
 
 ## Audio
 

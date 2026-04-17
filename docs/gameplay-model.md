@@ -680,7 +680,7 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
         "category": "unit",
         "display_name": "Footman",
         "model": "models/units/footman.gltf",
-        "icon": "icons/footman.png",
+        "icon": "icons/footman.ktx2",
         "health": { "max": 420, "regen": 0.25 },
         "states": {
             "mana": { "max": 0, "regen": 0 }
@@ -788,7 +788,7 @@ Movement speed is 0 (immobile).
     "potion_healing": {
         "category": "item",
         "display_name": "Potion of Healing",
-        "icon": "textures/icons/potion_healing.png",
+        "icon": "textures/icons/potion_healing.ktx2",
         "charges": 1,
         "cooldown": 5.0,
         "on_use": {

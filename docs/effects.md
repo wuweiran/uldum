@@ -27,7 +27,7 @@ DefineEffect("fire_burst", {
     life = 0.5,
     size = 8,
     gravity = -100,
-    texture = "textures/fire_particle.png",  -- optional, solid color if omitted
+    texture = "textures/fire_particle.ktx2",  -- optional, solid color if omitted
     start_color = { r = 1, g = 0.6, b = 0.1, a = 1 },
     end_color = { r = 1, g = 0.2, b = 0, a = 0 },
 })

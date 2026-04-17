@@ -28,7 +28,7 @@ static int cmd_pack(const std::string& input_dir, const std::string& output_path
     }
 
     struct FileInfo {
-        std::string rel_path;
+        std::string rel_path;   // normalized
         u64         name_hash;
         fs::path    abs_path;
     };
@@ -57,8 +57,6 @@ static int cmd_pack(const std::string& input_dir, const std::string& output_path
     header.file_count = static_cast<u32>(files.size());
     header.flags      = encrypt ? UPK_FLAG_ENCRYPTED : 0;
 
-    u32 table_size = static_cast<u32>(files.size() * sizeof(UPKEntry));
-
     std::ofstream out(output_path, std::ios::binary);
     if (!out) {
         std::cerr << "ERROR: Cannot create '" << output_path << "'\n";
@@ -67,9 +65,21 @@ static int cmd_pack(const std::string& input_dir, const std::string& output_path
 
     out.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
-    std::vector<UPKEntry> entries(files.size());
+    // Entry-table layout per entry (variable): u16 path_len, path bytes,
+    // u32 offset, u32 raw_size, u32 stored_size. Reserve it by writing
+    // zeros of the correct total size, then rewrite once blob offsets are
+    // known.
     auto table_pos = out.tellp();
-    out.write(reinterpret_cast<const char*>(entries.data()), table_size);
+    std::size_t table_size = 0;
+    for (auto& f : files) {
+        table_size += sizeof(u16) + f.rel_path.size() + 3 * sizeof(u32);
+    }
+    std::vector<char> zero(table_size, 0);
+    out.write(zero.data(), table_size);
+
+    // Write blobs, capture offsets.
+    struct WrittenEntry { u32 offset, raw_size, stored_size; };
+    std::vector<WrittenEntry> written(files.size());
 
     for (size_t i = 0; i < files.size(); ++i) {
         std::ifstream in(files[i].abs_path, std::ios::binary | std::ios::ate);
@@ -84,11 +94,20 @@ static int cmd_pack(const std::string& input_dir, const std::string& output_path
         u32 offset = static_cast<u32>(out.tellp());
         out.write(reinterpret_cast<const char*>(data.data()), data.size());
 
-        entries[i] = {files[i].name_hash, offset, raw_size, static_cast<u32>(data.size()), 0};
+        written[i] = {offset, raw_size, static_cast<u32>(data.size())};
     }
 
+    // Rewind and write the entry table now that offsets are known.
     out.seekp(table_pos);
-    out.write(reinterpret_cast<const char*>(entries.data()), table_size);
+    for (size_t i = 0; i < files.size(); ++i) {
+        u16 path_len = static_cast<u16>(files[i].rel_path.size());
+        out.write(reinterpret_cast<const char*>(&path_len), sizeof(path_len));
+        out.write(files[i].rel_path.data(), path_len);
+        out.write(reinterpret_cast<const char*>(&written[i].offset),      sizeof(u32));
+        out.write(reinterpret_cast<const char*>(&written[i].raw_size),    sizeof(u32));
+        out.write(reinterpret_cast<const char*>(&written[i].stored_size), sizeof(u32));
+    }
+
     out.seekp(0, std::ios::end);
     auto total = out.tellp();
     out.close();
@@ -108,32 +127,39 @@ static int cmd_unpack(const std::string& input_path, const std::string& output_d
         return 1;
     }
 
-    std::cerr << "NOTE: File names are hashed — extracting with hash-based names.\n";
-
     fs::create_directories(output_dir);
 
-    // We need to re-read the entries directly for offset/size info
+    // We need the (path, offset, sizes) trio to extract. Re-parse the entry
+    // table directly — UPKReader exposes hash lookup but we want paths here.
     std::ifstream in(input_path, std::ios::binary);
     UPKHeader header{};
     in.read(reinterpret_cast<char*>(&header), sizeof(header));
-    std::vector<UPKEntry> entries(header.file_count);
-    in.read(reinterpret_cast<char*>(entries.data()), header.file_count * sizeof(UPKEntry));
 
-    for (auto& e : entries) {
-        auto data = reader.read_by_hash(e.name_hash);
-        if (data.empty()) continue;
+    u32 extracted = 0;
+    for (u32 i = 0; i < header.file_count; ++i) {
+        u16 path_len = 0;
+        in.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+        std::string path(path_len, '\0');
+        if (path_len) in.read(path.data(), path_len);
+        u32 offset = 0, raw_size = 0, stored_size = 0;
+        in.read(reinterpret_cast<char*>(&offset),      sizeof(u32));
+        in.read(reinterpret_cast<char*>(&raw_size),    sizeof(u32));
+        in.read(reinterpret_cast<char*>(&stored_size), sizeof(u32));
 
-        char name[32];
-        std::snprintf(name, sizeof(name), "%016llx",
-                      static_cast<unsigned long long>(e.name_hash));
+        auto data = reader.read(path);
+        if (data.empty()) {
+            std::cerr << "WARN: empty data for '" << path << "'\n";
+            continue;
+        }
 
-        auto path = fs::path(output_dir) / name;
-        std::ofstream out(path, std::ios::binary);
+        fs::path out_path = fs::path(output_dir) / path;
+        fs::create_directories(out_path.parent_path());
+        std::ofstream out(out_path, std::ios::binary);
         out.write(reinterpret_cast<const char*>(data.data()), data.size());
-        std::cout << "  " << name << " (" << data.size() << " bytes)\n";
+        ++extracted;
     }
 
-    std::cout << "Extracted " << header.file_count << " files to '" << output_dir << "'\n";
+    std::cout << "Extracted " << extracted << " files to '" << output_dir << "'\n";
     return 0;
 }
 
@@ -152,26 +178,37 @@ static int cmd_list(const std::string& input_path) {
         std::cerr << "ERROR: Not a UPK file\n";
         return 1;
     }
-
-    std::vector<UPKEntry> entries(header.file_count);
-    in.read(reinterpret_cast<char*>(entries.data()), header.file_count * sizeof(UPKEntry));
+    if (header.version != UPK_VERSION) {
+        std::cerr << "ERROR: UPK version " << header.version
+                  << " not supported (expected " << UPK_VERSION << ")\n";
+        return 1;
+    }
 
     std::cout << "UPK v" << header.version << " — " << header.file_count << " files";
-    if (header.flags & UPK_FLAG_ENCRYPTED) std::cout << " [encrypted]";
+    if (header.flags & UPK_FLAG_ENCRYPTED)  std::cout << " [encrypted]";
     if (header.flags & UPK_FLAG_COMPRESSED) std::cout << " [compressed]";
     std::cout << "\n\n";
 
-    std::cout << "  Hash              Raw Size   Stored Size\n";
-    std::cout << "  ----------------  ---------  -----------\n";
+    std::cout << "  Raw Size   Stored Size  Path\n";
+    std::cout << "  ---------  -----------  ----\n";
 
     u64 total_raw = 0, total_stored = 0;
-    for (auto& e : entries) {
-        char line[80];
-        std::snprintf(line, sizeof(line), "  %016llx  %9u  %11u",
-                      static_cast<unsigned long long>(e.name_hash), e.raw_size, e.stored_size);
+    for (u32 i = 0; i < header.file_count; ++i) {
+        u16 path_len = 0;
+        in.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+        std::string path(path_len, '\0');
+        if (path_len) in.read(path.data(), path_len);
+        u32 offset = 0, raw_size = 0, stored_size = 0;
+        in.read(reinterpret_cast<char*>(&offset),      sizeof(u32));
+        in.read(reinterpret_cast<char*>(&raw_size),    sizeof(u32));
+        in.read(reinterpret_cast<char*>(&stored_size), sizeof(u32));
+
+        char line[128];
+        std::snprintf(line, sizeof(line), "  %9u  %11u  %s",
+                      raw_size, stored_size, path.c_str());
         std::cout << line << "\n";
-        total_raw += e.raw_size;
-        total_stored += e.stored_size;
+        total_raw += raw_size;
+        total_stored += stored_size;
     }
 
     std::cout << "\n  Total: " << total_raw << " bytes raw, " << total_stored << " bytes stored\n";
@@ -185,9 +222,9 @@ static void print_usage() {
         "uldum_pack — Uldum Package Tool\n"
         "\n"
         "Usage:\n"
-        "  uldum_pack pack <input_dir> <output.upk> [--encrypt --key <secret>]\n"
-        "  uldum_pack unpack <input.upk> <output_dir> [--key <secret>]\n"
-        "  uldum_pack list <input.upk>\n";
+        "  uldum_pack pack   <input_dir> <output>    [--encrypt --key <secret>]\n"
+        "  uldum_pack unpack <input>     <output_dir> [--key <secret>]\n"
+        "  uldum_pack list   <input>\n";
 }
 
 int main(int argc, char* argv[]) {

@@ -1,7 +1,7 @@
 {
     "potion_healing": {
         "display_name": "Potion of Healing",
-        "icon": "textures/icons/potion_healing.png",
+        "icon": "textures/icons/potion_healing.ktx2",
         "charges": 1,
         "cooldown": 5.0,
         "gold_cost": 150

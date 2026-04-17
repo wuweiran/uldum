@@ -86,10 +86,10 @@ Each map defines a **tileset** in `tileset.json`. The tileset lists all terrain 
 {
     "name": "Ashenvale",
     "layers": [
-        { "id": 0, "name": "grass",  "diffuse": "textures/grass.png" },
-        { "id": 1, "name": "dirt",   "diffuse": "textures/dirt.png" },
-        { "id": 2, "name": "stone",  "diffuse": "textures/stone.png" },
-        { "id": 3, "name": "mud",    "diffuse": "textures/mud.png" },
+        { "id": 0, "name": "grass",  "diffuse": "textures/grass.ktx2" },
+        { "id": 1, "name": "dirt",   "diffuse": "textures/dirt.ktx2" },
+        { "id": 2, "name": "stone",  "diffuse": "textures/stone.ktx2" },
+        { "id": 3, "name": "mud",    "diffuse": "textures/mud.ktx2" },
         { "id": 4, "name": "shallow_water", "type": "water_shallow",
           "color": [0.15, 0.35, 0.45], "opacity": 0.5, "wave_speed": 0.3 },
         { "id": 5, "name": "deep_water", "type": "water_deep",
@@ -98,7 +98,7 @@ Each map defines a **tileset** in `tileset.json`. The tileset lists all terrain 
 }
 ```
 
-- **`diffuse`**: Path to diffuse color texture (PNG). Relative to map root.
+- **`diffuse`**: Path to diffuse color texture (KTX2). Relative to map root.
 - **`type`**: Optional. Marks special layer types the engine handles differently.
 
 ### Layer Count
@@ -116,7 +116,7 @@ Maps can define up to **16 layers** (stored as `u8` per vertex, shader uses `sam
 
 ### Diffuse Textures
 
-One diffuse texture per layer, provided by the map as PNG. Tiles once per terrain tile (128 game units). The engine generates procedural fallback textures if files are missing.
+One diffuse texture per layer, provided by the map as KTX2 (authored from PNG via `scripts/png_to_ktx2.bat`). Tiles once per terrain tile (128 game units). The engine generates procedural fallback textures if files are missing.
 
 Per-layer normal maps are not supported yet. Terrain uses vertex normals for lighting. An optional `"normal"` field per layer can be added later for surface detail.
 

@@ -114,7 +114,7 @@ A simple melee map has one scene. Complex maps (RPGs, campaigns) use multiple sc
     "suggested_players": "2-4",
     "loading_screen": {
         "text": "Prepare for battle!",
-        "image": "assets/textures/loading.png"
+        "image": "assets/textures/loading.ktx2"
     },
     "players": [
         { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" },
@@ -151,10 +151,10 @@ The manifest declares all map-specific enumerations: classifications, attack/arm
 {
     "name": "Ashenvale",
     "layers": [
-        { "id": 0, "name": "grass",  "texture": "assets/textures/terrain/grass.png" },
-        { "id": 1, "name": "dirt",   "texture": "assets/textures/terrain/dirt.png" },
-        { "id": 2, "name": "stone",  "texture": "assets/textures/terrain/stone.png" },
-        { "id": 3, "name": "sand",   "texture": "assets/textures/terrain/sand.png" }
+        { "id": 0, "name": "grass",  "texture": "assets/textures/terrain/grass.ktx2" },
+        { "id": 1, "name": "dirt",   "texture": "assets/textures/terrain/dirt.ktx2" },
+        { "id": 2, "name": "stone",  "texture": "assets/textures/terrain/stone.ktx2" },
+        { "id": 3, "name": "sand",   "texture": "assets/textures/terrain/sand.ktx2" }
     ]
 }
 ```

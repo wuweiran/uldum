@@ -31,7 +31,7 @@ Uldum is a game engine for map-based, unit-centric games with Lua scripting, mul
 | `map` | Map format, terrain data, object placement, overrides | core, asset |
 | `network` | Server-authoritative sim, client prediction, state sync | core, simulation |
 | `audio` | 3D positional audio, SFX, music streaming | core, asset |
-| `asset` | Resource manager, format loaders (glTF, PNG, OGG) | core |
+| `asset` | Resource manager, format loaders (glTF, KTX2, OGG) | core |
 | `editor` | In-engine terrain editor (ImGui) | core, render, simulation, map |
 | `app` | Entry point, main loop, game state machine | All |
 
@@ -44,7 +44,7 @@ Uldum is a game engine for map-based, unit-centric games with Lua scripting, mul
 
 - **Server-authoritative networking** (not lockstep). No fixed-point math. Regular floating point.
 - **Custom platform layer** — no SDL. Win32 on Windows, GameActivity on Android.
-- **One format per asset type**: glTF (models + skeletal animation), PNG (textures), OGG (audio), GLSL (shaders), JSON (config), FlatBuffers (binary serialization). See `docs/model-format.md` for full art spec.
+- **One format per asset type**: glTF (models + skeletal animation), KTX2 + Basis Universal (textures — authored externally via `toktx`), OGG (audio), GLSL (shaders), JSON (config), FlatBuffers (binary serialization). See `docs/model-format.md` for full art spec.
 - **Hybrid ECS + unit-centric API**: ECS internally for performance, unit facade for scripting.
 - **Deterministic fixed timestep** for simulation (e.g. 16 ticks/sec), decoupled from render.
 

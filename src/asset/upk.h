@@ -13,6 +13,25 @@
 namespace uldum::asset {
 
 // ── UPK format constants ────────────────────────────────────────────────────
+//
+// On-disk layout:
+//   Header (16 bytes):                          — fixed
+//     u8[4] magic = "UPK\0"
+//     u32   version = 1
+//     u32   file_count
+//     u32   flags    (bit 0: compressed, bit 1: encrypted)
+//
+//   Entry table (variable-length, file_count entries). For each entry:
+//     u16    path_len
+//     char[] path           (normalized: forward slashes, lowercase, UTF-8)
+//     u32    offset         (bytes from start of file to data blob)
+//     u32    raw_size       (original size)
+//     u32    stored_size    (size after compression/encryption)
+//
+//   Data blobs (contiguous at the offsets listed in entries)
+//
+// Encryption (XOR) applies to data blobs only. Paths are plaintext so that
+// unpack can restore the original folder structure exactly.
 
 static constexpr u8  UPK_MAGIC[4] = {'U', 'P', 'K', 0};
 static constexpr u32 UPK_VERSION  = 1;
@@ -27,12 +46,15 @@ struct UPKHeader {
     u32 flags;
 };
 
+// In-memory entry. On disk, `path` is preceded by a u16 path_len and
+// followed by (offset, raw_size, stored_size); `name_hash` is a cache of
+// upk_hash(path) for fast lookup and is not stored in the file.
 struct UPKEntry {
+    std::string path;
     u64 name_hash;
     u32 offset;
     u32 raw_size;
     u32 stored_size;
-    u32 reserved;
 };
 
 // ── FNV-1a 64-bit hash ─────────────────────────────────────────────────────

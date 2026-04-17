@@ -1386,7 +1386,7 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
         return;
     }
 
-    // Procedural fallback colors per layer (used when diffuse PNG doesn't exist)
+    // Procedural fallback colors per layer (used when diffuse texture is missing)
     static const struct { u8 r, g, b; } fallback_colors[] = {
         {60, 140, 40},   // 0: grass green
         {140, 100, 50},  // 1: dirt brown
@@ -1406,7 +1406,7 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
     for (u32 i = 0; i < layer_count; ++i) {
         auto& tl = tileset.layers[i];
 
-        // Try loading diffuse PNG from map
+        // Try loading diffuse texture from map package
         bool loaded = false;
         if (!tl.diffuse_path.empty()) {
             std::string abs_path = m_map_root + "/" + tl.diffuse_path;

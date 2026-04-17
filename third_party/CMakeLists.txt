@@ -138,3 +138,21 @@ endif()
 if(MSVC)
     target_compile_options(enet PRIVATE /W0)
 endif()
+
+# ── KTX-Software (KTX2 container + Basis Universal transcoder) ────────────
+message(STATUS "Fetching KTX-Software...")
+set(KTX_FEATURE_TOOLS         ON  CACHE BOOL "")   # we want toktx for encoding
+set(KTX_FEATURE_TESTS         OFF CACHE BOOL "")
+set(KTX_FEATURE_DOC           OFF CACHE BOOL "")
+set(KTX_FEATURE_LOADTEST_APPS OFF CACHE BOOL "")
+set(KTX_FEATURE_STATIC_LIBRARY ON CACHE BOOL "")
+set(KTX_FEATURE_VK_UPLOAD     OFF CACHE BOOL "")  # we upload via VMA ourselves
+set(KTX_FEATURE_GL_UPLOAD     OFF CACHE BOOL "")
+set(BUILD_SHARED_LIBS         OFF CACHE BOOL "")
+FetchContent_Declare(ktx
+    URL      https://github.com/KhronosGroup/KTX-Software/archive/refs/tags/v4.3.2.tar.gz
+)
+FetchContent_MakeAvailable(ktx)
+if(MSVC AND TARGET ktx)
+    target_compile_options(ktx PRIVATE /W0)
+endif()

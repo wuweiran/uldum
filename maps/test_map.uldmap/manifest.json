@@ -17,12 +17,12 @@
         "ambient_intensity": 0.25,
         "fog_color": [0.5, 0.5, 0.6],
         "skybox": {
-            "right":  "shared/assets/textures/skybox/right.png",
-            "left":   "shared/assets/textures/skybox/left.png",
-            "top":    "shared/assets/textures/skybox/top.png",
-            "bottom": "shared/assets/textures/skybox/bottom.png",
-            "front":  "shared/assets/textures/skybox/front.png",
-            "back":   "shared/assets/textures/skybox/back.png"
+            "right":  "shared/assets/textures/skybox/right.ktx2",
+            "left":   "shared/assets/textures/skybox/left.ktx2",
+            "top":    "shared/assets/textures/skybox/top.ktx2",
+            "bottom": "shared/assets/textures/skybox/bottom.ktx2",
+            "front":  "shared/assets/textures/skybox/front.ktx2",
+            "back":   "shared/assets/textures/skybox/back.ktx2"
         }
     },
 

@@ -1,6 +1,6 @@
 # Uldum Package Format
 
-Binary archive format for bundling engine and map assets. Supports compression and encryption to prevent casual extraction.
+Binary archive format for bundling engine and map assets. Conceptually a folder in a single file: pack a directory and unpack it back out to get the original tree. Supports optional XOR encryption on data blobs.
 
 ## Extensions
 
@@ -11,11 +11,11 @@ Both use the same underlying format — the extension distinguishes role, not st
 
 ## Design Goals
 
-- **Fast random access**: O(log n) file lookup via sorted hash table
-- **No plaintext filenames**: paths stored as 64-bit hashes
-- **Compression**: LZ4 for fast decompression (optional per-file)
-- **Encryption**: XOR with repeated key (v1), upgradeable to AES (future)
-- **Simple**: single-file archive, no dependencies beyond LZ4
+- **Folder-in-a-file**: pack and unpack round-trip a directory losslessly (same paths, same structure)
+- **Fast random access**: O(log n) file lookup (binary search on hashed paths, cached in memory at open time)
+- **Compression**: LZ4 per-blob (optional, future)
+- **Encryption**: XOR with repeated key on data blobs (data only; paths are plaintext)
+- **Simple**: single file, minimal external dependencies
 
 ## File Layout
 
@@ -23,10 +23,11 @@ Both use the same underlying format — the extension distinguishes role, not st
 ┌──────────────────────────────────┐
 │ Header (16 bytes)                │
 ├──────────────────────────────────┤
-│ File Table (24 bytes × N)        │
+│ Entry table (variable)           │
+│   [entry 0] [entry 1] ... [N-1]  │
 ├──────────────────────────────────┤
-│ Data Blobs (variable)            │
-│   [blob 0] [blob 1] ... [blob N]│
+│ Data blobs (contiguous)          │
+│   [blob 0] [blob 1] ... [N-1]    │
 └──────────────────────────────────┘
 ```
 
@@ -36,38 +37,40 @@ Both use the same underlying format — the extension distinguishes role, not st
 |--------|------|-------|-------------|
 | 0 | 4 | magic | `"UPK\0"` (0x55, 0x50, 0x4B, 0x00) |
 | 4 | 4 | version | Format version (currently 1) |
-| 8 | 4 | file_count | Number of entries in file table |
-| 12 | 4 | flags | Bit 0: compressed (LZ4), Bit 1: encrypted (XOR v1) |
+| 8 | 4 | file_count | Number of entries in the entry table |
+| 12 | 4 | flags | Bit 0: compressed (per-blob LZ4, future), Bit 1: encrypted (XOR) |
 
-### File Table Entry (24 bytes)
+### Entry Table (variable-length)
 
-Entries are sorted by `name_hash` for binary search lookup.
+Each entry, in order:
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 8 | name_hash | FNV-1a 64-bit hash of relative file path (forward slashes, lowercase) |
-| 8 | 4 | offset | Byte offset from start of file to this entry's data blob |
-| 12 | 4 | raw_size | Original uncompressed size in bytes |
-| 16 | 4 | stored_size | Size as stored (after compression, before encryption) |
-| 20 | 4 | reserved | Reserved for future use (must be 0) |
+| Field | Size | Description |
+|-------|------|-------------|
+| path_len    | u16            | Byte length of the path string |
+| path        | char[path_len] | Relative path (normalized: forward slashes, lowercase, UTF-8) |
+| offset      | u32            | Byte offset from start of file to this entry's data blob |
+| raw_size    | u32            | Original uncompressed size |
+| stored_size | u32            | Size as stored (after compression/encryption) |
+
+Paths are plaintext. The runtime computes an FNV-1a 64-bit hash of the path at open time and caches a sorted (hash → entry) table for O(log n) lookups. The on-disk format carries the path string so tools (`uldum_pack unpack`, editor) can reconstruct the original folder.
 
 ### Data Blobs
 
-Each blob is the file's content, processed in order:
-1. **Compress** (if flags bit 0): LZ4 block compression
+Each blob's stored bytes are processed in order on write (reverse on read):
+1. **Compress** (if flags bit 0): LZ4 block compression (future)
 2. **Encrypt** (if flags bit 1): XOR with repeated 32-byte key
 
-To read a file: seek to `offset`, read `stored_size` bytes, decrypt (if encrypted), decompress (if compressed).
+Read path: seek to `offset`, read `stored_size` bytes, decrypt (if encrypted), decompress (if compressed).
 
-## Name Hashing
+## Path Normalization
 
-File paths are normalized before hashing:
+Paths are normalized before lookup (and before the hash is computed):
 - Forward slashes only (`/` not `\`)
 - Lowercase
 - No leading `./` or `/`
-- Example: `shared/assets/textures/terrain/grass.png`
+- Example: `shared/assets/textures/terrain/grass.ktx2`
 
-Hash function: FNV-1a 64-bit
+Hash function (FNV-1a 64-bit), used internally for fast lookup:
 ```
 hash = 14695981039346656037 (FNV offset basis)
 for each byte:
@@ -154,3 +157,20 @@ Source trees (`engine/`, `maps/<name>.uldmap/`) remain directories; the build pi
 |---------|----------|-------------|------------|
 | `engine.uldpak` | Engine shaders, textures, configs, scripts | Yes | No (public assets) |
 | `<map>.uldmap` | Map terrain, scripts, assets, types | Yes | Yes (protect gameplay) |
+
+## Texture Format
+
+**KTX2 + Basis Universal** is the only texture format the engine accepts. This applies to every target (`uldum_dev`, `uldum_game`, `uldum_server`, `uldum_editor`) and every mount (`engine.uldpak`, `.uldmap` file, loose directory). A PNG inside a mount is a load error — there is no format fallback, and no bake step in the engine pipeline.
+
+Runtime library: [KTX-Software](https://github.com/KhronosGroup/KTX-Software) (Khronos reference). One KTX2 payload transcodes to BC7 on desktop and ASTC on Android at GPU upload time.
+
+**Why no in-engine bake:** the engine stays out of texture production. Map makers use their own tools (Photoshop, GIMP, Substance, etc.) plus `toktx` — the standard Khronos CLI — to produce KTX2 files directly. That mirrors how they already produce glTF models, OGG audio, and Lua scripts: finished authored files in the map folder. `uldum_pack pack` archives them as-is.
+
+**Author workflow (PNG → KTX2):**
+
+```
+toktx --encode uastc --uastc_quality 2 --genmipmap --assign_oetf srgb   tex.ktx2 tex.png   # albedo / sRGB
+toktx --encode uastc --uastc_quality 2 --genmipmap --assign_oetf linear tex.ktx2 tex.png   # normals / data / linear
+```
+
+A helper script `scripts/png_to_ktx2.bat` wraps these flags — see [editor.md](editor.md).

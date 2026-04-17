@@ -25,7 +25,7 @@ uldum/
 ├── map/            # Map format (FlatBuffers), terrain data, object placement
 ├── network/        # Server-authoritative: server sim, client prediction, state sync
 ├── audio/          # miniaudio: 3D positional, SFX, music streaming
-├── asset/          # Resource manager, glTF/PNG/OGG loaders, async loading
+├── asset/          # Resource manager, glTF/KTX2/OGG loaders, async loading
 ├── editor/         # In-engine terrain editor (ImGui): sculpt, paint, place, pathing
 └── app/            # Entry point, main loop, game state machine
 ```
@@ -195,7 +195,7 @@ my_map.uldmap/
 │   ├── main.lua        # Map entry point
 │   └── ...             # Additional modules
 ├── models/             # Map-specific glTF models
-├── textures/           # Map-specific PNG textures
+├── textures/           # Map-specific KTX2 textures
 ├── audio/              # Map-specific OGG sounds
 └── overrides/
     ├── unit_types.json     # Override/add unit types
@@ -272,7 +272,7 @@ In-engine tool using Dear ImGui. Activated via editor mode toggle.
 | Tracy | latest | Profiling | BSD |
 | glm | latest | Math (rendering) | MIT |
 | cgltf | latest | glTF 2.0 loading | MIT |
-| stb_image | latest | PNG/JPEG loading | MIT/Public Domain |
+| KTX-Software | 4.3+ | KTX2 + Basis Universal textures | Apache 2.0 |
 | stb_vorbis | latest | OGG Vorbis decoding | MIT/Public Domain |
 | FlatBuffers | latest | Binary serialization | Apache 2.0 |
 | nlohmann/json | 3.11 | JSON parsing | MIT |
@@ -559,13 +559,12 @@ Build targets, cross-platform packaging, and asset baking.
 - Runtime: AssetManager loads from PAK instead of loose files
 - Encryption for map PAK (protect Lua scripts/gameplay logic)
 
-#### Phase 15c — Asset Baking
-- Offline build pipeline (Python or C++ tool)
-- **Textures**: PNG → KTX2 with BC7 (desktop) / ASTC (Android) GPU compression + mipmaps
-- **Audio**: OGG Opus for music/voice, WAV for short SFX
-- **Shaders**: GLSL → pre-compiled SPIR-V (already done via CMake)
-- **Configs**: JSON → FlatBuffers binary (optional, for load speed)
-- **Models**: glTF as-is, or bake to engine-native binary mesh format
+#### Phase 15c — KTX2 Textures
+- KTX2 + Basis Universal is the **only** runtime texture format, everywhere (engine, maps, all targets)
+- Authoring workflow: map makers convert PNG → KTX2 with `toktx` *before* dropping files into a map folder
+- Engine never bakes. `uldum_pack pack` remains pure archive; no format transforms anywhere in the build
+- Editor source-folder / normal modes still exist (different save semantics), but format-wise they're identical — both require KTX2
+- See [editor.md](editor.md) for editor modes, [packaging.md](packaging.md) for runtime texture loading and author workflow
 
 #### Phase 15d — Platform Packaging
 - **Windows**: self-contained output folder or installer

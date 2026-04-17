@@ -13,23 +13,40 @@ bool UPKReader::open(std::string_view path, std::string_view encryption_key) {
     std::ifstream file(std::string(path), std::ios::binary);
     if (!file) return false;
 
-    // Read header
     file.read(reinterpret_cast<char*>(&m_header), sizeof(m_header));
-    if (std::memcmp(m_header.magic, UPK_MAGIC, 4) != 0) {
+    if (!file || std::memcmp(m_header.magic, UPK_MAGIC, 4) != 0) {
         log::error(TAG, "'{}' is not a valid UPK file", path);
         return false;
     }
     if (m_header.version != UPK_VERSION) {
-        log::error(TAG, "'{}' has unsupported version {}", path, m_header.version);
+        log::error(TAG, "'{}' has unsupported version {} (expected {})",
+                   path, m_header.version, UPK_VERSION);
         return false;
     }
 
-    // Read file table
-    m_entries.resize(m_header.file_count);
-    file.read(reinterpret_cast<char*>(m_entries.data()),
-              m_header.file_count * sizeof(UPKEntry));
+    // Variable-length entry table — read one entry at a time.
+    m_entries.clear();
+    m_entries.reserve(m_header.file_count);
+    for (u32 i = 0; i < m_header.file_count; ++i) {
+        UPKEntry e;
+        u16 path_len = 0;
+        file.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+        e.path.resize(path_len);
+        if (path_len) file.read(e.path.data(), path_len);
+        file.read(reinterpret_cast<char*>(&e.offset),      sizeof(e.offset));
+        file.read(reinterpret_cast<char*>(&e.raw_size),    sizeof(e.raw_size));
+        file.read(reinterpret_cast<char*>(&e.stored_size), sizeof(e.stored_size));
+        if (!file) {
+            log::error(TAG, "'{}' entry table truncated at entry {}", path, i);
+            close();
+            return false;
+        }
+        e.name_hash = upk_hash(e.path);
+        m_entries.push_back(std::move(e));
+    }
+    std::sort(m_entries.begin(), m_entries.end(),
+              [](const UPKEntry& a, const UPKEntry& b) { return a.name_hash < b.name_hash; });
 
-    // Setup encryption
     m_encrypted = (m_header.flags & UPK_FLAG_ENCRYPTED) != 0;
     if (m_encrypted) {
         if (encryption_key.empty()) {

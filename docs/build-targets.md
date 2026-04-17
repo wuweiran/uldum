@@ -78,7 +78,7 @@ Headless multiplayer server.
 ```
 Shared libraries (all targets may link):
   uldum_core          Types, math, logging, allocators
-  uldum_asset         Resource loading (glTF, PNG, JSON)
+  uldum_asset         Resource loading (glTF, KTX2, JSON)
   uldum_map           Map format, terrain data, type definitions
   uldum_simulation    ECS, units, pathfinding, combat, abilities
   uldum_script        Lua VM, engine API bindings, triggers
