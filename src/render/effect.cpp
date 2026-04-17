@@ -1,5 +1,6 @@
 #include "render/effect.h"
 #include "render/particles.h"
+#include "asset/asset.h"
 #include "core/log.h"
 
 #include <nlohmann/json.hpp>
@@ -27,11 +28,13 @@ const EffectDef* EffectRegistry::get(const std::string& name) const {
 }
 
 void EffectRegistry::load_from_json(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) return;
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr) return;
+    auto bytes = mgr->read_file_bytes(path);
+    if (bytes.empty()) return;
 
     nlohmann::json j;
-    try { file >> j; } catch (...) {
+    try { j = nlohmann::json::parse(bytes.begin(), bytes.end()); } catch (...) {
         log::warn(TAG, "Failed to parse effects file '{}'", path);
         return;
     }

@@ -3,6 +3,7 @@ add_library(uldum_asset STATIC
     texture.cpp
     model.cpp
     config.cpp
+    upk.cpp
 )
 
 target_include_directories(uldum_asset PUBLIC ${CMAKE_SOURCE_DIR}/src)

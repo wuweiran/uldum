@@ -14,4 +14,5 @@ add_subdirectory(editor)
 
 # Executables
 add_subdirectory(app)
+add_subdirectory(tools)
 # editor/ builds uldum_editor.exe directly

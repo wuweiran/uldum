@@ -128,12 +128,13 @@ bool Editor::init(const std::string& map_path) {
     m_map_path = std::string(ULDUM_SOURCE_DIR) + "/" + m_map_path;
 #endif
 
-    if (m_map.load_map(m_map_path, m_asset, m_simulation)) {
+    if (m_map.load_map(m_map_path, m_asset, m_simulation, /*allow_directory=*/true)) {
         m_map_loaded = true;
         m_scenes = m_map.list_scenes();
         m_current_scene = m_map.manifest().start_scene;
         m_renderer.set_map_root(m_map.map_root());
         m_renderer.load_tileset_textures(m_map.tileset());
+        m_renderer.set_environment(m_map.manifest().environment);
         if (m_map.terrain().is_valid()) {
             std::vector<u8> shallow, deep;
             m_map.tileset().get_water_layer_ids(shallow, deep);
@@ -1027,12 +1028,13 @@ void Editor::open_map(const std::string& path) {
     m_current_scene.clear();
 
     m_map_path = path;
-    if (m_map.load_map(m_map_path, m_asset, m_simulation)) {
+    if (m_map.load_map(m_map_path, m_asset, m_simulation, /*allow_directory=*/true)) {
         m_map_loaded = true;
         m_scenes = m_map.list_scenes();
         m_current_scene = m_map.manifest().start_scene;
         m_renderer.set_map_root(m_map.map_root());
         m_renderer.load_tileset_textures(m_map.tileset());
+        m_renderer.set_environment(m_map.manifest().environment);
         if (m_map.terrain().is_valid()) {
             std::vector<u8> shallow, deep;
             for (auto& layer : m_map.tileset().layers) {

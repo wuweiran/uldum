@@ -18,4 +18,4 @@ target_link_libraries(uldum_editor PRIVATE
 )
 
 # Reuse shader and asset targets from app/
-add_dependencies(uldum_editor uldum_dev_shaders copy_assets)
+add_dependencies(uldum_editor uldum_dev_shaders pack_assets)

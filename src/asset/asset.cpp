@@ -2,6 +2,7 @@
 #include "core/log.h"
 
 #include <filesystem>
+#include <fstream>
 
 namespace uldum::asset {
 
@@ -9,6 +10,11 @@ static constexpr const char* TAG = "Asset";
 
 bool AssetManager::init(std::string_view engine_root) {
     m_engine_root = engine_root;
+
+    s_instance = this;
+
+    open_package("engine.uldpak", "engine");
+
     log::info(TAG, "AssetManager initialized — root: '{}'", m_engine_root);
     return true;
 }
@@ -46,7 +52,12 @@ Handle<TextureData> AssetManager::load_texture(std::string_view path) {
         m_texture_cache.erase(it);
     }
 
-    auto result = asset::load_texture(resolved);
+    auto bytes = read_file_bytes(resolved);
+    if (bytes.empty()) {
+        log::error(TAG, "Failed to load texture '{}': not found in any mounted package", resolved);
+        return {};
+    }
+    auto result = asset::load_texture_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
     if (!result) {
         log::error(TAG, "{}", result.error());
         return {};
@@ -74,7 +85,12 @@ Handle<ModelData> AssetManager::load_model(std::string_view path) {
         m_model_cache.erase(it);
     }
 
-    auto result = asset::load_model(resolved);
+    auto bytes = read_file_bytes(resolved);
+    if (bytes.empty()) {
+        log::error(TAG, "Failed to load model '{}': not found in any mounted package", resolved);
+        return {};
+    }
+    auto result = asset::load_model_from_memory(bytes.data(), static_cast<u32>(bytes.size()), resolved);
     if (!result) {
         log::error(TAG, "{}", result.error());
         return {};
@@ -108,7 +124,12 @@ Handle<JsonDocument> AssetManager::load_config(std::string_view path) {
         m_config_cache.erase(it);
     }
 
-    auto result = asset::load_config(resolved);
+    auto bytes = read_file_bytes(resolved);
+    if (bytes.empty()) {
+        log::error(TAG, "Failed to load config '{}': not found in any mounted package", resolved);
+        return {};
+    }
+    auto result = asset::load_config_from_memory(bytes.data(), static_cast<u32>(bytes.size()), resolved);
     if (!result) {
         log::error(TAG, "{}", result.error());
         return {};
@@ -129,7 +150,12 @@ Handle<JsonDocument> AssetManager::load_config_absolute(std::string_view abs_pat
         m_config_cache.erase(it);
     }
 
-    auto result = asset::load_config(path_str);
+    auto bytes = read_file_bytes(path_str);
+    if (bytes.empty()) {
+        log::error(TAG, "Failed to load config '{}': not found in any mounted package", path_str);
+        return {};
+    }
+    auto result = asset::load_config_from_memory(bytes.data(), static_cast<u32>(bytes.size()), path_str);
     if (!result) {
         log::error(TAG, "{}", result.error());
         return {};
@@ -144,6 +170,70 @@ Handle<JsonDocument> AssetManager::load_config_absolute(std::string_view abs_pat
 
 void AssetManager::release(Handle<JsonDocument> h) {
     m_configs.remove(h);
+}
+
+// ── Mounting ────────────────────────────────────────────────────────────────
+
+static std::string normalize_prefix(std::string_view prefix) {
+    auto p = upk_normalize_path(prefix);
+    if (!p.empty() && p.back() != '/') p += '/';
+    return p;
+}
+
+bool AssetManager::open_package(std::string_view pkg_path, std::string_view prefix,
+                                std::string_view encryption_key) {
+    PackageMount m;
+    m.prefix = normalize_prefix(prefix);
+    if (!m.reader.open(pkg_path, encryption_key)) {
+        return false;
+    }
+    log::info(TAG, "Mounted package '{}' at prefix '{}' ({} files)",
+              pkg_path, m.prefix, m.reader.file_count());
+    m_mounts.push_back(std::make_unique<Mount>(std::move(m)));
+    return true;
+}
+
+bool AssetManager::mount_directory(std::string_view fs_dir, std::string_view prefix) {
+    namespace fs = std::filesystem;
+    if (!fs::is_directory(fs::path(std::string(fs_dir)))) {
+        return false;
+    }
+    DirectoryMount m;
+    m.prefix = normalize_prefix(prefix);
+    m.fs_root = std::string(fs_dir);
+    log::info(TAG, "Mounted directory '{}' at prefix '{}'", m.fs_root, m.prefix);
+    m_mounts.push_back(std::make_unique<Mount>(std::move(m)));
+    return true;
+}
+
+std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
+    auto norm = upk_normalize_path(path);
+
+    for (auto& mount : m_mounts) {
+        std::vector<u8> data = std::visit([&](auto& m) -> std::vector<u8> {
+            std::string_view lookup = norm;
+            if (!m.prefix.empty() && lookup.starts_with(m.prefix)) {
+                lookup.remove_prefix(m.prefix.size());
+            }
+            if constexpr (std::is_same_v<std::decay_t<decltype(m)>, PackageMount>) {
+                return m.reader.read(lookup);
+            } else {
+                std::string abs_path = m.fs_root;
+                if (!abs_path.empty() && abs_path.back() != '/' && abs_path.back() != '\\')
+                    abs_path += '/';
+                abs_path += std::string(lookup);
+                std::ifstream file(abs_path, std::ios::binary | std::ios::ate);
+                if (!file) return {};
+                auto size = file.tellg();
+                file.seekg(0);
+                std::vector<u8> buf(static_cast<size_t>(size));
+                file.read(reinterpret_cast<char*>(buf.data()), size);
+                return buf;
+            }
+        }, *mount);
+        if (!data.empty()) return data;
+    }
+    return {};
 }
 
 } // namespace uldum::asset

@@ -132,5 +132,6 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 
 
 bool save_terrain(const TerrainData& td, std::string_view path);
 TerrainData load_terrain(std::string_view path);
+TerrainData load_terrain_from_memory(const u8* data, u32 size);
 
 } // namespace uldum::map

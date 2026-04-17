@@ -91,5 +91,6 @@ struct ModelData {
 };
 
 std::expected<ModelData, std::string> load_model(std::string_view path);
+std::expected<ModelData, std::string> load_model_from_memory(const u8* data, u32 size, std::string_view source_path = "");
 
 } // namespace uldum::asset

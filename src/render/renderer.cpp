@@ -2,6 +2,7 @@
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "map/terrain_data.h"
 #include "map/map.h"
+#include "asset/asset.h"
 #include "asset/texture.h"
 #include "simulation/world.h"
 #include "simulation/simulation.h"
@@ -26,21 +27,21 @@ static constexpr const char* TAG = "Render";
 // ── Shader loading helper ──────────────────────────────────────────────────
 
 static VkShaderModule load_shader(VkDevice device, std::string_view path) {
-    std::string path_str(path);
-    std::ifstream file(path_str, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
-        log::error(TAG, "Failed to open shader '{}'", path);
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr) {
+        log::error(TAG, "Shader load without AssetManager: '{}'", path);
         return VK_NULL_HANDLE;
     }
-    auto size = file.tellg();
-    std::vector<char> code(size);
-    file.seekg(0);
-    file.read(code.data(), size);
+    auto bytes = mgr->read_file_bytes(path);
+    if (bytes.empty()) {
+        log::error(TAG, "Shader not found in any package: '{}'", path);
+        return VK_NULL_HANDLE;
+    }
 
     VkShaderModuleCreateInfo ci{};
     ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = code.size();
-    ci.pCode    = reinterpret_cast<const uint32_t*>(code.data());
+    ci.codeSize = bytes.size();
+    ci.pCode    = reinterpret_cast<const uint32_t*>(bytes.data());
 
     VkShaderModule mod = VK_NULL_HANDLE;
     vkCreateShaderModule(device, &ci, nullptr, &mod);
@@ -550,8 +551,15 @@ void Renderer::set_environment(const map::EnvironmentConfig& env) {
         u32 face_w = 0, face_h = 0;
         bool all_loaded = true;
 
+        auto* mgr = asset::AssetManager::instance();
         for (u32 i = 0; i < 6; ++i) {
-            auto result = asset::load_texture(paths[i]);
+            auto bytes = mgr ? mgr->read_file_bytes(paths[i]) : std::vector<u8>{};
+            if (bytes.empty()) {
+                log::warn(TAG, "Failed to load skybox face '{}' — skipping skybox", paths[i]);
+                all_loaded = false;
+                break;
+            }
+            auto result = asset::load_texture_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
             if (!result || result->channels != 4) {
                 log::warn(TAG, "Failed to load skybox face '{}' — skipping skybox", paths[i]);
                 all_loaded = false;
@@ -1402,7 +1410,11 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
         bool loaded = false;
         if (!tl.diffuse_path.empty()) {
             std::string abs_path = m_map_root + "/" + tl.diffuse_path;
-            auto tex_result = asset::load_texture(abs_path);
+            auto* mgr = asset::AssetManager::instance();
+            auto bytes = mgr ? mgr->read_file_bytes(abs_path) : std::vector<u8>{};
+            auto tex_result = bytes.empty()
+                ? std::expected<asset::TextureData, std::string>(std::unexpect, "not in package")
+                : asset::load_texture_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
             if (tex_result) {
                 auto& tex_data = *tex_result;
                 // Resize to TEX_SIZE if needed (simple: just use as-is if same size,
@@ -1463,7 +1475,11 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
 
             if (!tl.normal_path.empty()) {
                 std::string abs_path = m_map_root + "/" + tl.normal_path;
-                auto tex_result = asset::load_texture(abs_path);
+                auto* mgr = asset::AssetManager::instance();
+                auto bytes = mgr ? mgr->read_file_bytes(abs_path) : std::vector<u8>{};
+                auto tex_result = bytes.empty()
+                    ? std::expected<asset::TextureData, std::string>(std::unexpect, "not in package")
+                    : asset::load_texture_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
                 if (tex_result) {
                     auto& tex_data = *tex_result;
                     if (tex_data.width == TEX_SIZE && tex_data.height == TEX_SIZE && tex_data.channels == 4) {
@@ -2346,25 +2362,33 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     // Don't retry paths that already failed
     if (m_model_failed.contains(model_path)) return nullptr;
 
-    // Resolve path: try map assets, then engine root, then absolute
-    namespace fs = std::filesystem;
+    // Resolve path: prefer map shared assets, fall back to engine-relative.
+    // Both candidates are probed against mounted packages via AssetManager.
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr) {
+        log::warn(TAG, "Model load without AssetManager: '{}'", model_path);
+        m_model_failed.insert(model_path);
+        return nullptr;
+    }
+
+    std::vector<u8> bytes;
     std::string resolved;
 
     if (!m_map_root.empty()) {
-        std::string map_asset = m_map_root + "/shared/assets/" + model_path;
-        if (fs::exists(map_asset)) resolved = map_asset;
+        resolved = m_map_root + "/shared/assets/" + model_path;
+        bytes = mgr->read_file_bytes(resolved);
     }
-    if (resolved.empty() && fs::exists(model_path)) {
+    if (bytes.empty()) {
         resolved = model_path;
+        bytes = mgr->read_file_bytes(resolved);
     }
-    if (resolved.empty()) {
+    if (bytes.empty()) {
         log::warn(TAG, "Model not found: '{}'", model_path);
         m_model_failed.insert(model_path);
         return nullptr;
     }
 
-    // Load model from file
-    auto result = asset::load_model(resolved);
+    auto result = asset::load_model_from_memory(bytes.data(), static_cast<u32>(bytes.size()), resolved);
     if (!result) {
         log::error(TAG, "Failed to load model '{}': {}", model_path, result.error());
         m_model_failed.insert(model_path);

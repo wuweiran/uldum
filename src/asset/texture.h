@@ -17,5 +17,6 @@ struct TextureData {
 };
 
 std::expected<TextureData, std::string> load_texture(std::string_view path);
+std::expected<TextureData, std::string> load_texture_from_memory(const u8* data, u32 size);
 
 } // namespace uldum::asset

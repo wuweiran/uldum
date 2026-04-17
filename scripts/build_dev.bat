@@ -25,4 +25,4 @@ if not defined VS_PATH (
 
 call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" x64
 cmake -S "%ROOT%" -B "%ROOT%\build" -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
-cmake --build "%ROOT%\build" --target uldum_dev uldum_game uldum_server
+cmake --build "%ROOT%\build" --target uldum_dev

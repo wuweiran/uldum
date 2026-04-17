@@ -268,4 +268,44 @@ TerrainData load_terrain(std::string_view path) {
     return td;
 }
 
+TerrainData load_terrain_from_memory(const u8* data, u32 size) {
+    if (size < 16) return {};  // minimum: 4 u32s
+
+    u32 pos = 0;
+    auto read = [&](void* dst, u32 n) {
+        if (pos + n <= size) std::memcpy(dst, data + pos, n);
+        pos += n;
+    };
+
+    TerrainData td;
+    read(&td.tiles_x, sizeof(u32));
+    read(&td.tiles_y, sizeof(u32));
+    read(&td.tile_size, sizeof(f32));
+    read(&td.layer_height, sizeof(f32));
+
+    if (td.tiles_x == 0 || td.tiles_y == 0 || td.tiles_x > 4096 || td.tiles_y > 4096) {
+        log::error(TAG, "Invalid terrain dimensions: {}x{}", td.tiles_x, td.tiles_y);
+        return {};
+    }
+
+    u32 vc = td.vertex_count();
+    td.heightmap.resize(vc);
+    td.cliff_level.resize(vc);
+    td.tile_layer.resize(vc);
+    td.pathing.resize(vc);
+
+    read(td.heightmap.data(),   vc * sizeof(f32));
+    read(td.cliff_level.data(), vc * sizeof(u8));
+    read(td.tile_layer.data(),  vc * sizeof(u8));
+    read(td.pathing.data(),     vc * sizeof(u8));
+
+    if (pos > size) {
+        log::error(TAG, "Terrain data truncated");
+        return {};
+    }
+
+    log::info(TAG, "Loaded terrain from memory: {}x{} tiles, {} vertices", td.tiles_x, td.tiles_y, vc);
+    return td;
+}
+
 } // namespace uldum::map

@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 15a complete. Build targets.
+Phase 15b complete. Build targets + packaging.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -180,9 +180,24 @@ Phase 15a complete. Build targets.
   - `uldum_game` — shipped product (reads game.json config, no debug)
   - `uldum_server` — headless dedicated server (no renderer/audio/window)
   - `uldum_editor` — in-engine terrain editor (ImGui)
+  - `uldum_pack` — package tool (pack/unpack/list .uldpak / .uldmap archives)
   - `game.json` — product configuration (name, default map, port, resolution)
-  - Build scripts: `build.bat`, `build_all.bat`, `build_game.bat`, `build_server.bat`, `build_editor.bat`
+  - Build scripts:
+    - `build.bat` — build all targets
+    - `build_dev.bat` — build uldum_dev only
+    - `build_game.bat` — build uldum_game only
+    - `build_server.bat` — build uldum_server only
+    - `build_editor.bat` — build uldum_editor only
   - Test scripts: `test_multiplayer.bat`, `test_server.bat`
+- Packaging (Phase 15b):
+  - `.uldpak` — engine asset archive (`engine.uldpak`)
+  - `.uldmap` — map asset archive (e.g. `maps/test_map.uldmap`)
+  - Both use the same binary format (hash-keyed lookup, optional LZ4 compression, optional XOR encryption)
+  - Package-only asset loading — no filesystem fallback at runtime (missing file surfaces as a load error)
+  - Build pipeline packs source `engine/` and `maps/<name>.uldmap/` folders into `bin/engine.uldpak` and `bin/maps/<name>.uldmap`; `build/bin/` contains only packages, no loose asset folders
+  - `uldum_pack pack <dir> <output> [--encrypt --key <secret>]`
+  - `uldum_pack unpack <input> <dir> [--key <secret>]`
+  - `uldum_pack list <input>`
 - Ninja build system for parallel compilation
 
 ## Prerequisites

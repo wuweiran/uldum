@@ -216,6 +216,8 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
 
 // ── Model loading ─────────────────────────────────────────────────────────
 
+static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* data, std::string_view path);
+
 std::expected<ModelData, std::string> load_model(std::string_view path) {
     std::string path_str(path);
 
@@ -233,6 +235,30 @@ std::expected<ModelData, std::string> load_model(std::string_view path) {
         return std::unexpected(std::format("Failed to load glTF buffers '{}': error {}", path, static_cast<int>(result)));
     }
 
+    return build_model_from_cgltf(data, path);
+}
+
+std::expected<ModelData, std::string> load_model_from_memory(const u8* data_bytes, u32 size, std::string_view source_path) {
+    cgltf_options options{};
+    cgltf_data* data = nullptr;
+
+    cgltf_result result = cgltf_parse(&options, data_bytes, size, &data);
+    if (result != cgltf_result_success) {
+        return std::unexpected(std::format("Failed to parse glTF '{}': error {}", source_path, static_cast<int>(result)));
+    }
+
+    // Embedded buffers (GLB) resolve without a file path. External .bin refs are not supported in memory mode.
+    result = cgltf_load_buffers(&options, data, nullptr);
+    if (result != cgltf_result_success) {
+        cgltf_free(data);
+        return std::unexpected(std::format("Failed to load glTF buffers '{}': error {}", source_path, static_cast<int>(result)));
+    }
+
+    return build_model_from_cgltf(data, source_path);
+}
+
+static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* data, std::string_view path) {
+    std::string path_str(path);
     ModelData model;
     model.name = path_str;
 

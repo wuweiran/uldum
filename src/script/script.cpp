@@ -8,6 +8,7 @@
 #include "input/command_system.h"
 #include "input/command.h"
 #include "map/map.h"
+#include "asset/asset.h"
 #include "render/effect.h"
 #include "render/renderer.h"
 #include "audio/audio.h"
@@ -73,6 +74,49 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     lua["package"]["cpath"] = "";
     // Default empty package.path — set_script_paths() configures it before scripts run
     lua["package"]["path"] = "";
+
+    // Replace the default file-based searcher with one that reads from mounted packages.
+    // Slot 2 of package.searchers is Lua's io-based file searcher; we substitute ours
+    // so require() resolves through the AssetManager instead of the filesystem.
+    lua["package"]["searchers"][2] = [this](const std::string& modname) -> sol::object {
+        auto& L = *m_lua;
+        auto* mgr = asset::AssetManager::instance();
+        if (!mgr) return sol::make_object(L, std::string("\n\tno AssetManager"));
+
+        std::string modpath = modname;
+        std::replace(modpath.begin(), modpath.end(), '.', '/');
+
+        std::string path_str = L["package"]["path"].get_or<std::string>("");
+        std::string tried;
+
+        size_t start = 0;
+        while (start <= path_str.size()) {
+            size_t end = path_str.find(';', start);
+            if (end == std::string::npos) end = path_str.size();
+            std::string pattern = path_str.substr(start, end - start);
+            start = end + 1;
+            if (pattern.empty()) continue;
+
+            size_t q = pattern.find('?');
+            if (q == std::string::npos) continue;
+            std::string candidate = pattern.substr(0, q) + modpath + pattern.substr(q + 1);
+
+            auto bytes = mgr->read_file_bytes(candidate);
+            if (bytes.empty()) {
+                tried += "\n\tno package entry '" + candidate + "'";
+                continue;
+            }
+
+            std::string chunk(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            sol::load_result lr = L.load(chunk, "@" + candidate, sol::load_mode::text);
+            if (!lr.valid()) {
+                sol::error err = lr;
+                return sol::make_object(L, std::format("\n\tload error in '{}': {}", candidate, err.what()));
+            }
+            return sol::make_object(L, sol::function(lr));
+        }
+        return sol::make_object(L, tried);
+    };
 
     // Redirect print to engine log
     lua["print"] = [](sol::variadic_args va) {
@@ -148,17 +192,19 @@ void ScriptEngine::shutdown() {
 }
 
 bool ScriptEngine::load_script(std::string_view path) {
-    std::string path_str(path);
-    std::ifstream file(path_str);
-    if (!file.is_open()) {
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr) {
+        log::warn(TAG, "Script load without AssetManager: '{}'", path);
+        return false;
+    }
+    auto bytes = mgr->read_file_bytes(path);
+    if (bytes.empty()) {
         log::warn(TAG, "Script not found: '{}'", path);
         return false;
     }
+    std::string script_src(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 
-    std::stringstream ss;
-    ss << file.rdbuf();
-
-    auto result = m_lua->safe_script(ss.str(), sol::script_pass_on_error);
+    auto result = m_lua->safe_script(script_src, sol::script_pass_on_error);
     if (!result.valid()) {
         sol::error err = result;
         log::error(TAG, "Lua error in '{}': {}", path, err.what());

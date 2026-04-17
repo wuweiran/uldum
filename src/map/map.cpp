@@ -20,13 +20,27 @@ void MapManager::shutdown() {
     log::info(TAG, "MapManager shut down");
 }
 
-bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim) {
+bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim,
+                          bool allow_directory) {
     unload_map();
     sim.world().clear_entities();
     m_map_root = std::string(path);
 
-    // Temporarily point the asset manager at the map root for map-relative paths
-    // We'll load map files using absolute paths constructed from m_map_root
+    // Mount the map. m_map_root (e.g. "maps/test_map.uldmap") is both the
+    // filesystem location and the virtual prefix for asset keys.
+    bool is_dir = std::filesystem::is_directory(std::filesystem::path(m_map_root));
+    if (is_dir) {
+        if (!allow_directory) {
+            log::error(TAG, "Map '{}' is a directory, but this target only accepts packaged .uldmap files", m_map_root);
+            return false;
+        }
+        assets.mount_directory(m_map_root, m_map_root);
+    } else {
+        if (!assets.open_package(m_map_root, m_map_root)) {
+            log::error(TAG, "Failed to open map package '{}'", m_map_root);
+            return false;
+        }
+    }
 
     if (!load_manifest(assets)) return false;
     if (!load_tileset(assets)) return false;
@@ -271,9 +285,13 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
 bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
     std::string scene_dir = m_map_root + "/scenes/" + std::string(scene_name);
 
-    // Load terrain from binary file
     std::string terrain_path = scene_dir + "/terrain.bin";
-    m_scene.terrain = load_terrain(terrain_path);
+    {
+        auto bytes = assets.read_file_bytes(terrain_path);
+        if (!bytes.empty()) {
+            m_scene.terrain = load_terrain_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
+        }
+    }
     if (!m_scene.terrain.is_valid()) {
         log::error(TAG, "Scene '{}': missing terrain.bin — every scene must have terrain data", scene_name);
         return false;
