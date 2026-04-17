@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 14f complete. Skybox, environment lighting, water rendering, particle shapes, point lights.
+Phase 15a complete. Build targets.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -175,6 +175,14 @@ Phase 14f complete. Skybox, environment lighting, water rendering, particle shap
   - Glow particle effects cast point lights on surrounding surfaces
   - Procedural particle shapes: soft circle, spark, blood splatter, glow beam, water droplet
   - Lua API: SetSunDirection, AddPointLight
+- Build targets (Phase 15a):
+  - `uldum_dev` — development runtime (debug, auto-starts map)
+  - `uldum_game` — shipped product (reads game.json config, no debug)
+  - `uldum_server` — headless dedicated server (no renderer/audio/window)
+  - `uldum_editor` — in-engine terrain editor (ImGui)
+  - `game.json` — product configuration (name, default map, port, resolution)
+  - Build scripts: `build.bat`, `build_all.bat`, `build_game.bat`, `build_server.bat`, `build_editor.bat`
+  - Test scripts: `test_multiplayer.bat`, `test_server.bat`
 - Ninja build system for parallel compilation
 
 ## Prerequisites

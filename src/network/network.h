@@ -58,6 +58,7 @@ public:
 
     // Host: set how many remote players to wait for before starting.
     void set_expected_players(u32 count) { m_expected_players = count; }
+    void set_first_player_slot(u32 slot) { m_next_player_slot = slot; }
 
     // Host: signal game over. Broadcasts S_END to all clients.
     void host_end_game(u32 winner_id, std::string_view stats_json);
@@ -129,7 +130,7 @@ private:
         std::unordered_set<u32> known_entities;
     };
     std::vector<PeerInfo> m_peers;
-    u32 m_next_player_slot = 1;  // 0 = host local player
+    u32 m_next_player_slot = 0;  // first connecting client gets slot 0
     std::unordered_set<u32> m_prev_tick_entities;
 
     // Disconnected players awaiting reconnect

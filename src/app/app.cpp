@@ -173,6 +173,8 @@ bool App::start_session() {
             log::error(TAG, "Failed to start host on port {}", m_args.port);
             return false;
         }
+        // Host is player 0 (local) — remote clients start at slot 1
+        m_network.set_first_player_slot(1);
         u32 total_players = static_cast<u32>(m_map.manifest().players.size());
         m_network.set_expected_players(total_players > 1 ? total_players - 1 : 0);
         m_network.set_disconnect_timeout(m_map.manifest().disconnect_timeout);

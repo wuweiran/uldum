@@ -546,20 +546,30 @@ GPU-driven rendering, culling, anti-aliasing, and water.
 
 ### Phase 15 — Packaging & Distribution
 
-Build targets, cross-platform packaging, and asset baking. See [build-targets.md](build-targets.md) for the full target design.
+Build targets, cross-platform packaging, and asset baking.
 
-- **Build targets**: `uldum_game` (shipped product), `game.json` configuration, renamed executable per product
-- **PAK archive format**: pack engine assets and map assets into single archive files (engine.pak, map.pak)
-- **Encryption**: encrypt map PAK files to protect gameplay logic from reverse engineering; optionally encrypt engine assets too
-- **Build output**: self-contained distribution folder per platform (exe + engine.pak + any platform-specific files)
-- **Windows packaging**: output folder or installer
-- **Android packaging**: APK/AAB with assets bundled
-- **Asset baking pipeline**: offline build step that converts dev-friendly source assets into optimized shipping formats:
-  - **Textures**: PNG (dev) → **KTX2** with BC7 (desktop) / ASTC (Android) GPU compression + mipmaps
-  - **Audio**: OGG Opus for music/voice streaming, WAV for short SFX (no decompression latency)
-  - **Shaders**: GLSL (dev) → pre-compiled SPIR-V
-  - **Configs**: JSON (dev) → FlatBuffers binary (optional, for load speed)
-  - **Models**: glTF stays as-is (already efficient), or bake to engine-native binary mesh format
+#### Phase 15a — Build Targets
+- **`uldum_game`**: shipped product executable (Release build, no debug UI, no editor)
+- **`game.json`**: product configuration (product name, default map, window title, resolution)
+- **`uldum_server`**: headless dedicated server (no renderer, no audio, no window — simulation + networking only)
+- Build scripts: `build_game.bat`, `build_server.bat`
+
+#### Phase 15b — PAK Archive
+- Pack engine assets and map assets into single .pak archive files (engine.pak, map.pak)
+- Runtime: AssetManager loads from PAK instead of loose files
+- Encryption for map PAK (protect Lua scripts/gameplay logic)
+
+#### Phase 15c — Asset Baking
+- Offline build pipeline (Python or C++ tool)
+- **Textures**: PNG → KTX2 with BC7 (desktop) / ASTC (Android) GPU compression + mipmaps
+- **Audio**: OGG Opus for music/voice, WAV for short SFX
+- **Shaders**: GLSL → pre-compiled SPIR-V (already done via CMake)
+- **Configs**: JSON → FlatBuffers binary (optional, for load speed)
+- **Models**: glTF as-is, or bake to engine-native binary mesh format
+
+#### Phase 15d — Platform Packaging
+- **Windows**: self-contained output folder or installer
+- **Android**: APK/AAB with assets bundled (GameActivity + Vulkan)
 
 ### Phase 16 — UI System
 

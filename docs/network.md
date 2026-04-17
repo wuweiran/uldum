@@ -200,10 +200,31 @@ EndGame(0, '{"kills": 15, "time": 302}')
 
 The engine fires `on_game_end` event (for triggers), then broadcasts `S_END` with the winner ID and a JSON stats string. The stats format is entirely map-defined — the engine just passes it through.
 
+## Session Lifecycle
+
+The game supports two hosting models:
+
+**Host mode** (local host + client):
+1. Host creates game session (loads map, inits simulation)
+2. Host joins as player 0 (local, auto-ready)
+3. Client connects → server assigns next slot (player 1)
+4. Client auto-ready
+5. All joiners ready → host broadcasts S_START
+
+**Dedicated server** (headless `uldum_server`):
+1. Server starts, loads map from game.json
+2. Client 0 connects → assigned player 0, auto-ready
+3. Client 1 connects → assigned player 1, auto-ready
+4. All joiners ready → server broadcasts S_START
+
+Key design points:
+- Player slot assignment starts at 0 for dedicated server, 1 for host (host is player 0)
+- Game starts when connected peers >= expected players (auto-start, no UI yet)
+- Future (Phase 16 UI): explicit CREATE_SESSION, JOIN, READY messages; host/server decides when to start
+- Server can serve one game at a time (multi-game deferred)
+
 ## Future Work
 
 - **Delta compression**: only send entities that changed since last acknowledged snapshot
 - **Transport fallback**: TCP or QUIC for environments that block UDP
-- **Reconnect** (Phase 13d): timeout window, full state catch-up, configurable pause
-- **Dedicated server**: headless mode with no renderer (Phase 15)
 - **Bandwidth optimization**: variable send rate, priority-based entity updates

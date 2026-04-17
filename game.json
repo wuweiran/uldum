@@ -1,0 +1,8 @@
+{
+    "product_name": "Uldum Test Game",
+    "window_title": "Uldum",
+    "default_map": "maps/test_map.uldmap",
+    "default_port": 7777,
+    "width": 1920,
+    "height": 1080
+}
