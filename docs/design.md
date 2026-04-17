@@ -567,8 +567,13 @@ Build targets, cross-platform packaging, and asset baking.
 - See [editor.md](editor.md) for editor modes, [packaging.md](packaging.md) for runtime texture loading and author workflow
 
 #### Phase 15d — Platform Packaging
-- **Windows**: self-contained output folder or installer
-- **Android**: APK/AAB with assets bundled (GameActivity + Vulkan)
+- **Windows**: `dist_windows.bat` produces a zipped self-contained folder (exe + `engine.uldpak` + map + `game.json`). Installer deferred.
+- **Android**: debug APK that installs and renders the test map
+  - Android NDK + Gradle wrapper at `android/`, engine as `libuldum_game.so`
+  - `src/platform/android/` — GameActivity, Vulkan surface, lifecycle
+  - APK-bundled assets via `AAssetManager` (new mount kind)
+  - Touch input and mobile UI are Phase 16c, not here
+- **Linux** and **iOS** deferred. Release signing / AAB / Play Console deferred.
 
 ### Phase 16 — UI System
 
