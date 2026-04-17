@@ -53,9 +53,10 @@ static f32 angle_diff(f32 from, f32 to) {
 
 // Local steering: adjust direction to avoid a nearby unit blocking the path.
 // Returns adjusted direction. If no blocker, returns original forward.
+// prefer_left: deterministic side preference based on unit ID + time.
 static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const Pathfinder& pathfinder,
                               u32 self_id, glm::vec3 pos, glm::vec3 forward, f32 self_radius,
-                              MoveType move_type) {
+                              MoveType move_type, bool prefer_left) {
     f32 look_ahead = self_radius * 4.0f;
     UnitFilter filter;
     filter.exclude_buildings = true;
@@ -95,13 +96,9 @@ static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const 
 
     if (!blocker_t) return forward;
 
-    // Steer to the side with more space
-    glm::vec3 to_blocker = blocker_t->position - pos;
-    to_blocker.z = 0;
-    glm::vec3 left{-forward.y, forward.x, 0};
-    f32 side_dot = glm::dot(to_blocker, left);
-    glm::vec3 perp = (side_dot > 0) ? glm::vec3{forward.y, -forward.x, 0}
-                                      : glm::vec3{-forward.y, forward.x, 0};
+    // Steer to the preferred side (deterministic per unit per time window)
+    glm::vec3 perp = prefer_left ? glm::vec3{-forward.y, forward.x, 0}
+                                  : glm::vec3{forward.y, -forward.x, 0};
     glm::vec3 steer = glm::normalize(perp * 0.6f + forward * 0.4f);
 
     // Validate: steered position must be on a passable tile
@@ -123,6 +120,9 @@ static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const 
 
 void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                      const SpatialGrid& grid, const map::TerrainData* terrain) {
+    static u32 steer_tick = 0;
+    ++steer_tick;
+
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
         auto& mov = world.movements.data()[i];
@@ -213,6 +213,9 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 mov.corridor.clear();
                 mov.has_waypoint = false;
                 mov.moving = false;
+                // Path failed — clear approach so combat can auto-acquire a reachable target
+                mov.approach_target = simulation::Unit{};
+                mov.approach_range = 0;
             }
         }
 
@@ -275,10 +278,16 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
         glm::vec3 forward{to_wp.x / wp_dist, to_wp.y / wp_dist, 0.0f};
 
-        // Local steering: avoid nearby units
-        glm::vec3 dir = local_steer(world, grid, pathfinder, id,
-                                     transform->position, forward, mov.collision_radius,
-                                     mov.type);
+        // Local steering: avoid nearby units (1/3 frequency, staggered by ID)
+        glm::vec3 dir = forward;
+        if ((id + steer_tick) % 3 == 0) {
+            // Deterministic side preference: stable per unit for ~0.3s
+            u32 time_bucket = steer_tick / 10;  // flips every ~10 ticks (~0.3s at 32Hz)
+            bool prefer_left = ((id + time_bucket) % 2) == 0;
+            dir = local_steer(world, grid, pathfinder, id,
+                              transform->position, forward, mov.collision_radius,
+                              mov.type, prefer_left);
+        }
 
         // Turn toward movement direction
         f32 desired_facing = std::atan2(dir.y, dir.x);

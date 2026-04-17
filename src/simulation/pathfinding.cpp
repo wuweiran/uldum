@@ -299,7 +299,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     static constexpr i32 dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     static constexpr f32 cost[] = {1.414f, 1.0f, 1.414f, 1.0f, 1.0f, 1.414f, 1.0f, 1.414f};
 
-    static constexpr u32 max_iterations = 128;
+    static constexpr u32 max_iterations = 256;
     u32 iterations = 0;
 
     // Track the closest reachable node to the goal (fallback if goal is unreachable)
