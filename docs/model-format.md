@@ -2,7 +2,7 @@
 
 ## Overview
 
-All models use **glTF 2.0** (`.gltf` or `.glb`). The engine extracts geometry, skeleton, and animation data via cgltf. Standalone textures are **KTX2 + Basis Universal** (authored externally from PNG via `toktx` — see [packaging.md](packaging.md)). Audio is **OGG Opus** (music) or **WAV** (SFX).
+All models use **glTF 2.0** (`.gltf` or `.glb`). The engine extracts geometry, skeleton, and animation data via cgltf. Standalone textures are **KTX2 + Basis Universal** (authored from PNG via `basisu` — see [packaging.md](packaging.md)). Audio is **OGG Opus** (music) or **WAV** (SFX).
 
 ## Coordinate System
 
@@ -172,7 +172,7 @@ Defined in a sidecar JSON file alongside the glTF model (e.g. `footman.effects.j
 ## Textures
 
 - **Format**: KTX2 + Basis Universal (one format, every target, every mount)
-- **Loader**: [KTX-Software](https://github.com/KhronosGroup/KTX-Software) (`libktx`). Basis Universal supercompression transcodes to BC7 on desktop or ASTC on Android at GPU upload time.
+- **Loader**: [Basis Universal](https://github.com/BinomialLLC/basis_universal) transcoder library (linked into `uldum_asset`). Parses the KTX2 container and transcodes to BC7 on desktop or ASTC on Android at GPU upload time.
 - **Unit textures**: referenced by glTF material (standalone KTX2 files; embedded glTF textures are a separate deferred item)
 - **Terrain textures**: 4-layer splatmap; each layer points to a KTX2 in `tileset.json`
 
@@ -181,7 +181,7 @@ Defined in a sidecar JSON file alongside the glTF model (e.g. `footman.effects.j
 | Stage | Format | Tool |
 |-------|--------|------|
 | Authoring | PNG / TGA / source format of choice | Any image editor |
-| Import step (author-side, outside the engine) | PNG → KTX2 | `toktx` / `scripts/png_to_ktx2.bat` |
+| Import step (author-side, outside the engine) | PNG → KTX2 | `basisu` / `scripts/png_to_ktx2.bat` |
 | In-tree / shipping | KTX2 + Basis Universal | — (runtime reads KTX2 directly) |
 
 See [packaging.md](packaging.md) and [editor.md](editor.md) for the full authoring workflow.

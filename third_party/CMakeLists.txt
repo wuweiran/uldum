@@ -139,20 +139,54 @@ if(MSVC)
     target_compile_options(enet PRIVATE /W0)
 endif()
 
-# ── KTX-Software (KTX2 container + Basis Universal transcoder) ────────────
-message(STATUS "Fetching KTX-Software...")
-set(KTX_FEATURE_TOOLS         ON  CACHE BOOL "")   # we want toktx for encoding
-set(KTX_FEATURE_TESTS         OFF CACHE BOOL "")
-set(KTX_FEATURE_DOC           OFF CACHE BOOL "")
-set(KTX_FEATURE_LOADTEST_APPS OFF CACHE BOOL "")
-set(KTX_FEATURE_STATIC_LIBRARY ON CACHE BOOL "")
-set(KTX_FEATURE_VK_UPLOAD     OFF CACHE BOOL "")  # we upload via VMA ourselves
-set(KTX_FEATURE_GL_UPLOAD     OFF CACHE BOOL "")
-set(BUILD_SHARED_LIBS         OFF CACHE BOOL "")
-FetchContent_Declare(ktx
-    URL      https://github.com/KhronosGroup/KTX-Software/archive/refs/tags/v4.3.2.tar.gz
+# ── Basis Universal (KTX2 container + UASTC encoder/transcoder) ───────────
+# BasisU is the codec behind KTX2 UASTC/ETC1S. It ships both an authoring
+# CLI (basisu.exe — we invoke it from scripts/png_to_ktx2.bat) and a
+# self-contained transcoder that can parse KTX2 files end-to-end.
+#
+# We build two things from the same source tree:
+#   - `basisu_transcoder` — a static lib made from just transcoder/*.cpp, linked
+#     into uldum_asset for runtime decoding
+#   - `basisu` — their full build (encoder + CLI), used only at author time
+#
+# Replaces KTX-Software, which bundles more than we need (fmt, cxxopts,
+# astc-encoder, five extra CLI tools) and hit MSVC/fmt consteval issues.
+message(STATUS "Fetching Basis Universal...")
+FetchContent_Declare(basisu
+    URL https://github.com/BinomialLLC/basis_universal/archive/refs/heads/master.tar.gz
 )
-FetchContent_MakeAvailable(ktx)
-if(MSVC AND TARGET ktx)
-    target_compile_options(ktx PRIVATE /W0)
+FetchContent_Populate(basisu)
+
+# Runtime transcoder library — minimal, no encoder, no CLI.
+add_library(basisu_transcoder STATIC
+    ${basisu_SOURCE_DIR}/transcoder/basisu_transcoder.cpp
+)
+target_include_directories(basisu_transcoder SYSTEM PUBLIC
+    ${basisu_SOURCE_DIR}/transcoder
+)
+# KTX2 container support on; zstd-compressed KTX2 off (we use plain UASTC).
+target_compile_definitions(basisu_transcoder PUBLIC
+    BASISD_SUPPORT_KTX2=1
+    BASISD_SUPPORT_KTX2_ZSTD=0
+)
+if(MSVC)
+    target_compile_options(basisu_transcoder PRIVATE /W0)
+endif()
+
+# Their full build — gives us the `basisu` CLI executable for authoring.
+# BasisU's own CMakeLists hard-sets CMAKE_RUNTIME_OUTPUT_DIRECTORY to a
+# subdirectory under their source tree, and target-scoped overrides don't
+# dislodge it. Copy the binary into our build/bin/ with a POST_BUILD step so
+# png_to_ktx2.bat can find it alongside the engine executables.
+add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR})
+if(TARGET basisu)
+    if(MSVC)
+        target_compile_options(basisu PRIVATE /W0)
+    endif()
+    add_custom_target(basisu_copy_to_bin ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:basisu>
+            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<TARGET_FILE_NAME:basisu>
+        COMMENT "Copying basisu.exe to build/bin/")
+    add_dependencies(basisu_copy_to_bin basisu)
 endif()

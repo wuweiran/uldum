@@ -12,23 +12,23 @@ setlocal enabledelayedexpansion
 ::
 :: Output: <file>.ktx2 next to each input PNG. Mipmaps generated.
 ::
-:: Requires: build\Debug\toktx.exe (built by scripts\build.bat).
+:: Requires: build\bin\basisu.exe (built by scripts\build.bat).
 ::
 
 set "ROOT=%~dp0.."
-set "TOKTX=%ROOT%\build\Debug\toktx.exe"
+set "BASISU=%ROOT%\build\bin\basisu.exe"
 
-if not exist "%TOKTX%" (
-    echo ERROR: %TOKTX% not found. Run scripts\build.bat first.
+if not exist "%BASISU%" (
+    echo ERROR: %BASISU% not found. Run scripts\build.bat first.
     exit /b 1
 )
 
-set "OETF=srgb"
+set "LINEAR="
 
 :parse_args
 if "%~1"=="" goto :args_done
 if /i "%~1"=="--linear" (
-    set "OETF=linear"
+    set "LINEAR=-linear"
     shift
     goto :parse_args
 )
@@ -40,10 +40,10 @@ if "%~1"=="" goto :args_done
 set "IN=%~1"
 set "OUT=%~dpn1.ktx2"
 
-echo Converting "%IN%" -^> "%OUT%" (oetf=%OETF%)
-"%TOKTX%" --encode uastc --uastc_quality 2 --genmipmap --assign_oetf %OETF% "%OUT%" "%IN%"
+echo Converting "%IN%" -^> "%OUT%"
+"%BASISU%" -ktx2 -uastc -uastc_level 2 -mipmap %LINEAR% -output_file "%OUT%" "%IN%"
 if errorlevel 1 (
-    echo ERROR: toktx failed on %IN%
+    echo ERROR: basisu failed on %IN%
     exit /b 1
 )
 

@@ -162,15 +162,15 @@ Source trees (`engine/`, `maps/<name>.uldmap/`) remain directories; the build pi
 
 **KTX2 + Basis Universal** is the only texture format the engine accepts. This applies to every target (`uldum_dev`, `uldum_game`, `uldum_server`, `uldum_editor`) and every mount (`engine.uldpak`, `.uldmap` file, loose directory). A PNG inside a mount is a load error — there is no format fallback, and no bake step in the engine pipeline.
 
-Runtime library: [KTX-Software](https://github.com/KhronosGroup/KTX-Software) (Khronos reference). One KTX2 payload transcodes to BC7 on desktop and ASTC on Android at GPU upload time.
+Library: [Basis Universal](https://github.com/BinomialLLC/basis_universal) provides both the runtime transcoder (linked into `uldum_asset` via `basisu_transcoder.cpp` compiled as a small static lib) and the authoring CLI (`basisu.exe` built as part of the engine build, lands in `build/bin/`). One KTX2 payload transcodes to BC7 on desktop and ASTC on Android at GPU upload time.
 
-**Why no in-engine bake:** the engine stays out of texture production. Map makers use their own tools (Photoshop, GIMP, Substance, etc.) plus `toktx` — the standard Khronos CLI — to produce KTX2 files directly. That mirrors how they already produce glTF models, OGG audio, and Lua scripts: finished authored files in the map folder. `uldum_pack pack` archives them as-is.
+**Why no in-engine bake:** the engine stays out of texture production. Map makers use their own tools (Photoshop, GIMP, Substance, etc.) plus `basisu` — the Basis Universal CLI — to produce KTX2 files directly. That mirrors how they already produce glTF models, OGG audio, and Lua scripts: finished authored files in the map folder. `uldum_pack pack` archives them as-is.
 
 **Author workflow (PNG → KTX2):**
 
 ```
-toktx --encode uastc --uastc_quality 2 --genmipmap --assign_oetf srgb   tex.ktx2 tex.png   # albedo / sRGB
-toktx --encode uastc --uastc_quality 2 --genmipmap --assign_oetf linear tex.ktx2 tex.png   # normals / data / linear
+basisu -ktx2 -uastc -uastc_level 2 -mipmap          -output_file tex.ktx2 tex.png   # albedo / sRGB (default)
+basisu -ktx2 -uastc -uastc_level 2 -mipmap -linear  -output_file tex.ktx2 tex.png   # normals / data / linear
 ```
 
 A helper script `scripts/png_to_ktx2.bat` wraps these flags — see [editor.md](editor.md).

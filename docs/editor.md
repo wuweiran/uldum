@@ -52,7 +52,7 @@ No "reverse bake" is supported — `.uldmap` → source folder is not a round-tr
 
 ## PNG → KTX2 conversion (author-side)
 
-Map makers convert PNG textures to KTX2 outside the engine using [KTX-Software](https://github.com/KhronosGroup/KTX-Software)'s `toktx` tool, before placing files into a map folder.
+Map makers convert PNG textures to KTX2 outside the engine using the [Basis Universal](https://github.com/BinomialLLC/basis_universal) encoder, before placing files into a map folder. `basisu.exe` is built as part of the engine build and ends up at `build/bin/basisu.exe`.
 
 A helper script `scripts/png_to_ktx2.bat` wraps the canonical flags:
 

@@ -1,69 +1,78 @@
 #include "asset/texture.h"
 
-#include <ktx.h>
+#include <basisu_transcoder.h>
 
 #include <format>
 #include <fstream>
+#include <mutex>
 
 namespace uldum::asset {
 
-// All textures are KTX2 + Basis Universal. Transcoded to RGBA8 here.
-// See docs/packaging.md for the format policy.
+// All textures are KTX2 containers with UASTC or ETC1S payload (Basis
+// Universal supercompression). We transcode to RGBA8 here for GPU upload;
+// switching to a hardware-native format (BC7 on desktop, ASTC on Android)
+// is a later optimization.
 
-static std::expected<TextureData, std::string> decode_ktx2(ktxTexture2* tex) {
-    if (ktxTexture2_NeedsTranscoding(tex)) {
-        KTX_error_code rc = ktxTexture2_TranscodeBasis(tex, KTX_TTF_RGBA32, 0);
-        if (rc != KTX_SUCCESS) {
-            ktxTexture_Destroy(ktxTexture(tex));
-            return std::unexpected(std::format("KTX2 transcode failed: error {}", static_cast<int>(rc)));
-        }
+static void ensure_basisu_init() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        basist::basisu_transcoder_init();
+    });
+}
+
+static std::expected<TextureData, std::string> decode_from_memory(const u8* data, u32 size) {
+    ensure_basisu_init();
+
+    basist::ktx2_transcoder tex;
+    if (!tex.init(data, size)) {
+        return std::unexpected(std::string("Failed to parse KTX2 container"));
+    }
+    if (!tex.start_transcoding()) {
+        return std::unexpected(std::string("Failed to start KTX2 transcoding"));
     }
 
-    // Base mip level only (level 0, layer 0, face 0).
-    ktx_size_t offset = 0;
-    KTX_error_code rc = ktxTexture_GetImageOffset(ktxTexture(tex), 0, 0, 0, &offset);
-    if (rc != KTX_SUCCESS) {
-        ktxTexture_Destroy(ktxTexture(tex));
-        return std::unexpected(std::format("KTX2 GetImageOffset failed: error {}", static_cast<int>(rc)));
+    const u32 w = tex.get_width();
+    const u32 h = tex.get_height();
+
+    // Base mip level, first layer, first face.
+    basist::ktx2_image_level_info info{};
+    if (!tex.get_image_level_info(info, 0, 0, 0)) {
+        return std::unexpected(std::string("Failed to query KTX2 level 0"));
     }
 
     TextureData out;
-    out.width    = tex->baseWidth;
-    out.height   = tex->baseHeight;
+    out.width    = w;
+    out.height   = h;
     out.channels = 4;
+    out.pixels.resize(static_cast<size_t>(w) * h * 4);
 
-    const u8* pixels = ktxTexture_GetData(ktxTexture(tex)) + offset;
-    ktx_size_t level0_size = static_cast<ktx_size_t>(out.width) * out.height * 4;
-    out.pixels.assign(pixels, pixels + level0_size);
+    // Transcode directly to uncompressed RGBA32 (4 bytes per pixel).
+    const u32 output_pixel_count = w * h;
+    if (!tex.transcode_image_level(
+            /*level_index=*/0, /*layer_index=*/0, /*face_index=*/0,
+            out.pixels.data(), output_pixel_count,
+            basist::transcoder_texture_format::cTFRGBA32)) {
+        return std::unexpected(std::string("KTX2 transcode to RGBA32 failed"));
+    }
 
-    ktxTexture_Destroy(ktxTexture(tex));
     return out;
 }
 
 std::expected<TextureData, std::string> load_texture(std::string_view path) {
     std::string path_str(path);
-
-    ktxTexture2* tex = nullptr;
-    KTX_error_code rc = ktxTexture2_CreateFromNamedFile(
-        path_str.c_str(),
-        KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-        &tex);
-    if (rc != KTX_SUCCESS || !tex) {
-        return std::unexpected(std::format("Failed to open KTX2 '{}': error {}", path, static_cast<int>(rc)));
+    std::ifstream file(path_str, std::ios::binary | std::ios::ate);
+    if (!file) {
+        return std::unexpected(std::format("Failed to open texture '{}'", path));
     }
-    return decode_ktx2(tex);
+    auto size = file.tellg();
+    file.seekg(0);
+    std::vector<u8> bytes(static_cast<size_t>(size));
+    file.read(reinterpret_cast<char*>(bytes.data()), size);
+    return decode_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
 }
 
 std::expected<TextureData, std::string> load_texture_from_memory(const u8* data, u32 size) {
-    ktxTexture2* tex = nullptr;
-    KTX_error_code rc = ktxTexture2_CreateFromMemory(
-        data, size,
-        KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-        &tex);
-    if (rc != KTX_SUCCESS || !tex) {
-        return std::unexpected(std::format("Failed to parse KTX2 from memory: error {}", static_cast<int>(rc)));
-    }
-    return decode_ktx2(tex);
+    return decode_from_memory(data, size);
 }
 
 } // namespace uldum::asset
