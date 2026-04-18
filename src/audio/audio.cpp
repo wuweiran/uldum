@@ -1,11 +1,11 @@
 #include "audio/audio.h"
+#include "asset/asset.h"
 #include "core/log.h"
 
 #include <miniaudio.h>
 
 #include <algorithm>
 #include <cstring>
-#include <filesystem>
 
 namespace uldum::audio {
 
@@ -329,20 +329,38 @@ void AudioEngine::set_volume(Channel channel, f32 volume) {
 // ── Path resolution ───────────────────────────────────────────────────────
 
 std::string AudioEngine::resolve_path(std::string_view path) const {
-    namespace fs = std::filesystem;
-
-    // Try map assets first
-    if (!m_map_root.empty()) {
-        std::string map_path = m_map_root + "/shared/assets/" + std::string(path);
-        if (fs::exists(map_path)) return map_path;
+    // All audio goes through the AssetManager's mounted packages. For each
+    // candidate virtual path, read bytes once and register them with
+    // miniaudio's resource manager so ma_sound_init_from_file(candidate)
+    // reads from memory. The bytes are owned by m_sound_cache.
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr || !m_engine) {
+        log::warn(TAG, "Sound not found: '{}' (no asset manager)", path);
+        return {};
     }
 
-    // Try engine root
-    std::string engine_path = "engine/" + std::string(path);
-    if (fs::exists(engine_path)) return engine_path;
+    auto try_candidate = [&](std::string candidate) -> std::string {
+        if (auto it = m_sound_cache.find(candidate); it != m_sound_cache.end()) {
+            return it->first;  // already registered
+        }
+        auto bytes = mgr->read_file_bytes(candidate);
+        if (bytes.empty()) return {};
 
-    // Try as absolute/relative
-    if (fs::exists(path)) return std::string(path);
+        auto [it, _] = m_sound_cache.emplace(std::move(candidate), std::move(bytes));
+        ma_resource_manager_register_encoded_data(
+            ma_engine_get_resource_manager(m_engine),
+            it->first.c_str(),
+            it->second.data(),
+            it->second.size());
+        return it->first;
+    };
+
+    if (!m_map_root.empty()) {
+        if (auto r = try_candidate(m_map_root + "/shared/assets/" + std::string(path)); !r.empty())
+            return r;
+    }
+    if (auto r = try_candidate("engine/" + std::string(path)); !r.empty()) return r;
+    if (auto r = try_candidate(std::string(path)); !r.empty()) return r;
 
     log::warn(TAG, "Sound not found: '{}'", path);
     return {};

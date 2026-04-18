@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 // miniaudio types (opaque pointers — defined in audio.cpp)
 struct ma_engine;
@@ -77,6 +78,11 @@ private:
 
     std::string m_map_root;
     bool m_initialized = false;
+
+    // Sound bytes loaded from packages, kept alive for miniaudio's resource
+    // manager. Each entry's data is registered with ma_resource_manager under
+    // its key so ma_sound_init_from_file(key) reads from memory.
+    mutable std::unordered_map<std::string, std::vector<u8>> m_sound_cache;
 };
 
 } // namespace uldum::audio
