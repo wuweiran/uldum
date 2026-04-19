@@ -1511,7 +1511,26 @@ void Editor::draw_ui() {
                      (flags & map::PATHING_WALKABLE) ? "Y" : "N",
                      (flags & map::PATHING_FLYABLE) ? "Y" : "N",
                      (flags & map::PATHING_RAMP) ? "Y" : "N");
-        ImGui::Text("Water: %s", td.is_water(m_cursor_vx, m_cursor_vy) ? "yes" : "no");
+
+        // Layer at the cursor vertex — id, tileset name, and LayerType.
+        u32 vi = m_cursor_vy * td.verts_x() + m_cursor_vx;
+        u8 layer_id = (vi < td.tile_layer.size()) ? td.tile_layer[vi] : 0;
+        const map::TilesetLayer* tl = m_map.tileset().get_layer(layer_id);
+        const char* type_str = "(unknown)";
+        const char* name_str = "(missing)";
+        if (tl) {
+            name_str = tl->name.c_str();
+            switch (tl->type) {
+                case map::LayerType::Ground:       type_str = "ground"; break;
+                case map::LayerType::WaterShallow: type_str = "water_shallow"; break;
+                case map::LayerType::WaterDeep:    type_str = "water_deep"; break;
+                case map::LayerType::Grass:        type_str = "grass"; break;
+            }
+        }
+        ImGui::Text("Layer: %u '%s' [%s]", layer_id, name_str, type_str);
+        ImGui::Text("Water: %s%s",
+                     td.is_water(m_cursor_vx, m_cursor_vy) ? "yes" : "no",
+                     td.is_deep_water(m_cursor_vx, m_cursor_vy) ? " (deep)" : "");
     } else {
         ImGui::Text("Cursor: (off terrain)");
     }
