@@ -11,5 +11,5 @@ add_library(uldum_render STATIC
     effect.cpp
 )
 
-target_include_directories(uldum_render PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(uldum_render PUBLIC ${ULDUM_SRC})
 target_link_libraries(uldum_render PUBLIC uldum_core uldum_rhi uldum_asset uldum_simulation uldum_map glm::glm vma)

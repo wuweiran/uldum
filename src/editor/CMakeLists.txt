@@ -3,8 +3,8 @@ add_executable(uldum_editor
     editor.cpp
 )
 
-target_include_directories(uldum_editor PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_compile_definitions(uldum_editor PRIVATE ULDUM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_include_directories(uldum_editor PRIVATE ${ULDUM_SRC})
+target_compile_definitions(uldum_editor PRIVATE ULDUM_SOURCE_DIR="${ULDUM_ROOT}")
 target_link_libraries(uldum_editor PRIVATE
     uldum_core
     uldum_platform

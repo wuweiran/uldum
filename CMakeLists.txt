@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.28)
 project(uldum VERSION 0.1.0 LANGUAGES CXX C)
 
+# `CMAKE_SOURCE_DIR` points at the top-level project passed to cmake -S, which
+# on Android is the wrapper under platforms/android/app/src/main/cpp/ — not
+# the repo root. Use ULDUM_ROOT / ULDUM_SRC everywhere the target needs the
+# engine's source tree, regardless of who invoked CMake.
+set(ULDUM_ROOT ${CMAKE_CURRENT_LIST_DIR})
+set(ULDUM_SRC  ${ULDUM_ROOT}/src)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -10,11 +17,23 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Vulkan SDK
-find_package(Vulkan REQUIRED COMPONENTS glslc)
+# Vulkan: on desktop we need glslc from the Vulkan SDK to compile shaders at
+# build time. On Android the NDK ships Vulkan headers + libvulkan.so but no
+# glslc — shaders are pre-compiled on desktop and shipped inside engine.uldpak,
+# so the Android build skips shader compilation entirely.
+if(ANDROID)
+    find_package(Vulkan REQUIRED)
+else()
+    find_package(Vulkan REQUIRED COMPONENTS glslc)
+endif()
 
-# Shader compilation: GLSL → SPIR-V
+# Shader compilation: GLSL → SPIR-V. Desktop only — Android relies on
+# pre-compiled .spv files bundled in the APK's engine.uldpak asset, produced
+# by a prior desktop build.
 function(compile_shaders TARGET SHADER_DIR OUTPUT_DIR)
+    if(ANDROID)
+        return()  # no-op on Android (no glslc available in the NDK toolchain)
+    endif()
     file(GLOB SHADERS ${SHADER_DIR}/*.vert ${SHADER_DIR}/*.frag ${SHADER_DIR}/*.comp)
     foreach(SHADER ${SHADERS})
         get_filename_component(SHADER_NAME ${SHADER} NAME)

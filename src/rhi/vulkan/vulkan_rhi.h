@@ -7,6 +7,10 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 
+#ifdef ULDUM_PLATFORM_ANDROID
+#define VK_USE_PLATFORM_ANDROID_KHR
+#endif
+
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <vector>

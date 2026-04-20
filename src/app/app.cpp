@@ -64,8 +64,10 @@ bool App::init(const LaunchArgs& args) {
         return false;
     }
 
-    // Asset manager
-    if (!m_asset.init("engine")) {
+    // Asset manager — on Android, hand over the APK AAssetManager so engine.uldpak
+    // and .uldmap files can be read from APK assets. Platform::asset_manager()
+    // returns nullptr on desktop so this is a no-op there.
+    if (!m_asset.init("engine", m_platform->asset_manager())) {
         log::error(TAG, "AssetManager init failed");
         return false;
     }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        GameActivity extends androidx.appcompat.app.AppCompatActivity, so the
+        activity theme must inherit from Theme.AppCompat.* (the platform
+        Theme.NoTitleBar.Fullscreen isn't compatible — it crashes in
+        AppCompatDelegateImpl.createSubDecor with "You need to use a
+        Theme.AppCompat theme (or descendant) with this activity").
+
+        Theme.AppCompat.NoActionBar hides the action bar; the fullscreen /
+        no-title behavior is achieved via the window flags below so the game
+        can draw edge-to-edge over the status/nav bars.
+    -->
+    <style name="Theme.Uldum" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+</resources>

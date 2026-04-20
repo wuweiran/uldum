@@ -99,6 +99,7 @@ bool GameServer::init_game(map::MapManager& map,
         if (map_id.empty()) map_id = map.manifest().name;  // fallback if no id
 
         std::string save_dir;
+#ifdef _WIN32
         char* appdata = nullptr;
         size_t appdata_len = 0;
         if (_dupenv_s(&appdata, &appdata_len, "APPDATA") == 0 && appdata) {
@@ -107,6 +108,12 @@ bool GameServer::init_game(map::MapManager& map,
         } else {
             save_dir = "saves/" + map_id;
         }
+#else
+        // Android / POSIX — fall back to a relative path under CWD. Real
+        // mobile save-dir handling (app-private storage via GameActivity)
+        // comes later.
+        save_dir = "saves/" + map_id;
+#endif
         m_script.set_save_path(save_dir);
     }
 

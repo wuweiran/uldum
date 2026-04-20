@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <vector>
@@ -118,6 +119,8 @@ bool VulkanRhi::create_instance(const Config& config) {
         VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef ULDUM_PLATFORM_WINDOWS
         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+#elif defined(ULDUM_PLATFORM_ANDROID)
+        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
 #endif
     };
 
@@ -125,7 +128,36 @@ bool VulkanRhi::create_instance(const Config& config) {
 
     VkDebugUtilsMessengerCreateInfoEXT debug_info{};
 
-    if (config.enable_validation) {
+    // Validation layers on Android require the developer to drop
+    // libVkLayer_khronos_validation.so into platforms/android/app/src/main/jniLibs/<abi>/
+    // (the SDK/NDK does not ship them in the APK). When present, the APK-
+    // packaged .so is loaded by the Android Vulkan loader automatically and
+    // VK_LAYER_KHRONOS_validation can be enabled in the usual way.
+    //
+    // Probe for the layer before requesting it — if the user hasn't bundled
+    // it, we still want the engine to launch (sans validation) rather than
+    // failing vkCreateInstance with VK_ERROR_LAYER_NOT_PRESENT.
+    bool want_validation = config.enable_validation;
+    if (want_validation) {
+        u32 layer_count = 0;
+        vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+        std::vector<VkLayerProperties> available(layer_count);
+        vkEnumerateInstanceLayerProperties(&layer_count, available.data());
+        bool found = false;
+        for (const auto& l : available) {
+            if (std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+                found = true; break;
+            }
+        }
+        if (!found) {
+            log::warn(TAG, "VK_LAYER_KHRONOS_validation not available — install Vulkan SDK "
+                           "or bundle libVkLayer_khronos_validation.so in jniLibs. Continuing "
+                           "without validation.");
+            want_validation = false;
+        }
+    }
+
+    if (want_validation) {
         layers.push_back("VK_LAYER_KHRONOS_validation");
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
@@ -145,16 +177,23 @@ bool VulkanRhi::create_instance(const Config& config) {
     ci.ppEnabledExtensionNames = extensions.data();
     ci.enabledLayerCount       = static_cast<u32>(layers.size());
     ci.ppEnabledLayerNames     = layers.data();
-    if (config.enable_validation) {
+    if (want_validation) {
         ci.pNext = &debug_info;
     }
 
-    if (vkCreateInstance(&ci, nullptr, &m_instance) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create Vulkan instance");
-        return false;
+    {
+        VkResult rc = vkCreateInstance(&ci, nullptr, &m_instance);
+        if (rc != VK_SUCCESS) {
+            log::error(TAG, "vkCreateInstance failed: VkResult {}", static_cast<int>(rc));
+            log::error(TAG, "  API: 1.3  |  extensions: {}  |  layers: {}",
+                       extensions.size(), layers.size());
+            for (auto* e : extensions) log::error(TAG, "    ext: {}", e);
+            for (auto* l : layers)     log::error(TAG, "    layer: {}", l);
+            return false;
+        }
     }
 
-    if (config.enable_validation) {
+    if (want_validation) {
         create_debug_messenger(m_instance, &debug_info, &m_debug_messenger);
     }
 
@@ -175,6 +214,20 @@ bool VulkanRhi::create_surface(platform::Platform& platform) {
 
     if (vkCreateWin32SurfaceKHR(m_instance, &ci, nullptr, &m_surface) != VK_SUCCESS) {
         log::error(TAG, "Failed to create Win32 Vulkan surface");
+        return false;
+    }
+#elif defined(ULDUM_PLATFORM_ANDROID)
+    ANativeWindow* window = static_cast<ANativeWindow*>(platform.native_window_handle());
+    if (!window) {
+        log::error(TAG, "Android surface creation requested but no ANativeWindow — "
+                        "APP_CMD_INIT_WINDOW hasn't fired yet");
+        return false;
+    }
+    VkAndroidSurfaceCreateInfoKHR ci{};
+    ci.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    ci.window = window;
+    if (vkCreateAndroidSurfaceKHR(m_instance, &ci, nullptr, &m_surface) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create Android Vulkan surface");
         return false;
     }
 #endif
@@ -321,19 +374,35 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device, m_surface, &caps);
 
-    // Pick format
+    // Pick format. We need an sRGB variant so the hardware applies the
+    // gamma curve when our shaders write lit (linear-space) colors. Without
+    // it, midtones get crushed and everything looks dark — common on Adreno,
+    // which often exposes R8G8B8A8_SRGB rather than B8G8R8A8_SRGB as the
+    // first sRGB entry in the list.
     u32 format_count = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(m_physical_device, m_surface, &format_count, nullptr);
     std::vector<VkSurfaceFormatKHR> formats(format_count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(m_physical_device, m_surface, &format_count, formats.data());
 
     VkSurfaceFormatKHR chosen_format = formats[0];
+    bool picked_srgb = false;
     for (const auto& fmt : formats) {
-        if (fmt.format == VK_FORMAT_B8G8R8A8_SRGB && fmt.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+        if (fmt.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) continue;
+        if (fmt.format == VK_FORMAT_B8G8R8A8_SRGB ||
+            fmt.format == VK_FORMAT_R8G8B8A8_SRGB) {
             chosen_format = fmt;
+            picked_srgb = true;
             break;
         }
     }
+    if (!picked_srgb) {
+        log::warn(TAG, "No sRGB swapchain format available (first format: {}); "
+                       "colors will render without gamma correction",
+                  static_cast<int>(chosen_format.format));
+    }
+    log::info(TAG, "Swapchain format: {} (colorSpace: {})",
+              static_cast<int>(chosen_format.format),
+              static_cast<int>(chosen_format.colorSpace));
 
     // Pick extent — skip if zero (window minimized or during display switch)
     VkExtent2D extent;
@@ -362,7 +431,18 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
     ci.imageExtent      = extent;
     ci.imageArrayLayers = 1;
     ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    ci.preTransform     = caps.currentTransform;
+
+    // preTransform = IDENTITY means "I render in the native surface orientation,
+    // compositor please rotate my output to match the display." Using
+    // currentTransform instead would require us to pre-rotate in the view
+    // matrix + swap extent W/H — faster on mobile (no compositor blit) but
+    // more complex. IDENTITY is correct and slightly slower; revisit if
+    // Android perf needs the optimization.
+    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+        ci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    } else {
+        ci.preTransform = caps.currentTransform;
+    }
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     // Prefer MAILBOX (uncapped, low latency) if available, fall back to FIFO (vsync)
     ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -511,6 +591,25 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
     // Reset per-image fence tracking
     m_image_in_flight.assign(image_count, VK_NULL_HANDLE);
 
+    // Resize m_render_finished to match the new image count. Swapchain
+    // recreates on Android commonly change the image count (the surface
+    // reports different minImageCount after INIT_WINDOW vs. after the
+    // initial acquire), so this has to grow or shrink on every recreate.
+    VkSemaphoreCreateInfo sem_ci{};
+    sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    while (m_render_finished.size() > image_count) {
+        vkDestroySemaphore(m_device, m_render_finished.back(), nullptr);
+        m_render_finished.pop_back();
+    }
+    while (m_render_finished.size() < image_count) {
+        VkSemaphore sem = VK_NULL_HANDLE;
+        if (vkCreateSemaphore(m_device, &sem_ci, nullptr, &sem) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create render_finished semaphore");
+            return false;
+        }
+        m_render_finished.push_back(sem);
+    }
+
     log::info(TAG, "Swapchain created: {}x{}, {} images", extent.width, extent.height, image_count);
     return true;
 }
@@ -580,14 +679,9 @@ bool VulkanRhi::create_sync_objects() {
         }
     }
 
-    // Per-swapchain-image render_finished semaphores — avoids reuse while present holds one
-    m_render_finished.resize(m_swapchain_images.size());
-    for (auto& sem : m_render_finished) {
-        if (vkCreateSemaphore(m_device, &sem_ci, nullptr, &sem) != VK_SUCCESS) {
-            log::error(TAG, "Failed to create render_finished semaphore");
-            return false;
-        }
-    }
+    // m_render_finished is per-swapchain-image and created/resized inside
+    // create_swapchain — it has to match the image count on every recreate,
+    // so we don't do a one-shot creation here.
 
     return true;
 }
@@ -814,9 +908,16 @@ void VulkanRhi::end_frame() {
     present.pImageIndices      = &m_current_image_index;
 
     VkResult result = vkQueuePresentKHR(m_present_queue, &present);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        // Hard error — swapchain can no longer present to this surface.
         m_swapchain_dirty = true;
     }
+    // VK_SUBOPTIMAL_KHR is intentionally ignored. On Android it's returned
+    // every frame when our preTransform = IDENTITY doesn't match the
+    // surface's currentTransform (a common, benign state). Treating it as
+    // "recreate now" would trigger a per-frame swapchain-destroy loop,
+    // which in turn makes Android's BufferQueue warn about buffers being
+    // freed while dequeued. Let the compositor keep handling the rotation.
 
     m_frame_index = (m_frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
 }

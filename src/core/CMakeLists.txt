@@ -3,4 +3,4 @@ add_library(uldum_core STATIC
     allocator.cpp
 )
 
-target_include_directories(uldum_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(uldum_core PUBLIC ${ULDUM_SRC})

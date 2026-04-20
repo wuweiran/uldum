@@ -39,3 +39,19 @@ Desktop.ini
 
 # Dependencies (if vendored via FetchContent)
 _deps/
+
+# Android / Gradle
+scripts/build_local.bat
+platforms/android/local.properties
+platforms/android/.gradle/
+platforms/android/.idea/
+platforms/android/.kotlin/
+platforms/android/app/.cxx/
+platforms/android/app/build/
+platforms/*/build/
+platforms/**/*.iml
+
+# APK-bundled assets — populated at build time by the copyEngineAssets Gradle
+# task from build/bin/. Source of truth is engine/ and maps/<name>.uldmap/.
+platforms/android/app/src/main/assets/engine.uldpak
+platforms/android/app/src/main/assets/maps/

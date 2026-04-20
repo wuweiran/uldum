@@ -80,6 +80,11 @@ public:
     virtual void* native_window_handle() const = 0;
     virtual void* native_instance_handle() const = 0;
 
+    // AAssetManager* on Android (for reading assets bundled in the APK),
+    // nullptr on desktop. Returned as void* so callers compile on both.
+    // Used by AssetManager to mount the APK's asset root.
+    virtual void* asset_manager() const { return nullptr; }
+
     // Optional message hook — called before default processing.
     // Return true to consume the message (skip default handling).
     // Args: native_window, msg, wparam, lparam

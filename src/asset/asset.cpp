@@ -4,14 +4,25 @@
 #include <filesystem>
 #include <fstream>
 
+#ifdef ULDUM_PLATFORM_ANDROID
+#include <android/asset_manager.h>
+#endif
+
 namespace uldum::asset {
 
 static constexpr const char* TAG = "Asset";
 
-bool AssetManager::init(std::string_view engine_root) {
+bool AssetManager::init(std::string_view engine_root, void* apk_assets) {
     m_engine_root = engine_root;
 
     s_instance = this;
+
+    // On Android the engine/maps live inside the APK — mount it at the root
+    // prefix first so subsequent open_package() calls read the archive bytes
+    // via AAssetManager instead of trying the filesystem.
+    if (apk_assets) {
+        mount_apk_assets(apk_assets);
+    }
 
     open_package("engine.uldpak", "engine");
 
@@ -184,7 +195,18 @@ bool AssetManager::open_package(std::string_view pkg_path, std::string_view pref
                                 std::string_view encryption_key) {
     PackageMount m;
     m.prefix = normalize_prefix(prefix);
-    if (!m.reader.open(pkg_path, encryption_key)) {
+
+    // If the package lives inside a previously-mounted APK / directory, read
+    // its bytes via the mount chain and open the reader from memory. This is
+    // how `engine.uldpak` and `<map>.uldmap` load on Android: an ApkAssetMount
+    // at prefix "" was installed first, read_file_bytes finds the package
+    // there, and UPKReader opens from those bytes. Falls back to the
+    // filesystem path when no existing mount produces the bytes.
+    auto bytes = read_file_bytes(pkg_path);
+    bool opened = bytes.empty()
+        ? m.reader.open(pkg_path, encryption_key)
+        : m.reader.open_from_memory(std::move(bytes), encryption_key, pkg_path);
+    if (!opened) {
         return false;
     }
     log::info(TAG, "Mounted package '{}' at prefix '{}' ({} files)",
@@ -206,6 +228,22 @@ bool AssetManager::mount_directory(std::string_view fs_dir, std::string_view pre
     return true;
 }
 
+bool AssetManager::mount_apk_assets(void* asset_manager, std::string_view prefix) {
+#ifdef ULDUM_PLATFORM_ANDROID
+    if (!asset_manager) return false;
+    ApkAssetMount m;
+    m.prefix = normalize_prefix(prefix);
+    m.asset_manager = asset_manager;
+    log::info(TAG, "Mounted APK assets at prefix '{}'", m.prefix);
+    m_mounts.push_back(std::make_unique<Mount>(std::move(m)));
+    return true;
+#else
+    (void)asset_manager;
+    (void)prefix;
+    return false;  // No-op on non-Android.
+#endif
+}
+
 std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
     auto norm = upk_normalize_path(path);
 
@@ -215,9 +253,10 @@ std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
             if (!m.prefix.empty() && lookup.starts_with(m.prefix)) {
                 lookup.remove_prefix(m.prefix.size());
             }
-            if constexpr (std::is_same_v<std::decay_t<decltype(m)>, PackageMount>) {
+            using T = std::decay_t<decltype(m)>;
+            if constexpr (std::is_same_v<T, PackageMount>) {
                 return m.reader.read(lookup);
-            } else {
+            } else if constexpr (std::is_same_v<T, DirectoryMount>) {
                 std::string abs_path = m.fs_root;
                 if (!abs_path.empty() && abs_path.back() != '/' && abs_path.back() != '\\')
                     abs_path += '/';
@@ -229,6 +268,24 @@ std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
                 std::vector<u8> buf(static_cast<size_t>(size));
                 file.read(reinterpret_cast<char*>(buf.data()), size);
                 return buf;
+            } else {
+                // ApkAssetMount — only reachable when a mount was installed, which
+                // only happens on Android.
+#ifdef ULDUM_PLATFORM_ANDROID
+                auto* mgr = static_cast<AAssetManager*>(m.asset_manager);
+                if (!mgr) return {};
+                std::string lookup_z(lookup);
+                AAsset* asset = AAssetManager_open(mgr, lookup_z.c_str(), AASSET_MODE_BUFFER);
+                if (!asset) return {};
+                off64_t len = AAsset_getLength64(asset);
+                std::vector<u8> buf(static_cast<size_t>(len));
+                AAsset_read(asset, buf.data(), buf.size());
+                AAsset_close(asset);
+                return buf;
+#else
+                (void)m;
+                return {};
+#endif
             }
         }, *mount);
         if (!data.empty()) return data;

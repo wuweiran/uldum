@@ -2,9 +2,14 @@
 
 #include <print>
 #include <chrono>
+#include <string>
 
 #ifdef ULDUM_PLATFORM_WINDOWS
 #include <Windows.h>
+#endif
+
+#ifdef ULDUM_PLATFORM_ANDROID
+#include <android/log.h>
 #endif
 
 namespace uldum::log {
@@ -26,9 +31,30 @@ static constexpr std::string_view level_str(Level level) {
     return "?????";
 }
 
+#ifdef ULDUM_PLATFORM_ANDROID
+static int android_priority(Level level) {
+    switch (level) {
+        case Level::Trace: return ANDROID_LOG_VERBOSE;
+        case Level::Debug: return ANDROID_LOG_DEBUG;
+        case Level::Info:  return ANDROID_LOG_INFO;
+        case Level::Warn:  return ANDROID_LOG_WARN;
+        case Level::Error: return ANDROID_LOG_ERROR;
+    }
+    return ANDROID_LOG_DEFAULT;
+}
+#endif
+
 void write(Level level, std::string_view tag, std::string_view message) {
     if (level < s_min_level) return;
 
+#ifdef ULDUM_PLATFORM_ANDROID
+    // logcat prepends its own timestamp and level glyph, and filters by tag.
+    // Feed it the raw message with our own tag so `adb logcat -s <tag>:*` works.
+    // NUL-terminate the views since __android_log_* needs C strings.
+    std::string tag_z(tag);
+    std::string msg_z(message);
+    __android_log_write(android_priority(level), tag_z.c_str(), msg_z.c_str());
+#else
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::floor<std::chrono::milliseconds>(now);
 
@@ -38,6 +64,7 @@ void write(Level level, std::string_view tag, std::string_view message) {
 
 #ifdef ULDUM_PLATFORM_WINDOWS
     OutputDebugStringA(line.c_str());
+#endif
 #endif
 }
 

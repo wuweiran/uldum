@@ -65,32 +65,41 @@ if(MSVC)
 endif()
 
 # ── sol2 (C++ ↔ Lua binding, header-only) ─────────────────────────────────
+# v3.3.0's vendored optional has a reference-type specialization that trips
+# newer Clang + C++23 ("no member named 'construct' in 'optional<T&>'"); the
+# post-3.3.0 main branch has the fix merged.
 message(STATUS "Fetching sol2...")
 FetchContent_Declare(sol2
-    URL      https://github.com/ThePhD/sol2/archive/refs/tags/v3.3.0.tar.gz
+    URL      https://github.com/ThePhD/sol2/archive/refs/heads/main.tar.gz
 )
 FetchContent_MakeAvailable(sol2)
 
 # ── Dear ImGui (editor UI) ────────────────────────────────────────────────
-message(STATUS "Fetching Dear ImGui...")
-FetchContent_Declare(imgui
-    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
-)
-FetchContent_Populate(imgui)
+# Only used by uldum_editor (desktop-only). Skipped entirely on Android to
+# avoid the fetch + compile overhead of a library no Android target links.
+if(NOT ANDROID)
+    message(STATUS "Fetching Dear ImGui...")
+    FetchContent_Declare(imgui
+        URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
+    )
+    FetchContent_Populate(imgui)
 
-add_library(imgui STATIC
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-)
-target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
-if(MSVC)
-    target_compile_options(imgui PRIVATE /W0)
+    set(IMGUI_SOURCES
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    )
+
+    add_library(imgui STATIC ${IMGUI_SOURCES})
+    target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+    if(MSVC)
+        target_compile_options(imgui PRIVATE /W0)
+    endif()
 endif()
 
 # ── miniaudio (audio playback) — header-only ──────────────────────────────
@@ -138,6 +147,21 @@ endif()
 if(MSVC)
     target_compile_options(enet PRIVATE /W0)
 endif()
+if(ANDROID)
+    # Bionic already provides socklen_t, fcntl, gethostbyname_r, etc.;
+    # without these defines ENet's unix.c retypedefs socklen_t and emits
+    # declarations that conflict with the NDK headers.
+    target_compile_definitions(enet PRIVATE
+        HAS_SOCKLEN_T=1
+        HAS_FCNTL=1
+        HAS_POLL=1
+        HAS_MSGHDR_FLAGS=1
+        HAS_INET_PTON=1
+        HAS_INET_NTOP=1
+        HAS_GETADDRINFO=1
+        HAS_GETNAMEINFO=1
+    )
+endif()
 
 # ── Basis Universal (KTX2 container + UASTC encoder/transcoder) ───────────
 # BasisU is the codec behind KTX2 UASTC/ETC1S. It ships both an authoring
@@ -174,19 +198,25 @@ if(MSVC)
 endif()
 
 # Their full build — gives us the `basisu` CLI executable for authoring.
+# Desktop-only: the CLI is a host tool (PNG → KTX2 encoding offline); it's
+# never invoked on device. Android builds skip this to avoid cross-compiling
+# an encoder that would never run.
+#
 # BasisU's own CMakeLists hard-sets CMAKE_RUNTIME_OUTPUT_DIRECTORY to a
 # subdirectory under their source tree, and target-scoped overrides don't
 # dislodge it. Copy the binary into our build/bin/ with a POST_BUILD step so
 # png_to_ktx2.bat can find it alongside the engine executables.
-add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR})
-if(TARGET basisu)
-    if(MSVC)
-        target_compile_options(basisu PRIVATE /W0)
+if(NOT ANDROID)
+    add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR})
+    if(TARGET basisu)
+        if(MSVC)
+            target_compile_options(basisu PRIVATE /W0)
+        endif()
+        add_custom_target(basisu_copy_to_bin ALL
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:basisu>
+                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<TARGET_FILE_NAME:basisu>
+            COMMENT "Copying basisu.exe to build/bin/")
+        add_dependencies(basisu_copy_to_bin basisu)
     endif()
-    add_custom_target(basisu_copy_to_bin ALL
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:basisu>
-            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<TARGET_FILE_NAME:basisu>
-        COMMENT "Copying basisu.exe to build/bin/")
-    add_dependencies(basisu_copy_to_bin basisu)
 endif()

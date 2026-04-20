@@ -16,7 +16,11 @@ namespace uldum::asset {
 
 class AssetManager {
 public:
-    bool init(std::string_view engine_root);
+    // Initialize the asset manager. Optional `apk_assets` is an
+    // AAssetManager* (from GameActivity); when non-null it is mounted at the
+    // root prefix so `open_package("engine.uldpak", ...)` can read the
+    // package from inside the APK. Desktop callers pass nullptr.
+    bool init(std::string_view engine_root, void* apk_assets = nullptr);
     void shutdown();
 
     // Load assets — returns existing handle if already loaded at that path.
@@ -39,6 +43,14 @@ public:
     // flows where the source tree is the authoritative asset layout.
     // Returns false if `fs_dir` is not a directory.
     bool mount_directory(std::string_view fs_dir, std::string_view prefix = "");
+
+    // Mount an Android APK's `assets/` directory at virtual `prefix`. Reads
+    // for paths under the prefix are served via `AAssetManager_open`. The
+    // `asset_manager` argument is an `AAssetManager*` from GameActivity
+    // (`app->activity->assetManager`), passed as `void*` to avoid leaking
+    // Android headers into desktop translation units. Returns false on
+    // non-Android builds or if `asset_manager` is null.
+    bool mount_apk_assets(void* asset_manager, std::string_view prefix = "");
 
     // Get loaded data by handle (nullptr if invalid/released).
     TextureData*  get(Handle<TextureData> h)  { return m_textures.get(h); }
@@ -66,7 +78,8 @@ private:
     std::string resolve_path(std::string_view relative) const;
 
     // Mounts (checked in order, first match wins).
-    // A mount is either a packed archive or a filesystem directory.
+    // Three kinds: packed archive, filesystem directory, or Android APK asset
+    // (only populated on Android; harmless as a variant member elsewhere).
     struct PackageMount {
         std::string prefix;
         UPKReader   reader;
@@ -75,7 +88,11 @@ private:
         std::string prefix;
         std::string fs_root;
     };
-    using Mount = std::variant<PackageMount, DirectoryMount>;
+    struct ApkAssetMount {
+        std::string prefix;
+        void*       asset_manager = nullptr;  // AAssetManager*
+    };
+    using Mount = std::variant<PackageMount, DirectoryMount, ApkAssetMount>;
     std::vector<std::unique_ptr<Mount>> m_mounts;
 
     ResourcePool<TextureData>  m_textures;

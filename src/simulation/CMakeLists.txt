@@ -9,5 +9,5 @@ add_library(uldum_simulation STATIC
     fog_of_war.cpp
 )
 
-target_include_directories(uldum_simulation PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(uldum_simulation PUBLIC ${ULDUM_SRC})
 target_link_libraries(uldum_simulation PUBLIC uldum_core uldum_asset uldum_map glm::glm)

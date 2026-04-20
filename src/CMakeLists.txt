@@ -1,4 +1,4 @@
-# Shared libraries
+# Shared libraries (all platforms)
 add_subdirectory(core)
 add_subdirectory(platform)
 add_subdirectory(rhi)
@@ -10,9 +10,12 @@ add_subdirectory(simulation)
 add_subdirectory(network)
 add_subdirectory(input)
 add_subdirectory(map)
-add_subdirectory(editor)
 
-# Executables
+# Executables / shared-library entry point
 add_subdirectory(app)
-add_subdirectory(tools)
-# editor/ builds uldum_editor.exe directly
+
+# Desktop-only: editor (ImGui, Win32 file dialogs) and the uldum_pack host tool.
+if(NOT ANDROID)
+    add_subdirectory(editor)
+    add_subdirectory(tools)
+endif()

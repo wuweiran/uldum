@@ -256,10 +256,21 @@ void ScriptEngine::set_script_paths(std::string_view scene_scripts,
 void ScriptEngine::set_save_path(std::string_view save_dir) {
     m_save_path = std::string(save_dir) + "/save_data.json";
 
-    // Create directory if needed
+    // Create directory if needed. Android crashes here if the CWD is the
+    // read-only system partition (current fallback). Catch the error and
+    // disable save persistence for this session rather than terminating —
+    // Android saves need the app's internal data path from GameActivity,
+    // which isn't yet plumbed through game_server.cpp.
     std::filesystem::path dir(save_dir);
-    if (!std::filesystem::exists(dir)) {
-        std::filesystem::create_directories(dir);
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec)) {
+        std::filesystem::create_directories(dir, ec);
+        if (ec) {
+            log::warn(TAG, "Save directory '{}' not writable ({}); save/load disabled",
+                      save_dir, ec.message());
+            m_save_path.clear();  // downstream save/load ops check for empty
+            return;
+        }
     }
 
     // Load existing save data

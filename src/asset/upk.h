@@ -95,8 +95,14 @@ inline void upk_xor(u8* data, u32 size, const u8 key[UPK_KEY_LEN]) {
 
 class UPKReader {
 public:
-    // Open a .upk archive. Returns false if file doesn't exist or is invalid.
+    // Open a .upk archive from a filesystem path.
+    // Returns false if file doesn't exist or is invalid.
     bool open(std::string_view path, std::string_view encryption_key = "");
+
+    // Open from bytes already in memory (e.g. read from an APK AAsset).
+    // The reader keeps the bytes alive for the lifetime of the archive.
+    bool open_from_memory(std::vector<u8> bytes, std::string_view encryption_key = "",
+                          std::string_view debug_label = "");
 
     void close();
 
@@ -116,7 +122,11 @@ public:
 private:
     const UPKEntry* find_entry(u64 hash) const;
 
+    // Exactly one of m_path / m_bytes is populated: m_path for file-backed
+    // archives (read_by_hash re-opens on each read), m_bytes for memory-backed
+    // archives (read_by_hash slices from this buffer).
     std::string           m_path;
+    std::vector<u8>       m_bytes;
     UPKHeader             m_header{};
     std::vector<UPKEntry> m_entries;  // sorted by name_hash
     bool                  m_encrypted = false;
