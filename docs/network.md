@@ -220,7 +220,7 @@ The game supports two hosting models:
 Key design points:
 - Player slot assignment starts at 0 for dedicated server, 1 for host (host is player 0)
 - Game starts when connected peers >= expected players (auto-start, no UI yet)
-- Future (Phase 16 UI): explicit CREATE_SESSION, JOIN, READY messages; host/server decides when to start
+- Future (Phase 16 Shell UI): explicit CREATE_SESSION, JOIN, READY messages from the game-room screen; host/server decides when to start
 - Server can serve one game at a time (multi-game deferred)
 
 ## Future Work

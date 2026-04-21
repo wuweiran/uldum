@@ -57,7 +57,7 @@ What end users run. Parameterized by a game project at build time:
 
 - Product name / window title → `game.json.name` + `game.json.window.title`
 - Exe name / Android applicationId → per game project (Windows: `<Name>.exe`; Android: `game.json.android.package_id`)
-- Bundled assets → `engine.uldpak` + the maps listed in `game.json.maps` + the project's `lobby/` + branding
+- Bundled assets → `engine.uldpak` + the maps listed in `game.json.maps` + the project's `shell/` (RML/RCSS) + branding
 - No dev console, no debug overlay, no map switching
 
 ## Game project folder layout
@@ -76,7 +76,7 @@ sample_game/
   keystore.properties.example  committed template
 ```
 
-`lobby/` will appear once the UI system (Phase 16) lands. Until then, the game auto-loads `default_map` on launch.
+`shell/` (Shell UI — menus, game room, settings, results) will appear once Phase 16a/b lands — RmlUi-authored RML + RCSS files. Until then, the game auto-loads `default_map` on launch. See [design.md](design.md) Phase 16 for the Shell UI / HUD split.
 
 ### `game.json` fields
 
@@ -147,7 +147,7 @@ Game scripts always take (or default to) a game project directory. They never bu
 
 **TODO (still part of Phase 15d):**
 1. Android-side `game.json` read — `android_main.cpp` currently uses `LaunchArgs` defaults at runtime; should read `game.json` from APK assets to honor `default_map` / `default_port` the way `uldum_game.exe` does on desktop.
-2. Lobby once Phase 16 UI lands — replace auto-load-default-map with a real main menu boot path.
+2. Shell UI once Phase 16a/b lands — RmlUi integration + sample_game screens (menu → game room → loading → session → results) replaces auto-load-default-map with a real boot path. HUD (in-game UI — health bars, selection, minimap) is Phase 16c, separate system authored in Lua.
 
 ## Platform matrix
 

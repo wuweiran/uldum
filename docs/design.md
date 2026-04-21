@@ -577,31 +577,38 @@ Build targets, cross-platform packaging, and asset baking.
 
 ### Phase 16 — UI System
 
-The UI system is the **application shell** — it spans the entire app lifecycle, not just in-game HUD. The engine owns the window from launch to exit; the game/product defines what each screen shows.
+Two systems: **Shell UI** (RmlUi, menus / game-room / settings / results) and **HUD** (custom, Lua-driven, in-game widgets). Concepts, rationale, authoring model, and primitives: see [ui.md](ui.md).
 
-```
-App Launch → Menu/Lobby (game-defined) → Loading → Gameplay (3D + map-defined HUD) → Results → Menu
-```
+**Phase 16a — Shell UI framework (RmlUi integration)**
+- RmlUi as a CMake `FetchContent` dep.
+- `Rml::RenderInterface` on top of our Vulkan RHI (mesh upload, texture binding, scissor, transform). Per-frame re-tessellation first; switch to persistent geometry only if frame time demands.
+- `Rml::SystemInterface` bridging time + input from `platform/windows` + `platform/android`.
+- Single `Rml::Context` owned by the engine; `App` loads / shows / hides RML documents.
+- Smoke test: trivial RML doc renders on Windows + Android.
+- `ImGui` stays for dev tools — no conflict.
 
-All screens are rendered by the same engine UI framework. CLI args (`--host`, `--connect`, `--map`) are dev shortcuts that skip the menu screen. In production, the menu UI drives session start programmatically.
+**Phase 16b — sample_game shell screens**
+- Skeleton-only (flat colors, default font, no polish) — demonstrates the architecture:
+  - Main menu → game room → loading → in-session → results → menu
+  - Settings overlay (accessible during session via Esc)
+- RML + RCSS under `sample_game/shell/`. Lua callbacks wire button events to engine actions (`start_session`, `end_session`, …). Hot-reload, no rebuild.
+- Dev APK's Android map picker = same Shell pipeline, auto-populated from bundled test maps.
 
-**Phase 16a — UI Framework**
-- Engine-rendered UI framework (Vulkan) — same system for menus and in-game HUD
-- Screen manager: transitions between menu, loading, gameplay, results screens
-- Lua UI API: scripts create/update/hide UI elements, respond to events
-- Theme/skinning: layout and style configurable per game/map
-- Dev overlay: FPS, network latency, debug info
+**Phase 16c — HUD system (custom, Lua-driven)**
+- Engine primitives: world-space billboards, screen-space panels, bars, icons, text labels, minimap.
+- Lua API: `DefineHudBar`, `ShowSelectionCircle`, `AttachIconToUnit`, etc. Values bound to sim state.
+- Custom instanced batch renderer — depth-aware for world-space.
+- Completely separate from RmlUi.
 
-**Phase 16b — Desktop Game UI**
-- Game-defined screens: main menu, lobby, settings, loading, results (product-level, not engine-built-in)
-- In-game HUD (map-defined via Lua):
-  - RTS command card, unit info panel, minimap, resource display
-  - RPG action bar (alternative layout for action/RPG maps)
-- Settings menu overlay (accessible during gameplay, same framework as lobby settings)
+**Phase 16d — Screen transitions + mobile polish**
+- Screen state machine; fades via RCSS transitions.
+- GameActivity touch → RmlUi `pointerdown` / `pointerup`.
+- RCSS sizing rules for mobile tap targets.
+- IME plumbing for text-entry fields — deferred until needed.
 
-**Phase 16c — Mobile UI & Action/RPG Preset**
-- Virtual joystick: touch-drag for direct hero movement
-- Ability touch buttons: per-slot with form-based targeting gestures
-- Touch selection: tap to select/target units
-- Adaptive layout: auto-scale for different screen sizes and aspect ratios
-- Mobile-specific UX: larger hit targets, swipe gestures, haptic feedback
+### Out of scope for Phase 16
+
+- Controller / gamepad input.
+- CJK / RTL text shaping (HarfBuzz).
+- Rich custom shader decorators (game-project art concern).
+- UI designer tool — authors edit RML / RCSS directly.

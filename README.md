@@ -308,6 +308,7 @@ src/
 - [docs/build-targets.md](docs/build-targets.md) — Build targets and packaging
 - [docs/packaging.md](docs/packaging.md) — `.uldpak` / `.uldmap` archive format, mounts, texture baking
 - [docs/editor.md](docs/editor.md) — Editor modes (normal / source-folder), authoring lifecycle
+- [docs/ui.md](docs/ui.md) — UI system: Shell UI (RmlUi) vs HUD (custom, Lua-driven)
 
 ## License
 

@@ -20,7 +20,7 @@ sample_game/
 
 Per-platform settings (exe name, Android `applicationId` / `app_name`) live as fields in `game.json`.
 
-Future addition: `lobby/` — main menu / map select Lua scripts. Lands with Phase 16 (UI system). Until then, the game auto-loads `default_map` on launch.
+Future addition: `shell/` — Shell UI markup (RML + RCSS for main menu, game room, settings, results). Lands with Phase 16a/b — see [../docs/design.md](../docs/design.md) Phase 16 for the Shell UI / HUD split. Until then, the game auto-loads `default_map` on launch.
 
 ## Not a playground
 
