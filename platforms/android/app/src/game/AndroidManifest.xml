@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Game-flavor manifest overlay. The only difference from the shared main
+    manifest is `android:icon` — the dev flavor has no icon resources so it
+    can't reference one; the game flavor loads icons from the game project's
+    branding/android/ mipmap buckets via sourceSets.res.srcDirs.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:icon="@mipmap/ic_launcher" />
+</manifest>

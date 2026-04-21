@@ -3,7 +3,7 @@ build/
 out/
 cmake-build-*/
 
-# Shippable artifacts produced by scripts/build_game.ps1 and build_android.ps1
+# Shippable artifacts produced by scripts/build_game.ps1 and build_android_game.ps1
 dist/
 
 # IDE
@@ -54,8 +54,8 @@ platforms/android/app/build/
 platforms/*/build/
 platforms/**/*.iml
 
-# APK-bundled assets — populated at build time by scripts/build_android.ps1
-# from the game project. Source of truth is the game project folder.
-platforms/android/app/src/main/assets/engine.uldpak
-platforms/android/app/src/main/assets/game.json
-platforms/android/app/src/main/assets/maps/
+# APK-bundled assets — populated at build time, per Gradle flavor.
+# Dev flavor: src/dev/assets/ staged by Gradle's stageDevAssets task.
+# Game flavor: src/game/assets/ staged by scripts/build_android_game.ps1.
+platforms/android/app/src/dev/assets/
+platforms/android/app/src/game/assets/

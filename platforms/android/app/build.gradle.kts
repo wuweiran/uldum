@@ -4,12 +4,18 @@ plugins {
     id("com.android.application")
 }
 
-// ── Game project parameterization ────────────────────────────────────────
-// build_android.ps1 passes these via -P flags. Defaults fall back to
-// sample_game so `gradlew assembleDebug` works from Android Studio without
-// the PowerShell wrapper (Studio reads the project without the per-project
-// sync).
+// ── Flavor parameterization ───────────────────────────────────────────────
+// Two product flavors:
+//   - dev:  engine-dev APK. Bundles every engine test map from repo's maps/.
+//           Fixed applicationId clan.midnight.uldum_dev. Studio's Run button
+//           is the canonical workflow — no PowerShell pre-step required.
+//   - game: shipping APK. Parameterized from a game project via -P flags
+//           set by scripts\build_android_game.ps1. Defaults fall back to
+//           sample_game so Studio can still open the project cleanly.
 val projectRoot = rootProject.projectDir.parentFile.parentFile
+val engineMapsDir = projectRoot.resolve("maps")
+val engineBuildBin = projectRoot.resolve("build/bin")
+
 val gameProjectDir = providers.gradleProperty("ulGameProjectDir")
     .orElse(projectRoot.resolve("sample_game").absolutePath)
     .get()
@@ -25,38 +31,25 @@ val ulVersionName = providers.gradleProperty("ulVersionName")
 
 android {
     // Engine namespace — fixed. MainActivity.kt lives in clan.midnight.uldum
-    // so the `.MainActivity` in AndroidManifest resolves here. applicationId
-    // (the published identifier) is what changes per game — it's what the
-    // Play Store sees.
+    // so the `.MainActivity` in AndroidManifest resolves here regardless of
+    // which flavor's applicationId is published.
     namespace = "clan.midnight.uldum"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
     ndkVersion = "29.0.14206865"
 
-    // games-activity 4.x ships prebuilt static libs via prefabs; the native
-    // build links game-activity::game-activity_static instead of including
-    // GameActivity.cpp directly. Enabled here so the feature is available when
-    // the real engine port wires up the GameActivity C++ lifecycle.
     buildFeatures {
         prefab = true
     }
 
     defaultConfig {
-        applicationId = ulApplicationId
         // minSdk 33 (Android 13) is what the NDK's libvulkan.so stub needs to
         // export the Vulkan 1.3 entry points the engine uses (dynamic
         // rendering, synchronization2, maintenance4 — all 1.3 core, not
         // available as linkable symbols in the API 29/30/31/32 stubs).
-        // Supporting older devices would require either volk-style dynamic
-        // loading with KHR-extension fallbacks, or a separate GLES backend.
         minSdk = 33
         targetSdk = 36
         versionCode = 1
-        versionName = ulVersionName
-
-        // Expand ${appLabel} inside AndroidManifest.xml. Lets each game set
-        // its own launcher label without hardcoding it here.
-        manifestPlaceholders["appLabel"] = ulAppName
 
         // arm64-v8a for real devices; x86_64 so the Android emulator works on a Windows/Linux host.
         ndk {
@@ -65,22 +58,48 @@ android {
 
         externalNativeBuild {
             cmake {
-                // We reuse our top-level CMakeLists for Android. The android/ wrapper
-                // below just adds our root project as a subdirectory.
                 arguments += listOf(
                     "-DANDROID_STL=c++_static",
                     "-DANDROID_PLATFORM=android-33",
-                    "-DULDUM_GAME_PROJECT_DIR=$gameProjectDir",
                 )
                 cppFlags += "-std=c++23"
             }
         }
     }
 
-    // Merge the game project's branding/android/ into res/ so launcher icons
-    // (mipmap-mdpi/ic_launcher.png, etc.) come from the game project — not
-    // committed inside the engine repo's Android scaffolding.
-    sourceSets["main"].res.srcDirs("$gameProjectDir/branding/android", "src/main/res")
+    flavorDimensions += "variant"
+    productFlavors {
+        create("dev") {
+            dimension = "variant"
+            applicationId = "clan.midnight.uldum_dev"
+            versionName = "0.1.0"
+            manifestPlaceholders["appLabel"] = "Uldum Dev"
+            externalNativeBuild {
+                cmake {
+                    // Flips android_main.cpp to the dev-mode path: hardcoded
+                    // test_map, no game.json read.
+                    arguments += "-DULDUM_ANDROID_DEV=1"
+                }
+            }
+        }
+        create("game") {
+            dimension = "variant"
+            applicationId = ulApplicationId
+            versionName = ulVersionName
+            manifestPlaceholders["appLabel"] = ulAppName
+            externalNativeBuild {
+                cmake {
+                    arguments += "-DULDUM_GAME_PROJECT_DIR=$gameProjectDir"
+                }
+            }
+        }
+    }
+
+    // Per-flavor res/ sources:
+    //   - game: launcher icons from the game project's branding/android/
+    //   - dev:  no res overlay; icon attribute is game-flavor-only (see
+    //           src/game/AndroidManifest.xml), so dev needs no icons
+    sourceSets["game"].res.srcDirs("$gameProjectDir/branding/android")
 
     externalNativeBuild {
         cmake {
@@ -89,18 +108,14 @@ android {
         }
     }
 
-    // The engine produces libuldum_game.so; everything else stays internal/static.
     packaging {
         jniLibs {
-            // Keep debug symbols in debug builds; strip in release.
             keepDebugSymbols += "**/*.so"
         }
     }
 
-    // Release signing: read keystore config from <project>/keystore.properties
-    // if present. Gitignored per-project — the example file is committed, the
-    // real one isn't. If absent, only `debug` builds work; release builds fail
-    // with a clear error from build_android.ps1 before Gradle ever runs.
+    // Release signing for the `game` flavor only. Dev releases are rare; if
+    // you need a signed dev APK you can point dev at a signing config too.
     val keystorePropsFile = file("$gameProjectDir/keystore.properties")
     if (keystorePropsFile.exists()) {
         val keystoreProps = Properties().apply {
@@ -135,43 +150,101 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    // AGP 9.x's built-in Kotlin picks up the JVM target from compileOptions —
-    // no separate kotlinOptions block needed.
 }
 
 dependencies {
-    // GameActivity — the modern AndroidX native activity for games.
-    // See https://developer.android.com/games/agdk/game-activity
     implementation("androidx.games:games-activity:4.4.1")
-    // GameActivity extends AppCompatActivity; AppCompat isn't a transitive
-    // dep so we add it explicitly.
     implementation("androidx.appcompat:appcompat:1.7.1")
 }
 
-// ── Assets validation ────────────────────────────────────────────────────
-// build_android.ps1 pre-populates src/main/assets/ with engine.uldpak,
-// game.json, and maps/*.uldmap using uldum_pack. This check fails the build
-// early if those aren't in place (usually because the PowerShell wrapper
-// wasn't used, or scripts\build.ps1 hasn't been run to produce uldum_pack).
-val validateGameAssets by tasks.registering {
-    description = "Check that engine.uldpak + game.json + maps/ are staged into assets/"
+// ── Asset staging ────────────────────────────────────────────────────────
+// dev flavor: Gradle invokes uldum_pack.exe directly to stage every engine
+// test map into src/dev/assets/maps/ plus engine.uldpak. No PowerShell
+// pre-step — Studio's Run button is self-sufficient.
+//
+// game flavor: scripts\build_android_game.ps1 pre-stages assets into
+// src/game/assets/ (parses game.json, packs listed maps). Gradle just
+// validates they're present.
+
+val uldumPackExe = engineBuildBin.resolve("uldum_pack.exe")
+val engineUldpak = engineBuildBin.resolve("engine.uldpak")
+
+val stageDevAssets by tasks.registering {
+    description = "Pack every engine test map into src/dev/assets/ for the dev APK"
+    val devAssetsDir = layout.projectDirectory.dir("src/dev/assets").asFile
+    val devMapsDir = devAssetsDir.resolve("maps")
+
     doFirst {
-        val assetsDir = layout.projectDirectory.dir("src/main/assets").asFile
+        if (!uldumPackExe.exists()) {
+            throw GradleException(
+                "$uldumPackExe not found — run scripts\\build.ps1 first to produce uldum_pack.exe."
+            )
+        }
+        if (!engineUldpak.exists()) {
+            throw GradleException(
+                "$engineUldpak not found — run scripts\\build.ps1 first."
+            )
+        }
+        if (!engineMapsDir.isDirectory) {
+            throw GradleException("Engine maps directory missing: $engineMapsDir")
+        }
+
+        devAssetsDir.mkdirs()
+        devMapsDir.deleteRecursively()
+        devMapsDir.mkdirs()
+
+        engineUldpak.copyTo(devAssetsDir.resolve("engine.uldpak"), overwrite = true)
+
+        val mapDirs = engineMapsDir.listFiles { f -> f.isDirectory && f.name.endsWith(".uldmap") }
+        if (mapDirs.isNullOrEmpty()) {
+            throw GradleException("No *.uldmap folders found in $engineMapsDir")
+        }
+        mapDirs.forEach { mapSrc ->
+            val mapDst = devMapsDir.resolve(mapSrc.name)
+            // ProcessBuilder instead of Gradle's exec{} — the script-scope
+            // exec block was removed from current Gradle Kotlin DSL in favor
+            // of injected ExecOperations (which doesn't work cleanly from
+            // doFirst). ProcessBuilder is plain JDK and always available.
+            val proc = ProcessBuilder(
+                uldumPackExe.absolutePath, "pack",
+                mapSrc.absolutePath, mapDst.absolutePath
+            ).redirectErrorStream(true).start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            if (exitCode != 0) {
+                throw GradleException("uldum_pack failed on ${mapSrc.name} (exit $exitCode)\n$output")
+            }
+        }
+    }
+}
+
+val validateGameAssets by tasks.registering {
+    description = "Check that engine.uldpak + game.json + maps/ are staged into src/game/assets/"
+    doFirst {
+        val assetsDir = layout.projectDirectory.dir("src/game/assets").asFile
         val missing = listOf("engine.uldpak", "game.json").filter {
             !assetsDir.resolve(it).exists()
         }
         if (missing.isNotEmpty()) {
             throw GradleException(
-                "Missing ${missing.joinToString()} in $assetsDir — run scripts\\build_android.ps1 " +
+                "Missing ${missing.joinToString()} in $assetsDir — run scripts\\build_android_game.ps1 " +
                 "(it pre-populates assets before invoking Gradle)."
             )
         }
         val mapsDir = assetsDir.resolve("maps")
         if (!mapsDir.exists() || mapsDir.listFiles().isNullOrEmpty()) {
             throw GradleException(
-                "No .uldmap files in $mapsDir — run scripts\\build_android.ps1."
+                "No .uldmap files in $mapsDir — run scripts\\build_android_game.ps1."
             )
         }
     }
 }
-tasks.named("preBuild") { dependsOn(validateGameAssets) }
+
+// Hook each flavor's preBuild to the matching staging task. Gradle generates
+// per-flavor/per-buildType task names like preDevDebugBuild, preGameDebugBuild.
+afterEvaluate {
+    listOf("Debug", "Release").forEach { buildType ->
+        tasks.findByName("preDev${buildType}Build")?.dependsOn(stageDevAssets)
+        tasks.findByName("preGame${buildType}Build")?.dependsOn(validateGameAssets)
+    }
+}

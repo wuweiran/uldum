@@ -4,21 +4,36 @@ Per-platform build and distribution notes. Lives alongside [design.md](design.md
 
 ## Windows
 
-Desktop development platform. Ships as a self-contained folder.
+Primary desktop development platform. Ships as a self-contained folder under `dist\`.
 
 **Prerequisites:**
 - Visual Studio 2022+ with the "Desktop development with C++" workload
 - Vulkan SDK 1.3+
 - CMake 3.28+
 
-**Build:**
+### Engine build (developer iteration)
+
 ```powershell
-scripts\build.ps1
+scripts\build.ps1              # all engine targets (Debug)
+scripts\build.ps1 -Release     # optimized build
+scripts\build_dev.ps1          # single-target helpers
+scripts\build_editor.ps1
+scripts\build_server.ps1
 ```
 
-**Output:** `build\bin\` — contains `uldum_dev.exe`, `uldum_game.exe`, `uldum_server.exe`, `uldum_editor.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and `maps\*.uldmap` packs. The root-level `game.json` used to sit here; it's now part of `sample_game/` (see [build-targets.md](build-targets.md)).
+**Output:** `build\bin\` — `uldum_dev.exe`, `uldum_editor.exe`, `uldum_server.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and every `maps\*.uldmap\` from the engine repo packed into `build\bin\maps\`. **No `uldum_game.exe`** — that target only appears in per-project game builds (below).
 
-Distribution zip (e.g., for Steam, itch.io) will be produced by `scripts\build_game.ps1 <project>` → `dist\<GameName>\` once the game-project pipeline is wired up. See the TODO list in [build-targets.md](build-targets.md).
+Run `uldum_dev.exe` from `build\bin\` to iterate. Loads `maps/test_map.uldmap` by default; `--map <path>` picks a different one.
+
+### Game build (packaging for shipping)
+
+```powershell
+scripts\build_game.ps1                       # sample_game, Debug  -> dist\UldumSample-debug\
+scripts\build_game.ps1 -Release              # sample_game, Release -> dist\UldumSample\
+scripts\build_game.ps1 ..\my-game -Release   # external game project
+```
+
+Produces a self-contained `dist\<GameName>[-debug]\` folder: `<GameName>.exe` (renamed from uldum_game, icon embedded from `<project>/branding/icon.ico`), `engine.uldpak`, only the maps listed in `game.json.maps[]`, and `game.json`. Zip it up for itch.io or point Steam's depot builder at the folder — no Windows installer generation yet (that's post-15d).
 
 ## Android
 
@@ -35,7 +50,7 @@ Android Studio is not required, but it's fine if you already have it — it bund
    - **Android SDK Build-Tools 36.0.0** (`build-tools;36.0.0`)
    - **NDK (Side by side) 29.0.14206865** (`ndk;29.0.14206865`)
 2. `JAVA_HOME` points at a JDK 17+ (Android Studio ships one; Temurin/OpenJDK work too).
-3. `scripts\build_android.ps1` auto-detects the SDK at `%LOCALAPPDATA%\Android\Sdk` (Studio's default). No other env vars needed.
+3. `scripts\build_android_game.ps1` auto-detects the SDK at `%LOCALAPPDATA%\Android\Sdk` (Studio's default). No other env vars needed.
 
 **Studio-free install:**
 
@@ -79,7 +94,7 @@ Android Studio users can open `platforms/android/` as a Gradle project; Studio d
 
 ### First-time setup: bootstrap the Gradle wrapper
 
-The Gradle Wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) should be committed to the repo. Once present, `scripts\build_android.ps1` is self-sufficient and future developers on a fresh clone skip this step entirely.
+The Gradle Wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) should be committed to the repo. Once present, `scripts\build_android_game.ps1` is self-sufficient and future developers on a fresh clone skip this step entirely.
 
 If a fresh checkout is missing the wrapper, bootstrap it once:
 
@@ -99,40 +114,79 @@ gradle wrapper --gradle-version 8.10
 
 Install Gradle once via [Chocolatey](https://chocolatey.org/) (`choco install gradle`), Scoop (`scoop install gradle`), or a manual zip extract. After this command, the system Gradle is no longer needed — the generated wrapper runs Gradle itself going forward.
 
-### Build
+### Two flavors: `dev` and `game`
+
+The Android project has two Gradle product flavors. Different purposes, different workflows:
+
+| Flavor | applicationId | Bundled content | Driver |
+|---|---|---|---|
+| `dev` | `clan.midnight.uldum_dev` | every `maps/*.uldmap/` from the engine repo | **Android Studio Run button** (or `gradlew assembleDevDebug`) |
+| `game` | per-project (from `game.json.android.package_id`) | only maps listed in `game.json.maps[]` | `scripts\build_android_game.ps1 [<project>]` |
+
+Different applicationIds → both APKs install side-by-side on one device, no conflict. The engine dev's iteration APK and the shipping game APK coexist.
+
+### Dev flavor — engine iteration (Android Studio)
+
+For debugging engine features on-device (touch input, Vulkan driver quirks, fog-of-war behavior on mobile GPU, performance). No PowerShell wrapper — Studio is the canonical tool.
+
+**First time:**
+```powershell
+scripts\build.ps1                 # produces build\bin\uldum_pack.exe, needed by Gradle's stageDevAssets
+```
+
+**Then in Android Studio:**
+1. Open `platforms\android\` (File → Open → select the folder).
+2. Let Gradle sync (first time ~2 min, downloads wrapper + AGP).
+3. **Build Variants** panel (View → Tool Windows → Build Variants) → pick `devDebug`.
+4. Attach device or start an emulator (AVD) — x86_64 for host emulators, arm64-v8a for real devices.
+5. Hit **Run** (Shift+F10). Gradle's `stageDevAssets` task packs every engine map + copies `engine.uldpak` into `src/dev/assets/`. APK installs and launches; auto-loads `maps/test_map.uldmap`.
+
+Set breakpoints in `src/app/android_main.cpp` or any engine code — Studio's LLDB attaches and stops on them. Logcat: `adb logcat -s Uldum:*`.
+
+**Swap in a different map** (no repackage): currently requires editing the `#ifdef ULDUM_ANDROID_DEV` hardcoded path in `src/app/android_main.cpp`. A future imgui-based dev lobby on Android will expose map selection in the app.
+
+### Game flavor — shipping APK (PowerShell)
+
+For packaging a specific game project (e.g., `sample_game/`) as a shippable APK.
 
 ```powershell
-scripts\build_android.ps1
+scripts\build.ps1                       # engine tools (first time, or after engine changes)
+scripts\build_android_game.ps1          # debug APK  -> dist\<GameName>-debug.apk
+scripts\build_android_game.ps1 -Release # release APK -> dist\<GameName>.apk (needs keystore.properties)
 ```
 
-What it does:
-1. Verifies `ANDROID_SDK_ROOT`, `ANDROID_NDK_ROOT`, `JAVA_HOME` are set
-2. `cd platforms\android` then `gradlew.bat assembleDebug` (the Gradle Wrapper is vendored as `.bat` — not our code)
-3. AGP invokes CMake with the Android NDK toolchain, building `libuldum_game.so` for `arm64-v8a` (and `x86_64` for emulator)
-4. AGP packages: assets + dex + manifest + native libs → zipalign → debug-signed APK
-5. Output: `android/app/build/outputs/apk/debug/app-debug.apk`
+What the script does:
+1. Resolves the game project dir (default: `sample_game/`). Reads `game.json`.
+2. Pre-stages APK assets in `platforms\android\app\src\game\assets\`:
+   - `engine.uldpak` from `build\bin\`
+   - `game.json` from the project
+   - Each `<project>/maps/<id>.uldmap/` packed with `uldum_pack.exe`
+3. Invokes `gradlew assembleGameDebug` (or `assembleGameRelease`) with per-project properties: `applicationId`, `versionName`, app label, project dir (for icon res lookup).
+4. Copies the resulting APK to `dist\<GameName>[-debug].apk`.
 
-### Install & run
-
+**Install / launch a game APK:**
 ```cmd
-adb install -r android\app\build\outputs\apk\debug\app-debug.apk
-adb shell am start -n com.uldum.game/.MainActivity
+adb install -r dist\UldumSample-debug.apk
+adb shell am start -n com.m1knight.uldum_sample/clan.midnight.uldum.MainActivity
 ```
 
-Logcat: `adb logcat -s Uldum:*`
+The activity class lives in the engine namespace (`clan.midnight.uldum.MainActivity`) regardless of applicationId — that's by design; per-game namespaces would force every game to ship a MainActivity subclass for no reason.
+
+**Release signing:** the release variant reads `<project>/keystore.properties` (gitignored). If absent, `-Release` fails fast with a message showing how to generate a keystore with `keytool`. See [build-targets.md](build-targets.md) for the game-project folder layout.
 
 ### Locked-in design decisions
 
 - **Native activity:** `GameActivity` from AndroidX Games Activity Library (actively maintained, handles lifecycle + input better than legacy `NativeActivity`)
-- **Min SDK:** 33 (Android 13). The engine uses Vulkan 1.3 core features (dynamic rendering, synchronization2, maintenance4); the NDK's `libvulkan.so` stub doesn't export 1.3 entry points as linkable symbols below API 33. Broader device coverage would require volk-style dynamic function loading with KHR-extension fallback — not planned for now.
+- **Min SDK:** 33 (Android 13). The engine uses Vulkan 1.3 core features (dynamic rendering, synchronization2, maintenance4); the NDK's `libvulkan.so` stub doesn't export 1.3 entry points as linkable symbols below API 33. Broader device coverage would require volk-style dynamic function loading with KHR-extension fallback — not planned.
 - **Target / compile SDK:** 36 (Android 16) · **Build-Tools:** 36.0.0 · **NDK:** 29.0.14206865
 - **ABIs:** `arm64-v8a` (devices) and `x86_64` (emulator). No armeabi-v7a.
-- **Gradle:** Wrapper-pinned per repo, no separate install
-- **AGP:** 8.x series
+- **Namespace fixed at `clan.midnight.uldum`** — only `applicationId` varies per flavor/game. `MainActivity` resolves relative to namespace.
+- **Gradle Wrapper** pinned per repo, no separate install. AGP 9.x.
 
 ### What's deferred
 
-- Play Store AAB packaging, release signing keystore workflow
-- iOS (requires MoltenVK and App Store submission — out of scope)
-- Linux desktop (headless server would be first Linux target when we need it)
+- Play Store AAB packaging (`bundle` task; Store accepts APK for direct upload but AAB is required for Play Store publishing).
+- iOS (requires MoltenVK and App Store submission — out of scope).
+- Linux desktop (headless server would be first Linux target when we need it).
+- ImGui-based dev lobby on Android — map picker / debug console. Compile-define-gated to dev flavor when it lands.
 

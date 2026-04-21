@@ -23,7 +23,7 @@ if(ANDROID)
     # ── Android: single shared library loaded by GameActivity ────────────────
     # Android apps don't ship executables — GameActivity loads libuldum_game.so
     # and calls android_main() inside it. One build artifact, one entry point.
-    # Driven by build_android.ps1 which sets ULDUM_GAME_PROJECT_DIR via Gradle.
+    # Driven by build_android_game.ps1 / Studio's dev flavor which sets ULDUM_GAME_PROJECT_DIR via Gradle.
 
     add_library(uldum_game SHARED
         android_main.cpp

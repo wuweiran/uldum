@@ -28,8 +28,8 @@ this switch the output is a debug APK, suffixed '-debug' in dist/ to
 discourage accidental shipping.
 
 .EXAMPLE
-scripts\build_android.ps1                    # sample_game debug -> dist\UldumSample-debug.apk
-scripts\build_android.ps1 -Release           # sample_game release -> dist\UldumSample.apk
+scripts\build_android_game.ps1                    # sample_game debug -> dist\UldumSample-debug.apk
+scripts\build_android_game.ps1 -Release           # sample_game release -> dist\UldumSample.apk
 #>
 #Requires -Version 5.1
 [CmdletBinding()]
@@ -130,7 +130,9 @@ if (-not (Test-Path -LiteralPath $engineUldpak)) {
 }
 
 # ── Stage APK assets ─────────────────────────────────────────────────────
-$assetsDir = Join-Path $Android 'app\src\main\assets'
+# Flavor-scoped: game flavor reads from src/game/assets/ (dev flavor has its
+# own src/dev/assets/ populated by Gradle's stageDevAssets task).
+$assetsDir = Join-Path $Android 'app\src\game\assets'
 $assetsMapsDir = Join-Path $assetsDir 'maps'
 New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
 if (Test-Path -LiteralPath $assetsMapsDir) {
@@ -165,9 +167,11 @@ $gradlew not found. Bootstrap the Gradle Wrapper once (see docs\platform.md):
 "@
 }
 
-$gradleTask  = if ($Release) { 'assembleRelease' } else { 'assembleDebug' }
-$variant     = if ($Release) { 'release' }        else { 'debug' }
-$debugSuffix = if ($Release) { '' }               else { '-debug' }
+# Flavor-aware Gradle task names: assembleGameDebug / assembleGameRelease.
+$gradleTask  = if ($Release) { 'assembleGameRelease' } else { 'assembleGameDebug' }
+$variantDir  = if ($Release) { 'game/release' }       else { 'game/debug' }
+$apkName     = if ($Release) { 'app-game-release.apk' } else { 'app-game-debug.apk' }
+$debugSuffix = if ($Release) { '' }                    else { '-debug' }
 
 Write-Host ''
 Write-Host "Building APK: '$gameName' ($variant)"
@@ -194,7 +198,7 @@ try {
 $exeName = $gameName -replace '\s', ''
 $distDir = Join-Path $Root 'dist'
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-$apkSrc = Join-Path $Android "app\build\outputs\apk\$variant\app-$variant.apk"
+$apkSrc = Join-Path $Android "app\build\outputs\apk\$variantDir\$apkName"
 if (-not (Test-Path -LiteralPath $apkSrc)) {
     throw "Expected APK not found at $apkSrc. Gradle output may have moved."
 }
@@ -202,6 +206,6 @@ $apkDst = Join-Path $distDir "$exeName$debugSuffix.apk"
 Copy-Item -LiteralPath $apkSrc -Destination $apkDst -Force
 
 Write-Host ''
-Write-Host "Built:   $apkDst ($variant)"
+Write-Host "Built:   $apkDst"
 Write-Host "Install: adb install -r `"$apkDst`""
 Write-Host "Launch:  adb shell am start -n $packageId/clan.midnight.uldum.MainActivity"

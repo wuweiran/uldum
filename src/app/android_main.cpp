@@ -50,9 +50,18 @@ extern "C" void android_main(struct android_app* app) {
         return;
     }
 
-    // TODO: source map_path from intent extras or game.json in APK assets.
-    // For the bootstrap stub, defaults match desktop (maps/test_map.uldmap).
     uldum::LaunchArgs args;
+#ifdef ULDUM_ANDROID_DEV
+    // Dev APK (clan.midnight.uldum_dev): engine iteration build. Every
+    // maps/*.uldmap/ from the engine repo is bundled in APK assets; we load
+    // test_map by default. A future imgui-based dev lobby will let the user
+    // pick from the bundled list without repackaging.
+    args.map_path = "maps/test_map.uldmap";
+#else
+    // Game APK: should read default_map from game.json in APK assets.
+    // TODO (Phase 15d remaining): plumb AAssetManager → game.json → map_path.
+    // Interim: LaunchArgs default matches desktop (maps/test_map.uldmap).
+#endif
 
     uldum::App game;
     if (!game.init(args)) {
