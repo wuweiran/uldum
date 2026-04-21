@@ -1,0 +1,20 @@
+{
+    "id": "simple_map",
+    "name": "Simple Map",
+    "author": "Uldum Sample",
+    "description": "Minimal map shipped with sample_game. 32x32 flat grass.",
+    "version": "0.1.0",
+    "engine_version": "0.1.0",
+    "suggested_players": "1",
+    "fog_of_war": "none",
+
+    "players": [
+        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" }
+    ],
+    "teams": [
+        { "id": 0, "name": "Players", "allied": true, "shared_vision": true }
+    ],
+
+    "tileset": "tileset.json",
+    "start_scene": "scene_01"
+}

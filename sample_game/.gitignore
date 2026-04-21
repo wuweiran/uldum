@@ -1,0 +1,10 @@
+# Per-project gitignore — travels with the folder when copied out to start
+# a new game. The engine repo's root .gitignore only protects this checkout;
+# a standalone copy of this folder needs its own rules.
+
+# Android release signing — keystore.properties.example is committed as a
+# template, the real keystore.properties is per-author and must never be.
+keystore.properties
+
+# Runtime log, if the game is launched from inside the project folder.
+run.log

@@ -1,6 +1,6 @@
 # Windows platform
 
-Windows packaging/distribution artifacts. Currently empty — Windows builds today are pure native executables orchestrated by `scripts/build.bat` + CMake, no extra project scaffolding needed.
+Windows packaging/distribution artifacts. Currently empty — Windows builds today are pure native executables orchestrated by `scripts/build.ps1` + CMake, no extra project scaffolding needed.
 
 This directory populates when Windows picks up any of:
 

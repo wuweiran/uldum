@@ -173,4 +173,4 @@ basisu -ktx2 -uastc -uastc_level 2 -mipmap          -output_file tex.ktx2 tex.pn
 basisu -ktx2 -uastc -uastc_level 2 -mipmap -linear  -output_file tex.ktx2 tex.png   # normals / data / linear
 ```
 
-A helper script `scripts/png_to_ktx2.bat` wraps these flags — see [editor.md](editor.md).
+A helper script `scripts/png_to_ktx2.ps1` wraps these flags — see [editor.md](editor.md).

@@ -12,13 +12,13 @@ Desktop development platform. Ships as a self-contained folder.
 - CMake 3.28+
 
 **Build:**
-```cmd
-scripts\build.bat
+```powershell
+scripts\build.ps1
 ```
 
-**Output:** `build\bin\` — contains `uldum_dev.exe`, `uldum_game.exe`, `uldum_server.exe`, `uldum_editor.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak`, `maps\*.uldmap`, `game.json`.
+**Output:** `build\bin\` — contains `uldum_dev.exe`, `uldum_game.exe`, `uldum_server.exe`, `uldum_editor.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and `maps\*.uldmap` packs. The root-level `game.json` used to sit here; it's now part of `sample_game/` (see [build-targets.md](build-targets.md)).
 
-Distribution zip (e.g., for Steam, itch.io) is planned post-Android — not yet automated.
+Distribution zip (e.g., for Steam, itch.io) will be produced by `scripts\build_game.ps1 <project>` → `dist\<GameName>\` once the game-project pipeline is wired up. See the TODO list in [build-targets.md](build-targets.md).
 
 ## Android
 
@@ -35,7 +35,7 @@ Android Studio is not required, but it's fine if you already have it — it bund
    - **Android SDK Build-Tools 36.0.0** (`build-tools;36.0.0`)
    - **NDK (Side by side) 29.0.14206865** (`ndk;29.0.14206865`)
 2. `JAVA_HOME` points at a JDK 17+ (Android Studio ships one; Temurin/OpenJDK work too).
-3. `scripts\build_android.bat` auto-detects the SDK at `%LOCALAPPDATA%\Android\Sdk` (Studio's default). No other env vars needed.
+3. `scripts\build_android.ps1` auto-detects the SDK at `%LOCALAPPDATA%\Android\Sdk` (Studio's default). No other env vars needed.
 
 **Studio-free install:**
 
@@ -79,7 +79,7 @@ Android Studio users can open `platforms/android/` as a Gradle project; Studio d
 
 ### First-time setup: bootstrap the Gradle wrapper
 
-The Gradle Wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) should be committed to the repo. Once present, `scripts\build_android.bat` is self-sufficient and future developers on a fresh clone skip this step entirely.
+The Gradle Wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) should be committed to the repo. Once present, `scripts\build_android.ps1` is self-sufficient and future developers on a fresh clone skip this step entirely.
 
 If a fresh checkout is missing the wrapper, bootstrap it once:
 
@@ -101,13 +101,13 @@ Install Gradle once via [Chocolatey](https://chocolatey.org/) (`choco install gr
 
 ### Build
 
-```cmd
-scripts\build_android.bat
+```powershell
+scripts\build_android.ps1
 ```
 
 What it does:
 1. Verifies `ANDROID_SDK_ROOT`, `ANDROID_NDK_ROOT`, `JAVA_HOME` are set
-2. `cd android/` then `gradlew.bat assembleDebug`
+2. `cd platforms\android` then `gradlew.bat assembleDebug` (the Gradle Wrapper is vendored as `.bat` — not our code)
 3. AGP invokes CMake with the Android NDK toolchain, building `libuldum_game.so` for `arm64-v8a` (and `x86_64` for emulator)
 4. AGP packages: assets + dex + manifest + native libs → zipalign → debug-signed APK
 5. Output: `android/app/build/outputs/apk/debug/app-debug.apk`

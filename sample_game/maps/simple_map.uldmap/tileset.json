@@ -1,0 +1,6 @@
+{
+    "name": "Simple",
+    "layers": [
+        { "id": 0, "name": "grass", "diffuse": "shared/assets/textures/terrain/grass.ktx2", "normal": "shared/assets/textures/terrain/grass_normal.ktx2" }
+    ]
+}

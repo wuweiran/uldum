@@ -181,7 +181,7 @@ Defined in a sidecar JSON file alongside the glTF model (e.g. `footman.effects.j
 | Stage | Format | Tool |
 |-------|--------|------|
 | Authoring | PNG / TGA / source format of choice | Any image editor |
-| Import step (author-side, outside the engine) | PNG → KTX2 | `basisu` / `scripts/png_to_ktx2.bat` |
+| Import step (author-side, outside the engine) | PNG → KTX2 | `basisu` / `scripts/png_to_ktx2.ps1` |
 | In-tree / shipping | KTX2 + Basis Universal | — (runtime reads KTX2 directly) |
 
 See [packaging.md](packaging.md) and [editor.md](editor.md) for the full authoring workflow.

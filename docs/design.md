@@ -552,7 +552,7 @@ Build targets, cross-platform packaging, and asset baking.
 - **`uldum_game`**: shipped product executable (Release build, no debug UI, no editor)
 - **`game.json`**: product configuration (product name, default map, window title, resolution)
 - **`uldum_server`**: headless dedicated server (no renderer, no audio, no window — simulation + networking only)
-- Build scripts: `build_game.bat`, `build_server.bat`
+- Build scripts: `build_game.ps1`, `build_server.ps1`
 
 #### Phase 15b — PAK Archive
 - Pack engine assets and map assets into single .pak archive files (engine.pak, map.pak)
@@ -567,7 +567,7 @@ Build targets, cross-platform packaging, and asset baking.
 - See [editor.md](editor.md) for editor modes, [packaging.md](packaging.md) for runtime texture loading and author workflow
 
 #### Phase 15d — Platform Packaging
-- **Windows**: `dist_windows.bat` produces a zipped self-contained folder (exe + `engine.uldpak` + map + `game.json`). Installer deferred.
+- **Windows**: `build_game.ps1 <project>` produces `dist/<GameName>/` with exe + `engine.uldpak` + listed maps + `game.json`. Installer deferred.
 - **Android**: debug APK that installs and renders the test map
   - Android NDK + Gradle wrapper at `android/`, engine as `libuldum_game.so`
   - `src/platform/android/` — GameActivity, Vulkan surface, lifecycle

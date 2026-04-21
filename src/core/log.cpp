@@ -2,6 +2,7 @@
 
 #include <print>
 #include <chrono>
+#include <fstream>
 #include <string>
 
 #ifdef ULDUM_PLATFORM_WINDOWS
@@ -15,6 +16,16 @@
 namespace uldum::log {
 
 static Level s_min_level = Level::Trace;
+
+// Desktop-only file sink — opens run.log next to the exe on first use. Flushed
+// on every write so a crash leaves a readable trail even if stdout is buffered
+// or redirected somewhere we can't see. Android skips this and relies on logcat.
+#ifndef ULDUM_PLATFORM_ANDROID
+static std::ofstream& log_file() {
+    static std::ofstream f("run.log", std::ios::out | std::ios::trunc);
+    return f;
+}
+#endif
 
 void set_level(Level level) {
     s_min_level = level;
@@ -61,6 +72,11 @@ void write(Level level, std::string_view tag, std::string_view message) {
     auto line = std::format("[{:%H:%M:%S}] [{}] [{}] {}\n", time, level_str(level), tag, message);
 
     std::print("{}", line);
+
+    if (auto& f = log_file(); f) {
+        f << line;
+        f.flush();
+    }
 
 #ifdef ULDUM_PLATFORM_WINDOWS
     OutputDebugStringA(line.c_str());

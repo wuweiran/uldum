@@ -1,0 +1,10 @@
+{
+    "units": [],
+    "destructables": [],
+    "items": [],
+    "doodads": [],
+    "regions": [],
+    "cameras": [
+        { "name": "default", "x": 2048.0, "y": 1024.0, "z": 1536.0, "pitch": -0.8, "yaw": 0.0 }
+    ]
+}

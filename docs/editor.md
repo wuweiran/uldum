@@ -54,14 +54,14 @@ No "reverse bake" is supported — `.uldmap` → source folder is not a round-tr
 
 Map makers convert PNG textures to KTX2 outside the engine using the [Basis Universal](https://github.com/BinomialLLC/basis_universal) encoder, before placing files into a map folder. `basisu.exe` is built as part of the engine build and ends up at `build/bin/basisu.exe`.
 
-A helper script `scripts/png_to_ktx2.bat` wraps the canonical flags:
+A helper script `scripts/png_to_ktx2.ps1` wraps the canonical flags:
 
-```cmd
-:: albedo / diffuse / sRGB textures
-scripts\png_to_ktx2.bat tex.png                  :: → tex.ktx2, UASTC, sRGB, mipmapped
+```powershell
+# albedo / diffuse / sRGB textures
+scripts\png_to_ktx2.ps1 tex.png                  # → tex.ktx2, UASTC, sRGB, mipmapped
 
-:: normal maps / data textures (linear)
-scripts\png_to_ktx2.bat --linear normal.png      :: → normal.ktx2, UASTC, linear, mipmapped
+# normal maps / data textures (linear)
+scripts\png_to_ktx2.ps1 -Linear normal.png       # → normal.ktx2, UASTC, linear, mipmapped
 ```
 
 Drop the resulting `.ktx2` into the map's asset folder. The engine never converts, bakes, or falls back — it only reads KTX2.

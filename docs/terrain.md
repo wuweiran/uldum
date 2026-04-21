@@ -116,7 +116,7 @@ Maps can define up to **16 layers** (stored as `u8` per vertex, shader uses `sam
 
 ### Diffuse Textures
 
-One diffuse texture per layer, provided by the map as KTX2 (authored from PNG via `scripts/png_to_ktx2.bat`). Tiles once per terrain tile (128 game units). The engine generates procedural fallback textures if files are missing.
+One diffuse texture per layer, provided by the map as KTX2 (authored from PNG via `scripts/png_to_ktx2.ps1`). Tiles once per terrain tile (128 game units). The engine generates procedural fallback textures if files are missing.
 
 Per-layer normal maps are not supported yet. Terrain uses vertex normals for lighting. An optional `"normal"` field per layer can be added later for surface detail.
 

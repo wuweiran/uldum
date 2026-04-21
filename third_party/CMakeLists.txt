@@ -165,7 +165,7 @@ endif()
 
 # ── Basis Universal (KTX2 container + UASTC encoder/transcoder) ───────────
 # BasisU is the codec behind KTX2 UASTC/ETC1S. It ships both an authoring
-# CLI (basisu.exe — we invoke it from scripts/png_to_ktx2.bat) and a
+# CLI (basisu.exe — we invoke it from scripts/png_to_ktx2.ps1) and a
 # self-contained transcoder that can parse KTX2 files end-to-end.
 #
 # We build two things from the same source tree:
@@ -205,7 +205,7 @@ endif()
 # BasisU's own CMakeLists hard-sets CMAKE_RUNTIME_OUTPUT_DIRECTORY to a
 # subdirectory under their source tree, and target-scoped overrides don't
 # dislodge it. Copy the binary into our build/bin/ with a POST_BUILD step so
-# png_to_ktx2.bat can find it alongside the engine executables.
+# png_to_ktx2.ps1 can find it alongside the engine executables.
 if(NOT ANDROID)
     add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR})
     if(TARGET basisu)

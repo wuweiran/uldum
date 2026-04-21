@@ -67,10 +67,10 @@ VMA, shaderc, sol2, Lua 5.4, ENet, miniaudio, Dear ImGui, Tracy, glm, cgltf, stb
 Requires Vulkan SDK installed and MSVC (Visual Studio Build Tools).
 
 **Windows (via build script):**
-```cmd
-scripts\build.bat
+```powershell
+scripts\build.ps1
 ```
-This calls `vcvarsall.bat x64` to set up the MSVC environment, then runs CMake configure + build.
+This imports the MSVC x64 environment (via `vcvarsall.bat x64`) into the PowerShell session, then runs CMake configure + build.
 
 **Or manually from a Developer Command Prompt:**
 ```cmd

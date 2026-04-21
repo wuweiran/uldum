@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 15b complete. Build targets + packaging.
+Phase 15d in progress. Android port done; game-project split under way.
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -177,18 +177,18 @@ Phase 15b complete. Build targets + packaging.
   - Lua API: SetSunDirection, AddPointLight
 - Build targets (Phase 15a):
   - `uldum_dev` — development runtime (debug, auto-starts map)
-  - `uldum_game` — shipped product (reads game.json config, no debug)
+  - `uldum_game` — shipped product runtime, parameterized by a game project (name, icon, bundled maps, package ID)
   - `uldum_server` — headless dedicated server (no renderer/audio/window)
   - `uldum_editor` — in-engine terrain editor (ImGui)
   - `uldum_pack` — package tool (pack/unpack/list .uldpak / .uldmap archives)
-  - `game.json` — product configuration (name, default map, port, resolution)
-  - Build scripts:
-    - `build.bat` — build all targets
-    - `build_dev.bat` — build uldum_dev only
-    - `build_game.bat` — build uldum_game only
-    - `build_server.bat` — build uldum_server only
-    - `build_editor.bat` — build uldum_editor only
-  - Test scripts: `test_multiplayer.bat`, `test_server.bat`
+  - `sample_game/game.json` — product configuration (name, window, maps, default_map, Android metadata)
+  - Build scripts (PowerShell):
+    - `build.ps1` — build all targets
+    - `build_dev.ps1` — build uldum_dev only
+    - `build_game.ps1` — build uldum_game only
+    - `build_server.ps1` — build uldum_server only
+    - `build_editor.ps1` — build uldum_editor only
+  - Test scripts: `test_multiplayer.ps1`, `test_server.ps1`
 - Packaging (Phase 15b):
   - `.uldpak` — engine asset archive (`engine.uldpak`)
   - `.uldmap` — map asset archive (e.g. `maps/test_map.uldmap`)
@@ -222,11 +222,13 @@ Install these before building:
 
 Using the build script (auto-detects Visual Studio, uses Ninja for parallel builds):
 
-```cmd
-scripts\build.bat
+```powershell
+scripts\build.ps1
 ```
 
 First build fetches third-party dependencies via CMake FetchContent (takes ~1 min). Subsequent builds are incremental.
+
+> If PowerShell blocks the script with an execution-policy error, either run it as `powershell -ExecutionPolicy Bypass -File scripts\build.ps1`, or allow local scripts once via `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 Output: `build/bin/uldum_dev.exe` (developer runtime), `build/bin/uldum_editor.exe` (map editor). See [docs/build-targets.md](docs/build-targets.md) for details.
 
@@ -268,7 +270,7 @@ In host mode, the simulation waits for all expected players (from manifest) befo
 
 - **"Failed to create Vulkan instance"** — Vulkan SDK not installed, or GPU drivers too old. Run `vulkaninfo` to check.
 - **Build hangs during configure** — FetchContent is downloading dependencies. Wait for it to finish.
-- **build.bat says "No Visual Studio installation found"** — Install VS with the C++ workload.
+- **build.ps1 says "No Visual Studio installation found"** — Install VS with the C++ workload.
 - **CMake errors about missing packages** — Delete the `build/` directory and rebuild.
 
 ## Project Structure

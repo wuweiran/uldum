@@ -3,6 +3,9 @@ build/
 out/
 cmake-build-*/
 
+# Shippable artifacts produced by scripts/build_game.ps1 and build_android.ps1
+dist/
+
 # IDE
 .vs/
 .vscode/
@@ -41,7 +44,7 @@ Desktop.ini
 _deps/
 
 # Android / Gradle
-scripts/build_local.bat
+scripts/build_local.ps1
 platforms/android/local.properties
 platforms/android/.gradle/
 platforms/android/.idea/
@@ -51,7 +54,8 @@ platforms/android/app/build/
 platforms/*/build/
 platforms/**/*.iml
 
-# APK-bundled assets — populated at build time by the copyEngineAssets Gradle
-# task from build/bin/. Source of truth is engine/ and maps/<name>.uldmap/.
+# APK-bundled assets — populated at build time by scripts/build_android.ps1
+# from the game project. Source of truth is the game project folder.
 platforms/android/app/src/main/assets/engine.uldpak
+platforms/android/app/src/main/assets/game.json
 platforms/android/app/src/main/assets/maps/

@@ -1,178 +1,159 @@
-# Uldum Engine — Build Targets
+# Uldum Engine — Build Targets & Game Projects
 
-## Overview
+## Two kinds of things in this repo
 
-The Uldum engine is not a product — it is the runtime underneath products. A shipped game is a map package with custom UI, scripts, and assets, configured via `game.json`. The engine is invisible to end users.
+This repo contains an **engine** and one **game project** (`sample_game/`). They are different concepts with different build flows.
 
-Four build targets serve different audiences:
+- **Engine** — the runtime underneath products. Lives in `src/`, `engine/`, `third_party/`, `platforms/`. Has no identity (no name, no icon, no shipped maps). Built into a handful of executables/libraries that developers use.
+- **Game project** — a product. Has a name, an icon, a package ID, a lobby, a list of maps it ships. Built into a distributable `.exe` / `.apk`. `sample_game/` is the only one in this repo; real first-party games live in their own repos or folders.
+
+The boundary matters: the engine never contains game content, and a game project never contains engine code. Build scripts reflect the split — engine scripts write to `build/bin/`, game scripts write to `dist/`.
+
+## Engine build targets
+
+Four executables + one packaging tool, all built from engine source.
 
 | Target | Audience | Purpose |
 |--------|----------|---------|
-| `uldum_dev` | Developers | Test any map, debug overlay, dev console |
-| `uldum_editor` | Map makers | Terrain sculpt, object placement, save/load |
-| `uldum_game` | End users | Shipped game, loads one map, no debug UI |
-| `uldum_server` | Multiplayer | Headless authoritative simulation |
+| `uldum_dev` | Engine devs | Run any map from `maps/`; debug overlay, dev console, hot-reload |
+| `uldum_editor` | Map authors | ImGui terrain editor; opens `.uldmap` folders or archives |
+| `uldum_server` | Multiplayer | Headless authoritative simulation (no window, no renderer, no audio) |
+| `uldum_pack` | Build pipeline | Pack/unpack/list `.uldpak` and `.uldmap` archives |
+| `uldum_game` | End users | Shipped product runtime. Parameterized by a game project (name, icon, bundled maps, package ID) |
 
-## Targets
+`uldum_game` is the only engine target parameterized by a game project. The rest are pure engine.
 
-### `uldum_dev` — Developer Runtime
+### `uldum_dev` — developer runtime
 
-What developers use day-to-day. Loads maps, runs full gameplay, shows debug info.
+- Reads every `.uldmap/` folder under `maps/`, packs them into `build/bin/maps/` at build time.
+- Auto-loads `maps/test_map.uldmap` unless `--map <path>` is given.
+- In-process local server for single-player; `--host` / `--connect` for multiplayer.
+- Debug overlay, dev console, Lua hot-reload.
+- Never ships to end users.
 
-- Loads `maps/test_map.uldmap` by default (or any map via command line)
-- In-process local server for single player (no network latency)
-- Debug overlay: FPS, entity count, pathing grid, spatial grid visualization
-- Dev console (toggle with ~): execute Lua, inspect state, switch maps
-- Hot-reload Lua scripts on file change
-- Free camera (not locked to map camera restrictions)
-- Full gameplay: simulation, combat, abilities, scripts, AI
+### `uldum_editor` — map editor
 
-**This is what the current `uldum.exe` is.** Phase 10+ adds debug overlay and dev console.
+- Opens `.uldmap` folders (author mode, read/write) or `.uldmap` archives (packed mode, read-only).
+- Terrain sculpt, paint, cliff/ramp, water, pathing, object placement, Lua script editing.
+- No gameplay simulation, no network.
+- Windows only.
 
-### `uldum_editor` — Map Editor
+### `uldum_server` — dedicated server
 
-Desktop-only tool for creating and editing `.uldmap` packages.
+- No window, no renderer, no audio.
+- Authoritative simulation at 32 Hz, runs map Lua, accepts ENet connections.
+- Reads config from CLI; `game.json` is read only when pointed at a game project.
 
-- ImGui-based UI: toolbar, property inspector, terrain tools, object palette
-- Terrain editing: sculpt (raise/lower/smooth/flatten), paint textures, set cliff levels, place water, mark pathing
-- Object editing: place/move/delete units, destructables, items, regions, cameras
-- Type editing: edit unit_types.json, ability_types.json in the UI
-- Save/Load: read and write all map files (terrain.bin, objects.json, manifest.json)
-- Test play: launch `uldum_dev` with current map as a separate process
-- No gameplay simulation (no combat, no AI, no scripts running)
-- No network
+### `uldum_pack` — packaging tool
 
-### `uldum_game` — Shipped Game
+- `uldum_pack pack <dir> <output> [--encrypt --key <secret>]`
+- `uldum_pack unpack <input> <dir> [--key <secret>]`
+- `uldum_pack list <input>`
+- Used by the build pipeline to produce `engine.uldpak` and `.uldmap` archives.
 
-What end users run. A specific game product.
+### `uldum_game` — shipped product runtime
 
-- Reads `game.json` for configuration (map path, window settings, title)
-- Loads exactly one map — the game's main map
-- Shows the map's custom UI (Lua-driven menus, HUD, etc.)
-- Connects to server (remote for multiplayer, in-process for single player)
+What end users run. Parameterized by a game project at build time:
+
+- Product name / window title → `game.json.name` + `game.json.window.title`
+- Exe name / Android applicationId → per game project (Windows: `<Name>.exe`; Android: `game.json.android.package_id`)
+- Bundled assets → `engine.uldpak` + the maps listed in `game.json.maps` + the project's `lobby/` + branding
 - No dev console, no debug overlay, no map switching
-- Release build: no validation layers, optimized
 
-A publisher ships:
-```
-MyGame/
-├── mygame.exe            (uldum_game, renamed)
-├── game.json             { "map": "maps/main.uldmap", "title": "My Game" }
-├── maps/main.uldmap/     game content
-└── engine/               shaders, engine scripts, default assets
-```
+## Game project folder layout
 
-### `uldum_server` — Dedicated Server
+A game project is a self-contained folder. The engine builds against it; the engine doesn't care where it lives on disk. Per-platform settings (Windows exe name, Android `applicationId`) are all config fields in `game.json` — there's no `windows/` or `android/` subfolder; folders only exist where there's actual content to hold.
 
-Headless multiplayer server.
-
-- No window, no renderer, no audio
-- Loads map, runs authoritative simulation at 32 Hz
-- Accepts client connections via ENet
-- Executes map Lua scripts (game logic, triggers, AI)
-- Reads server config from `game.json` or command-line args
-- Minimal platform layer (filesystem + networking only)
-
-## Library Architecture
+This repo's `sample_game/` is the reference:
 
 ```
-Shared libraries (all targets may link):
-  uldum_core          Types, math, logging, allocators
-  uldum_asset         Resource loading (glTF, KTX2, JSON)
-  uldum_map           Map format, terrain data, type definitions
-  uldum_simulation    ECS, units, pathfinding, combat, abilities
-  uldum_script        Lua VM, engine API bindings, triggers
-  uldum_network       ENet client/server, state sync
-  uldum_rhi           Vulkan 1.3 abstraction
-  uldum_render        Pipelines, terrain mesh, animation, particles, effects
-  uldum_audio         3D positional audio (miniaudio)
-
-Platform libraries (one per OS):
-  uldum_platform_windows    Win32 window, input, filesystem
-  uldum_platform_android    GameActivity, touch input, APK filesystem
-  uldum_platform_headless   No window, minimal filesystem (for server)
-
-Editor executable (not a library — only the editor target uses this code):
-  uldum_editor      ImGui panels, terrain tools, object tools, gizmos
+sample_game/
+  game.json                  product config — name, window, maps[], default_map, android{}
+  branding/
+    icon.png                 1024×1024, becomes .ico for Windows and Android launcher icons
+  maps/                      only the maps that ship with this product
+  keystore.properties        Android release-signing secrets (gitignored)
+  keystore.properties.example  committed template
 ```
 
-## Link Matrix
+`lobby/` will appear once the UI system (Phase 16) lands. Until then, the game auto-loads `default_map` on launch.
 
-```
-                    core asset map  sim  script net  rhi  render audio platform       imgui
-uldum_dev            *    *    *    *     *     *    *     *      *   windows
-uldum_editor         *    *    *    *                *     *          windows          *
-uldum_game           *    *    *    *     *     *    *     *      *   windows/android
-uldum_server         *    *    *    *     *     *                     headless
-```
-
-## Source Layout
-
-```
-src/
-├── core/              Platform-independent
-├── asset/             Platform-independent
-├── map/               Platform-independent
-├── simulation/        Platform-independent
-├── script/            Platform-independent
-├── network/           Platform-independent
-├── rhi/               Vulkan 1.3 (Windows + Android)
-├── render/            Platform-independent (uses rhi/)
-├── audio/             Platform-independent (miniaudio)
-│
-├── platform/
-│   ├── platform.h         Abstract interface
-│   ├── windows/           Win32 implementation
-│   ├── android/           GameActivity (future)
-│   └── headless/          Server stub (future)
-│
-├── editor/            Editor executable (ImGui tools + entry point)
-│   ├── main.cpp           uldum_editor entry point
-│   └── editor.h/cpp       Editor core, terrain tools, object tools
-│
-└── app/               Game engine + entry points
-    ├── engine.h/cpp       Shared engine core (init, tick, render, shutdown)
-    ├── dev_main.cpp       uldum_dev entry point
-    ├── game_main.cpp      uldum_game entry point (stub)
-    └── server_main.cpp    uldum_server entry point (stub)
-```
-
-## `game.json` — Game Configuration
+### `game.json` fields
 
 ```json
 {
-    "title": "My RTS Game",
-    "version": "1.0.0",
-    "map": "maps/main.uldmap",
+    "name": "Uldum Sample",
+    "version": "0.1.0",
     "window": {
+        "title": "Uldum Sample",
         "width": 1920,
-        "height": 1080,
-        "fullscreen": false
+        "height": 1080
     },
-    "server": {
-        "tick_rate": 32,
-        "max_players": 8,
-        "port": 7777
+    "default_port": 7777,
+    "maps": ["simple_map"],
+    "default_map": "maps/simple_map.uldmap",
+    "android": {
+        "package_id": "com.m1knight.uldum-sample",
+        "app_name": "Uldum Sample"
     }
 }
 ```
 
-Read by `uldum_game` at startup. `uldum_dev` ignores it (loads maps via command line or default). `uldum_server` reads map path and server config from it.
+- `maps` — list of map IDs. Each resolves to `<project>/maps/<id>.uldmap/`. Build script packs only these into the dist.
+- `default_map` — exe-relative path to the initial map at runtime. Relative to the shipped `.exe`'s working directory (always `maps/<id>.uldmap`).
+- `android.package_id` — the `com.m1knight.<name>` published identifier.
+- `android.app_name` — the app label shown on the Android launcher / task switcher.
 
-## Platform Matrix
+## Scripts
+
+All scripts live in `scripts/`. Engine scripts build the engine. Game scripts build a game project.
+
+### Engine scripts
+
+All build / test / asset-util scripts are PowerShell (`.ps1`). The helper at `scripts/_lib/vcvars.ps1` imports the MSVC x64 environment (via `vcvarsall.bat x64`) into the current PowerShell session; each build script dot-sources it.
+
+| Script | Builds | Packs |
+|---|---|---|
+| `build.ps1` | all engine targets | `engine.uldpak`, every map in `maps/` |
+| `build_dev.ps1` | `uldum_dev` only | `engine.uldpak`, every map in `maps/` |
+| `build_editor.ps1` | `uldum_editor` only | `engine.uldpak` |
+| `build_server.ps1` | `uldum_server` only | `engine.uldpak`, every map in `maps/` |
+| `test_multiplayer.ps1` | — (runtime) | Launches two `uldum_dev` instances (host + connect) against `maps/test_map.uldmap` |
+| `test_server.ps1` | — (runtime) | Launches `uldum_server` against a map in `maps/` |
+| `convert_skybox.py` | — (asset util) | EXR → KTX2 cubemap faces |
+| `png_to_ktx2.ps1` | — (asset util) | PNG → KTX2 |
+
+Output: `build/bin/`. Engine scripts never write to `dist/` and never touch a game project.
+
+### Game scripts
+
+| Script | Builds |
+|---|---|
+| `build_game.ps1 [<project-dir>]` | `uldum_game` parameterized by the project. Defaults to `sample_game/`. Output: `dist/<GameName>/<GameName>.exe` + `engine.uldpak` + `maps/` + `game.json` + icon. |
+| `build_android.ps1 [<project-dir>]` | Same input. Gradle build with injected `applicationId`, app label, icon, asset source. Output: `dist/<GameName>.apk`. Defaults to `sample_game/`. |
+
+Game scripts always take (or default to) a game project directory. They never build the engine in isolation — they orchestrate the engine build alongside game-specific assets.
+
+## Current state
+
+**Done:**
+- Engine build (`scripts\build.ps1`) produces `uldum_dev`, `uldum_editor`, `uldum_server`, `uldum_pack` + `engine.uldpak` + every `maps/*.uldmap/` packed into `build/bin/maps/`. Does **not** produce `uldum_game` — that's strictly a game-project output now.
+- `sample_game/` with `game.json`, `branding/icon.png` + committed `icon.ico` + committed Android launcher icons (`branding/android/mipmap-*/ic_launcher.png`), and `maps/simple_map.uldmap/` (flat 32×32 grass).
+- **Parameterized Windows build (`scripts\build_game.ps1 [<project>]`)** — per-project CMake build tree at `build/game-<project>/`; reads `game.json` via CMake's `file(READ ... JSON)`; exe renamed from `game.json.name` (whitespace stripped); icon embedded from `<project>/branding/icon.ico`; only maps listed in `game.json.maps` are packed. Output: `dist/<GameName>/<GameName>.exe` + `engine.uldpak` + `maps/` + `game.json`.
+- **Parameterized Android build (`scripts\build_android.ps1 [<project>]`)** — PowerShell extracts `android.package_id` / `android.app_name` / `version` from `game.json` and passes them to Gradle via `-P` properties. `applicationId`, `versionName`, and `android:label` (via manifest placeholder) are per-project. Launcher icons pulled from `<project>/branding/android/` via Gradle `sourceSets.res.srcDirs`. APK assets pre-staged by PowerShell (engine.uldpak + game.json + uldum_pack-packed maps). Output: `dist/<GameName>.apk`.
+- Android build depends on `scripts\build.ps1` having run (needs `build/bin/uldum_pack.exe` and `build/bin/engine.uldpak`).
+- File-logged runtime diagnostics: every log line is also written to `run.log` next to the exe, flushed on each write.
+
+**TODO (still part of Phase 15d):**
+1. Android-side `game.json` read — `android_main.cpp` currently uses `LaunchArgs` defaults at runtime; should read `game.json` from APK assets to honor `default_map` / `default_port` the way `uldum_game.exe` does on desktop.
+2. Lobby once Phase 16 UI lands — replace auto-load-default-map with a real main menu boot path.
+
+## Platform matrix
 
 | Target | Windows | Android | Linux (future) |
 |--------|---------|---------|----------------|
-| `uldum_dev` | .exe | - | - |
-| `uldum_editor` | .exe | - | - |
+| `uldum_dev` | .exe | — | — |
+| `uldum_editor` | .exe | — | — |
+| `uldum_server` | .exe | — | .elf |
+| `uldum_pack` | .exe | — | .elf |
 | `uldum_game` | .exe | .apk | .elf |
-| `uldum_server` | .exe | - | .elf |
-
-## Phased Rollout
-
-| Phase | Targets Available |
-|-------|-------------------|
-| Phase 9 (current) | `uldum_dev` only |
-| Phase 10 (Editor) | + `uldum_editor` |
-| Phase 12 (Network) | + `uldum_server` |
-| Phase 13 (Packaging) | + `uldum_game`, Android, game.json |

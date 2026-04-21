@@ -17,5 +17,5 @@ target_link_libraries(uldum_editor PRIVATE
     ole32
 )
 
-# Reuse shader and asset targets from app/
-add_dependencies(uldum_editor uldum_dev_shaders pack_assets)
+# Reuse shader + asset targets from app/ (engine-build path, where these exist).
+add_dependencies(uldum_editor uldum_dev_shaders pack_engine_maps)
