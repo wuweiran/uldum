@@ -42,6 +42,12 @@ if(ANDROID)
         log
         android
     )
+    # Gradle's `arguments += "-DULDUM_ANDROID_DEV=1"` sets a CMake cache
+    # variable, not a preprocessor macro. Propagate it explicitly so the
+    # `#ifdef ULDUM_ANDROID_DEV` branch in android_main.cpp actually fires.
+    if(ULDUM_ANDROID_DEV)
+        target_compile_definitions(uldum PRIVATE ULDUM_ANDROID_DEV)
+    endif()
 
 
 elseif(ULDUM_GAME_PROJECT_DIR)

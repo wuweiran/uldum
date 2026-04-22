@@ -2786,7 +2786,11 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
     if (!m_shadow_pipeline) return;
 
     glm::vec3 light_dir = m_sun_direction;
-    glm::vec3 scene_center{4096.0f, 4096.0f, 160.0f};
+    // World is centered on (0, 0). Shadow frustum is anchored at map center;
+    // radius is generous enough to wrap the biggest current map (test_map's
+    // 8192×8192 has ±4096 extent). TODO: derive scene_center/radius from the
+    // actual terrain bounds when terrain is set.
+    glm::vec3 scene_center{0.0f, 0.0f, 160.0f};
     f32 scene_radius = 5120.0f;
     glm::mat4 light_vp = compute_light_vp(light_dir, scene_center, scene_radius);
 

@@ -611,6 +611,7 @@ Topics scoped out of current phases — revisit when the time comes.
 
 - **Multi-lobby server** — today's `uldum_server` hosts one game per process. Multi-tenant support (lobby directory, browse / create / join) is deferred. Workaround: multiple server processes on different ports.
 - **LAN game discovery** — WC3-style auto-populated list of local hosts via UDP broadcast, so clients don't have to type an IP.
+- **Single-cascade view-frustum shadows** — current shadow pass uses a fixed world-space box (`scene_center`/`scene_radius` in `renderer.cpp`), which couples shadow quality to map size. Switch to camera-view-frustum-derived bounds so shadow quality is uniform regardless of map size.
 - Controller / gamepad input.
 - CJK / RTL text shaping (HarfBuzz).
 - Rich custom shader decorators (game-project art concern).
