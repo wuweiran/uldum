@@ -29,6 +29,7 @@ static f64 wall_time() {
 
 bool NetworkManager::init_offline() {
     m_mode = Mode::Offline;
+    m_phase = Phase::Lobby;   // so the slot-claim handler accepts edits
     m_connected = false;
     log::info(TAG, "NetworkManager initialized — mode=Offline");
     return true;
@@ -52,7 +53,8 @@ bool NetworkManager::init_host(u16 port, u32 max_players,
     m_transport = std::move(transport);
     m_mode = Mode::Host;
     m_connected = true;
-    log::info(TAG, "NetworkManager initialized — mode=Host, port={}", port);
+    m_phase = Phase::Lobby;   // lobby-first: host waits for Start click
+    log::info(TAG, "NetworkManager initialized — mode=Host, port={} (lobby)", port);
     return true;
 }
 
@@ -62,24 +64,153 @@ void NetworkManager::host_on_connect(u32 peer_id) {
 
 void NetworkManager::host_on_disconnect(u32 peer_id) {
     for (auto it = m_peers.begin(); it != m_peers.end(); ++it) {
-        if (it->peer_id == peer_id) {
-            u32 player_id = it->player.id;
-            log::info(TAG, "Player {} (peer {}) disconnected — waiting {:.0f}s for reconnect",
-                      player_id, peer_id, m_disconnect_timeout);
+        if (it->peer_id != peer_id) continue;
 
-            // Move to disconnected list (preserve known entities for reconnect)
-            m_disconnected.push_back({it->player, std::move(it->known_entities), m_disconnect_timeout});
-            m_peers.erase(it);
-
-            if (m_pause_on_disconnect && m_game_started) {
-                m_paused = true;
-                log::info(TAG, "Game paused — waiting for reconnect");
+        // Lobby-phase disconnect: just release any claimed slot and drop
+        // the peer. No reconnect bookkeeping since there's no game running.
+        if (m_phase == Phase::Lobby) {
+            bool changed = false;
+            for (auto& a : m_lobby.slots) {
+                if (a.occupant == SlotOccupant::Human && a.peer_id == peer_id) {
+                    a.occupant = SlotOccupant::Open;
+                    a.peer_id  = 0;
+                    a.display_name.clear();
+                    changed = true;
+                }
             }
-
-            if (on_player_disconnected) on_player_disconnected(player_id);
+            m_peers.erase(it);
+            if (changed) host_broadcast_lobby_state();
+            log::info(TAG, "Peer {} left lobby", peer_id);
             return;
         }
+
+        u32 player_id = it->player.id;
+        log::info(TAG, "Player {} (peer {}) disconnected — waiting {:.0f}s for reconnect",
+                  player_id, peer_id, m_disconnect_timeout);
+
+        m_disconnected.push_back({it->player, std::move(it->known_entities), m_disconnect_timeout});
+        m_peers.erase(it);
+
+        if (m_pause_on_disconnect && m_game_started) {
+            m_paused = true;
+            log::info(TAG, "Game paused — waiting for reconnect");
+        }
+
+        if (on_player_disconnected) on_player_disconnected(player_id);
+        host_broadcast_pause_state();
+        return;
     }
+}
+
+void NetworkManager::host_broadcast_lobby_state() {
+    // Host: broadcast to all peers. Offline: no wire traffic, just fire
+    // the local callback so UI-side listeners still see the update.
+    if (m_mode == Mode::Host && m_transport) {
+        auto msg = build_lobby_state(m_lobby);
+        m_transport->broadcast(msg, true);
+    }
+    if (on_lobby_state_changed) on_lobby_state_changed();
+}
+
+void NetworkManager::host_commit_start() {
+    if (m_mode != Mode::Host || m_phase != Phase::Lobby) return;
+
+    // Safety net — the UI gates Start on this too, but if something slips
+    // through, starting with seatless peers makes them zombie clients
+    // (no S_WELCOME, no spawn burst, empty world). Refuse.
+    if (!all_connected_peers_seated()) {
+        log::warn(TAG, "host_commit_start refused — {} connected peer(s) haven't claimed a slot",
+                  seatless_peer_count());
+        return;
+    }
+
+    // Bind each connected peer to its claimed slot.
+    for (auto& peer : m_peers) {
+        peer.loaded = false;
+        for (u32 i = 0; i < m_lobby.slots.size(); ++i) {
+            const auto& a = m_lobby.slots[i];
+            if (a.occupant == SlotOccupant::Human && a.peer_id == peer.peer_id) {
+                peer.player = simulation::Player{i};
+                break;
+            }
+        }
+    }
+    m_self_loaded = false;
+    m_phase = Phase::Loading;
+
+    auto msg = build_lobby_commit();
+    m_transport->broadcast(msg, true);
+    log::info(TAG, "Host committed lobby — {} peer(s) loading", m_peers.size());
+}
+
+void NetworkManager::host_finish_start() {
+    if (m_mode != Mode::Host || m_phase != Phase::Loading) return;
+
+    // S_WELCOME + spawn burst per seated peer, then broadcast S_START.
+    for (auto& peer : m_peers) {
+        if (!peer.player.is_valid()) continue;
+        auto welcome = build_welcome(peer.player.id,
+            static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
+        m_transport->send(peer.peer_id, welcome, true);
+        host_send_spawn_burst(peer);
+    }
+
+    auto msg = build_start();
+    m_transport->broadcast(msg, true);
+
+    m_game_started = true;
+    m_phase = Phase::Playing;
+    log::info(TAG, "Host finished start: game live");
+}
+
+void NetworkManager::mark_self_loaded() {
+    m_self_loaded = true;
+}
+
+bool NetworkManager::all_connected_peers_seated() const {
+    if (m_mode != Mode::Host) return true;
+    for (const auto& peer : m_peers) {
+        bool seated = false;
+        for (const auto& a : m_lobby.slots) {
+            if (a.occupant == SlotOccupant::Human && a.peer_id == peer.peer_id) {
+                seated = true; break;
+            }
+        }
+        if (!seated) return false;
+    }
+    return true;
+}
+
+u32 NetworkManager::seatless_peer_count() const {
+    if (m_mode != Mode::Host) return 0;
+    u32 count = 0;
+    for (const auto& peer : m_peers) {
+        bool seated = false;
+        for (const auto& a : m_lobby.slots) {
+            if (a.occupant == SlotOccupant::Human && a.peer_id == peer.peer_id) {
+                seated = true; break;
+            }
+        }
+        if (!seated) ++count;
+    }
+    return count;
+}
+
+bool NetworkManager::all_peers_loaded() const {
+    if (m_mode == Mode::Host) {
+        if (!m_self_loaded) return false;
+        for (const auto& p : m_peers) {
+            if (p.player.is_valid() && !p.loaded) return false;
+        }
+        return true;
+    }
+    return true;
+}
+
+void NetworkManager::send_load_done() {
+    if (m_mode != Mode::Client || !m_transport) return;
+    auto msg = build_load_done();
+    m_transport->send(0, msg, true);
 }
 
 void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
@@ -91,6 +222,7 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         ByteReader r(data);
         r.read_u8();  // skip type
         u32 client_hash = r.read_u32();
+        std::string peer_name = r.read_string();
 
         if (m_map_hash != 0 && client_hash != m_map_hash) {
             auto reject = build_reject(RejectReason::WrongMap);
@@ -99,19 +231,35 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             return;
         }
 
-        // Check if this is a reconnecting player
+        // Lobby phase: register the peer with no slot and send them the
+        // current lobby snapshot. Slot claims happen via C_CLAIM_SLOT.
+        if (m_phase == Phase::Lobby) {
+            // Register peer (no player slot yet; assigned at host_commit_start)
+            PeerInfo info{peer_id, simulation::Player{UINT32_MAX}, std::move(peer_name), {}};
+            m_peers.push_back(std::move(info));
+
+            auto assign = build_lobby_assign(peer_id);
+            m_transport->send(peer_id, assign, true);
+
+            auto state_msg = build_lobby_state(m_lobby);
+            m_transport->send(peer_id, state_msg, true);
+            log::info(TAG, "Peer {} joined lobby", peer_id);
+            return;
+        }
+
+        // Playing phase: reconnect path. Find a disconnected slot to
+        // restore; slot is not assigned fresh because lobby is already
+        // finalized.
         if (!m_disconnected.empty()) {
-            // Reconnect: assign to the first disconnected slot
             auto it = m_disconnected.begin();
             u32 slot = it->player.id;
-            PeerInfo info{peer_id, it->player, {}};
+            PeerInfo info{peer_id, it->player, std::move(peer_name), {}};
             m_disconnected.erase(it);
 
             auto welcome = build_welcome(slot,
                 static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
             m_transport->send(peer_id, welcome, true);
 
-            // Re-send full state
             m_peers.push_back(std::move(info));
             host_send_spawn_burst(m_peers.back());
 
@@ -126,30 +274,78 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             }
 
             log::info(TAG, "Player {} reconnected (peer {})", slot, peer_id);
+            host_broadcast_pause_state();
             return;
         }
 
-        // New player — assign slot
-        u32 slot = m_next_player_slot++;
-        PeerInfo info{peer_id, simulation::Player{slot}, {}};
+        // Playing phase with no disconnected slot waiting — nothing to
+        // assign. Reject.
+        log::warn(TAG, "Peer {} attempted to join a running game with no open slot", peer_id);
+        auto reject = build_reject(RejectReason::Started);
+        m_transport->send(peer_id, reject, true);
+        break;
+    }
 
-        auto welcome = build_welcome(slot,
-            static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
-        m_transport->send(peer_id, welcome, true);
+    case MsgType::C_CLAIM_SLOT: {
+        if (m_phase != Phase::Lobby) break;
+        u32 slot = parse_claim_or_release_slot(data);
+        if (slot >= m_lobby.slots.size()) break;
+        auto& a = m_lobby.slots[slot];
+        if (a.locked) break;
+        // Accept only if the slot isn't Human-claimed by someone else.
+        if (a.occupant == SlotOccupant::Human && a.peer_id != peer_id) break;
 
-        m_peers.push_back(std::move(info));
-        host_send_spawn_burst(m_peers.back());
+        // Look up the claiming peer's name.
+        std::string claimer_name;
+        if (peer_id == LOCAL_PEER) {
+            claimer_name = m_player_name.empty() ? "Host" : m_player_name;
+        } else {
+            for (const auto& p : m_peers) {
+                if (p.peer_id == peer_id) { claimer_name = p.player_name; break; }
+            }
+            if (claimer_name.empty()) claimer_name = "Player";
+        }
 
-        log::info(TAG, "Player {} assigned to peer {} ({}/{} players)",
-                  slot, peer_id, m_peers.size(), m_expected_players);
+        // Release any other slot currently claimed by this peer. Restore
+        // each one's manifest-declared base_name so the UI doesn't show
+        // an empty label.
+        for (auto& other : m_lobby.slots) {
+            if (&other != &a && other.occupant == SlotOccupant::Human &&
+                                 other.peer_id == peer_id) {
+                other.occupant     = SlotOccupant::Open;
+                other.peer_id      = 0;
+                other.display_name = other.base_name;
+            }
+        }
+        a.occupant     = SlotOccupant::Human;
+        a.peer_id      = peer_id;
+        a.display_name = claimer_name;
+        host_broadcast_lobby_state();
+        break;
+    }
 
-        // Check if all expected players have joined → start the game
-        if (!m_game_started && m_expected_players > 0 &&
-            m_peers.size() >= m_expected_players) {
-            m_game_started = true;
-            auto msg = build_start();
-            m_transport->broadcast(msg, true);
-            log::info(TAG, "All players connected — game started");
+    case MsgType::C_RELEASE_SLOT: {
+        if (m_phase != Phase::Lobby) break;
+        u32 slot = parse_claim_or_release_slot(data);
+        if (slot >= m_lobby.slots.size()) break;
+        auto& a = m_lobby.slots[slot];
+        if (a.occupant == SlotOccupant::Human && a.peer_id == peer_id && !a.locked) {
+            a.occupant     = SlotOccupant::Open;
+            a.peer_id      = 0;
+            a.display_name = a.base_name;
+            host_broadcast_lobby_state();
+        }
+        break;
+    }
+
+    case MsgType::C_LOAD_DONE: {
+        if (m_phase != Phase::Loading) break;
+        for (auto& p : m_peers) {
+            if (p.peer_id == peer_id) {
+                p.loaded = true;
+                log::info(TAG, "Peer {} finished loading", peer_id);
+                break;
+            }
         }
         break;
     }
@@ -323,8 +519,7 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
 }
 
 void NetworkManager::host_update_disconnected(f32 dt) {
-    if (m_disconnected.empty()) return;
-
+    bool changed = false;
     for (auto it = m_disconnected.begin(); it != m_disconnected.end(); ) {
         it->timer -= dt;
         if (it->timer <= 0) {
@@ -332,6 +527,7 @@ void NetworkManager::host_update_disconnected(f32 dt) {
             log::info(TAG, "Player {} reconnect timeout expired — dropped", player_id);
             if (on_player_dropped) on_player_dropped(player_id);
             it = m_disconnected.erase(it);
+            changed = true;
         } else {
             ++it;
         }
@@ -340,7 +536,39 @@ void NetworkManager::host_update_disconnected(f32 dt) {
     // Unpause if all disconnected players have been dropped
     if (m_paused && m_disconnected.empty()) {
         m_paused = false;
+        changed = true;
         log::info(TAG, "All disconnected players dropped — game resumed");
+    }
+
+    // Rebuild local view + broadcast. Events (disconnect / drop / unpause)
+    // broadcast immediately; otherwise re-broadcast once a second so clients
+    // see the countdown tick.
+    m_pause_broadcast_timer += dt;
+    bool periodic = (m_paused && m_pause_broadcast_timer >= 1.0f);
+    if (changed || periodic) {
+        m_pause_broadcast_timer = 0.0f;
+        host_broadcast_pause_state();
+    }
+}
+
+void NetworkManager::host_broadcast_pause_state() {
+    if (m_mode != Mode::Host) return;
+    m_disconnected_view.clear();
+    m_disconnected_view.reserve(m_disconnected.size());
+    for (const auto& d : m_disconnected) {
+        DisconnectedView v;
+        v.player_id = d.player.id;
+        v.display_name = (d.player.id < m_lobby.slots.size())
+            ? m_lobby.slots[d.player.id].display_name : std::string{};
+        v.seconds_remaining = d.timer;
+        m_disconnected_view.push_back(std::move(v));
+    }
+    m_pause_view_active = m_paused;
+    if (on_pause_state_changed) on_pause_state_changed();
+
+    if (m_transport) {
+        auto msg = build_pause_state(m_paused, m_disconnected_view);
+        m_transport->broadcast(msg, true);
     }
 }
 
@@ -374,14 +602,15 @@ bool NetworkManager::init_client(std::string_view address, u16 port) {
 
     m_transport = std::move(transport);
     m_mode = Mode::Client;
-    m_connected = false;  // true after S_WELCOME
+    m_phase = Phase::Lobby;
+    m_connected = false;  // flipped to true on S_LOBBY_ASSIGN (lobby) or S_WELCOME (legacy)
     log::info(TAG, "NetworkManager initialized — mode=Client, connecting to {}:{}", address, port);
     return true;
 }
 
 void NetworkManager::client_on_connect(u32 /*peer_id*/) {
-    log::info(TAG, "Connected to server, sending C_JOIN");
-    auto msg = build_join(m_map_hash);
+    log::info(TAG, "Connected to server, sending C_JOIN (name='{}')", m_player_name);
+    auto msg = build_join(m_map_hash, m_player_name);
     m_transport->send(0, msg, true);
 }
 
@@ -395,6 +624,23 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     auto type = peek_type(data);
 
     switch (type) {
+    case MsgType::S_LOBBY_ASSIGN: {
+        m_client_peer_id = parse_lobby_assign(data);
+        m_connected = true;
+        log::info(TAG, "Lobby: assigned peer id {}", m_client_peer_id);
+        break;
+    }
+    case MsgType::S_LOBBY_STATE: {
+        m_lobby = parse_lobby_state(data);
+        if (on_lobby_state_changed) on_lobby_state_changed();
+        break;
+    }
+    case MsgType::S_LOBBY_COMMIT: {
+        m_phase = Phase::Loading;
+        log::info(TAG, "Host committed lobby — entering Loading");
+        if (on_lobby_commit) on_lobby_commit();
+        break;
+    }
     case MsgType::S_WELCOME: client_handle_welcome(data); break;
     case MsgType::S_REJECT: {
         ByteReader r(data);
@@ -410,7 +656,9 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_UPDATE: client_handle_update(data); break;
     case MsgType::S_START:
         m_game_started = true;
+        m_phase = Phase::Playing;
         log::info(TAG, "Game started!");
+        if (on_lobby_start) on_lobby_start();
         break;
     case MsgType::S_END: {
         m_end_data = parse_end(data);
@@ -418,11 +666,41 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         log::info(TAG, "Game ended — winner: player {}", m_end_data.winner_id);
         break;
     }
+    case MsgType::S_PAUSE_STATE: {
+        auto ps = parse_pause_state(data);
+        m_pause_view_active  = ps.paused;
+        m_disconnected_view  = std::move(ps.disconnected);
+        if (on_pause_state_changed) on_pause_state_changed();
+        break;
+    }
     default:
         log::warn(TAG, "Client received unknown message type 0x{:02x}", static_cast<u8>(type));
         break;
     }
 }
+
+void NetworkManager::send_claim_slot(u32 slot) {
+    auto msg = build_claim_slot(slot);
+    if (m_mode == Mode::Host || m_mode == Mode::Offline) {
+        // Host/Offline mutate locally (and Host broadcasts). Route through
+        // host_on_receive with the LOCAL_PEER sentinel so the slot-bookkeeping
+        // logic lives in one place and never collides with real ENet peer ids
+        // (which start at 0). Offline skips the broadcast inside.
+        host_on_receive(LOCAL_PEER, msg);
+    } else if (m_mode == Mode::Client && m_transport) {
+        m_transport->send(0, msg, true);
+    }
+}
+
+void NetworkManager::send_release_slot(u32 slot) {
+    auto msg = build_release_slot(slot);
+    if (m_mode == Mode::Host || m_mode == Mode::Offline) {
+        host_on_receive(LOCAL_PEER, msg);
+    } else if (m_mode == Mode::Client && m_transport) {
+        m_transport->send(0, msg, true);
+    }
+}
+
 
 void NetworkManager::client_handle_welcome(std::span<const u8> data) {
     auto w = parse_welcome(data);
@@ -837,6 +1115,12 @@ void NetworkManager::shutdown() {
     m_peers.clear();
     m_connected = false;
     m_mode = Mode::Offline;
+    m_phase = Phase::None;
+    m_game_started = false;
+    m_game_ended = false;
+    m_client_peer_id = UINT32_MAX;
+    m_local_player = simulation::Player{UINT32_MAX};
+    m_lobby = LobbyState{};
 }
 
 } // namespace uldum::network

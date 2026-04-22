@@ -8,6 +8,7 @@
 #include "core/settings.h"
 #include "network/game_server.h"
 #include "network/network.h"
+#include "network/lobby.h"
 #include "input/command_system.h"
 #include "input/selection.h"
 #include "input/picking.h"
@@ -18,19 +19,19 @@
 #include <memory>
 #include <string>
 
-#ifdef ULDUM_SHELL_UI
-// Full include (not just forward-decl): game_main.cpp instantiates App with
-// an implicit destructor, which needs the complete ui::Shell type for
-// std::unique_ptr's deleter. shell.h is cheap — it forward-declares RmlUi
-// types, so no RmlUi headers leak into app.h.
-#include "ui/shell.h"
-#endif
+// Forward-declare UI types that App owns via unique_ptr. App's destructor
+// is defined out-of-line in app.cpp, so the header doesn't need complete
+// types — this lets dev_console.h / ui/shell.h include app.h in turn
+// without a cycle.
+namespace uldum::ui { class Shell; }
+namespace uldum { class DevConsole; }
 
 namespace uldum {
 
 enum class AppState {
-    Menu,       // waiting for session to start (dev: auto-starts)
-    Loading,    // loading map, creating game session
+    Menu,       // main menu / boot screen
+    Lobby,      // manifest loaded, slot assignment in progress
+    Loading,    // map content loading + waiting for all peers
     Playing,    // simulation running, rendering gameplay
     Results,    // game ended, showing stats
 };
@@ -40,12 +41,19 @@ struct LaunchArgs {
     std::string connect_address;
     std::string map_path = "maps/test_map.uldmap";
     u16 port = 7777;
+    // Which slot the local user occupies. Set by the lobby at Start time;
+    // drives renderer / selection / fog viewer and GameServer slot claim.
+    u32 local_slot = 0;
+    // True when CLI flags (`--map`) asked to skip the menu and start a
+    // session directly. Menu → Lobby → Loading → Playing runs without UI.
+    bool auto_start = false;
 };
 
 class App {
 public:
-    App() = default;
-    ~App() = default;
+    App();
+    ~App();  // out-of-line (app.cpp) so header only needs forward-decls
+             // of DevConsole / Shell — see top of file.
 
     // One-time init of persistent engine subsystems (platform, RHI, renderer, audio, asset).
     bool init(const LaunchArgs& args = {});
@@ -58,7 +66,18 @@ public:
 
 private:
     // ── Session lifecycle ────────────────────────────────────────────────
-    // Per-game: load map, create GameServer + Network, wire callbacks.
+    // Enter Lobby: loads map (manifest, types, terrain, preplaced), brings
+    // up the network (listener/connector for Host/Client, offline stub for
+    // Offline), and seeds m_network.lobby_state() so the dev UI can show
+    // slot assignments. Simulation is initialized but not yet "active"
+    // (no tick, no input wiring, no S_START).
+    bool enter_lobby();
+    // Exit Lobby back to Menu without ever starting a session. Symmetric
+    // to enter_lobby — tears down the map-side state only.
+    void leave_lobby();
+    // Start the game from the lobby. Preconditions: enter_lobby() succeeded
+    // and m_network.lobby_state() is populated (all slots non-Open,
+    // m_args.local_slot set).
     bool start_session();
     // Tear down per-session state. Safe to call start_session() again after.
     void end_session();
@@ -93,6 +112,11 @@ private:
     std::unique_ptr<ui::Shell> m_shell;
 #endif
 
+#ifdef ULDUM_DEV_UI
+    // uldum_dev only. ImGui-based dev console — map picker, session controls.
+    std::unique_ptr<DevConsole> m_dev_console;
+#endif
+
     // ── Per-session (created in start_session, destroyed in end_session) ─
     network::GameServer      m_server;
     network::NetworkManager  m_network;
@@ -103,6 +127,12 @@ private:
     std::unique_ptr<input::InputPreset> m_input_preset;
     map::MapManager          m_map;
     bool                     m_session_active = false;
+
+    // Whether enter_lobby() has prepared a session. The LobbyState itself
+    // lives on NetworkManager (authoritative for Host; mirrored for Client;
+    // host-like local-only for Offline) so that wire traffic and local edits
+    // both mutate the same struct.
+    bool                     m_lobby_active = false;
 };
 
 } // namespace uldum

@@ -9,7 +9,7 @@
     "fog_of_war": "none",
 
     "players": [
-        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" }
+        { "team": 0, "color": "red" }
     ],
     "teams": [
         { "id": 0, "name": "Players", "allied": true, "shared_vision": true }

@@ -27,8 +27,8 @@
     },
 
     "players": [
-        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" },
-        { "slot": 1, "type": "computer", "team": 1, "name": "Creeps", "color": "green" }
+        { "team": 0, "color": "red" },
+        { "team": 1, "color": "green" }
     ],
     "teams": [
         { "id": 0, "name": "Players", "allied": true, "shared_vision": true },

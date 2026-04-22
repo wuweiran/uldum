@@ -572,7 +572,7 @@ Build targets, cross-platform packaging, and asset baking.
   - Android NDK + Gradle wrapper at `android/`, engine as `libuldum_game.so`
   - `src/platform/android/` — GameActivity, Vulkan surface, lifecycle
   - APK-bundled assets via `AAssetManager` (new mount kind)
-  - Touch input and mobile UI are Phase 16c, not here
+  - Touch input and mobile UI are Phase 16d, not here
 - **Linux** and **iOS** deferred. Release signing / AAB / Play Console deferred.
 
 ### Phase 16 — UI System
@@ -587,11 +587,10 @@ Two systems: **Shell UI** (RmlUi, menus / game-room / settings / results) and **
 - Smoke test: trivial RML doc renders on Windows + Android.
 - `ImGui` stays for dev tools — no conflict.
 
-**Phase 16b — sample_game shell screens**
-- Skeleton-only (flat colors, default font, no polish) — demonstrates the architecture:
-  - Main menu → game room → loading → in-session → results → menu
-  - Settings overlay (accessible during session via Esc)
-- RML + RCSS under `sample_game/shell/`. Lua callbacks wire button events to engine actions (`start_session`, `end_session`, …). Hot-reload, no rebuild.
+**Phase 16b — sample_game shell screens + game lobby**
+- Skeleton-only (flat colors, default font, no polish): main menu → game lobby → loading → in-session → results → menu, plus a settings overlay.
+- RML + RCSS under `sample_game/shell/`, Lua button callbacks; hot-reload, no rebuild.
+- Game lobby lives in both Shell UI and dev UI: per-team slot table, host is authoritative, host's Start commits. Manifest slots carry `{team, color, type?, name?}`; `"type": "computer"` is a map-locked AI. See `docs/network.md` for the lobby protocol and `Simulation::get_player_name` / Lua `GetPlayerName` for name exposure.
 - Dev APK's Android map picker = same Shell pipeline, auto-populated from bundled test maps.
 
 **Phase 16c — HUD system (custom, Lua-driven)**
@@ -606,8 +605,12 @@ Two systems: **Shell UI** (RmlUi, menus / game-room / settings / results) and **
 - RCSS sizing rules for mobile tap targets.
 - IME plumbing for text-entry fields — deferred until needed.
 
-### Out of scope for Phase 16
+## 16. Deferred / Future Work
 
+Topics scoped out of current phases — revisit when the time comes.
+
+- **Multi-lobby server** — today's `uldum_server` hosts one game per process. Multi-tenant support (lobby directory, browse / create / join) is deferred. Workaround: multiple server processes on different ports.
+- **LAN game discovery** — WC3-style auto-populated list of local hosts via UDP broadcast, so clients don't have to type an IP.
 - Controller / gamepad input.
 - CJK / RTL text shaping (HarfBuzz).
 - Rich custom shader decorators (game-project art concern).

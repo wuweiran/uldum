@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 15d in progress. Android port done; game-project split under way.
+Phase 16b complete. Next up: Phase 16c (HUD system — custom, Lua-driven in-game widgets).
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -188,7 +188,6 @@ Phase 15d in progress. Android port done; game-project split under way.
     - `build_game.ps1` — build uldum_game only
     - `build_server.ps1` — build uldum_server only
     - `build_editor.ps1` — build uldum_editor only
-  - Test scripts: `test_multiplayer.ps1`, `test_server.ps1`
 - Packaging (Phase 15b):
   - `.uldpak` — engine asset archive (`engine.uldpak`)
   - `.uldmap` — map asset archive (e.g. `maps/test_map.uldmap`)

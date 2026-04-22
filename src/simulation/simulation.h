@@ -7,6 +7,8 @@
 #include "simulation/spatial_query.h"
 #include "simulation/fog_of_war.h"
 
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace uldum::asset { class AssetManager; }
@@ -74,6 +76,15 @@ public:
     // Query: does player_a share vision with player_b?
     bool has_shared_vision(Player a, Player b) const;
 
+    // Per-player names. Indexed by Player.id; empty string for unknown ids.
+    // Populated by App::start_session from the finalized lobby, surfaced to
+    // Lua via GetPlayerName(player).
+    void set_player_names(std::vector<std::string> names) { m_player_names = std::move(names); }
+    std::string_view get_player_name(Player p) const {
+        if (p.id < m_player_names.size()) return m_player_names[p.id];
+        return {};
+    }
+
     const map::TerrainData* terrain() const { return m_terrain; }
 
 private:
@@ -88,6 +99,8 @@ private:
     // Alliance table: m_alliances[a * m_player_count + b] = flags from a toward b
     std::vector<AllianceFlags> m_alliances;
     u32 m_player_count = 0;
+
+    std::vector<std::string> m_player_names;
 };
 
 } // namespace uldum::simulation

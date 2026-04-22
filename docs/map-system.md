@@ -117,10 +117,10 @@ A simple melee map has one scene. Complex maps (RPGs, campaigns) use multiple sc
         "image": "assets/textures/loading.ktx2"
     },
     "players": [
-        { "slot": 0, "type": "human", "team": 0, "name": "Player 1", "color": "red" },
-        { "slot": 1, "type": "human", "team": 1, "name": "Player 2", "color": "blue" },
-        { "slot": 2, "type": "computer", "team": 0, "name": "Computer 1", "color": "teal" },
-        { "slot": 3, "type": "computer", "team": 1, "name": "Computer 2", "color": "purple" }
+        { "slot": 0, "team": 0, "color": "red" },
+        { "slot": 1, "team": 1, "color": "blue" },
+        { "slot": 2, "team": 0, "color": "teal" },
+        { "slot": 3, "team": 1, "color": "purple" }
     ],
     "teams": [
         { "id": 0, "name": "Sentinels", "allied": true, "shared_vision": true },

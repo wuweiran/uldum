@@ -14,12 +14,15 @@ namespace uldum::simulation { class Simulation; struct World; }
 
 namespace uldum::map {
 
+// Player-slot declaration. The map declares the slot's team topology, color,
+// and — optionally — whether the slot is a locked computer player. Array
+// index into MapManifest::players is the player id; there is no separate
+// slot number. Default (no `type`) means "lobby-decided human or open".
 struct PlayerSlot {
-    u32         slot = 0;
-    std::string type;   // "human", "computer", "open"
     u32         team = 0;
-    std::string name;
     std::string color;
+    std::string type;   // "" (lobby-decided) or "computer" (map-locked AI)
+    std::string name;   // placeholder name; required for computer slots
 };
 
 struct TeamDef {
@@ -171,8 +174,22 @@ public:
     //     consume shipped packages.
     //   - true:            `path` may also be a directory on disk (loose files).
     //     Only uldum_editor uses this, so it can edit the source tree live.
+    //
+    // Equivalent to `load_manifest_only(...) && load_content(...)`.
     bool load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim,
                   bool allow_directory = false);
+
+    // Lobby-phase load: mounts the map and parses only `manifest.json`. Fast
+    // enough to run on Menu → Lobby transition without a loading screen. Does
+    // not populate the simulation or load terrain. Call `load_content` later
+    // (on Start / Loading state) to actually bring the map online.
+    bool load_manifest_only(std::string_view path, asset::AssetManager& assets,
+                            bool allow_directory = false);
+
+    // Loading-phase load: tileset, types, terrain, preplaced objects. Assumes
+    // `load_manifest_only` (or `load_map`) has already mounted the map.
+    bool load_content(asset::AssetManager& assets, simulation::Simulation& sim);
+
     void unload_map();
     bool is_loaded() const { return m_loaded; }
 

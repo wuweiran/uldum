@@ -4,18 +4,16 @@
 #include <cstring>
 #include <string>
 
+// WC3-style CLI: `uldum_dev --map <path>` auto-starts an offline game of
+// that map. Any other launch drops the user in the dev-console menu to
+// pick a map and/or configure multiplayer.
 static uldum::LaunchArgs parse_args(int argc, char* argv[]) {
     uldum::LaunchArgs args;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--host") == 0) {
-            args.net_mode = uldum::network::Mode::Host;
-        } else if (std::strcmp(argv[i], "--connect") == 0 && i + 1 < argc) {
-            args.net_mode = uldum::network::Mode::Client;
-            args.connect_address = argv[++i];
-        } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-            args.port = static_cast<uldum::u16>(std::stoi(argv[++i]));
-        } else if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
-            args.map_path = argv[++i];
+        if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
+            args.map_path   = argv[++i];
+            args.net_mode   = uldum::network::Mode::Offline;
+            args.auto_start = true;
         }
     }
     return args;

@@ -20,14 +20,11 @@ void MapManager::shutdown() {
     log::info(TAG, "MapManager shut down");
 }
 
-bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim,
-                          bool allow_directory) {
+bool MapManager::load_manifest_only(std::string_view path, asset::AssetManager& assets,
+                                    bool allow_directory) {
     unload_map();
-    sim.world().clear_entities();
     m_map_root = std::string(path);
 
-    // Mount the map. m_map_root (e.g. "maps/test_map.uldmap") is both the
-    // filesystem location and the virtual prefix for asset keys.
     bool is_dir = std::filesystem::is_directory(std::filesystem::path(m_map_root));
     if (is_dir) {
         if (!allow_directory) {
@@ -43,13 +40,29 @@ bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, si
     }
 
     if (!load_manifest(assets)) return false;
+    log::info(TAG, "Map '{}' manifest loaded (lobby-phase)", m_manifest.name);
+    return true;
+}
+
+bool MapManager::load_content(asset::AssetManager& assets, simulation::Simulation& sim) {
+    if (m_map_root.empty()) {
+        log::error(TAG, "load_content called before load_manifest_only");
+        return false;
+    }
+    sim.world().clear_entities();
     if (!load_tileset(assets)) return false;
     if (!load_types(assets, sim)) return false;
     if (!load_scene(m_manifest.start_scene, assets, sim)) return false;
 
     m_loaded = true;
-    log::info(TAG, "Map '{}' loaded — scene '{}'", m_manifest.name, m_manifest.start_scene);
+    log::info(TAG, "Map '{}' content loaded — scene '{}'", m_manifest.name, m_manifest.start_scene);
     return true;
+}
+
+bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim,
+                          bool allow_directory) {
+    return load_manifest_only(path, assets, allow_directory)
+        && load_content(assets, sim);
 }
 
 void MapManager::unload_map() {
@@ -111,11 +124,10 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
     if (j.contains("players")) {
         for (auto& p : j["players"]) {
             PlayerSlot slot;
-            slot.slot  = p.value("slot", 0u);
-            slot.type  = p.value("type", "human");
             slot.team  = p.value("team", 0u);
-            slot.name  = p.value("name", "");
             slot.color = p.value("color", "");
+            slot.type  = p.value("type", "");
+            slot.name  = p.value("name", "");
             m_manifest.players.push_back(std::move(slot));
         }
     }

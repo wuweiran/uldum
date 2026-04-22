@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 #include "input/command.h"
+#include "network/lobby.h"
 
 #include <glm/vec3.hpp>
 
@@ -15,22 +16,51 @@ namespace uldum::network {
 
 // ── Message type IDs ──────────────────────────────────────────────────────
 
+// Numbering convention: top nibble is the category, so a stray `0x5X` in
+// a packet log is immediately readable as "server entity sync". Gaps inside
+// each block leave room for future message types without re-shuffling.
+//
+//   0x0X  client → server, lobby
+//   0x1X  client → server, playing
+//   0x2X  client → server, any phase
+//   0x4X  server → client, lobby / pre-game
+//   0x5X  server → client, playing / entity sync
+//   0x6X  server → client, playing / session events
 enum class MsgType : u8 {
-    // Client → Server
-    C_JOIN   = 0x01,
-    C_ORDER  = 0x02,
-    C_LEAVE  = 0x03,
+    // ── Client → Server ──
 
-    // Server → Client
-    S_WELCOME = 0x10,
-    S_REJECT  = 0x11,
-    S_SPAWN   = 0x20,
-    S_DESTROY = 0x21,
-    S_STATE   = 0x30,
-    S_SOUND   = 0x31,
-    S_UPDATE  = 0x32,   // on-change: attribute, state, or ability update
-    S_START   = 0x40,   // all players connected, game begins
-    S_END     = 0x41,   // game over, includes results
+    // Lobby
+    C_JOIN          = 0x01,
+    C_CLAIM_SLOT    = 0x02,
+    C_RELEASE_SLOT  = 0x03,
+    C_LOAD_DONE     = 0x04,
+
+    // Playing
+    C_ORDER         = 0x10,
+
+    // Any phase
+    C_LEAVE         = 0x20,
+
+    // ── Server → Client ──
+
+    // Lobby / pre-game
+    S_REJECT        = 0x40,
+    S_LOBBY_ASSIGN  = 0x41,   // tells a newly-joined peer its peer_id
+    S_LOBBY_STATE   = 0x42,   // full lobby snapshot (broadcast on change)
+    S_LOBBY_COMMIT  = 0x43,   // host locked the lobby — start loading the map
+    S_WELCOME       = 0x44,   // bridge: final player_id, sent at end of Loading
+
+    // Playing — entity sync
+    S_SPAWN         = 0x50,
+    S_DESTROY       = 0x51,
+    S_STATE         = 0x52,
+    S_UPDATE        = 0x53,   // on-change: attribute, state, or ability update
+    S_SOUND         = 0x54,
+
+    // Playing — session events
+    S_START         = 0x60,   // all players loaded, game begins
+    S_END           = 0x61,   // game over, includes results
+    S_PAUSE_STATE   = 0x62,   // mid-game: list of disconnected players + timers
 };
 
 enum class RejectReason : u8 {
@@ -102,10 +132,11 @@ inline MsgType peek_type(std::span<const u8> data) {
 
 // ── Client → Server ──────────────────────────────────────────────────────
 
-inline std::vector<u8> build_join(u32 map_hash) {
+inline std::vector<u8> build_join(u32 map_hash, std::string_view player_name) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::C_JOIN));
     w.write_u32(map_hash);
+    w.write_string(player_name);
     return std::move(w.data());
 }
 
@@ -400,10 +431,134 @@ inline SoundData parse_sound(std::span<const u8> data) {
     return s;
 }
 
+// ── Lobby messages ───────────────────────────────────────────────────────
+
+inline std::vector<u8> build_claim_slot(u32 slot) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::C_CLAIM_SLOT));
+    w.write_u32(slot);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_release_slot(u32 slot) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::C_RELEASE_SLOT));
+    w.write_u32(slot);
+    return std::move(w.data());
+}
+
+inline u32 parse_claim_or_release_slot(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    return r.read_u32();
+}
+
+inline std::vector<u8> build_load_done() {
+    return {static_cast<u8>(MsgType::C_LOAD_DONE)};
+}
+
+inline std::vector<u8> build_lobby_commit() {
+    return {static_cast<u8>(MsgType::S_LOBBY_COMMIT)};
+}
+
+inline std::vector<u8> build_lobby_assign(u32 peer_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_LOBBY_ASSIGN));
+    w.write_u32(peer_id);
+    return std::move(w.data());
+}
+
+inline u32 parse_lobby_assign(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    return r.read_u32();
+}
+
+inline std::vector<u8> build_lobby_state(const LobbyState& s) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_LOBBY_STATE));
+    w.write_string(s.map_path);
+    w.write_string(s.map_name);
+    w.write_u16(static_cast<u16>(s.slots.size()));
+    for (const auto& a : s.slots) {
+        w.write_u32(a.team);
+        w.write_string(a.color);
+        w.write_u8(static_cast<u8>(a.occupant));
+        w.write_bool(a.locked);
+        w.write_u32(a.peer_id);
+        w.write_string(a.display_name);
+    }
+    return std::move(w.data());
+}
+
+inline LobbyState parse_lobby_state(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    LobbyState s;
+    s.map_path = r.read_string();
+    s.map_name = r.read_string();
+    u16 n = r.read_u16();
+    s.slots.resize(n);
+    for (u16 i = 0; i < n; ++i) {
+        auto& a = s.slots[i];
+        a.team = r.read_u32();
+        a.color = r.read_string();
+        a.occupant = static_cast<SlotOccupant>(r.read_u8());
+        a.locked = r.read_bool();
+        a.peer_id = r.read_u32();
+        a.display_name = r.read_string();
+    }
+    return s;
+}
+
 // ── Session messages ─────────────────────────────────────────────────────
 
 inline std::vector<u8> build_start() {
     return {static_cast<u8>(MsgType::S_START)};
+}
+
+// Mid-game pause snapshot. Host broadcasts to all clients so everyone sees
+// the same "Player X disconnected, 57s remaining" dialog. Sent on every
+// change (disconnect / reconnect / drop) and once per second while paused
+// so clients see the countdown.
+struct DisconnectedView {
+    u32         player_id;
+    std::string display_name;
+    f32         seconds_remaining;
+};
+
+inline std::vector<u8> build_pause_state(bool paused, const std::vector<DisconnectedView>& list) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_PAUSE_STATE));
+    w.write_bool(paused);
+    w.write_u16(static_cast<u16>(list.size()));
+    for (const auto& d : list) {
+        w.write_u32(d.player_id);
+        w.write_string(d.display_name);
+        w.write_f32(d.seconds_remaining);
+    }
+    return std::move(w.data());
+}
+
+struct PauseState {
+    bool                          paused = false;
+    std::vector<DisconnectedView> disconnected;
+};
+
+inline PauseState parse_pause_state(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    PauseState s;
+    s.paused = r.read_bool();
+    u16 n = r.read_u16();
+    s.disconnected.resize(n);
+    for (u16 i = 0; i < n; ++i) {
+        auto& d = s.disconnected[i];
+        d.player_id         = r.read_u32();
+        d.display_name      = r.read_string();
+        d.seconds_remaining = r.read_f32();
+    }
+    return s;
 }
 
 // S_END carries a winner player ID and a Lua-defined stats table serialized as JSON string.

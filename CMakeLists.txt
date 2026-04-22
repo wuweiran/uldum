@@ -80,5 +80,13 @@ if(ULDUM_GAME_PROJECT_DIR AND NOT ANDROID)
     set(ULDUM_SHELL_UI TRUE)
 endif()
 
+# Dev UI (ImGui-based map picker / session controls) is compiled into the
+# desktop `uldum_dev` target only. Engine-dev-only iteration tool — not in
+# editor (has its own ImGui), not in game (Shell UI), not in server (headless),
+# not on Android (dev flavor uses a different flow).
+if(NOT ANDROID AND NOT ULDUM_GAME_PROJECT_DIR)
+    set(ULDUM_DEV_UI TRUE)
+endif()
+
 add_subdirectory(third_party)
 add_subdirectory(src)

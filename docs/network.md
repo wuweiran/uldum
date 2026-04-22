@@ -59,13 +59,21 @@ Phase 13b uses **ENet** (reliable/unreliable UDP):
 
 All messages are binary with a 1-byte type header. No FlatBuffers — messages are simple fixed-size records.
 
+Message IDs are organized by top-nibble category: client/server direction + phase. Gaps in each block leave room for future messages.
+
 ### Client → Server
 
 | Type | ID | Reliability | Content |
 |---|---|---|---|
-| `C_JOIN` | 0x01 | reliable | `u32 map_hash` — verify same map |
-| `C_ORDER` | 0x02 | reliable | `u8 order_type, u32 target_id, f32 x, f32 y, u8 unit_count, u32[] unit_ids` |
-| `C_LEAVE` | 0x03 | reliable | (empty) |
+| **Lobby** | | | |
+| `C_JOIN` | 0x01 | reliable | `u32 map_hash, string player_name` — verify map + identify player |
+| `C_CLAIM_SLOT` | 0x02 | reliable | `u32 slot` — claim slot as Human (me) |
+| `C_RELEASE_SLOT` | 0x03 | reliable | `u32 slot` — release my claim |
+| `C_LOAD_DONE` | 0x04 | reliable | (empty) — map content finished loading |
+| **Playing** | | | |
+| `C_ORDER` | 0x10 | reliable | serialized `GameCommand` — unit order |
+| **Any phase** | | | |
+| `C_LEAVE` | 0x20 | reliable | (empty) — clean disconnect |
 
 `C_ORDER` is a serialized `GameCommand`. The server validates ownership (the commanding player must own the units) before executing.
 
@@ -73,14 +81,39 @@ All messages are binary with a 1-byte type header. No FlatBuffers — messages a
 
 | Type | ID | Reliability | Content |
 |---|---|---|---|
-| `S_WELCOME` | 0x10 | reliable | `u32 player_id, u32 player_count, u32 tick_rate` |
-| `S_REJECT` | 0x11 | reliable | `u8 reason` (0=full, 1=wrong map, 2=started) |
-| `S_SPAWN` | 0x20 | reliable | `u32 entity_id, u32 type_hash, u8 owner, f32 x, f32 y, f32 facing` |
-| `S_DESTROY` | 0x21 | reliable | `u32 entity_id` |
-| `S_STATE` | 0x30 | unreliable | `u32 tick, u16 count, EntityState[]` — see below |
-| `S_SOUND` | 0x31 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
-| `S_START` | 0x40 | reliable | (empty) — all players connected, game begins |
-| `S_END` | 0x41 | reliable | `u32 winner_id, u16 stats_len, char[] stats_json` |
+| **Lobby / pre-game** | | | |
+| `S_REJECT` | 0x40 | reliable | `u8 reason` (0=full, 1=wrong map, 2=started) |
+| `S_LOBBY_ASSIGN` | 0x41 | reliable | `u32 peer_id` — sent once on lobby join so the client knows which rows are "mine" |
+| `S_LOBBY_STATE` | 0x42 | reliable | full snapshot of the lobby (map + slot table) |
+| `S_LOBBY_COMMIT` | 0x43 | reliable | (empty) — host locked the lobby, enter Loading |
+| `S_WELCOME` | 0x44 | reliable | `u32 player_id, u32 player_count, u32 tick_rate` — sent at end of Loading with the peer's finalized slot |
+| **Playing — entity sync** | | | |
+| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, u32 type_hash, u8 owner, f32 x, f32 y, f32 facing` |
+| `S_DESTROY` | 0x51 | reliable | `u32 entity_id` |
+| `S_STATE` | 0x52 | unreliable | `u32 tick, u16 count, EntityState[]` — see below |
+| `S_UPDATE` | 0x53 | reliable | on-change attribute / state / ability delta |
+| `S_SOUND` | 0x54 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
+| **Playing — session events** | | | |
+| `S_START` | 0x60 | reliable | (empty) — all players loaded, game begins |
+| `S_END` | 0x61 | reliable | `u32 winner_id, u16 stats_len, char[] stats_json` |
+| `S_PAUSE_STATE` | 0x62 | reliable | mid-game disconnect snapshot — see below |
+
+### LobbyState snapshot (S_LOBBY_STATE payload)
+
+```
+string  map_path
+string  map_name
+u16     slot_count
+for each slot (array index = player id):
+  u32    team
+  string color
+  u8     occupant   (0=Open, 1=Computer, 2=Human)
+  bool   locked     (true for map-declared Computer slots)
+  u32    peer_id    (valid iff occupant=Human)
+  string display_name
+```
+
+Host is authoritative: on every mutation (claim / release / peer join or leave) host broadcasts a fresh `S_LOBBY_STATE`. Clients mirror.
 
 ### EntityState (per-entity in S_STATE)
 
@@ -164,14 +197,21 @@ The remote client sees the result of its command after one round trip (~2 ticks 
 ## Session Lifecycle
 
 ```
-Host starts (--host)      → listening, simulation paused
-Clients connect (--connect) → C_JOIN → S_WELCOME → S_SPAWN burst
-All expected players joined → S_START broadcast → simulation begins ticking
-  ... gameplay ...
-Lua calls EndGame(winner, stats) → S_END broadcast → session over
+Host starts lobby    → listening on port, m_phase=Lobby
+Clients connect      → C_JOIN(map_hash, player_name) → S_LOBBY_ASSIGN + S_LOBBY_STATE
+Peers pick slots     → C_CLAIM_SLOT / C_RELEASE_SLOT → host mutates → S_LOBBY_STATE broadcast
+Host presses Start   → host_commit_start:
+                          bind each peer.player to its claimed slot
+                          S_WELCOME + S_SPAWN burst per peer
+                          S_START broadcast
+                          m_phase=Playing
+Simulation ticks     → S_STATE broadcast per tick
+Lua calls EndGame    → S_END broadcast → session over
 ```
 
-The host reads expected player count from the map manifest. Simulation does not tick until all players connect. Offline mode skips all of this — simulation starts immediately.
+A `NetworkManager::Phase` flag (`None / Lobby / Playing`) gates which incoming messages are honored. Offline mode skips all of this — simulation starts immediately.
+
+The dedicated `uldum_server` auto-commits Start the moment all slots are filled (no UI to press a button). Multi-lobby support on the server process is deferred; see the "Deferred / Future Work" section in [design.md](design.md).
 
 ## Reconnect
 
@@ -200,27 +240,6 @@ EndGame(0, '{"kills": 15, "time": 302}')
 
 The engine fires `on_game_end` event (for triggers), then broadcasts `S_END` with the winner ID and a JSON stats string. The stats format is entirely map-defined — the engine just passes it through.
 
-## Session Lifecycle
-
-The game supports two hosting models:
-
-**Host mode** (local host + client):
-1. Host creates game session (loads map, inits simulation)
-2. Host joins as player 0 (local, auto-ready)
-3. Client connects → server assigns next slot (player 1)
-4. Client auto-ready
-5. All joiners ready → host broadcasts S_START
-
-**Dedicated server** (headless `uldum_server`):
-1. Server starts, loads map from game.json
-2. Client 0 connects → assigned player 0, auto-ready
-3. Client 1 connects → assigned player 1, auto-ready
-4. All joiners ready → server broadcasts S_START
-
-Key design points:
-- Player slot assignment starts at 0 for dedicated server, 1 for host (host is player 0)
-- Game starts when connected peers >= expected players (auto-start, no UI yet)
-- Future (Phase 16 Shell UI): explicit CREATE_SESSION, JOIN, READY messages from the game-room screen; host/server decides when to start
 - Server can serve one game at a time (multi-game deferred)
 
 ## Future Work

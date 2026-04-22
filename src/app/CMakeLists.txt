@@ -165,6 +165,11 @@ else()
     )
     target_include_directories(uldum_dev PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum_dev PRIVATE ${ULDUM_ENGINE_LIBS})
+    if(ULDUM_DEV_UI)
+        target_sources(uldum_dev PRIVATE dev_console.cpp)
+        target_link_libraries(uldum_dev PRIVATE imgui)
+        target_compile_definitions(uldum_dev PRIVATE ULDUM_DEV_UI)
+    endif()
     compile_shaders(uldum_dev
         ${ULDUM_ROOT}/engine/shaders
         ${ULDUM_ENGINE_STAGING}/shaders

@@ -2,6 +2,7 @@
 #include "map/map.h"
 #include "network/game_server.h"
 #include "network/network.h"
+#include "network/lobby.h"
 #include "input/command_system.h"
 #include "core/log.h"
 
@@ -103,8 +104,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Dedicated server: all players are remote, slots start at 0
-    network.set_expected_players(max_players);
+    // Dedicated server is authoritative-but-not-playing: populate the lobby
+    // from the manifest with every slot left Open. Clients claim slots via
+    // their dev-UI lobby; the server auto-commits Start once all slots are
+    // filled (no one on the server presses a Start button).
+    uldum::network::init_lobby_from_manifest(network.lobby_state(), args.map_path, map.manifest());
+
     // Set map hash so clients are validated (FNV-1a, same as App)
     {
         std::string hash_str = map.manifest().name + map.manifest().version;
@@ -133,6 +138,27 @@ int main(int argc, char* argv[]) {
 
         // Network receive
         network.update(frame_dt);
+
+        // Auto-commit the lobby when it's fully claimed and every connected
+        // peer has seated themselves. Server has no UI to press Start, so
+        // these two conditions together are the trigger.
+        if (network.phase() == uldum::network::Phase::Lobby &&
+            uldum::network::lobby_all_slots_claimed(network.lobby_state()) &&
+            network.all_connected_peers_seated()) {
+            uldum::log::info(TAG, "Lobby full — auto-committing start");
+            network.host_commit_start();
+            // Server is headless and pre-loaded — it's always "loaded" for
+            // handshake purposes. Mark self immediately; once all clients
+            // send C_LOAD_DONE, host_finish_start wraps things up below.
+            network.mark_self_loaded();
+        }
+
+        // Transition Loading → Playing once every peer has sent C_LOAD_DONE.
+        if (network.phase() == uldum::network::Phase::Loading &&
+            network.all_peers_loaded()) {
+            uldum::log::info(TAG, "All peers loaded — finishing start");
+            network.host_finish_start();
+        }
 
         // Tick simulation
         if (network.is_game_started() && !network.is_paused()) {

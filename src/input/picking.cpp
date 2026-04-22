@@ -54,16 +54,22 @@ bool Picker::screen_to_world(f32 screen_x, f32 screen_y, glm::vec3& world_pos) c
     glm::vec3 origin = ray_origin(screen_x, screen_y);
     glm::vec3 dir = screen_to_ray(screen_x, screen_y);
 
-    // March along ray until we hit terrain
+    // March along ray until we hit terrain. World is centered on (0,0) —
+    // the SW corner is at (origin_x, origin_y) = (-W/2, -H/2). Without the
+    // shift the bounds check rejects points in the lower-left quadrant and
+    // the tile lookup picks the wrong cell.
+    const f32 ox = m_terrain->origin_x();
+    const f32 oy = m_terrain->origin_y();
+    const f32 wx = m_terrain->world_width();
+    const f32 wy = m_terrain->world_height();
     f32 step = m_terrain->tile_size * 0.5f;
     for (f32 t = 0.0f; t < 100000.0f; t += step) {
         glm::vec3 p = origin + dir * t;
-        if (p.x < 0 || p.y < 0 ||
-            p.x > m_terrain->world_width() || p.y > m_terrain->world_height())
+        if (p.x < ox || p.y < oy || p.x > ox + wx || p.y > oy + wy)
             continue;
 
-        f32 fx = p.x / m_terrain->tile_size;
-        f32 fy = p.y / m_terrain->tile_size;
+        f32 fx = (p.x - ox) / m_terrain->tile_size;
+        f32 fy = (p.y - oy) / m_terrain->tile_size;
         u32 ix = std::min(static_cast<u32>(fx), m_terrain->tiles_x - 1);
         u32 iy = std::min(static_cast<u32>(fy), m_terrain->tiles_y - 1);
         f32 lx = fx - static_cast<f32>(ix);

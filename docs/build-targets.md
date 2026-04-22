@@ -118,8 +118,6 @@ All build / test / asset-util scripts are PowerShell (`.ps1`). The helper at `sc
 | `build_dev.ps1` | `uldum_dev` only | `engine.uldpak`, every map in `maps/` |
 | `build_editor.ps1` | `uldum_editor` only | `engine.uldpak` |
 | `build_server.ps1` | `uldum_server` only | `engine.uldpak`, every map in `maps/` |
-| `test_multiplayer.ps1` | — (runtime) | Launches two `uldum_dev` instances (host + connect) against `maps/test_map.uldmap` |
-| `test_server.ps1` | — (runtime) | Launches `uldum_server` against a map in `maps/` |
 | `convert_skybox.py` | — (asset util) | EXR → KTX2 cubemap faces |
 | `png_to_ktx2.ps1` | — (asset util) | PNG → KTX2 |
 
@@ -147,7 +145,7 @@ Game scripts always take (or default to) a game project directory. They never bu
 
 **TODO (still part of Phase 15d):**
 1. Android-side `game.json` read — `android_main.cpp` currently uses `LaunchArgs` defaults at runtime; should read `game.json` from APK assets to honor `default_map` / `default_port` the way `uldum_game.exe` does on desktop.
-2. Shell UI once Phase 16a/b lands — RmlUi integration + sample_game screens (menu → game room → loading → session → results) replaces auto-load-default-map with a real boot path. HUD (in-game UI — health bars, selection, minimap) is Phase 16c, separate system authored in Lua.
+2. Shell UI once Phase 16a/b lands — RmlUi integration + sample_game screens (menu → lobby → loading → session → results) replaces auto-load-default-map with a real boot path. HUD (in-game UI — health bars, selection, minimap) is Phase 16c, separate system authored in Lua.
 
 ## Platform matrix
 

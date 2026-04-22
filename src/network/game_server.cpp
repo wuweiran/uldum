@@ -25,26 +25,29 @@ bool GameServer::init_game(map::MapManager& map,
                            render::EffectManager* effect_mgr,
                            audio::AudioEngine* audio,
                            render::Renderer* renderer) {
-    // Alliances from manifest
+    // Alliances from manifest. Array index is the player id — there's no
+    // separate slot number field.
     {
         auto& manifest = map.manifest();
-        m_simulation.init_alliances(static_cast<u32>(manifest.players.size()));
-        for (auto& pa : manifest.players) {
-            for (auto& pb : manifest.players) {
-                if (pa.slot == pb.slot) continue;
-                if (pa.team == pb.team) {
-                    for (auto& team : manifest.teams) {
-                        if (team.id == pa.team && team.allied) {
-                            m_simulation.set_alliance(
-                                simulation::Player{pa.slot},
-                                simulation::Player{pb.slot},
+        const u32 n = static_cast<u32>(manifest.players.size());
+        m_simulation.init_alliances(n);
+        for (u32 a = 0; a < n; ++a) {
+            for (u32 b = 0; b < n; ++b) {
+                if (a == b) continue;
+                const auto& pa = manifest.players[a];
+                const auto& pb = manifest.players[b];
+                if (pa.team != pb.team) continue;
+                for (auto& team : manifest.teams) {
+                    if (team.id == pa.team && team.allied) {
+                        m_simulation.set_alliance(
+                            simulation::Player{a},
+                            simulation::Player{b},
+                            true);
+                        if (team.shared_vision) {
+                            m_simulation.set_shared_vision(
+                                simulation::Player{a},
+                                simulation::Player{b},
                                 true);
-                            if (team.shared_vision) {
-                                m_simulation.set_shared_vision(
-                                    simulation::Player{pa.slot},
-                                    simulation::Player{pb.slot},
-                                    true);
-                            }
                         }
                     }
                 }
