@@ -1,6 +1,10 @@
 #include "app/app.h"
 #include "core/log.h"
 
+#ifdef ULDUM_SHELL_UI
+#include "ui/shell.h"
+#endif
+
 #include <chrono>
 #include <functional>
 
@@ -98,6 +102,19 @@ bool App::init(const LaunchArgs& args) {
         log::error(TAG, "AudioEngine init failed");
         return false;
     }
+
+#ifdef ULDUM_SHELL_UI
+    // Shell UI — game builds only. Loads the main menu immediately as a
+    // smoke test of the RmlUi integration. 16b wires menu events to the
+    // App state machine properly; for now the doc just loads and RmlUi
+    // starts tessellating into our (stub) RenderInterface.
+    m_shell = std::make_unique<ui::Shell>();
+    if (!m_shell->init(m_rhi, m_platform->width(), m_platform->height())) {
+        log::error(TAG, "Shell UI init failed");
+        return false;
+    }
+    m_shell->load_document("shell/main_menu.rml");
+#endif
 
     log::info(TAG, "=== Engine subsystems initialized ===");
     return true;
@@ -434,6 +451,12 @@ void App::run() {
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
                 m_renderer.draw(cmd, m_rhi.extent(), world, alpha);
+#ifdef ULDUM_SHELL_UI
+                if (m_shell) {
+                    m_shell->update(frame_dt);
+                    m_shell->render(cmd, m_rhi.extent().width, m_rhi.extent().height);
+                }
+#endif
                 m_rhi.end_frame();
             }
             auto r1 = std::chrono::steady_clock::now();
@@ -446,7 +469,21 @@ void App::run() {
                           frame_dt * 1000.0f, render_ms, world.transforms.count());
             }
         }
-        // TODO (Phase 16): Menu, Loading, Results screens render here
+#ifdef ULDUM_SHELL_UI
+        else if (m_shell) {
+            // Non-Playing states (Menu, Loading, Results): no 3D scene, but
+            // the Shell UI still renders. Open the render pass, draw only
+            // Shell. Once a main menu wires up start_session, Menu state is
+            // reachable before/between sessions.
+            VkCommandBuffer cmd = m_rhi.begin_frame();
+            if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
+                m_rhi.begin_rendering();
+                m_shell->update(frame_dt);
+                m_shell->render(cmd, m_rhi.extent().width, m_rhi.extent().height);
+                m_rhi.end_frame();
+            }
+        }
+#endif
     }
 
     if (m_session_active) end_session();

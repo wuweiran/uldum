@@ -51,6 +51,9 @@ elseif(ULDUM_GAME_PROJECT_DIR)
     #   - game.json + engine.uldpak bundled alongside
     # Per-project build tree under build/game-<name>/ keeps artifacts isolated.
 
+    # Shell UI (RmlUi) is a game-only dependency; set in the root CMakeLists
+    # before third_party/ is processed. See ULDUM_SHELL_UI there.
+
     if(NOT IS_DIRECTORY ${ULDUM_GAME_PROJECT_DIR})
         message(FATAL_ERROR "ULDUM_GAME_PROJECT_DIR='${ULDUM_GAME_PROJECT_DIR}' is not a directory")
     endif()
@@ -85,7 +88,19 @@ elseif(ULDUM_GAME_PROJECT_DIR)
                 ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/maps/${MAP_ID}.uldmap)
     endforeach()
 
-    # Pack engine.uldpak + listed maps + game.json into the dist folder.
+    # If the game project ships a shell/ folder (RML + RCSS for main menu,
+    # settings, etc.), copy it as loose files into the dist. Later we may
+    # pack it into a .uldpak — today the Shell's FileInterface reads loose
+    # files directly from the working directory.
+    set(COPY_SHELL_COMMAND "")
+    if(IS_DIRECTORY ${ULDUM_GAME_PROJECT_DIR}/shell)
+        set(COPY_SHELL_COMMAND
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${ULDUM_GAME_PROJECT_DIR}/shell
+                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shell)
+    endif()
+
+    # Pack engine.uldpak + listed maps + game.json + shell/ into the dist folder.
     add_custom_target(pack_game_assets ALL
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${ULDUM_ROOT}/engine
@@ -99,6 +114,7 @@ elseif(ULDUM_GAME_PROJECT_DIR)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${ULDUM_GAME_JSON_PATH}
             ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/game.json
+        ${COPY_SHELL_COMMAND}
         COMMENT "Packing '${ULDUM_GAME_NAME}' assets"
         VERBATIM
     )
@@ -123,6 +139,10 @@ elseif(ULDUM_GAME_PROJECT_DIR)
     set_target_properties(uldum_game PROPERTIES OUTPUT_NAME ${ULDUM_GAME_EXE_NAME})
     target_include_directories(uldum_game PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum_game PRIVATE ${ULDUM_ENGINE_LIBS})
+    if(ULDUM_SHELL_UI)
+        target_link_libraries(uldum_game PRIVATE uldum_ui)
+        target_compile_definitions(uldum_game PRIVATE ULDUM_SHELL_UI)
+    endif()
     compile_shaders(uldum_game
         ${ULDUM_ROOT}/engine/shaders
         ${ULDUM_ENGINE_STAGING}/shaders

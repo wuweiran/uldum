@@ -17,6 +17,14 @@
 #include <memory>
 #include <string>
 
+#ifdef ULDUM_SHELL_UI
+// Full include (not just forward-decl): game_main.cpp instantiates App with
+// an implicit destructor, which needs the complete ui::Shell type for
+// std::unique_ptr's deleter. shell.h is cheap — it forward-declares RmlUi
+// types, so no RmlUi headers leak into app.h.
+#include "ui/shell.h"
+#endif
+
 namespace uldum {
 
 enum class AppState {
@@ -66,6 +74,12 @@ private:
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
     audio::AudioEngine       m_audio;
+
+#ifdef ULDUM_SHELL_UI
+    // Game-build only. RmlUi-backed Shell UI (menus, game room, settings,
+    // results). Created after RHI is up; torn down in shutdown.
+    std::unique_ptr<ui::Shell> m_shell;
+#endif
 
     // ── Per-session (created in start_session, destroyed in end_session) ─
     network::GameServer      m_server;

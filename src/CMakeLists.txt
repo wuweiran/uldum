@@ -11,6 +11,11 @@ add_subdirectory(network)
 add_subdirectory(input)
 add_subdirectory(map)
 
+# Shell UI framework — game-only. See ULDUM_SHELL_UI in root CMakeLists.
+if(ULDUM_SHELL_UI)
+    add_subdirectory(ui)
+endif()
+
 # Executables / shared-library entry point
 add_subdirectory(app)
 

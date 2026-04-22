@@ -94,7 +94,12 @@ if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
 # uldum_pack.exe and basisu.exe are build-time tools, skipped.
 Write-Host ''
 Write-Host "Assembling $distDir ..."
-if (Test-Path -LiteralPath $distDir) { Remove-Item -LiteralPath $distDir -Recurse -Force }
+if (Test-Path -LiteralPath $distDir) {
+    # Best-effort wipe — a prior run of the exe (or antivirus scanning it)
+    # can briefly hold the directory open. If removal fails we fall back to
+    # in-place overwrite, which is fine for shippable bits.
+    Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
 $binDir = Join-Path $buildTree 'bin'
@@ -102,6 +107,11 @@ Copy-Item -LiteralPath (Join-Path $binDir "$exeName.exe")  -Destination (Join-Pa
 Copy-Item -LiteralPath (Join-Path $binDir 'engine.uldpak') -Destination $distDir
 Copy-Item -LiteralPath (Join-Path $binDir 'maps')          -Destination $distDir -Recurse
 Copy-Item -LiteralPath (Join-Path $binDir 'game.json')     -Destination $distDir
+
+$shellDir = Join-Path $binDir 'shell'
+if (Test-Path -LiteralPath $shellDir) {
+    Copy-Item -LiteralPath $shellDir -Destination $distDir -Recurse
+}
 
 Write-Host ''
 Write-Host "Built: $distDir\$exeName$debugSuffix.exe ($config)"
