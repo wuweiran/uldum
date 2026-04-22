@@ -1,1 +1,15 @@
-{}
+{
+    "paladin": {
+        "display_name": "Paladin",
+        "model": "models/knight.glb",
+        "model_scale": 50.0,
+        "health": { "max": 1200, "regen": 3.0 },
+        "movement": { "speed": 350, "turn_rate": 0.6, "collision_radius": 28, "type": "ground" },
+        "animation": { "dmg_pt": 0.667, "walk_speed": 350 },
+        "combat": { "damage": 45, "range": 128, "cooldown": 1.7, "dmg_time": 0.4, "backsw_time": 0.3, "acquire_range": 600 },
+        "vision": { "range": 1800 },
+        "abilities": ["attack", "move", "stop"],
+        "classifications": ["ground", "hero"],
+        "selection": { "radius": 48, "priority": 10 }
+    }
+}

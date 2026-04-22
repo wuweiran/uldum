@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -58,8 +59,25 @@ public:
     void on_key(u32 key, bool down);
     void on_text(std::string_view utf8);
 
-    // Document loading. Returns nullptr on failure; errors go to log.
+    // Document loading. Replaces the current document if one is already
+    // shown. Returns nullptr on failure; errors go to log.
     Rml::ElementDocument* load_document(std::string_view rml_path);
+
+    // Hide + close the currently-shown document. Call when leaving a Shell
+    // screen (e.g. Menu → Playing) so menu geometry isn't redrawn behind
+    // gameplay.
+    void hide_current_document();
+
+    // Install a handler that fires when the user clicks any RML element
+    // with an id — the handler receives that id (e.g. "play", "quit").
+    // Buttons on RML use id attributes; this is the minimal event API.
+    using ClickHandler = std::function<void(std::string_view id)>;
+    void set_click_handler(ClickHandler handler);
+
+    // Update the text content of an element by id in the current document.
+    // Used for settings screens where a button label reflects state
+    // ("Sound: ON" / "Sound: OFF"). Silently no-ops if the id isn't found.
+    void set_element_text(std::string_view id, std::string_view text);
 
 private:
     struct Impl;

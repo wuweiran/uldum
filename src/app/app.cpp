@@ -3,6 +3,7 @@
 
 #ifdef ULDUM_SHELL_UI
 #include "ui/shell.h"
+#include <nlohmann/json.hpp>
 #endif
 
 #include <chrono>
@@ -103,16 +104,58 @@ bool App::init(const LaunchArgs& args) {
         return false;
     }
 
+    // Settings wiring. Subsystems subscribe to the keys they care about;
+    // the Shell UI flips values via click handlers (or, in Tier 2, via
+    // Lua / data binding). Defaults are applied by calling set() once
+    // so listeners get a consistent initial state.
+    m_settings.subscribe("audio.master_enabled", [this](const settings::Value& v) {
+        bool enabled = std::get_if<bool>(&v) ? std::get<bool>(v) : true;
+        m_audio.set_volume(audio::Channel::Master, enabled ? 1.0f : 0.0f);
+    });
+    m_settings.set("audio.master_enabled", true);
+
 #ifdef ULDUM_SHELL_UI
-    // Shell UI — game builds only. Loads the main menu immediately as a
-    // smoke test of the RmlUi integration. 16b wires menu events to the
-    // App state machine properly; for now the doc just loads and RmlUi
-    // starts tessellating into our (stub) RenderInterface.
+    // Shell UI — game builds only. Loads the main menu and routes its
+    // button clicks into the App state machine.
     m_shell = std::make_unique<ui::Shell>();
     if (!m_shell->init(m_rhi, m_platform->width(), m_platform->height())) {
         log::error(TAG, "Shell UI init failed");
         return false;
     }
+
+    // Click dispatch — each RML button's `id=` maps to an app action.
+    // Commands (verbs) are handled directly; settings toggles go through
+    // the settings store so subsystems react via their subscriptions.
+    m_shell->set_click_handler([this](std::string_view id) {
+        if (id == "play") {
+            if (m_state == AppState::Menu) {
+                log::info(TAG, "Shell: 'play' -> Loading");
+                m_shell->hide_current_document();
+                m_state = AppState::Loading;
+            }
+        } else if (id == "quit") {
+            log::info(TAG, "Shell: 'quit'");
+            m_wants_quit = true;
+        } else if (id == "options") {
+            m_shell->load_document("shell/options.rml");
+            // Refresh the sound toggle's label to match current setting,
+            // since the RML ships with "Sound: ON" as its static text.
+            bool snd = m_settings.get_bool("audio.master_enabled", true);
+            m_shell->set_element_text("sound_toggle", snd ? "Sound: ON" : "Sound: OFF");
+        } else if (id == "back") {
+            // Back works from both Options and Results. In Results we also
+            // need to leave that state — session was already torn down when
+            // we entered Results, so just transition to Menu.
+            if (m_state == AppState::Results) m_state = AppState::Menu;
+            m_shell->load_document("shell/main_menu.rml");
+        } else if (id == "sound_toggle") {
+            bool cur = m_settings.get_bool("audio.master_enabled", true);
+            bool now = !cur;
+            m_settings.set("audio.master_enabled", now);  // fires audio listener
+            m_shell->set_element_text("sound_toggle", now ? "Sound: ON" : "Sound: OFF");
+        }
+    });
+
     m_shell->load_document("shell/main_menu.rml");
 #endif
 
@@ -234,6 +277,21 @@ bool App::start_session() {
                 m_network.host_end_game(winner_id, stats);
             }
             log::info(TAG, "Game ended — winner: player {}", winner_id);
+
+#ifdef ULDUM_SHELL_UI
+            // Parse whatever the Lua script shipped in the stats JSON. The
+            // "elapsed" key is the sample_map convention; other maps can
+            // produce their own stats schema and Shell UIs their own
+            // results.rml to render it.
+            f32 elapsed = 0.0f;
+            try {
+                auto j = nlohmann::json::parse(stats);
+                elapsed = j.value("elapsed", 0.0f);
+            } catch (...) {
+                // Stats wasn't valid JSON; keep elapsed=0 and move on.
+            }
+            m_last_elapsed_seconds = elapsed;
+#endif
             m_state = AppState::Results;
         });
     } else {
@@ -318,9 +376,16 @@ void App::run() {
 
     m_state = AppState::Menu;
     log::info(TAG, "Entered Menu state");
-    bool dev_auto_start = true;
 
-    while (m_platform->poll_events()) {
+    // Game builds with a Shell UI wait for the menu's "Play" button.
+    // Engine-dev builds skip the menu (there is none) and auto-start.
+#ifdef ULDUM_SHELL_UI
+    bool dev_auto_start = false;
+#else
+    bool dev_auto_start = true;
+#endif
+
+    while (m_platform->poll_events() && !m_wants_quit) {
         auto current_time = std::chrono::high_resolution_clock::now();
         float frame_dt = std::chrono::duration<float>(current_time - previous_time).count();
         previous_time = current_time;
@@ -332,7 +397,24 @@ void App::run() {
             m_renderer.handle_resize(aspect);
             if (m_session_active)
                 m_picker.set_screen_size(m_platform->width(), m_platform->height());
+#ifdef ULDUM_SHELL_UI
+            if (m_shell) m_shell->on_resize(m_platform->width(), m_platform->height());
+#endif
         }
+
+#ifdef ULDUM_SHELL_UI
+        // Forward mouse state to the Shell UI every frame. We only care
+        // about the menu screens here; gameplay input still flows through
+        // the existing input_preset path.
+        if (m_shell) {
+            auto& in = m_platform->input();
+            m_shell->on_mouse_move(static_cast<i32>(in.mouse_x), static_cast<i32>(in.mouse_y));
+            if (in.mouse_left_pressed)  m_shell->on_mouse_button(0, true);
+            if (in.mouse_left_released) m_shell->on_mouse_button(0, false);
+            if (in.mouse_right_pressed)  m_shell->on_mouse_button(1, true);
+            if (in.mouse_right_released) m_shell->on_mouse_button(1, false);
+        }
+#endif
 
         switch (m_state) {
         case AppState::Menu:
@@ -434,9 +516,27 @@ void App::run() {
         }
 
         case AppState::Results:
+#ifdef ULDUM_SHELL_UI
+            // Game build: end the session immediately (tear down sim / audio /
+            // network), then show the Results screen and stay put until the
+            // user clicks "back". Loading the document is a one-shot — the
+            // `m_results_shown` latch keeps us from reloading every frame.
+            if (m_session_active) {
+                end_session();
+                if (m_shell) {
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "Time: %.1f s", m_last_elapsed_seconds);
+                    m_shell->load_document("shell/results.rml");
+                    m_shell->set_element_text("time_label", buf);
+                }
+            }
+#else
+            // Engine-dev build (no Shell): auto-return to Menu. uldum_dev's
+            // auto-start will kick the next session off on the following frame.
             log::info(TAG, "Session complete → ending session → Menu");
             end_session();
             m_state = AppState::Menu;
+#endif
             break;
         }
 

@@ -123,7 +123,10 @@ public:
     bool load_script(std::string_view path);
 
     // Call a global Lua function by name
-    void call_function(std::string_view name);
+    // Calls a top-level Lua function by name. Returns true if the function
+    // existed and returned without a Lua error; false if the function was
+    // not defined or threw.
+    bool call_function(std::string_view name);
 
 private:
     void bind_api();

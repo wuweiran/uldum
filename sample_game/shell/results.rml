@@ -1,0 +1,15 @@
+<rml>
+<head>
+    <title>Results</title>
+    <link type="text/rcss" href="main_menu.rcss"/>
+</head>
+<body>
+    <div id="root">
+        <div id="title">Mission Complete</div>
+        <div id="time_label">Time: --</div>
+        <div id="menu">
+            <div class="btn" id="back">Back to Menu</div>
+        </div>
+    </div>
+</body>
+</rml>

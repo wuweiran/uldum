@@ -5,17 +5,35 @@
 #include "core/log.h"
 
 #include <RmlUi/Core.h>
+#include <RmlUi/Core/EventListener.h>
 #include <vulkan/vulkan.h>
 
 namespace uldum::ui {
 
 static constexpr const char* TAG = "UI";
 
+// RmlUi event listener that dispatches element clicks to a C++ std::function.
+// Attached to every loaded document — RmlUi bubbles events up to the root.
+class ShellClickListener final : public Rml::EventListener {
+public:
+    Shell::ClickHandler handler;
+    void ProcessEvent(Rml::Event& event) override {
+        if (!handler) return;
+        auto* el = event.GetTargetElement();
+        if (!el) return;
+        const Rml::String& id = el->GetId();
+        if (id.empty()) return;
+        handler(std::string_view(id.c_str(), id.size()));
+    }
+};
+
 struct Shell::Impl {
     RenderInterface* render     = nullptr;
     SystemInterface* system     = nullptr;
     FileInterface*   file       = nullptr;
     Rml::Context*    context    = nullptr;
+    Rml::ElementDocument* document = nullptr;
+    std::unique_ptr<ShellClickListener> click_listener;
     bool             initialized = false;
 };
 
@@ -130,15 +148,60 @@ void Shell::on_text(std::string_view utf8) {
 }
 
 Rml::ElementDocument* Shell::load_document(std::string_view rml_path) {
-    if (!m_impl->context) return nullptr;
-    auto* doc = m_impl->context->LoadDocument(Rml::String(rml_path.data(), rml_path.size()));
+    auto& impl = *m_impl;
+    if (!impl.context) return nullptr;
+    // Replace any existing document so Shell owns exactly one at a time.
+    hide_current_document();
+
+    auto* doc = impl.context->LoadDocument(Rml::String(rml_path.data(), rml_path.size()));
     if (!doc) {
         log::error(TAG, "Failed to load RML document '{}'", rml_path);
         return nullptr;
     }
     doc->Show();
+
+    // If a click handler is registered, attach the listener to this doc's
+    // root. `bubbles=true` (actually capture_phase=false + bubbles impl by
+    // the third arg meaning 'in_capture_phase') → clicks on descendants
+    // bubble up and fire here.
+    if (impl.click_listener) {
+        doc->AddEventListener("click", impl.click_listener.get(), false);
+    }
+
+    impl.document = doc;
     log::info(TAG, "Loaded RML document '{}'", rml_path);
     return doc;
+}
+
+void Shell::hide_current_document() {
+    auto& impl = *m_impl;
+    if (!impl.document) return;
+    if (impl.click_listener) {
+        impl.document->RemoveEventListener("click", impl.click_listener.get(), false);
+    }
+    impl.document->Close();
+    impl.document = nullptr;
+}
+
+void Shell::set_element_text(std::string_view id, std::string_view text) {
+    auto& impl = *m_impl;
+    if (!impl.document) return;
+    auto* el = impl.document->GetElementById(Rml::String(id.data(), id.size()));
+    if (!el) return;
+    el->SetInnerRML(Rml::String(text.data(), text.size()));
+}
+
+void Shell::set_click_handler(ClickHandler handler) {
+    auto& impl = *m_impl;
+    if (!impl.click_listener) {
+        impl.click_listener = std::make_unique<ShellClickListener>();
+    }
+    impl.click_listener->handler = std::move(handler);
+
+    // If a document is already shown (handler set after load), attach now.
+    if (impl.document) {
+        impl.document->AddEventListener("click", impl.click_listener.get(), false);
+    }
 }
 
 } // namespace uldum::ui

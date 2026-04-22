@@ -1,5 +1,7 @@
 {
-    "units": [],
+    "units": [
+        { "type": "paladin", "x": 512.0, "y": 2048.0, "facing": 0.0, "owner": 0 }
+    ],
     "destructables": [],
     "items": [],
     "doodads": [],

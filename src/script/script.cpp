@@ -215,18 +215,20 @@ bool ScriptEngine::load_script(std::string_view path) {
     return true;
 }
 
-void ScriptEngine::call_function(std::string_view name) {
+bool ScriptEngine::call_function(std::string_view name) {
     std::string name_str(name);
     sol::function fn = (*m_lua)[name_str];
     if (!fn.valid()) {
         log::warn(TAG, "Lua function '{}' not found", name);
-        return;
+        return false;
     }
     auto result = fn();
     if (!result.valid()) {
         sol::error err = result;
         log::error(TAG, "Error calling '{}': {}", name, err.what());
+        return false;
     }
+    return true;
 }
 
 // ── Script paths (require) ────────────────────────────────────────────────

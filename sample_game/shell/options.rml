@@ -1,0 +1,15 @@
+<rml>
+<head>
+    <title>Options</title>
+    <link type="text/rcss" href="main_menu.rcss"/>
+</head>
+<body>
+    <div id="root">
+        <div id="title">Options</div>
+        <div id="menu">
+            <div class="btn" id="sound_toggle">Sound: ON</div>
+            <div class="btn" id="back">Back</div>
+        </div>
+    </div>
+</body>
+</rml>

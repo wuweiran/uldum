@@ -5,6 +5,7 @@
 #include "asset/asset.h"
 #include "render/renderer.h"
 #include "audio/audio.h"
+#include "core/settings.h"
 #include "network/game_server.h"
 #include "network/network.h"
 #include "input/command_system.h"
@@ -68,12 +69,23 @@ private:
     LaunchArgs m_args;
     AppState   m_state = AppState::Menu;
 
+    // Set by Shell UI click handlers (e.g. Quit button) to break out of
+    // the main loop. Platform's poll_events() returns false on OS-initiated
+    // quit (window close); this covers in-app quit requests.
+    bool m_wants_quit = false;
+
+    // Most recent end-of-session elapsed time (seconds) pulled out of the
+    // Lua stats JSON. Shown on the Results screen. Stays at 0 until the
+    // first EndGame call.
+    f32 m_last_elapsed_seconds = 0.0f;
+
     // ── Persistent (survive across sessions) ────────────────────────────
     std::unique_ptr<platform::Platform> m_platform;
     rhi::VulkanRhi           m_rhi;
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
     audio::AudioEngine       m_audio;
+    settings::Store          m_settings;
 
 #ifdef ULDUM_SHELL_UI
     // Game-build only. RmlUi-backed Shell UI (menus, game room, settings,
