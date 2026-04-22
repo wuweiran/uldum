@@ -30,10 +30,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Name of the .so that GameActivity loads. -->
+            <!-- Name of the .so GameActivity loads. Both dev and game
+                 flavors build the same `uldum` target — the flavor
+                 distinction lives at the APK level (applicationId, label,
+                 bundled assets), not the library name. -->
             <meta-data
                 android:name="android.app.lib_name"
-                android:value="uldum_game" />
+                android:value="uldum" />
         </activity>
     </application>
 </manifest>

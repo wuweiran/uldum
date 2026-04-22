@@ -1,10 +1,9 @@
 # Android app's CMake. AGP invokes this with the NDK toolchain already configured.
 #
 # We add the repo root as a subdirectory: the root CMakeLists branches on
-# ANDROID to produce a single shared library target `uldum_game` (src/app/
-# CMakeLists.txt's if(ANDROID) branch). All the engine's static libs, the
-# portable third-party deps (Basis transcoder, miniaudio, ENet, Lua, sol2,
-# VMA, stb, cgltf, json, glm), and the Android platform layer compile here.
+# ANDROID to produce one shared library target `uldum` (both dev and game
+# flavors build the same target; they differ only in compile-time flags
+# and APK-level config).
 #
 # Desktop-only bits (imgui, basisu.exe CLI, uldum_pack tool, uldum_editor,
 # uldum_dev/game/server exes, shader compilation via glslc, pack_assets
@@ -24,9 +23,6 @@ endif()
 
 add_subdirectory("${ULDUM_ROOT}" "${CMAKE_BINARY_DIR}/uldum")
 
-# `uldum_game` is the SHARED library target defined in src/app/CMakeLists.txt's
-# if(ANDROID) branch. GameActivity loads it by name (see the
-# android.app.lib_name metadata in AndroidManifest.xml → "uldum_game").
-if(NOT TARGET uldum_game)
-    message(FATAL_ERROR "Expected target 'uldum_game' from the engine tree was not created.")
+if(NOT TARGET uldum)
+    message(FATAL_ERROR "Expected target 'uldum' from the engine tree was not created.")
 endif()

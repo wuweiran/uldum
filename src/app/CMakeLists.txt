@@ -21,16 +21,20 @@ set(ULDUM_ENGINE_STAGING ${CMAKE_BINARY_DIR}/staging/engine)
 if(ANDROID)
 
     # ── Android: single shared library loaded by GameActivity ────────────────
-    # Android apps don't ship executables — GameActivity loads libuldum_game.so
-    # and calls android_main() inside it. One build artifact, one entry point.
-    # Driven by build_android_game.ps1 / Studio's dev flavor which sets ULDUM_GAME_PROJECT_DIR via Gradle.
+    # Android apps don't ship executables — GameActivity loads libuldum.so
+    # and calls android_main() inside it. The dev and game flavors produce
+    # separate APKs with separate applicationIds, so they can't collide on
+    # a device — we don't need the `.so` name to encode which flavor it is.
+    # Flavor differences are compile-time flags:
+    #   Dev flavor   → -DULDUM_ANDROID_DEV=1     (auto-start on test_map)
+    #   Game flavor  → -DULDUM_GAME_PROJECT_DIR=...  (read game.json)
 
-    add_library(uldum_game SHARED
+    add_library(uldum SHARED
         android_main.cpp
         app.cpp
     )
-    target_include_directories(uldum_game PRIVATE ${ULDUM_SRC})
-    target_link_libraries(uldum_game PRIVATE
+    target_include_directories(uldum PRIVATE ${ULDUM_SRC})
+    target_link_libraries(uldum PRIVATE
         ${ULDUM_ENGINE_LIBS}
         -Wl,--whole-archive
         game-activity::game-activity_static
