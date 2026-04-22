@@ -86,9 +86,13 @@ void FogOfWar::update(const World& world, const Simulation& sim) {
         u32 player_id = owner->player.id;
         if (player_id >= m_player_count) continue;
 
-        // Sub-tile precision: use exact position within the tile grid
-        f32 cx = transform->position.x / m_tile_size;
-        f32 cy = transform->position.y / m_tile_size;
+        // Sub-tile precision: use exact position within the tile grid.
+        // Shift by terrain origin so world (0,0) = map center maps correctly
+        // to grid (tiles_x/2, tiles_y/2).
+        f32 ox = m_terrain ? m_terrain->origin_x() : 0.0f;
+        f32 oy = m_terrain ? m_terrain->origin_y() : 0.0f;
+        f32 cx = (transform->position.x - ox) / m_tile_size;
+        f32 cy = (transform->position.y - oy) / m_tile_size;
         f32 radius = vision.sight_range / m_tile_size;
 
         // Viewer's cliff level (from Movement component or terrain)

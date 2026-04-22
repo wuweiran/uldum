@@ -16,8 +16,8 @@ function main()
     register_hit_vfx()
     register_death_vfx()
 
-    -- Find preplaced units
-    local units = GetUnitsInRange(3500, 3700, 2000)
+    -- Find preplaced units (world origin = map center in centered coords)
+    local units = GetUnitsInRange(-596, -396, 2000)
     local archer, grunt
 
     for _, unit in ipairs(units) do

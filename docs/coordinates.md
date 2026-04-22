@@ -16,6 +16,7 @@
 - **Z** = up / height (ground level = 0)
 - **Facing** = rotation around Z axis, in radians. 0 = facing +Y (forward).
 - **Right-handed** coordinate system.
+- **World origin (0, 0) = map center** (WC3 convention). A 32×32 tile map at 128 units/tile extends (-2048..+2048) on each axis. The south-west corner is at `(origin_x(), origin_y())` = `(-world_width/2, -world_height/2)`.
 
 ## Where Game Coordinates Are Used
 
@@ -24,7 +25,7 @@
 | Simulation (`Transform`) | `position` is (X, Y, Z) in game coords. `facing` is rotation around Z. |
 | Unit creation | `create_unit(world, type, owner, x, y)` places on XY ground plane, Z = terrain height. |
 | Camera | Position in game coords. Movement on XY plane (WASD), height on Z (Q/E). Up vector = (0,0,1). Yaw 0 = looking toward +Y. |
-| Terrain data | Heightmap indexed by grid (ix, iy). World position: `x = ix * tile_size`, `y = iy * tile_size`, `z = heightmap[iy * verts_x + ix]`. |
+| Terrain data | Heightmap indexed by grid (ix, iy). World position: `x = td.vertex_world_x(ix)`, `y = td.vertex_world_y(iy)`, `z = td.world_z_at(ix, iy)`. Grid (0, 0) is the SW vertex and sits at world `(origin_x(), origin_y())`. |
 | Terrain mesh | Vertices in game coords. Normals computed via `cross(dx, dy)` in game space. |
 | Shaders (world space) | Vertex shader outputs `frag_world_normal = mat3(model) * in_normal` in game coords. Fragment shader light direction is in game coords. |
 

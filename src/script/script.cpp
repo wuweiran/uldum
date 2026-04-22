@@ -714,6 +714,13 @@ void ScriptEngine::bind_api() {
 
     lua["GetPlayer"] = [](u32 slot) -> simulation::Player { return simulation::Player{slot}; };
 
+    // Lobby-assigned name for a player. Humans get the peer's `player_name`
+    // from C_JOIN; Computer slots get the manifest placeholder ("Creeps" etc.);
+    // unclaimed slots get "Player N". Empty string for unknown ids.
+    lua["GetPlayerName"] = [&](simulation::Player p) -> std::string {
+        return std::string{sim.get_player_name(p)};
+    };
+
     // ── Alliance API ─────────────────────────────────────────────────
 
     lua["SetAlliance"] = [&](simulation::Player a, simulation::Player b, bool allied, sol::optional<bool> passive) {

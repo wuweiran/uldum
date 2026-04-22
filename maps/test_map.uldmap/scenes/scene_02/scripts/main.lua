@@ -3,7 +3,8 @@
 -- Creeps spawn from edges and attack toward two heroes at the center.
 -- Footman has Cleave (30% AoE on attack), Paladin has Consecration (periodic
 -- AoE damage) and Holy Light (auto-heals Footman when HP is low).
--- Coordinate scale: WC3-style (1 tile = 128 game units, map = 8192x8192)
+-- Coordinate scale: WC3-style (1 tile = 128 game units, map = 8192x8192,
+-- world origin at map center so the 64×64 grid extends (-4096..+4096) on each axis).
 --------------------------------------------------------------------------------
 
 require("constants")
@@ -15,8 +16,8 @@ function main()
     local player1 = GetPlayer(0)   -- heroes
     local player2 = GetPlayer(1)   -- creeps
 
-    -- Find preplaced heroes (center of 8192x8192 map)
-    local units = GetUnitsInRange(4096, 4096, 1280)
+    -- Find preplaced heroes (world origin = map center)
+    local units = GetUnitsInRange(0, 0, 1280)
     local footman, paladin
 
     for _, unit in ipairs(units) do
@@ -135,15 +136,15 @@ function main()
         for i = 1, count do
             local edge = RandomInt(0, 3)
             local x, y
-            if edge == 0 then     x, y = 512,  RandomFloat(1920, 6272)  -- left
-            elseif edge == 1 then x, y = 7680, RandomFloat(1920, 6272)  -- right
-            elseif edge == 2 then x, y = RandomFloat(1920, 6272), 512   -- bottom
-            else                  x, y = RandomFloat(1920, 6272), 7680  -- top
+            if edge == 0 then     x, y = -3584, RandomFloat(-2176, 2176)  -- left
+            elseif edge == 1 then x, y =  3584, RandomFloat(-2176, 2176)  -- right
+            elseif edge == 2 then x, y = RandomFloat(-2176, 2176), -3584  -- bottom
+            else                  x, y = RandomFloat(-2176, 2176),  3584  -- top
             end
 
             local creep = CreateUnit("creep", player2, x, y, 0)
             if creep then
-                IssueOrder(creep, "attack", 4096, 4096)
+                IssueOrder(creep, "attack", 0, 0)
             end
         end
         Log("[Wave " .. wave .. "] Spawned " .. count .. " creeps")

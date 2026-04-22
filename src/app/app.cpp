@@ -213,6 +213,13 @@ bool App::start_session() {
         m_renderer.set_terrain_data(&m_map.terrain());
     }
 
+    // Apply the scene's default camera pose if declared. Without this the
+    // engine-wide default runs, which only approximates "look at origin".
+    if (!m_map.scene().cameras.empty()) {
+        const auto& cam = m_map.scene().cameras.front();
+        m_renderer.camera().set_pose({cam.x, cam.y, cam.z}, cam.pitch, cam.yaw);
+    }
+
     bool is_client = (m_args.net_mode == network::Mode::Client);
 
     // Game server phase 2 (offline/host only — client doesn't run the simulation)

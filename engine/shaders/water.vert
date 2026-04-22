@@ -34,5 +34,6 @@ void main() {
     frag_world_pos = world_pos.xyz;
     frag_layer_corners = in_layer_corners;
     frag_case_info = in_case_info;
-    frag_fog_uv = world_pos.xy / pc.world_size;
+    // World (0, 0) is map center → shift to [0, 1] for the fog texture.
+    frag_fog_uv = world_pos.xy / pc.world_size + 0.5;
 }

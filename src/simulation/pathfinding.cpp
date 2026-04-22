@@ -209,9 +209,14 @@ void Pathfinder::build_cache() {
 
 // Build a set of tiles occupied by units (for A* cost penalty).
 // Returns a set of tile keys where non-self units are standing.
-static std::unordered_set<u64> build_unit_tile_set(const World* world, u32 self_id, f32 tile_size, u32 tiles_x, u32 tiles_y) {
+static std::unordered_set<u64> build_unit_tile_set(const World* world, u32 self_id, const map::TerrainData& td) {
     std::unordered_set<u64> occupied;
     if (!world) return occupied;
+    const f32 tile_size = td.tile_size;
+    const f32 ox = td.origin_x();
+    const f32 oy = td.origin_y();
+    const u32 tiles_x = td.tiles_x;
+    const u32 tiles_y = td.tiles_y;
 
     for (u32 i = 0; i < world->transforms.count(); ++i) {
         u32 id = world->transforms.ids()[i];
@@ -223,8 +228,8 @@ static std::unordered_set<u64> build_unit_tile_set(const World* world, u32 self_
         if (!info || info->category != Category::Unit) continue;
 
         auto& pos = world->transforms.data()[i].position;
-        i32 tx = static_cast<i32>(pos.x / tile_size);
-        i32 ty = static_cast<i32>(pos.y / tile_size);
+        i32 tx = static_cast<i32>((pos.x - ox) / tile_size);
+        i32 ty = static_cast<i32>((pos.y - oy) / tile_size);
         if (tx >= 0 && ty >= 0 &&
             static_cast<u32>(tx) < tiles_x && static_cast<u32>(ty) < tiles_y) {
             occupied.insert(tile_key(tx, ty));
@@ -241,7 +246,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     auto& td = *m_terrain;
 
     // Build unit occupancy for cost penalty
-    auto unit_tiles = build_unit_tile_set(world, self_id, td.tile_size, td.tiles_x, td.tiles_y);
+    auto unit_tiles = build_unit_tile_set(world, self_id, td);
 
     static constexpr f32 UNIT_COST_PENALTY = 5.0f;
 

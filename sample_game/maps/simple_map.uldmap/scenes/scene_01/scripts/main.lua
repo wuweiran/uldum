@@ -6,9 +6,12 @@
 -- up via the Results screen.
 --------------------------------------------------------------------------------
 
+-- Centered coords: world (0, 0) is map center. 32×32 tile map extends
+-- (-2048..+2048) on each axis. Paladin spawns west of center, walks east
+-- past the origin to the goal.
 local paladin
-local destination_x = 3072
-local destination_y = 2048
+local destination_x = 1024
+local destination_y = 0
 local reach_radius  = 96  -- ~3/4 of a tile at 128 u/tile
 
 local elapsed = 0
@@ -18,7 +21,7 @@ function main()
     Log("[Scene01] Simple map — walk-to-destination demo")
 
     -- Find the preplaced paladin (only unit in the scene).
-    for _, u in ipairs(GetUnitsInRange(2048, 2048, 4096)) do
+    for _, u in ipairs(GetUnitsInRange(0, 0, 4096)) do
         if GetUnitTypeId(u) == "paladin" then paladin = u end
     end
     if not paladin then

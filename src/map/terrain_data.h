@@ -52,6 +52,18 @@ struct TerrainData {
     f32 world_width()  const { return static_cast<f32>(tiles_x) * tile_size; }
     f32 world_height() const { return static_cast<f32>(tiles_y) * tile_size; }
 
+    // Convention: world (0, 0) is the MAP CENTER (WC3-style). Internal grid
+    // indices stay 0-based; world position of grid vertex (0, 0) is the
+    // south-west corner, which sits at (-W/2, -H/2).
+    f32 origin_x() const { return -0.5f * world_width();  }
+    f32 origin_y() const { return -0.5f * world_height(); }
+
+    // World-space position of grid vertex (ix, iy). Call sites should use
+    // these rather than `ix * tile_size` so the centered-coord convention
+    // stays consistent.
+    f32 vertex_world_x(u32 ix) const { return origin_x() + static_cast<f32>(ix) * tile_size; }
+    f32 vertex_world_y(u32 iy) const { return origin_y() + static_cast<f32>(iy) * tile_size; }
+
     // Per-vertex accessors
     f32& height_at(u32 ix, u32 iy) { return heightmap[iy * verts_x() + ix]; }
     f32  height_at(u32 ix, u32 iy) const { return heightmap[iy * verts_x() + ix]; }

@@ -1,12 +1,12 @@
 {
     "units": [
-        { "type": "paladin", "x": 512.0, "y": 2048.0, "facing": 0.0, "owner": 0 }
+        { "type": "paladin", "x": -1536.0, "y": 0.0, "facing": 0.0, "owner": 0 }
     ],
     "destructables": [],
     "items": [],
     "doodads": [],
     "regions": [],
     "cameras": [
-        { "name": "default", "x": 2048.0, "y": 1024.0, "z": 1536.0, "pitch": -0.8, "yaw": 0.0 }
+        { "name": "default", "x": 0.0, "y": -1024.0, "z": 1650.0, "pitch": -0.98, "yaw": 0.0 }
     ]
 }

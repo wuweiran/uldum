@@ -26,6 +26,15 @@ public:
 
     void set_aspect(f32 aspect) { m_aspect = aspect; m_dirty = true; }
 
+    // Map-defined camera pose applied on session start from the scene's
+    // `cameras[0]` entry in objects.json. Pitch/yaw are radians.
+    void set_pose(glm::vec3 position, f32 pitch, f32 yaw) {
+        m_position = position;
+        m_pitch    = pitch;
+        m_yaw      = yaw;
+        m_dirty    = true;
+    }
+
     glm::mat4 view_matrix() const;
     glm::mat4 projection_matrix() const;
     glm::mat4 view_projection() const;
@@ -44,8 +53,11 @@ public:
 private:
     void recalculate();
 
-    // Game coordinates: X=right, Y=forward, Z=up
-    glm::vec3 m_position{2880.0f, 1920.0f, 1650.0f};  // WC3 default height
+    // Game coordinates: X=right, Y=forward, Z=up. World origin is the
+    // map center (WC3 convention). Default sits south of origin, elevated,
+    // pitched down so the camera looks at the map center. Any map can
+    // override this via `cameras[0]` in its scene objects.json.
+    glm::vec3 m_position{0.0f, -1024.0f, 1650.0f};
     f32 m_pitch = -0.98f;  // ~56 degrees down (WC3 angle of attack ~304)
     f32 m_yaw   = 0.0f;    // 0 = looking toward +Y (forward)
 

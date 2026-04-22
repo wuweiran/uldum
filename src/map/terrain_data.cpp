@@ -54,21 +54,21 @@ bool TerrainData::is_tile_deep_water(u32 tx, u32 ty) const {
 }
 
 glm::ivec2 TerrainData::world_to_tile(f32 x, f32 y) const {
-    i32 tx = static_cast<i32>(x / tile_size);
-    i32 ty = static_cast<i32>(y / tile_size);
+    i32 tx = static_cast<i32>((x - origin_x()) / tile_size);
+    i32 ty = static_cast<i32>((y - origin_y()) / tile_size);
     tx = std::clamp(tx, 0, static_cast<i32>(tiles_x - 1));
     ty = std::clamp(ty, 0, static_cast<i32>(tiles_y - 1));
     return {tx, ty};
 }
 
 glm::vec2 TerrainData::tile_center(u32 tx, u32 ty) const {
-    return {(static_cast<f32>(tx) + 0.5f) * tile_size,
-            (static_cast<f32>(ty) + 0.5f) * tile_size};
+    return {origin_x() + (static_cast<f32>(tx) + 0.5f) * tile_size,
+            origin_y() + (static_cast<f32>(ty) + 0.5f) * tile_size};
 }
 
 u8 TerrainData::cliff_level_at(f32 x, f32 y) const {
-    u32 vx = static_cast<u32>(std::round(x / tile_size));
-    u32 vy = static_cast<u32>(std::round(y / tile_size));
+    u32 vx = static_cast<u32>(std::round((x - origin_x()) / tile_size));
+    u32 vy = static_cast<u32>(std::round((y - origin_y()) / tile_size));
     vx = std::min(vx, tiles_x);
     vy = std::min(vy, tiles_y);
     return cliff_at(vx, vy);
@@ -78,8 +78,8 @@ u8 TerrainData::cliff_level_at(f32 x, f32 y) const {
 
 f32 sample_height(const TerrainData& td, f32 x, f32 y) {
     if (!td.is_valid()) return 0.0f;
-    f32 fx = x / td.tile_size;
-    f32 fy = y / td.tile_size;
+    f32 fx = (x - td.origin_x()) / td.tile_size;
+    f32 fy = (y - td.origin_y()) / td.tile_size;
     u32 ix = std::min(static_cast<u32>(std::floor(fx)), td.tiles_x - 1);
     u32 iy = std::min(static_cast<u32>(std::floor(fy)), td.tiles_y - 1);
     f32 tx = fx - static_cast<f32>(ix);

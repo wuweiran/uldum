@@ -323,8 +323,8 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
     auto sample_height = [&](f32 x, f32 y) -> f32 {
         auto& td = m_scene.terrain;
         if (!td.is_valid()) return 0.0f;
-        u32 ix = std::min(static_cast<u32>(x / td.tile_size), td.tiles_x);
-        u32 iy = std::min(static_cast<u32>(y / td.tile_size), td.tiles_y);
+        u32 ix = std::min(static_cast<u32>((x - td.origin_x()) / td.tile_size), td.tiles_x);
+        u32 iy = std::min(static_cast<u32>((y - td.origin_y()) / td.tile_size), td.tiles_y);
         return td.world_z_at(ix, iy);
     };
 
@@ -350,9 +350,10 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 // Set initial cliff level from nearest vertex
                 auto* mov = world.movements.get(unit.id);
                 if (mov) {
-                    u32 vx = std::min(static_cast<u32>(std::round(pu.x / m_scene.terrain.tile_size)), m_scene.terrain.tiles_x);
-                    u32 vy = std::min(static_cast<u32>(std::round(pu.y / m_scene.terrain.tile_size)), m_scene.terrain.tiles_y);
-                    mov->cliff_level = m_scene.terrain.cliff_at(vx, vy);
+                    auto& td = m_scene.terrain;
+                    u32 vx = std::min(static_cast<u32>(std::round((pu.x - td.origin_x()) / td.tile_size)), td.tiles_x);
+                    u32 vy = std::min(static_cast<u32>(std::round((pu.y - td.origin_y()) / td.tile_size)), td.tiles_y);
+                    mov->cliff_level = td.cliff_at(vx, vy);
                 }
 
                 // Buildings block pathing at runtime via PathingBlocker component
@@ -360,8 +361,8 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 if (cls && simulation::has_classification(cls->flags, "structure")) {
                     auto& td = m_scene.terrain;
                     if (td.is_valid()) {
-                        i32 cx = static_cast<i32>(pu.x / td.tile_size);
-                        i32 cy = static_cast<i32>(pu.y / td.tile_size);
+                        i32 cx = static_cast<i32>((pu.x - td.origin_x()) / td.tile_size);
+                        i32 cy = static_cast<i32>((pu.y - td.origin_y()) / td.tile_size);
                         simulation::PathingBlocker blocker;
                         for (i32 dy = -1; dy <= 2; ++dy) {
                             for (i32 dx = -1; dx <= 2; ++dx) {

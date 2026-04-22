@@ -1,15 +1,15 @@
 {
     "units": [
-        { "type": "footman", "owner": 0, "x": 3800.0, "y": 4096.0, "facing": 180.0 },
-        { "type": "paladin", "owner": 0, "x": 3900.0, "y": 4096.0, "facing": 0.0 }
+        { "type": "footman", "owner": 0, "x": -296.0, "y":  0.0, "facing": 180.0 },
+        { "type": "paladin", "owner": 0, "x": -196.0, "y":  0.0, "facing":   0.0 }
     ],
     "destructables": [],
     "items": [],
     "doodads": [],
     "regions": [
-        { "name": "center", "x": 3584.0, "y": 3840.0, "width": 1024.0, "height": 512.0 }
+        { "name": "center", "x": -512.0, "y": -256.0, "width": 1024.0, "height": 512.0 }
     ],
     "cameras": [
-        { "name": "default", "x": 4096.0, "y": 2560.0, "z": 1920.0, "pitch": -0.8, "yaw": 0.0 }
+        { "name": "default", "x": 0.0, "y": -1536.0, "z": 1650.0, "pitch": -0.98, "yaw": 0.0 }
     ]
 }

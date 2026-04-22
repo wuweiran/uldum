@@ -256,8 +256,8 @@ void Editor::run() {
         m_cursor_valid = raycast_terrain(input.mouse_x, input.mouse_y, m_cursor_pos);
         if (m_cursor_valid && m_map_loaded) {
             auto& td = m_map.terrain();
-            m_cursor_vx = static_cast<i32>(std::round(m_cursor_pos.x / td.tile_size));
-            m_cursor_vy = static_cast<i32>(std::round(m_cursor_pos.y / td.tile_size));
+            m_cursor_vx = static_cast<i32>(std::round((m_cursor_pos.x - td.origin_x()) / td.tile_size));
+            m_cursor_vy = static_cast<i32>(std::round((m_cursor_pos.y - td.origin_y()) / td.tile_size));
             m_cursor_vx = std::clamp(m_cursor_vx, 0, static_cast<i32>(td.tiles_x));
             m_cursor_vy = std::clamp(m_cursor_vy, 0, static_cast<i32>(td.tiles_y));
         }
@@ -451,12 +451,15 @@ bool Editor::raycast_terrain(f32 screen_x, f32 screen_y, glm::vec3& hit) const {
         glm::vec3 p = ray_origin + ray_dir * t;
 
         // Out of terrain bounds?
-        if (p.x < 0 || p.y < 0 || p.x > td.world_width() || p.y > td.world_height())
+        if (p.x < td.origin_x() || p.y < td.origin_y()
+            || p.x > td.origin_x() + td.world_width()
+            || p.y > td.origin_y() + td.world_height())
             continue;
 
-        // Sample terrain height at this XY
-        f32 fx = p.x / td.tile_size;
-        f32 fy = p.y / td.tile_size;
+        // Sample terrain height at this XY (grid coords are 0-based; shift
+        // from centered world to grid space).
+        f32 fx = (p.x - td.origin_x()) / td.tile_size;
+        f32 fy = (p.y - td.origin_y()) / td.tile_size;
         u32 ix = std::min(static_cast<u32>(fx), td.tiles_x - 1);
         u32 iy = std::min(static_cast<u32>(fy), td.tiles_y - 1);
         f32 lx = fx - static_cast<f32>(ix);
@@ -1216,12 +1219,8 @@ void Editor::draw_overlays() {
         // Horizontal lines
         for (i32 iy = grid_min_y; iy <= grid_max_y; ++iy) {
             for (i32 ix = grid_min_x; ix < grid_max_x; ++ix) {
-                glm::vec3 a{static_cast<f32>(ix) * td.tile_size,
-                            static_cast<f32>(iy) * td.tile_size,
-                            td.world_z_at(ix, iy) + 1.0f};
-                glm::vec3 b{static_cast<f32>(ix + 1) * td.tile_size,
-                            static_cast<f32>(iy) * td.tile_size,
-                            td.world_z_at(ix + 1, iy) + 1.0f};
+                glm::vec3 a{td.vertex_world_x(ix),     td.vertex_world_y(iy), td.world_z_at(ix, iy) + 1.0f};
+                glm::vec3 b{td.vertex_world_x(ix + 1), td.vertex_world_y(iy), td.world_z_at(ix + 1, iy) + 1.0f};
                 ImVec2 sa, sb;
                 if (world_to_screen(a, sa) && world_to_screen(b, sb))
                     draw_list->AddLine(sa, sb, grid_color);
@@ -1230,12 +1229,8 @@ void Editor::draw_overlays() {
         // Vertical lines
         for (i32 ix = grid_min_x; ix <= grid_max_x; ++ix) {
             for (i32 iy = grid_min_y; iy < grid_max_y; ++iy) {
-                glm::vec3 a{static_cast<f32>(ix) * td.tile_size,
-                            static_cast<f32>(iy) * td.tile_size,
-                            td.world_z_at(ix, iy) + 1.0f};
-                glm::vec3 b{static_cast<f32>(ix) * td.tile_size,
-                            static_cast<f32>(iy + 1) * td.tile_size,
-                            td.world_z_at(ix, iy + 1) + 1.0f};
+                glm::vec3 a{td.vertex_world_x(ix), td.vertex_world_y(iy),     td.world_z_at(ix, iy) + 1.0f};
+                glm::vec3 b{td.vertex_world_x(ix), td.vertex_world_y(iy + 1), td.world_z_at(ix, iy + 1) + 1.0f};
                 ImVec2 sa, sb;
                 if (world_to_screen(a, sa) && world_to_screen(b, sb))
                     draw_list->AddLine(sa, sb, grid_color);
@@ -1250,9 +1245,7 @@ void Editor::draw_overlays() {
                 f32 w = tile_falloff(dx, dy, m_brush_size);
                 if (w <= 0.0f) continue;
 
-                glm::vec3 vpos{static_cast<f32>(ix) * td.tile_size,
-                               static_cast<f32>(iy) * td.tile_size,
-                               td.world_z_at(ix, iy) + 2.0f};
+                glm::vec3 vpos{td.vertex_world_x(ix), td.vertex_world_y(iy), td.world_z_at(ix, iy) + 2.0f};
                 ImVec2 sp;
                 if (world_to_screen(vpos, sp)) {
                     f32 dot_r = 2.0f + w * 4.0f;
@@ -1264,8 +1257,7 @@ void Editor::draw_overlays() {
 
         // Center vertex marker
         {
-            glm::vec3 cpos{static_cast<f32>(m_cursor_vx) * td.tile_size,
-                           static_cast<f32>(m_cursor_vy) * td.tile_size,
+            glm::vec3 cpos{td.vertex_world_x(m_cursor_vx), td.vertex_world_y(m_cursor_vy),
                            td.world_z_at(m_cursor_vx, m_cursor_vy) + 3.0f};
             ImVec2 sp;
             if (world_to_screen(cpos, sp)) {
@@ -1286,10 +1278,10 @@ void Editor::draw_overlays() {
         f32 sh = static_cast<f32>(m_rhi.extent().height);
 
         for (auto& [tx, ty] : m_blocked_tiles) {
-            glm::vec3 c00{tx * td.tile_size,     ty * td.tile_size,     td.world_z_at(tx, ty) + z_off};
-            glm::vec3 c10{(tx+1) * td.tile_size, ty * td.tile_size,     td.world_z_at(tx+1, ty) + z_off};
-            glm::vec3 c01{tx * td.tile_size,     (ty+1) * td.tile_size, td.world_z_at(tx, ty+1) + z_off};
-            glm::vec3 c11{(tx+1) * td.tile_size, (ty+1) * td.tile_size, td.world_z_at(tx+1, ty+1) + z_off};
+            glm::vec3 c00{td.vertex_world_x(tx),     td.vertex_world_y(ty),     td.world_z_at(tx, ty) + z_off};
+            glm::vec3 c10{td.vertex_world_x(tx + 1), td.vertex_world_y(ty),     td.world_z_at(tx+1, ty) + z_off};
+            glm::vec3 c01{td.vertex_world_x(tx),     td.vertex_world_y(ty + 1), td.world_z_at(tx, ty+1) + z_off};
+            glm::vec3 c11{td.vertex_world_x(tx + 1), td.vertex_world_y(ty + 1), td.world_z_at(tx+1, ty+1) + z_off};
 
             ImVec2 s00, s10, s01, s11;
             if (!world_to_screen(c00, s00) || !world_to_screen(c10, s10) ||
@@ -1307,7 +1299,7 @@ void Editor::draw_overlays() {
         }
 
         for (auto& [vx, vy] : m_blocked_verts) {
-            glm::vec3 pos{vx * td.tile_size, vy * td.tile_size, td.world_z_at(vx, vy) + z_off};
+            glm::vec3 pos{td.vertex_world_x(vx), td.vertex_world_y(vy), td.world_z_at(vx, vy) + z_off};
             ImVec2 sp;
             if (!world_to_screen(pos, sp)) continue;
             if (sp.x < 0 || sp.x > sw || sp.y < 0 || sp.y > sh) continue;

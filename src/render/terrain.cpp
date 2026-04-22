@@ -92,8 +92,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
             idx = static_cast<u32>(vertices.size());
             TerrainVertex v;
             v.position = {
-                static_cast<f32>(ix) * td.tile_size,
-                static_cast<f32>(iy) * td.tile_size,
+                td.vertex_world_x(ix),
+                td.vertex_world_y(iy),
                 td.world_z_at(ix, iy)
             };
             v.texcoord = texcoord_at(ix, iy);
@@ -155,11 +155,11 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
             u8 cmin = std::min({c[0], c[1], c[2], c[3]});
             u8 cmax = std::max({c[0], c[1], c[2], c[3]});
 
-            f32 x0 = static_cast<f32>(tx) * td.tile_size;
-            f32 x1 = static_cast<f32>(tx + 1) * td.tile_size;
+            f32 x0 = td.vertex_world_x(tx);
+            f32 x1 = td.vertex_world_x(tx + 1);
             f32 xm = (x0 + x1) * 0.5f;
-            f32 y0 = static_cast<f32>(ty) * td.tile_size;
-            f32 y1 = static_cast<f32>(ty + 1) * td.tile_size;
+            f32 y0 = td.vertex_world_y(ty);
+            f32 y1 = td.vertex_world_y(ty + 1);
             f32 ym = (y0 + y1) * 0.5f;
 
             f32 high_z = static_cast<f32>(cmax) * td.layer_height;
@@ -194,8 +194,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
             auto corner_v = [&](u32 ci, f32 base_z) -> u32 {
                 u32 ix = (ci & 1) ? tx+1 : tx;
                 u32 iy = (ci & 2) ? ty+1 : ty;
-                return add_vert(static_cast<f32>(ix) * td.tile_size,
-                                static_cast<f32>(iy) * td.tile_size,
+                return add_vert(td.vertex_world_x(ix),
+                                td.vertex_world_y(iy),
                                 base_z + td.height_at(ix, iy),
                                 texcoord_at(ix, iy), ti);
             };
@@ -464,8 +464,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 glm::vec3 wall_center = (vertices[wa_h].position + vertices[wb_h].position) * 0.5f;
                 glm::vec3 low_center{0, 0, 0};
                 for (u32 i = 0; i < 4; ++i) { if (c[i] != cmax) {
-                    low_center = glm::vec3{static_cast<f32>((i & 1) ? tx+1 : tx) * td.tile_size,
-                                           static_cast<f32>((i & 2) ? ty+1 : ty) * td.tile_size, 0};
+                    low_center = glm::vec3{td.vertex_world_x((i & 1) ? tx+1 : tx),
+                                           td.vertex_world_y((i & 2) ? ty+1 : ty), 0};
                     break;
                 }}
                 glm::vec3 wall_n = glm::normalize(glm::vec3{
