@@ -17,9 +17,15 @@ void SpatialGrid::init(f32 world_width, f32 world_height, f32 cell_size, const S
     m_sim          = sim;
     m_cells_x      = static_cast<u32>(std::ceil(world_width / cell_size));
     m_cells_y      = static_cast<u32>(std::ceil(world_height / cell_size));
+    // World is centered on (0, 0), so the grid spans
+    // [-world_width/2, +world_width/2] — without this offset, all units
+    // in the negative quadrants would squash into cell (0, 0).
+    m_origin_x     = -0.5f * world_width;
+    m_origin_y     = -0.5f * world_height;
     m_cells.resize(m_cells_x * m_cells_y);
 
-    log::info("SpatialGrid", "Initialized: {}x{} cells (cell_size={})", m_cells_x, m_cells_y, cell_size);
+    log::info("SpatialGrid", "Initialized: {}x{} cells (cell_size={}, origin=({}, {}))",
+              m_cells_x, m_cells_y, cell_size, m_origin_x, m_origin_y);
 }
 
 void SpatialGrid::update(const World& world) {
@@ -40,8 +46,8 @@ void SpatialGrid::update(const World& world) {
         const auto* t = transforms.get(id);
         if (!t) continue;
 
-        i32 cx = static_cast<i32>(t->position.x / m_cell_size);
-        i32 cy = static_cast<i32>(t->position.y / m_cell_size);
+        i32 cx = static_cast<i32>((t->position.x - m_origin_x) / m_cell_size);
+        i32 cy = static_cast<i32>((t->position.y - m_origin_y) / m_cell_size);
         cx = std::clamp(cx, 0, static_cast<i32>(m_cells_x) - 1);
         cy = std::clamp(cy, 0, static_cast<i32>(m_cells_y) - 1);
 
@@ -53,10 +59,10 @@ void SpatialGrid::update(const World& world) {
 }
 
 void SpatialGrid::get_cell_range(f32 x, f32 y, f32 radius, i32& min_cx, i32& min_cy, i32& max_cx, i32& max_cy) const {
-    min_cx = std::max(0, static_cast<i32>((x - radius) / m_cell_size));
-    min_cy = std::max(0, static_cast<i32>((y - radius) / m_cell_size));
-    max_cx = std::min(static_cast<i32>(m_cells_x) - 1, static_cast<i32>((x + radius) / m_cell_size));
-    max_cy = std::min(static_cast<i32>(m_cells_y) - 1, static_cast<i32>((y + radius) / m_cell_size));
+    min_cx = std::max(0, static_cast<i32>((x - radius - m_origin_x) / m_cell_size));
+    min_cy = std::max(0, static_cast<i32>((y - radius - m_origin_y) / m_cell_size));
+    max_cx = std::min(static_cast<i32>(m_cells_x) - 1, static_cast<i32>((x + radius - m_origin_x) / m_cell_size));
+    max_cy = std::min(static_cast<i32>(m_cells_y) - 1, static_cast<i32>((y + radius - m_origin_y) / m_cell_size));
 }
 
 bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter& filter) const {

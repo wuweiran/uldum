@@ -58,6 +58,12 @@ private:
     u32 m_cells_y     = 0;
     f32 m_world_width = 0;
     f32 m_world_height = 0;
+    // Map origin (world coords of cell (0,0)'s corner). The world is
+    // centered on (0, 0), so origin_x/y are negative — without this, all
+    // units in the negative quadrants would clamp into cell (0, 0) and
+    // never find each other via unit_in_range queries.
+    f32 m_origin_x    = 0;
+    f32 m_origin_y    = 0;
     const Simulation* m_sim = nullptr;
 };
 
