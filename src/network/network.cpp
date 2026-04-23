@@ -7,6 +7,9 @@
 #include "input/command_system.h"
 #include "map/map.h"
 #include "map/terrain_data.h"
+#include "hud/hud.h"
+#include "hud/text_tag.h"
+#include "script/script.h"
 #include "core/log.h"
 
 #include <glm/gtc/constants.hpp>
@@ -368,6 +371,27 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         break;
     }
 
+    case MsgType::C_NODE_EVENT: {
+        // Client reported a HUD atom event (button press). Look up which
+        // player the peer plays, then fire the matching server-side trigger
+        // with node id in context.
+        simulation::Player player{UINT32_MAX};
+        for (auto& p : m_peers) {
+            if (p.peer_id == peer_id) { player = p.player; break; }
+        }
+        if (!player.is_valid()) return;
+
+        ByteReader r(data);
+        r.read_u8();
+        std::string node_id = r.read_string();
+        NodeEventKind kind  = static_cast<NodeEventKind>(r.read_u8());
+
+        if (m_script && kind == NodeEventKind::ButtonPressed) {
+            m_script->fire_node_event("button_pressed", player.id, node_id);
+        }
+        break;
+    }
+
     default:
         log::warn(TAG, "Host received unknown message type 0x{:02x}", static_cast<u8>(type));
         break;
@@ -673,10 +697,128 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         if (on_pause_state_changed) on_pause_state_changed();
         break;
     }
+
+    // HUD sync — decode and apply to the local Hud. No-op if no HUD
+    // pointer is installed (shouldn't happen in Client mode).
+    case MsgType::S_HUD_CREATE_NODE: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string template_id = r.read_string();
+        std::string anchor      = r.read_string();
+        f32 x = r.read_f32(), y = r.read_f32(), w = r.read_f32(), h = r.read_f32();
+        if (m_hud) {
+            hud::Hud::Placement pl{};
+            // Hold the anchor string alive across the call — the Placement
+            // field is a string_view.
+            std::string anchor_hold = anchor;
+            pl.anchor       = anchor_hold;
+            pl.x = x; pl.y = y; pl.w = w; pl.h = h;
+            // Server only sent us nodes we should see, so local_player is
+            // already the implicit owner; mark broadcast so the render
+            // filter accepts it regardless of which slot this client is on.
+            pl.owner_player = UINT32_MAX;
+            m_hud->instantiate_template(template_id, pl);
+        }
+        break;
+    }
+    case MsgType::S_HUD_DESTROY_NODE: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string id = r.read_string();
+        if (m_hud) m_hud->remove_node_by_id(id);
+        break;
+    }
+    case MsgType::S_HUD_SET_LABEL_TEXT: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string id   = r.read_string();
+        std::string text = r.read_string();
+        if (m_hud) m_hud->set_label_text(id, text);
+        break;
+    }
+    case MsgType::S_HUD_SET_BAR_FILL: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string id = r.read_string();
+        f32 fill       = r.read_f32();
+        if (m_hud) m_hud->set_bar_fill(id, fill);
+        break;
+    }
+    case MsgType::S_HUD_SET_NODE_VISIBLE: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string id = r.read_string();
+        bool visible   = r.read_bool();
+        if (m_hud) m_hud->set_node_visible(id, visible);
+        break;
+    }
+    case MsgType::S_HUD_SET_IMAGE_SOURCE: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string id   = r.read_string();
+        std::string path = r.read_string();
+        if (m_hud) m_hud->set_image_source(id, path);
+        break;
+    }
+    case MsgType::S_HUD_SET_BUTTON_ENABLED: {
+        ByteReader r(data);
+        r.read_u8();
+        std::string id = r.read_string();
+        bool enabled   = r.read_bool();
+        if (m_hud) m_hud->set_button_enabled(id, enabled);
+        break;
+    }
+    case MsgType::S_HUD_CREATE_TEXT_TAG: {
+        ByteReader r(data);
+        r.read_u8();
+        hud::TextTagCreateInfo info{};
+        info.text       = r.read_string();
+        info.px_size    = r.read_f32();
+        info.pos.x      = r.read_f32();
+        info.pos.y      = r.read_f32();
+        info.pos.z      = r.read_f32();
+        info.unit.id    = r.read_u32();
+        info.z_offset   = r.read_f32();
+        info.color.rgba = r.read_u32();
+        info.velocity_x = r.read_f32();
+        info.velocity_y = r.read_f32();
+        info.lifespan   = r.read_f32();
+        info.fadepoint  = r.read_f32();
+        info.owner_player = UINT32_MAX;  // server routed here, so it's for us
+        if (m_hud) m_hud->create_text_tag(info);
+        break;
+    }
+
     default:
         log::warn(TAG, "Client received unknown message type 0x{:02x}", static_cast<u8>(type));
         break;
     }
+}
+
+void NetworkManager::host_hud_sync(const std::vector<u8>& packet, u32 owner_player) {
+    if (m_mode != Mode::Host || !m_transport) return;
+    if (owner_player == UINT32_MAX) {
+        // Broadcast — every connected peer sees it.
+        m_transport->broadcast(packet, true);
+        return;
+    }
+    // Targeted — find the peer whose player matches and send just to them.
+    // Peers whose slot doesn't match never know the node exists.
+    for (const auto& p : m_peers) {
+        if (p.player.id == owner_player) {
+            m_transport->send(p.peer_id, packet, true);
+            return;
+        }
+    }
+    // No peer for that player (they may be disconnected or the host
+    // itself plays the slot). The host's own Hud already applied the
+    // mutation locally at the Lua binding layer, so nothing else to do.
+}
+
+void NetworkManager::send_node_event(std::string_view node_id, NodeEventKind kind) {
+    if (m_mode != Mode::Client || !m_transport) return;
+    auto msg = build_node_event(node_id, kind);
+    m_transport->send(0, msg, true);   // host is peer 0 from the client's view
 }
 
 void NetworkManager::send_claim_slot(u32 slot) {

@@ -25,6 +25,22 @@ struct Transform {
     // Previous tick state for render interpolation
     glm::vec3 prev_position{0.0f};
     f32       prev_facing = 0.0f;
+
+    // Sub-tick render interpolation. `alpha` in [0, 1] — callers should
+    // use the same value the renderer passes into its per-frame draw so
+    // everything tracking an entity (mesh, selection circle, HP bar,
+    // world labels) projects through the exact same position.
+    glm::vec3 interp_position(f32 alpha) const {
+        return prev_position + (position - prev_position) * alpha;
+    }
+    // Shortest-path angle interpolation (handles 2π wrap).
+    f32 interp_facing(f32 alpha) const {
+        f32 diff = facing - prev_facing;
+        constexpr f32 PI = 3.14159265358979f;
+        while (diff >  PI) diff -= 2.0f * PI;
+        while (diff < -PI) diff += 2.0f * PI;
+        return prev_facing + diff * alpha;
+    }
 };
 
 struct HandleInfo {

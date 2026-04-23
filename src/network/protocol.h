@@ -26,6 +26,7 @@ namespace uldum::network {
 //   0x4X  server → client, lobby / pre-game
 //   0x5X  server → client, playing / entity sync
 //   0x6X  server → client, playing / session events
+//   0x7X  server → client, HUD sync (16c-v)
 enum class MsgType : u8 {
     // ── Client → Server ──
 
@@ -37,6 +38,7 @@ enum class MsgType : u8 {
 
     // Playing
     C_ORDER         = 0x10,
+    C_NODE_EVENT    = 0x11,   // client forwards a HUD atom event (button press, etc.)
 
     // Any phase
     C_LEAVE         = 0x20,
@@ -61,6 +63,22 @@ enum class MsgType : u8 {
     S_START         = 0x60,   // all players loaded, game begins
     S_END           = 0x61,   // game over, includes results
     S_PAUSE_STATE   = 0x62,   // mid-game: list of disconnected players + timers
+
+    // Playing — HUD sync
+    S_HUD_CREATE_NODE         = 0x70, // template instantiation + placement
+    S_HUD_DESTROY_NODE        = 0x71,
+    S_HUD_SET_LABEL_TEXT      = 0x72,
+    S_HUD_SET_BAR_FILL        = 0x73,
+    S_HUD_SET_NODE_VISIBLE    = 0x74,
+    S_HUD_SET_IMAGE_SOURCE    = 0x75,
+    S_HUD_SET_BUTTON_ENABLED  = 0x76,
+    S_HUD_CREATE_TEXT_TAG     = 0x77,
+};
+
+// Event kinds for C_NODE_EVENT. Keep numeric so unknown kinds can be
+// ignored / logged without a string parse.
+enum class NodeEventKind : u8 {
+    ButtonPressed = 0,
 };
 
 enum class RejectReason : u8 {
@@ -196,6 +214,17 @@ inline std::vector<u8> build_order(const input::GameCommand& cmd) {
 
 inline std::vector<u8> build_leave() {
     return {static_cast<u8>(MsgType::C_LEAVE)};
+}
+
+// C_NODE_EVENT — client reports a HUD atom event (e.g., button pressed)
+// back to the host so server-side triggers can fire. Fire-and-forget,
+// reliable delivery expected.
+inline std::vector<u8> build_node_event(std::string_view node_id, NodeEventKind kind) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::C_NODE_EVENT));
+    w.write_string(node_id);
+    w.write_u8(static_cast<u8>(kind));
+    return std::move(w.data());
 }
 
 // ── Server → Client ──────────────────────────────────────────────────────
@@ -696,6 +725,94 @@ inline UpdateData parse_update(std::span<const u8> data) {
         break;
     }
     return u;
+}
+
+// ── HUD sync builders + parsers (16c-v) ──────────────────────────────────
+// One message per atom mutation. Opcodes live in the 0x7X block. Target
+// filtering is transport-level: server picks which peer(s) to send each
+// message to based on the node's `owner_player`. A node without an owner
+// is broadcast.
+
+inline std::vector<u8> build_hud_create_node(std::string_view template_id,
+                                              std::string_view anchor,
+                                              f32 x, f32 y, f32 w, f32 h) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_CREATE_NODE));
+    wr.write_string(template_id);
+    wr.write_string(anchor);
+    wr.write_f32(x); wr.write_f32(y); wr.write_f32(w); wr.write_f32(h);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_destroy_node(std::string_view node_id) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_DESTROY_NODE));
+    wr.write_string(node_id);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_set_label_text(std::string_view node_id, std::string_view text) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_LABEL_TEXT));
+    wr.write_string(node_id);
+    wr.write_string(text);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_set_bar_fill(std::string_view node_id, f32 fill) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_BAR_FILL));
+    wr.write_string(node_id);
+    wr.write_f32(fill);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_set_node_visible(std::string_view node_id, bool visible) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_NODE_VISIBLE));
+    wr.write_string(node_id);
+    wr.write_bool(visible);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_set_image_source(std::string_view node_id, std::string_view path) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_IMAGE_SOURCE));
+    wr.write_string(node_id);
+    wr.write_string(path);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_set_button_enabled(std::string_view node_id, bool enabled) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_BUTTON_ENABLED));
+    wr.write_string(node_id);
+    wr.write_bool(enabled);
+    return std::move(wr.data());
+}
+
+// Text tags — fire-and-forget broadcast at creation. Animation runs
+// locally on each side from identical starting params (lifespan / velocity
+// / fadepoint); no mid-life sync. Permanent tags (lifespan == 0) are
+// out of scope for MP in v1.
+inline std::vector<u8> build_hud_create_text_tag(
+        std::string_view text, f32 px_size,
+        f32 wx, f32 wy, f32 wz,
+        u32 unit_id, f32 z_offset,
+        u32 color_rgba,
+        f32 velocity_x, f32 velocity_y,
+        f32 lifespan, f32 fadepoint) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_CREATE_TEXT_TAG));
+    wr.write_string(text);
+    wr.write_f32(px_size);
+    wr.write_f32(wx); wr.write_f32(wy); wr.write_f32(wz);
+    wr.write_u32(unit_id);
+    wr.write_f32(z_offset);
+    wr.write_u32(color_rgba);
+    wr.write_f32(velocity_x); wr.write_f32(velocity_y);
+    wr.write_f32(lifespan); wr.write_f32(fadepoint);
+    return std::move(wr.data());
 }
 
 } // namespace uldum::network

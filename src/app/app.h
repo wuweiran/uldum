@@ -4,6 +4,7 @@
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "asset/asset.h"
 #include "render/renderer.h"
+#include "render/selection_circles.h"
 #include "audio/audio.h"
 #include "core/settings.h"
 #include "network/game_server.h"
@@ -15,6 +16,8 @@
 #include "input/input_preset.h"
 #include "input/input_bindings.h"
 #include "map/map.h"
+#include "hud/hud.h"
+#include "hud/world.h"
 
 #include <memory>
 #include <string>
@@ -23,7 +26,7 @@
 // is defined out-of-line in app.cpp, so the header doesn't need complete
 // types — this lets dev_console.h / ui/shell.h include app.h in turn
 // without a cycle.
-namespace uldum::ui { class Shell; }
+namespace uldum::shell { class Shell; }
 namespace uldum { class DevConsole; }
 
 namespace uldum {
@@ -103,13 +106,16 @@ private:
     rhi::VulkanRhi           m_rhi;
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
+    render::SelectionCircles m_selection_circles;
     audio::AudioEngine       m_audio;
     settings::Store          m_settings;
+    hud::Hud                 m_hud;
+    hud::WorldContext        m_hud_world_ctx;
 
 #ifdef ULDUM_SHELL_UI
     // Game-build only. RmlUi-backed Shell UI (menus, game room, settings,
     // results). Created after RHI is up; torn down in shutdown.
-    std::unique_ptr<ui::Shell> m_shell;
+    std::unique_ptr<shell::Shell> m_shell;
 #endif
 
 #ifdef ULDUM_DEV_UI

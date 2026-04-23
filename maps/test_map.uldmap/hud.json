@@ -1,0 +1,110 @@
+{
+  "preset": "rts",
+
+  "composites": {},
+
+  "world_overlays": {
+    "entity_bars": {
+      "z_offset": 140.0,
+      "size":     { "w": 34, "h": 4 },
+      "spacing":  1,
+      "bars": [
+        {
+          "state":      "health",
+          "visibility": "not_full",
+          "style":      { "bg_color": "#00000080", "fill_color": "#40D040FF" }
+        },
+        {
+          "state":      "mana",
+          "visibility": "always",
+          "style":      { "bg_color": "#00000080", "fill_color": "#4080FFFF" }
+        }
+      ]
+    },
+
+    "unit_name_label": {
+      "z_offset": 170.0,
+      "size":     14,
+      "style":    { "color": "#FFFFFFFF", "bg_color": "#000000A0" }
+    }
+  },
+
+  "nodes": [
+    {
+      "id":    "wave_panel",
+      "type":  "panel",
+      "style": { "bg": "#141620DC" },
+
+      "children": [
+        {
+          "id":     "wave_label",
+          "type":   "label",
+          "anchor": "tl",
+          "x": 10, "y": 6, "w": 260, "h": 20,
+          "text":   "Wave 0 / 20",
+          "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
+        },
+        {
+          "id":     "wave_progress",
+          "type":   "bar",
+          "anchor": "tl",
+          "x": 10, "y": 30, "w": 260, "h": 10,
+          "fill":   0.0,
+          "style":  { "bg_color": "#282C38DC", "fill_color": "#50C878F0" }
+        }
+      ]
+    },
+
+    {
+      "id":    "test_panel",
+      "type":  "panel",
+      "style": { "bg": "#141620DC" },
+
+      "children": [
+        {
+          "id":     "test_title",
+          "type":   "label",
+          "anchor": "tl",
+          "x": 10, "y": 8, "w": 220, "h": 24,
+          "text":   "16c-iv hud.json",
+          "style":  { "color": "#DCDCE6FF", "size": 18, "align": "center" }
+        },
+
+        {
+          "id":     "test_bar",
+          "type":   "bar",
+          "anchor": "tl",
+          "x": 10, "y": 42, "w": 220, "h": 14,
+          "fill":   0.5,
+          "style":  { "bg_color": "#282C38DC", "fill_color": "#50C878F0" }
+        },
+
+        {
+          "id":     "test_icon",
+          "type":   "image",
+          "anchor": "tl",
+          "x": 10, "y": 66, "w": 40, "h": 40,
+          "source": "shared/assets/textures/terrain/grass.ktx2"
+        },
+
+        {
+          "id":     "test_button",
+          "type":   "button",
+          "anchor": "tl",
+          "x": 10, "y": 130, "w": 220, "h": 40,
+
+          "children": [
+            {
+              "id":     "test_button_label",
+              "type":   "label",
+              "anchor": "tl",
+              "x": 0, "y": 0, "w": 220, "h": 40,
+              "text":   "Click me",
+              "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

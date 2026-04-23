@@ -16,6 +16,30 @@ function main()
     local player1 = GetPlayer(0)   -- heroes
     local player2 = GetPlayer(1)   -- creeps
 
+    -- Wave panel: top-center, visible only to player 0.
+    -- `owner = GetPlayer(0)` marks the node as player-0-owned — the HUD
+    -- render filter hides it from anyone else's screen, and once MP sync
+    -- lands, the host only sends these updates to player 0's client.
+    CreateNode("wave_panel", {
+        anchor = "tc", x = 0, y = 20, w = 280, h = 48,
+        owner  = GetPlayer(0),
+    })
+
+    -- Smoke-test the test_panel button too — same ownership filter.
+    CreateNode("test_panel", {
+        anchor = "tl", x = 20, y = 20, w = 240, h = 200,
+        owner  = GetPlayer(0),
+    })
+
+    -- Trigger: respond to button clicks. GetTriggerPlayer() / GetTriggerNode()
+    -- tell us who clicked what.
+    local btn_trig = CreateTrigger()
+    TriggerRegisterPlayerEvent(btn_trig, GetPlayer(0), EVENT_BUTTON_PRESSED)
+    TriggerAddAction(btn_trig, function()
+        Log("[Button] player=" .. tostring(GetTriggerPlayer().id)
+            .. " node='" .. GetTriggerNode() .. "'")
+    end)
+
     -- Find preplaced heroes (world origin = map center)
     local units = GetUnitsInRange(0, 0, 1280)
     local footman, paladin
@@ -39,6 +63,7 @@ function main()
     register_armor_system()
     register_hit_vfx()
     register_death_vfx()
+    register_damage_text()
 
     ---------------------------------------------------------------------------
     -- Cleave: when footman deals damage, deal 30% to nearby enemy ground units
@@ -127,10 +152,16 @@ function main()
     -- (Heroes auto-acquire enemies via engine acquire_range)
     ---------------------------------------------------------------------------
     local wave = 0
+    local TOTAL_WAVES    = 20
     local SPAWN_INTERVAL = 6.0
 
     CreateTimer(SPAWN_INTERVAL, true, function()
         wave = wave + 1
+        -- Update the wave panel each wave — label shows "Wave N / 20"
+        -- and the bar fills proportionally.
+        SetLabelText("wave_label", string.format("Wave %d / %d", wave, TOTAL_WAVES))
+        SetBarFill("wave_progress", wave / TOTAL_WAVES)
+
         local count = math.min(2 + wave, 8)
 
         for i = 1, count do

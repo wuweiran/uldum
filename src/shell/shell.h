@@ -16,7 +16,7 @@ namespace Rml {
 
 namespace uldum::rhi { class VulkanRhi; }
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 // Shell owns the single Rml::Context for the application and the three
 // interface implementations (render, system, file). It's created once at
@@ -84,4 +84,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace uldum::ui
+} // namespace uldum::shell

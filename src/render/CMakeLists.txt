@@ -9,6 +9,7 @@ add_library(uldum_render STATIC
     procedural_skeleton.cpp
     particles.cpp
     effect.cpp
+    selection_circles.cpp
 )
 
 target_include_directories(uldum_render PUBLIC ${ULDUM_SRC})

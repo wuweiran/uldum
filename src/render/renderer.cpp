@@ -63,21 +63,12 @@ static std::vector<u8> generate_solid_texture(u32 size, u8 r, u8 g, u8 b) {
     return pixels;
 }
 
-// ── Render interpolation helper ────────────────────────────────────────────
-
-// Interpolate between previous and current transform for smooth rendering.
-static glm::vec3 lerp_position(const simulation::Transform& t, f32 alpha) {
-    return glm::mix(t.prev_position, t.position, alpha);
-}
-
-static f32 lerp_facing(const simulation::Transform& t, f32 alpha) {
-    // Shortest-path angle interpolation
-    f32 diff = t.facing - t.prev_facing;
-    // Normalize to [-π, π]
-    while (diff > glm::pi<f32>()) diff -= glm::two_pi<f32>();
-    while (diff < -glm::pi<f32>()) diff += glm::two_pi<f32>();
-    return t.prev_facing + diff * alpha;
-}
+// ── Render interpolation helpers ───────────────────────────────────────────
+// Thin wrappers around Transform's interp_position / interp_facing methods.
+// Kept here so existing call sites (which are many in renderer.cpp) don't
+// need to change shape. The canonical implementation lives in components.h.
+static glm::vec3 lerp_position(const simulation::Transform& t, f32 alpha) { return t.interp_position(alpha); }
+static f32       lerp_facing  (const simulation::Transform& t, f32 alpha) { return t.interp_facing(alpha); }
 
 // ── Terrain slope tilt helper ──────────────────────────────────────────────
 

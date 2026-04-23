@@ -1,11 +1,11 @@
-#include "ui/file_interface.h"
+#include "shell/file_interface.h"
 #include "asset/asset.h"
 #include "core/log.h"
 
 #include <cstring>
 #include <fstream>
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 static constexpr const char* TAG = "UI";
 
@@ -81,4 +81,4 @@ size_t FileInterface::Length(Rml::FileHandle file) {
     return it == m_files.end() ? 0 : it->second.bytes.size();
 }
 
-} // namespace uldum::ui
+} // namespace uldum::shell

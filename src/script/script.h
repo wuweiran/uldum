@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "simulation/handle_types.h"
 
 #include <glm/vec3.hpp>
 #include <nlohmann/json.hpp>
@@ -20,6 +21,7 @@ namespace uldum::map { class MapManager; }
 namespace uldum::render { class EffectRegistry; class EffectManager; class Renderer; }
 namespace uldum::audio { class AudioEngine; }
 namespace uldum::input { class SelectionState; class CommandSystem; }
+namespace uldum::hud   { class Hud; }
 
 namespace uldum::script {
 
@@ -84,12 +86,24 @@ public:
     // Connect input systems (call after input is initialized, before scripts run).
     void set_input(input::SelectionState* selection, input::CommandSystem* commands);
 
+    // Connect the HUD so the Lua bindings under `bind_hud_api` can mutate
+    // node content (SetLabelText, SetBarFill, etc.) and create text tags.
+    // Call before init() — the binding registration needs the pointer live.
+    void set_hud(hud::Hud* hud) { m_hud = hud; }
+
     void shutdown();
     void update(float dt);
 
     // Fire a game event — evaluates all triggers registered for this event.
     void fire_event(std::string_view event_name, u32 unit_id = UINT32_MAX,
                     std::string_view ability_id = "", u32 player_id = UINT32_MAX);
+
+    // Fire a HUD node event (button press, etc.) tagged with the issuing
+    // player. Sets the node-id context so Lua can read `GetTriggerNode()`
+    // inside the action, then dispatches through fire_event with the
+    // player-id filter.
+    void fire_node_event(std::string_view event_name, u32 player_id,
+                         std::string_view node_id);
 
     // Set event context before firing (combat events set these)
     void set_context_unit(u32 id)     { m_ctx_unit = id; }
@@ -109,6 +123,7 @@ public:
     void set_context_spell_target_unit(u32 id) { m_ctx_spell_target_unit = id; }
     void set_context_spell_target_x(f32 x) { m_ctx_spell_target_x = x; }
     void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
+    void set_context_node_id(std::string id) { m_ctx_node_id = std::move(id); }
 
     // Configure Lua package.path so require() resolves from these directories.
     // Searched in order: scene scripts, shared scripts, engine scripts.
@@ -134,6 +149,7 @@ private:
     void bind_timer_api();
     void bind_input_api();
     void bind_save_api();
+    void bind_hud_api();
 
     u32 next_trigger_id() { return ++m_next_trigger; }
     u32 next_timer_id()   { return ++m_next_timer; }
@@ -152,6 +168,9 @@ private:
     // Input (set via set_input)
     input::SelectionState*   m_selection = nullptr;
     input::CommandSystem*    m_commands  = nullptr;
+
+    // HUD (set via set_hud)
+    hud::Hud*                m_hud       = nullptr;
 
     // Persistent save data (SaveData/LoadData)
     std::string m_save_path;
@@ -192,6 +211,7 @@ private:
     u32  m_ctx_spell_target_unit = UINT32_MAX;
     f32  m_ctx_spell_target_x    = 0;
     f32  m_ctx_spell_target_y    = 0;
+    std::string m_ctx_node_id;   // which HUD node fired the event (button_pressed etc.)
 };
 
 } // namespace uldum::script

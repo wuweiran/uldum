@@ -211,23 +211,19 @@ std::unique_ptr<InputPreset> create_preset(std::string_view name);
 // "rts" → RtsPreset, "action_rpg" → (Phase 12d)
 ```
 
-### RTS Preset (Desktop)
+### RTS Preset
 
-Standard WC3-style controls:
+Standard WC3-style controls. Preset `"rts"` in `manifest.json`.
 
-| Input | Action |
+| Aspect | Behavior |
 |---|---|
-| Left click | Select unit under cursor |
-| Left drag | Box select |
-| Right click ground | Move (or AttackMove in attack-move mode) |
-| Right click enemy | Attack order |
-| Right click ally | Move to ally position |
-| Shift + order | Queue order |
-| Ability hotkey | Cast ability (ability's `"hotkey"` field) |
-| Control groups | Ctrl+0-9 assign, 0-9 recall (hardcoded) |
-| F1-F3 | Select hero 1-3 |
-| Edge pan / arrow keys | Camera pan |
-| Mouse wheel | Zoom |
+| Selection | Multi-select. Click, shift-click, box-drag. Ctrl-click / double-click selects all of same type on screen. Selection persists until changed. Max 24 units. |
+| Control groups | `Ctrl+0..9` to bind, `0..9` to recall. |
+| Movement | Right-click ground → selected units pathfind there. Shift queues. |
+| Targeting | No persistent target slot. Right-click enemy → selected units attack. Ability buttons that need a target enter reticle mode → click picks. |
+| Camera | Free pan (edge-scroll + arrow keys on desktop, two-finger pan on mobile), mouse wheel / pinch zoom. No auto-follow. |
+| Hotkeys | Each ability slot has an optional `"hotkey"` field; pressing it issues the ability on selection. Commands (`stop`, `hold`, `attack_move`, `patrol`) bind per-map. |
+| Mobile | Same semantics. Tap replaces click; tap-drag replaces box-drag; HUD `action_bar` slot buttons replace hotkeys. |
 
 Default command keybindings (overridable per map):
 
@@ -246,23 +242,31 @@ slots. When a key is pressed, it checks if any slotted ability has a matching
 `"hotkey"` value. If found, the preset enters targeting mode (for target_unit /
 target_point forms) or instant-casts (for no-target / toggle forms).
 
-### Action/RPG Preset (Phase 12d, deferred)
+### Action Preset
 
-| Input | Action |
+Single-hero, direct-control. Preset `"action_rpg"` in `manifest.json`. Targeting
+is **explicit and persistent** for v1 — soft-target (Diablo) and lock-on
+(Souls-like) are out of scope.
+
+| Aspect | Behavior |
 |---|---|
-| Virtual joystick / click-to-move | Direct movement |
-| Ability buttons (desktop: per-slot keys) | Cast |
-| Ability buttons (mobile: touch) | Cast with form-based targeting |
-| Tap unit | Select / target |
+| Selection | **None.** The player is the hero; there is no "selected units" concept. |
+| Movement | WASD on desktop; virtual `joystick` composite on mobile. No click-to-move. |
+| Targeting | Explicit, persistent. `Tab` cycles nearest enemies; click picks; tap picks on mobile. Target slot holds one entity until it changes or dies. All slotted abilities that need a target use the target slot unless ground-placed. |
+| Camera | Chase cam: position tracks the hero; player controls rotation (mouse look on desktop, swipe on mobile) and zoom (wheel / pinch). No free pan. |
+| Hotkeys (desktop) | Ability slots are bound per-slot (`1..9`, `Q W E R F`). Slot 0 defaults to `Q`, slot 1 `W`, etc. The ability's `"hotkey"` field is ignored. |
+| Hotkeys (mobile) | No keys. Every occupied slot becomes a touch button on the `action_bar` composite. |
+| Control groups | N/A — one actor. |
 
-**Ability activation (RPG desktop):** Slot-based. Keys are bound per slot in
-input bindings (e.g., slot 0 = Q, slot 1 = W). The ability's `"hotkey"` field
-is ignored.
+**Ability activation (Action desktop):** Slot-based. Keys are bound per slot in
+input bindings. Targeting uses the current target slot; ground-placed abilities
+enter reticle mode (click picks ground).
 
-**Ability activation (RPG mobile):** No keys. Each occupied slot becomes a touch
+**Ability activation (Action mobile):** Each occupied slot becomes a touch
 button. Targeting interaction is derived from the ability's `form`:
+
 - `instant` / `toggle` → tap button
-- `target_unit` → tap button, then tap target (or auto-target nearest)
+- `target_unit` → tap button, uses current target slot (no extra tap needed)
 - `target_point` → tap button, then tap ground (or drag from button)
 - `channel` → tap button to start, tap again to cancel
 
@@ -357,18 +361,22 @@ The `CommandSystem` interface stays the same. In multiplayer mode, `submit()`
 sends over the network instead of executing locally. The input preset and
 selection state are completely unaware of networking.
 
-## 9. Future: UI System Interaction
+## 9. UI System Interaction
 
-The input system is designed to work with a future UI framework. When a UI
-system exists, it will read the same data:
+The HUD consumes the slot system — it never drives input. Both presets use the
+same `action_bar` composite (see [ui.md](ui.md)): a slot group where each slot
+shows icon / cooldown ring / hotkey badge / disabled overlay for its bound
+ability. Click or hotkey fires a Lua callback that issues the command.
 
-- **RTS command card**: renders commands in a fixed area + ability slots in a
-  grid. Reads `"commands"` list and ability slot array. Displays ability icons,
-  hotkey letters, cooldown overlays, and tooltips.
-- **RPG action bar**: renders ability slots as a horizontal bar. Slot position
-  determines button position. Desktop: shows slot keybinding. Mobile: touch
-  buttons with form-based targeting gestures.
+The differences between presets are in **how slots get bound**, not in which
+composite is drawn:
 
-The UI layer is a consumer of the slot system — it never drives input. Input
-presets and UI are independent readers of the same underlying data (commands
-list, ability slots, ability definitions).
+- **RTS**: Lua hooks `on_select` and rebinds `action_bar` slots to the primary
+  selected unit's slot array. Empty selection → slots show empty.
+- **Action**: Lua binds `action_bar` slots once from the hero's abilities; the
+  binding stays until Lua updates it (level up, ability swap).
+
+Input presets and HUD composites are independent readers of the same underlying
+data — commands list, ability slots, ability definitions. The HUD never bypasses
+the command system; its click / hotkey callbacks issue `GameCommand`s exactly
+like raw input does.

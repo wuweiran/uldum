@@ -1,4 +1,4 @@
-#include "ui/render_interface.h"
+#include "shell/render_interface.h"
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "asset/asset.h"
 #include "core/log.h"
@@ -8,7 +8,7 @@
 
 #include <cstring>
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 static constexpr const char* TAG = "UI";
 
@@ -598,4 +598,4 @@ void RenderInterface::begin_frame(VkCommandBuffer cmd, VkExtent2D extent) {
     m_transform        = glm::mat4(1.0f);
 }
 
-} // namespace uldum::ui
+} // namespace uldum::shell

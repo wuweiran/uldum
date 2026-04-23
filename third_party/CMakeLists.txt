@@ -197,44 +197,92 @@ if(MSVC)
     target_compile_options(basisu_transcoder PRIVATE /W0)
 endif()
 
-# ── FreeType (font rasterization — RmlUi dep) ────────────────────────────
-# Only fetched for Shell-UI-capable builds (desktop game). Dev/editor/server
-# don't need it. FreeType is minimal here — strip brotli, zlib, harfbuzz,
-# png, bzip2 backends we don't use.
+# ── FreeType (font rasterization) ────────────────────────────────────────
+# Fetched unconditionally: needed by uldum_hud's MSDF glyph pipeline (all
+# builds) and by uldum_shell / RmlUi (game builds only). Minimal — strip
+# brotli, zlib, harfbuzz, png, bzip2 backends we don't use.
+#
+# Save caller's BUILD_SHARED_LIBS; force static for just these deps to keep
+# the dist folder self-contained (no DLL copying needed), then restore.
+set(_ULDUM_SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+message(STATUS "Fetching FreeType...")
+set(FT_DISABLE_BROTLI   TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
+FetchContent_Declare(freetype
+    GIT_REPOSITORY https://github.com/freetype/freetype.git
+    GIT_TAG        VER-2-13-3
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(freetype)
+if(MSVC AND TARGET freetype)
+    target_compile_options(freetype PRIVATE /W0)
+endif()
+# RmlUi calls find_package(Freetype) which expects the namespaced target
+# `Freetype::Freetype`. FreeType's own CMake only exports the unadorned
+# `freetype` target, so alias across.
+if(TARGET freetype AND NOT TARGET Freetype::Freetype)
+    add_library(Freetype::Freetype ALIAS freetype)
+endif()
+
+# ── msdfgen (MSDF glyph rasterization, used by uldum_hud) ────────────────
+# Generates multi-channel signed distance fields from font glyph outlines.
+# Uses FreeType (above) for font loading. We disable SVG/PNG/Skia because
+# we only feed it FT_Face / FT_GlyphSlot outlines and consume the result
+# as a raw bitmap.
+message(STATUS "Fetching msdfgen...")
+set(MSDFGEN_DISABLE_SVG      ON  CACHE BOOL   "" FORCE)
+set(MSDFGEN_DISABLE_PNG      ON  CACHE BOOL   "" FORCE)
+set(MSDFGEN_USE_SKIA         OFF CACHE BOOL   "" FORCE)
+set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL   "" FORCE)
+set(MSDFGEN_CORE_ONLY        OFF CACHE BOOL   "" FORCE)
+set(MSDFGEN_INSTALL          OFF CACHE BOOL   "" FORCE)
+set(MSDFGEN_DYNAMIC_RUNTIME  ON  CACHE BOOL   "" FORCE)  # /MD to match the rest of the project
+FetchContent_Declare(msdfgen
+    GIT_REPOSITORY https://github.com/Chlumsky/msdfgen.git
+    GIT_TAG        v1.12
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(msdfgen)
+if(MSVC)
+    foreach(T msdfgen-core msdfgen-ext msdfgen)
+        if(TARGET ${T})
+            target_compile_options(${T} PRIVATE /W0)
+        endif()
+    endforeach()
+endif()
+
+# ── Default UI font (Roboto Regular) ─────────────────────────────────────
+# Bundled into engine.uldpak at build time. Fetched from Google's official
+# `google/fonts` mono-repo, which hosts the canonical Apache-2.0 licensed
+# release of Roboto. Maps can override the UI font via manifest.json later.
+message(STATUS "Fetching Roboto font...")
+FetchContent_Declare(roboto_font
+    URL https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf
+    DOWNLOAD_NO_EXTRACT TRUE
+)
+FetchContent_Populate(roboto_font)
+# Expose the fetched .ttf path so src/app/CMakeLists.txt can copy it into
+# the engine staging dir (alongside compiled shaders) before packing.
+set(ULDUM_DEFAULT_FONT_TTF ${roboto_font_SOURCE_DIR}/Roboto-Regular.ttf CACHE INTERNAL "")
+
+# Restore the caller's BUILD_SHARED_LIBS setting.
+set(BUILD_SHARED_LIBS ${_ULDUM_SAVED_BUILD_SHARED_LIBS} CACHE BOOL "" FORCE)
+unset(_ULDUM_SAVED_BUILD_SHARED_LIBS)
+
+# ── RmlUi (Shell UI framework) ───────────────────────────────────────────
+# Used only by uldum_game (desktop) and the Android `game` flavor — never
+# by uldum_dev / editor / server / android dev flavor. We implement our
+# own RenderInterface + SystemInterface + FileInterface on top of our
+# Vulkan RHI and asset manager; RmlUi's bundled backends aren't used.
 if(ULDUM_SHELL_UI)
-    # Save caller's BUILD_SHARED_LIBS; we force static for just these deps
-    # to keep the dist folder self-contained (no DLL copying needed), then
-    # restore afterwards so we don't affect later fetches.
     set(_ULDUM_SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-    message(STATUS "Fetching FreeType...")
-    set(FT_DISABLE_BROTLI   TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
-    FetchContent_Declare(freetype
-        GIT_REPOSITORY https://github.com/freetype/freetype.git
-        GIT_TAG        VER-2-13-3
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(freetype)
-    if(MSVC AND TARGET freetype)
-        target_compile_options(freetype PRIVATE /W0)
-    endif()
-    # RmlUi calls find_package(Freetype) which expects the namespaced target
-    # `Freetype::Freetype`. FreeType's own CMake only exports the unadorned
-    # `freetype` target, so alias across.
-    if(TARGET freetype AND NOT TARGET Freetype::Freetype)
-        add_library(Freetype::Freetype ALIAS freetype)
-    endif()
-
-    # ── RmlUi (Shell UI framework) ────────────────────────────────────────
-    # Used only by uldum_game (desktop) and the Android `game` flavor — never
-    # by uldum_dev / editor / server / android dev flavor. We implement our
-    # own RenderInterface + SystemInterface + FileInterface on top of our
-    # Vulkan RHI and asset manager; RmlUi's bundled backends aren't used.
     message(STATUS "Fetching RmlUi...")
     # BACKEND must be a valid value (RmlUi rejects "none"), but with
     # RMLUI_SAMPLES=OFF the backend code isn't built. "auto" is the safe
@@ -260,7 +308,6 @@ if(ULDUM_SHELL_UI)
         endforeach()
     endif()
 
-    # Restore the caller's BUILD_SHARED_LIBS setting.
     set(BUILD_SHARED_LIBS ${_ULDUM_SAVED_BUILD_SHARED_LIBS} CACHE BOOL "" FORCE)
     unset(_ULDUM_SAVED_BUILD_SHARED_LIBS)
 endif()

@@ -15,6 +15,7 @@ function main()
     register_armor_system()
     register_hit_vfx()
     register_death_vfx()
+    register_damage_text()
 
     -- Find preplaced units (world origin = map center in centered coords)
     local units = GetUnitsInRange(-596, -396, 2000)

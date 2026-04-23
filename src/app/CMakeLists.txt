@@ -11,6 +11,7 @@ set(ULDUM_ENGINE_LIBS
     uldum_network
     uldum_input
     uldum_map
+    uldum_hud
 )
 
 # Staging dir: source engine/ + compiled shaders are assembled here,
@@ -115,6 +116,9 @@ elseif(ULDUM_GAME_PROJECT_DIR)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${ULDUM_ROOT}/engine
             ${ULDUM_ENGINE_STAGING}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${ULDUM_DEFAULT_FONT_TTF}
+            ${ULDUM_ENGINE_STAGING}/fonts/Roboto-Regular.ttf
         COMMAND $<TARGET_FILE:uldum_pack> pack
             ${ULDUM_ENGINE_STAGING}
             ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine.uldpak
@@ -150,7 +154,7 @@ elseif(ULDUM_GAME_PROJECT_DIR)
     target_include_directories(uldum_game PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum_game PRIVATE ${ULDUM_ENGINE_LIBS})
     if(ULDUM_SHELL_UI)
-        target_link_libraries(uldum_game PRIVATE uldum_ui)
+        target_link_libraries(uldum_game PRIVATE uldum_shell)
         target_compile_definitions(uldum_game PRIVATE ULDUM_SHELL_UI)
     endif()
     compile_shaders(uldum_game
@@ -201,6 +205,9 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${ULDUM_ROOT}/engine
             ${ULDUM_ENGINE_STAGING}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${ULDUM_DEFAULT_FONT_TTF}
+            ${ULDUM_ENGINE_STAGING}/fonts/Roboto-Regular.ttf
         COMMAND $<TARGET_FILE:uldum_pack> pack
             ${ULDUM_ENGINE_STAGING}
             ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine.uldpak

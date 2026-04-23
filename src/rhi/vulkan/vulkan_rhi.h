@@ -52,6 +52,11 @@ public:
     VkFormat         depth_format()     const { return m_depth_format; }
     VkSampleCountFlagBits msaa_samples() const { return m_msaa_samples; }
     u32              current_image_index() const { return m_current_image_index; }
+    // Ring-buffer index for resources that are written per-frame but read by
+    // the GPU for up to MAX_FRAMES_IN_FLIGHT frames. Stable inside one frame;
+    // advances in end_frame(). Callers can allocate MAX_FRAMES_IN_FLIGHT
+    // copies of a resource and index by this value to avoid CPU/GPU races.
+    u32              frame_index()         const { return m_frame_index; }
     VkImageView      current_image_view() const { return m_swapchain_views[m_current_image_index]; }
     VkImage          current_image()      const { return m_swapchain_images[m_current_image_index]; }
     VkQueue          graphics_queue() const { return m_graphics_queue; }

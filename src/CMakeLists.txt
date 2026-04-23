@@ -13,8 +13,13 @@ add_subdirectory(map)
 
 # Shell UI framework — game-only. See ULDUM_SHELL_UI in root CMakeLists.
 if(ULDUM_SHELL_UI)
-    add_subdirectory(ui)
+    add_subdirectory(shell)
 endif()
+
+# HUD — custom retained-mode UI for in-game overlays (healthbars, command
+# card, minimap, floating damage text). Available in all flavors (dev + game,
+# desktop + Android). Separate from uldum_shell / RmlUi.
+add_subdirectory(hud)
 
 # Executables / shared-library entry point
 add_subdirectory(app)

@@ -1,8 +1,12 @@
 #include "app/app.h"
 #include "core/log.h"
+#include "hud/node.h"
+#include "hud/hud_loader.h"
+#include "hud/world.h"
+#include "hud/text_tag.h"
 
 #ifdef ULDUM_SHELL_UI
-#include "ui/shell.h"
+#include "shell/shell.h"
 #include <nlohmann/json.hpp>
 #endif
 
@@ -105,6 +109,23 @@ bool App::init(const LaunchArgs& args) {
         return false;
     }
 
+    // HUD — custom retained-mode UI for in-game overlays. Initialized once
+    // alongside the renderer; lives across sessions.
+    if (!m_hud.init(m_rhi)) {
+        log::error(TAG, "HUD init failed");
+        return false;
+    }
+
+    // Selection circles — ground rings under selected units. 3D decals,
+    // rendered inside the main pass after the 3D scene but before HUD.
+    if (!m_selection_circles.init(m_rhi)) {
+        log::error(TAG, "Selection circles init failed");
+        return false;
+    }
+
+    // HUD nodes are loaded from each map's `hud.json` at session start
+    // (see start_session). App::init leaves the HUD tree empty.
+
     // Audio
     if (!m_audio.init()) {
         log::error(TAG, "AudioEngine init failed");
@@ -145,7 +166,7 @@ bool App::init(const LaunchArgs& args) {
 #ifdef ULDUM_SHELL_UI
     // Shell UI — game builds only. Loads the main menu and routes its
     // button clicks into the App state machine.
-    m_shell = std::make_unique<ui::Shell>();
+    m_shell = std::make_unique<shell::Shell>();
     if (!m_shell->init(m_rhi, m_platform->width(), m_platform->height())) {
         log::error(TAG, "Shell UI init failed");
         return false;
@@ -333,6 +354,29 @@ bool App::start_session() {
         m_renderer.camera().set_pose({cam.x, cam.y, cam.z}, cam.pitch, cam.yaw);
     }
 
+    // HUD setup — runs on EVERY flavor (host, offline, client). Client
+    // needs hud.json loaded for its own entity-bar config + name-label
+    // rendering, and needs the NetworkManager → Hud wire so incoming
+    // S_HUD_* messages apply to its local tree.
+    m_hud.clear_nodes();
+    {
+        std::string hud_path = m_map.map_root() + "/hud.json";
+        hud::load_from_asset(m_hud, hud_path,
+                             m_rhi.extent().width, m_rhi.extent().height);
+    }
+    m_hud.set_local_player(m_args.local_slot);
+    m_network.set_hud(&m_hud);
+    // Button click callback. Host / offline fires the server trigger
+    // directly; client forwards to host via C_NODE_EVENT.
+    m_hud.set_button_event_fn([this](const std::string& node_id) {
+        if (m_args.net_mode == network::Mode::Client) {
+            m_network.send_node_event(node_id, network::NodeEventKind::ButtonPressed);
+        } else {
+            m_server.script().fire_node_event("button_pressed",
+                                              m_args.local_slot, node_id);
+        }
+    });
+
     // Game server phase 2 (offline/host only — client doesn't run the simulation)
     if (!is_client) {
         // Push finalized lobby names into the sim so Lua's GetPlayerName can
@@ -343,6 +387,20 @@ bool App::start_session() {
             names.push_back(a.display_name);
         }
         m_server.simulation().set_player_names(std::move(names));
+
+        // Connect server Lua → HUD + → NetworkManager (for C_NODE_EVENT
+        // handling). Both must be set before init_game runs the map's Lua.
+        m_server.script().set_hud(&m_hud);
+        m_network.set_script(&m_server.script());
+
+        // Host mode: every local HUD mutation also emits a protocol packet
+        // via NetworkManager::host_hud_sync. The network layer routes it
+        // to the owning peer (or broadcasts). Offline skips sync entirely.
+        if (m_args.net_mode == network::Mode::Host) {
+            m_hud.set_sync_fn([this](const std::vector<u8>& pkt, u32 owner) {
+                m_network.host_hud_sync(pkt, owner);
+            });
+        }
 
         if (!m_server.init_game(m_map,
                                 &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio, &m_renderer)) {
@@ -445,6 +503,31 @@ bool App::start_session() {
         m_server.script().set_input(&m_selection, &m_commands);
     }
 
+    // HUD world-UI context: supplies world / fog / camera / picker / selection
+    // / terrain / local player so draw_world_overlays() can iterate entities,
+    // project positions, and filter by fog. Built here and held stable for
+    // the session; cleared in end_session().
+    {
+        m_hud_world_ctx = hud::WorldContext{};
+        if (is_client) {
+            m_hud_world_ctx.world = &m_network.client_world();
+            m_hud_world_ctx.fog   = &m_network.client_fog();
+        } else {
+            m_hud_world_ctx.world = &m_server.simulation().world();
+            m_hud_world_ctx.fog   = &m_server.simulation().fog();
+        }
+        // Type registry: server/host owns one; client also needs it (set via
+        // NetworkManager::set_type_registry earlier in start_session). Both
+        // paths resolve to the same pointer — the server's simulation types.
+        m_hud_world_ctx.types        = &m_server.simulation().types();
+        m_hud_world_ctx.camera       = &m_renderer.camera();
+        m_hud_world_ctx.picker       = &m_picker;
+        m_hud_world_ctx.selection    = &m_selection;
+        m_hud_world_ctx.terrain      = m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
+        m_hud_world_ctx.local_player = simulation::Player{m_args.local_slot};
+        m_hud.set_world_context(&m_hud_world_ctx);
+    }
+
     m_session_active = true;
     log::info(TAG, "=== Session started ===");
     return true;
@@ -459,6 +542,9 @@ void App::end_session() {
     m_commands = input::CommandSystem{};
     m_selection = input::SelectionState{};
 
+    m_hud.set_world_context(nullptr);
+    m_hud_world_ctx = hud::WorldContext{};
+    m_hud.clear_nodes();
     m_network.shutdown();
     m_map.shutdown();
     m_server.shutdown();
@@ -796,6 +882,27 @@ void App::run() {
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
                 m_renderer.draw(cmd, m_rhi.extent(), world, alpha);
+                // Selection circles — ground rings under selected units.
+                // Drawn after the 3D scene so they can be occluded by
+                // buildings, before HUD so bars / labels stack above.
+                const map::TerrainData* sel_terrain =
+                    m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
+                m_selection_circles.draw(cmd, m_renderer.camera(), world,
+                                         sel_terrain,
+                                         m_selection.selected(),
+                                         simulation::Player{m_args.local_slot},
+                                         alpha);
+                // HUD overlay. Feed the current mouse state in, walk the
+                // widget tree, and render.
+                {
+                    const auto& in = m_platform->input();
+                    m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
+                    m_hud.update_text_tags(frame_dt);
+                    m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
+                    m_hud.draw_tree();
+                    m_hud.draw_world_overlays(alpha);
+                    m_hud.render(cmd);
+                }
 #ifdef ULDUM_SHELL_UI
                 if (m_shell) {
                     m_shell->update(frame_dt);
@@ -860,6 +967,8 @@ void App::shutdown() {
     if (m_shell) m_shell.reset();
 #endif
     m_audio.shutdown();
+    m_hud.shutdown();
+    m_selection_circles.shutdown();
     m_renderer.shutdown();
     m_asset.shutdown();
     m_rhi.shutdown();

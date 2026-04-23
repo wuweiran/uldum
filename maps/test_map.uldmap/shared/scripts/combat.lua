@@ -39,6 +39,31 @@ function register_hit_vfx()
     end)
 end
 
+--- Register floating damage numbers. Fires on attack damage and creates
+--- a red text tag above the target unit that rises and fades out.
+function register_damage_text()
+    local trig = CreateTrigger(TRIGGER_PRIORITY_LOW)
+    TriggerRegisterEvent(trig, EVENT_GLOBAL_DAMAGE)
+    TriggerAddCondition(trig, function()
+        return GetDamageAmount() > 0
+    end)
+    TriggerAddAction(trig, function()
+        local target = GetDamageTarget()
+        if not target then return end
+        CreateTextTag{
+            text      = string.format("-%d", math.floor(GetDamageAmount() + 0.5)),
+            unit      = target,
+            z_offset  = 120.0,
+            size      = 18,
+            color     = "#FF5050FF",
+            velocity  = { 0, -40 },     -- rise up the screen (y-down)
+            lifespan  = 1.2,
+            fadepoint = 0.6,
+        }
+    end)
+    Log("[Combat] Damage text numbers active")
+end
+
 --- Register death burst VFX + logging.
 function register_death_vfx()
     local death_trig = CreateTrigger()

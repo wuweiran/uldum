@@ -1,14 +1,14 @@
-#include "ui/shell.h"
-#include "ui/render_interface.h"
-#include "ui/system_interface.h"
-#include "ui/file_interface.h"
+#include "shell/shell.h"
+#include "shell/render_interface.h"
+#include "shell/system_interface.h"
+#include "shell/file_interface.h"
 #include "core/log.h"
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/EventListener.h>
 #include <vulkan/vulkan.h>
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 static constexpr const char* TAG = "UI";
 
@@ -204,4 +204,4 @@ void Shell::set_click_handler(ClickHandler handler) {
     }
 }
 
-} // namespace uldum::ui
+} // namespace uldum::shell

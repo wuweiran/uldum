@@ -13,6 +13,9 @@
 #include "render/renderer.h"
 #include "audio/audio.h"
 #include "network/protocol.h"
+#include "hud/hud.h"
+#include "hud/node.h"
+#include "hud/text_tag.h"
 #include "core/log.h"
 
 #define SOL_ALL_SAFETIES_ON 1
@@ -145,6 +148,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     bind_timer_api();
     bind_input_api();
     bind_save_api();
+    bind_hud_api();
 
     // Hook the world's damage callback so all damage (combat + script) fires on_damage events
     sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target, f32& amount, std::string_view damage_type) {
@@ -397,6 +401,14 @@ void ScriptEngine::update(float dt) {
 }
 
 // ── Event firing ──────────────────────────────────────────────────────────
+
+void ScriptEngine::fire_node_event(std::string_view event_name, u32 player_id,
+                                    std::string_view node_id) {
+    set_context_node_id(std::string(node_id));
+    set_context_player(player_id);
+    fire_event(event_name, UINT32_MAX, "", player_id);
+    m_ctx_node_id.clear();
+}
 
 void ScriptEngine::fire_event(std::string_view event_name, u32 unit_id,
                                std::string_view /*ability_id*/, u32 player_id) {
@@ -1097,6 +1109,10 @@ void ScriptEngine::bind_trigger_api() {
     lua["GetTriggerPlayer"] = [&, player_or_nil]() -> sol::object {
         return player_or_nil(simulation::Player{m_ctx_player});
     };
+    // GetTriggerNode() — id of the HUD node that fired a button_pressed
+    // (or other node-event) trigger. Empty string outside a node-event
+    // action.
+    lua["GetTriggerNode"] = [this]() -> std::string { return m_ctx_node_id; };
     lua["GetTriggerAbilityId"] = [&]() -> std::string {
         if (m_ctx_ability.empty()) {
             log::warn(TAG, "GetTriggerAbilityId() called but no ability in context (event: '{}')", m_ctx_event);
@@ -1316,6 +1332,176 @@ void ScriptEngine::bind_input_api() {
     lua["GetOrderPlayer"] = [this]() -> u32 { return m_ctx_order_player; };
     lua["IsOrderQueued"] = [this]() -> bool { return m_ctx_order_queued; };
     lua["CancelOrder"] = [this]() { m_ctx_order_cancelled = true; };
+}
+
+// ── HUD bindings ─────────────────────────────────────────────────────────
+// Atom state setters + text tag create/destroy + setters. All of these
+// no-op cleanly if the HUD pointer was never wired (e.g., in a pure
+// server build) or the referenced node id doesn't exist.
+
+void ScriptEngine::bind_hud_api() {
+    auto& lua = *m_lua;
+
+    // Parse "#RRGGBB" / "#RRGGBBAA" color string → packed u32. Matches the
+    // hud.json loader's expectation so Lua authors can use the same color
+    // literals they see in JSON.
+    auto parse_color = [](const std::string& s) -> hud::Color {
+        auto hex_nibble = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return -1;
+        };
+        auto hex_byte = [&](char a, char b) -> u8 {
+            int hi = hex_nibble(a), lo = hex_nibble(b);
+            if (hi < 0 || lo < 0) return 0;
+            return static_cast<u8>((hi << 4) | lo);
+        };
+        if (s.size() == 7 && s[0] == '#') {
+            return hud::rgba(hex_byte(s[1], s[2]), hex_byte(s[3], s[4]), hex_byte(s[5], s[6]), 255);
+        }
+        if (s.size() == 9 && s[0] == '#') {
+            return hud::rgba(hex_byte(s[1], s[2]), hex_byte(s[3], s[4]),
+                             hex_byte(s[5], s[6]), hex_byte(s[7], s[8]));
+        }
+        return hud::rgba(255, 255, 255, 255);
+    };
+
+    // ── Node lookup + state setters ──────────────────────────────────────
+
+    // GetNode(id) — returns the id string if the node exists, nil otherwise.
+    // Idiom: `if GetNode("my_label") then SetLabelText("my_label", "...") end`.
+    lua["GetNode"] = [this](const std::string& id) -> sol::object {
+        auto& lua = *m_lua;
+        if (!m_hud) return sol::make_object(lua, sol::nil);
+        auto* n = m_hud->find_node_by_id(id);
+        return n ? sol::make_object(lua, id) : sol::make_object(lua, sol::nil);
+    };
+
+    // State setters route through Hud's by-id API so both local mutation
+    // and MP sync emission happen in one call.
+    lua["SetNodeVisible"]   = [this](const std::string& id, bool visible)          { if (m_hud) m_hud->set_node_visible(id, visible); };
+    lua["SetLabelText"]     = [this](const std::string& id, const std::string& t)  { if (m_hud) m_hud->set_label_text(id, t); };
+    lua["SetBarFill"]       = [this](const std::string& id, f32 fill)              { if (m_hud) m_hud->set_bar_fill(id, fill); };
+    lua["SetImageSource"]   = [this](const std::string& id, const std::string& p)  { if (m_hud) m_hud->set_image_source(id, p); };
+    lua["SetButtonEnabled"] = [this](const std::string& id, bool enabled)          { if (m_hud) m_hud->set_button_enabled(id, enabled); };
+
+    // CreateNode(template_id, { anchor, x, y, w, h, owner }): instantiate
+    // a template defined in the map's hud.json `nodes` block at the
+    // requested placement. Templates define what the node is (type,
+    // style, content, children); Lua decides where it goes and who
+    // sees it. `owner` (optional) = GetPlayer(N) → only that player's
+    // client sees this node. Omit for a broadcast (all clients).
+    // Returns the id string on success, nil on failure.
+    lua["CreateNode"] = [this](const std::string& template_id,
+                               sol::table placement) -> sol::object {
+        auto& lua = *m_lua;
+        if (!m_hud) return sol::make_object(lua, sol::nil);
+
+        std::string anchor_str = placement["anchor"].get_or(std::string("tl"));
+        hud::Hud::Placement pl{};
+        pl.anchor = anchor_str;
+        pl.x      = placement["x"].get_or(0.0f);
+        pl.y      = placement["y"].get_or(0.0f);
+        pl.w      = placement["w"].get_or(0.0f);
+        pl.h      = placement["h"].get_or(0.0f);
+        if (auto o = placement["owner"]; o.valid()) {
+            pl.owner_player = o.get<simulation::Player>().id;
+        }
+        if (pl.w <= 0.0f || pl.h <= 0.0f) {
+            log::warn("HUD", "CreateNode '{}': w/h must be > 0 (got {}, {})",
+                      template_id, pl.w, pl.h);
+        }
+
+        bool ok = m_hud->instantiate_template(template_id, pl);
+        return ok ? sol::make_object(lua, template_id)
+                  : sol::make_object(lua, sol::nil);
+    };
+
+    // DestroyNode(id): remove an instantiated node (and its entire
+    // subtree) from the HUD. No-op if the id isn't in the current tree.
+    lua["DestroyNode"] = [this](const std::string& id) -> bool {
+        if (!m_hud) return false;
+        return m_hud->remove_node_by_id(id);
+    };
+
+    // ── Text tags ────────────────────────────────────────────────────────
+    // Handles: a single Lua integer packing (generation << 32) | index.
+    // Generation 0 = invalid sentinel.
+
+    auto pack_id = [](hud::TextTagId id) -> u64 {
+        return (static_cast<u64>(id.generation) << 32) | static_cast<u64>(id.index);
+    };
+    auto unpack_id = [](u64 h) -> hud::TextTagId {
+        return hud::TextTagId{ static_cast<u32>(h & 0xFFFFFFFFu),
+                               static_cast<u32>(h >> 32) };
+    };
+
+    // CreateTextTag{ ... }. See docs/ui.md for the full list of fields.
+    lua["CreateTextTag"] = [this, parse_color, pack_id](sol::table args) -> u64 {
+        if (!m_hud) return 0;
+        hud::TextTagCreateInfo info{};
+        // `proxy.get_or(default)` avoids ambiguity with sol2's template
+        // overloads; type is deduced from the default value.
+        info.text      = args["text"].get_or(std::string{});
+        info.px_size   = args["size"].get_or(14.0f);
+
+        // Position: either `pos = { x, y, z }` world point or `unit = U`.
+        if (args["unit"].valid()) {
+            info.unit = args["unit"].get<simulation::Unit>();
+        } else if (args["pos"].valid()) {
+            sol::table p = args["pos"];
+            info.pos = { p[1].get_or(0.0f), p[2].get_or(0.0f), p[3].get_or(0.0f) };
+        }
+        info.z_offset = args["z_offset"].get_or(0.0f);
+
+        if (auto c = args["color"]; c.valid()) info.color = parse_color(c.get<std::string>());
+
+        if (auto v = args["velocity"]; v.valid()) {
+            sol::table vt = v;
+            info.velocity_x = vt[1].get_or(0.0f);
+            info.velocity_y = vt[2].get_or(0.0f);
+        }
+        info.lifespan  = args["lifespan"].get_or(0.0f);
+        info.fadepoint = args["fadepoint"].get_or(0.0f);
+
+        // owner (optional) — if set, only that player's client sees the tag.
+        if (auto o = args["owner"]; o.valid()) {
+            info.owner_player = o.get<simulation::Player>().id;
+        }
+
+        return pack_id(m_hud->create_text_tag(info));
+    };
+
+    lua["DestroyTextTag"] = [this, unpack_id](u64 h) {
+        if (!m_hud) return;
+        m_hud->destroy_text_tag(unpack_id(h));
+    };
+
+    lua["SetTextTagText"] = [this, unpack_id](u64 h, const std::string& text) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_text(unpack_id(h), text);
+    };
+    lua["SetTextTagPos"] = [this, unpack_id](u64 h, f32 x, f32 y, f32 z) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_pos(unpack_id(h), x, y, z);
+    };
+    lua["SetTextTagPosUnit"] = [this, unpack_id](u64 h, simulation::Unit unit, f32 z_offset) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_pos_unit(unpack_id(h), unit.id, z_offset);
+    };
+    lua["SetTextTagColor"] = [this, unpack_id, parse_color](u64 h, const std::string& color) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_color(unpack_id(h), parse_color(color));
+    };
+    lua["SetTextTagVelocity"] = [this, unpack_id](u64 h, f32 vx, f32 vy) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_velocity(unpack_id(h), vx, vy);
+    };
+    lua["SetTextTagVisible"] = [this, unpack_id](u64 h, bool visible) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_visible(unpack_id(h), visible);
+    };
 }
 
 } // namespace uldum::script

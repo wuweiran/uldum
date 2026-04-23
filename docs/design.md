@@ -597,14 +597,14 @@ Two systems: **Shell UI** (RmlUi, menus / game-room / settings / results) and **
 
 Custom retained-mode UI stack, separate from RmlUi. Available in both dev and game builds. One input preset per map (RTS or RPG), with per-platform (desktop/mobile) adaptation driven by the engine. HUD owns screen-space widgets and world-anchored overlays (healthbars, floating damage text).
 
-- **16c-i — UI foundation.** 2D quad batcher + font pipeline + retained widget tree + input routing. Cross-platform (desktop + mobile) from day one. Delivers one interactive button on screen; no game integration. HUD-stack specifics (renderer, font pipeline, text stack) in [ui.md](ui.md).
-- **16c-ii — Widget catalog.** Atoms (panel, button, bar, label, icon, image) + core composites (command_card, selection_info, resource_bar, status_strip, minimap, chat_box, dialog). Data bindings pull from sim state each frame.
-- **16c-iii — World-anchored overlays.** Healthbar billboards, floating text. Projected through the scene camera.
-- **16c-iv — Map manifest schema + RTS-desktop preset.** Declarative `"hud"` block in manifest. Port the current hardcoded HUD to the new form; `test_map` declares `"preset": "rts"`. Visual parity, now data-driven.
-- **16c-v — Lua API.** Minimal runtime surface: show/hide, set text, set value, open dialog, bind action slot. Rewire existing scripted HUD behaviors (game-over, objective text).
-- **16c-vi — RTS-mobile variant.** Touch affordances, safe-area handling, mobile-tuned sizes. Android `uldum` auto-boots into it.
-- **16c-vii — RPG-desktop preset.** Action bar (actor-bound), player_frame, target_frame. Ship a small `rpg_demo.uldmap`.
-- **16c-viii — RPG-mobile variant.** Virtual joystick + touch action bar.
+- **16c-i — UI foundation.** 2D quad batcher + font pipeline + retained node tree + input routing. Cross-platform (desktop + mobile) from day one. Delivers one interactive button on screen; no game integration. HUD-stack specifics (renderer, font pipeline, text stack) in [ui.md](ui.md).
+- **16c-ii — Node catalog (atoms + composites).** Atom nodes (panel, label, image, bar, button) + v1 composites (action_bar, minimap, chat_box, joystick). Catalog and schema pinned in [ui.md](ui.md). Deferred composites tracked separately: unit_panel, status_strip, resource_bar, dialog.
+- **16c-iii — World UI.** Screen-pixel-sized elements anchored to world positions or entities, projected each frame, rendered on top of the 3D scene (no occlusion). Covers multi-bar overlays above units, hover-triggered name labels, and WC3-style text tags (Lua-created, optionally animated with velocity / lifespan / fadepoint). Selection circles (ground decals) tracked separately — either as a follow-up sub-phase or deferred.
+- **16c-iv — `hud.json` loader + RTS desktop preset.** Parser for the `hud.json` schema from [ui.md](ui.md). Port today's hardcoded HUD to a declarative `hud.json`; `test_map` declares `"preset": "rts"`. RTS preset behavior matrix lives in [input-system.md](input-system.md).
+- **16c-v — Lua API + server/client sync.** Single authoritative Lua VM on the server. Bindings follow the WC3-style flat naming in [ui.md](ui.md): `GetNode`, `SetNodeVisible`, `SetLabelText`, `SetBarFill`, `CreateNode`, `DestroyNode`, `TriggerRegisterNodeEvent`, `CreateTextTag` / `SetTextTag*` / `DestroyTextTag`, etc. Networking: atom node state changes broadcast as `S_HUD_UPDATE` deltas; transient targeted / broadcast events use `S_HUD_EVENT`; client atom input forwarded as `C_NODE_EVENT`. Composite actions (action_bar slot press → ability cast) ride existing game-command protocols, no new messages.
+- **16c-vi — RTS mobile variant.** Touch affordances, safe-area handling, mobile-tuned sizes. Android `uldum` auto-boots into it.
+- **16c-vii — Action preset (desktop).** `action_rpg` input preset + `action_bar` bound to a hero actor. Ship a minimal `action_demo.uldmap` that boots into it.
+- **16c-viii — Action preset (mobile).** `joystick` composite active; touch action_bar; swipe-camera.
 
 **Phase 16d — Screen transitions + mobile polish**
 - Screen state machine; fades via RCSS transitions.

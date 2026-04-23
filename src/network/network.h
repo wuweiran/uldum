@@ -16,8 +16,10 @@
 #include <vector>
 
 namespace uldum::simulation { class Simulation; class TypeRegistry; }
-namespace uldum::input { class CommandSystem; }
-namespace uldum::map { class MapManager; }
+namespace uldum::input  { class CommandSystem; }
+namespace uldum::map    { class MapManager; }
+namespace uldum::hud    { class Hud; }
+namespace uldum::script { class ScriptEngine; }
 
 namespace uldum::network {
 
@@ -99,6 +101,23 @@ public:
 
     // Set the type registry for spawning entities on the client.
     void set_type_registry(const simulation::TypeRegistry* types) { m_client_types = types; }
+
+    // HUD sync plumbing (16c-v).
+    // - On host: set_hud() + set_script() install handlers so client-side
+    //   C_NODE_EVENT can fire server-side triggers, and host_hud_sync can
+    //   route outgoing state deltas.
+    // - On client: set_hud() installs the target HUD that S_HUD_* messages
+    //   apply to locally.
+    void set_hud(hud::Hud* hud)                 { m_hud = hud; }
+    void set_script(script::ScriptEngine* scr)  { m_script = scr; }
+
+    // Host: route a packet built by Hud's sync_fn to the matching peer(s).
+    // owner_player == UINT32_MAX broadcasts; specific slot id looks up the
+    // PeerInfo with that player and sends to that peer only.
+    void host_hud_sync(const std::vector<u8>& packet, u32 owner_player);
+
+    // Client: report a HUD node event (button press, etc.) to the host.
+    void send_node_event(std::string_view node_id, NodeEventKind kind);
 
 
     // Initialize client-side fog of war from map data.
@@ -250,6 +269,12 @@ private:
     simulation::World m_client_world;
     simulation::Player m_local_player{UINT32_MAX};
     const simulation::TypeRegistry* m_client_types = nullptr;
+
+    // HUD sync plumbing — set by App during start_session. Host uses
+    // m_script to dispatch C_NODE_EVENT; client uses m_hud to apply
+    // S_HUD_* messages.
+    hud::Hud*               m_hud    = nullptr;
+    script::ScriptEngine*   m_script = nullptr;
 
     // Fog of war (client computes locally from received entities)
     simulation::FogOfWar m_client_fog;

@@ -4,7 +4,7 @@
 
 #include <chrono>
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 // Bridges RmlUi to engine logging + wall clock. No windowing concerns —
 // RmlUi doesn't need them, the platform layer handles clipboard / cursor
@@ -24,4 +24,4 @@ private:
     std::chrono::steady_clock::time_point m_start;
 };
 
-} // namespace uldum::ui
+} // namespace uldum::shell

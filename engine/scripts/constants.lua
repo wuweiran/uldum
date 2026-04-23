@@ -35,3 +35,10 @@ EVENT_UNIT_ABILITY_REMOVED = "unit_ability_removed"
 EVENT_PLAYER_ORDER         = "player_order"
 EVENT_PLAYER_DISCONNECT    = "player_disconnect"
 EVENT_PLAYER_LEAVE         = "player_leave"
+
+-- HUD events — player-scoped. A player's client forwards the raw input
+-- (button press etc.) to the server via C_NODE_EVENT; the server fires
+-- the corresponding event with the player id as the filter. Use
+-- GetTriggerPlayer() / GetTriggerNode() inside the action to identify
+-- who clicked what.
+EVENT_BUTTON_PRESSED       = "button_pressed"

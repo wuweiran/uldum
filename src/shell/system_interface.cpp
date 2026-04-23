@@ -1,7 +1,7 @@
-#include "ui/system_interface.h"
+#include "shell/system_interface.h"
 #include "core/log.h"
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 static constexpr const char* TAG = "UI";
 
@@ -37,4 +37,4 @@ bool SystemInterface::LogMessage(Rml::Log::Type type, const Rml::String& message
     return true;  // keep processing
 }
 
-} // namespace uldum::ui
+} // namespace uldum::shell

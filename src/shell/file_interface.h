@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 // Routes RmlUi's file loading through our AssetManager so RML/RCSS/font
 // files come from the same places as the rest of the engine's assets —
@@ -33,4 +33,4 @@ private:
     Rml::FileHandle m_next_handle = 1;
 };
 
-} // namespace uldum::ui
+} // namespace uldum::shell

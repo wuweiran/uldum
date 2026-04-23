@@ -11,7 +11,7 @@
 
 namespace uldum::rhi { class VulkanRhi; }
 
-namespace uldum::ui {
+namespace uldum::shell {
 
 // Real Vulkan implementation of RmlUi's render contract.
 //
@@ -111,4 +111,4 @@ private:
     glm::mat4       m_transform       = glm::mat4(1.0f);
 };
 
-} // namespace uldum::ui
+} // namespace uldum::shell
