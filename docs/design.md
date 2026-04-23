@@ -594,10 +594,17 @@ Two systems: **Shell UI** (RmlUi, menus / game-room / settings / results) and **
 - Dev APK's Android map picker = same Shell pipeline, auto-populated from bundled test maps.
 
 **Phase 16c — HUD system (custom, Lua-driven)**
-- Engine primitives: world-space billboards, screen-space panels, bars, icons, text labels, minimap.
-- Lua API: `DefineHudBar`, `ShowSelectionCircle`, `AttachIconToUnit`, etc. Values bound to sim state.
-- Custom instanced batch renderer — depth-aware for world-space.
-- Completely separate from RmlUi.
+
+Custom retained-mode UI stack, separate from RmlUi. Available in both dev and game builds. One input preset per map (RTS or RPG), with per-platform (desktop/mobile) adaptation driven by the engine. HUD owns screen-space widgets and world-anchored overlays (healthbars, floating damage text).
+
+- **16c-i — UI foundation.** 2D quad batcher + font pipeline + retained widget tree + input routing. Cross-platform (desktop + mobile) from day one. Delivers one interactive button on screen; no game integration. HUD-stack specifics (renderer, font pipeline, text stack) in [ui.md](ui.md).
+- **16c-ii — Widget catalog.** Atoms (panel, button, bar, label, icon, image) + core composites (command_card, selection_info, resource_bar, status_strip, minimap, chat_box, dialog). Data bindings pull from sim state each frame.
+- **16c-iii — World-anchored overlays.** Healthbar billboards, floating text. Projected through the scene camera.
+- **16c-iv — Map manifest schema + RTS-desktop preset.** Declarative `"hud"` block in manifest. Port the current hardcoded HUD to the new form; `test_map` declares `"preset": "rts"`. Visual parity, now data-driven.
+- **16c-v — Lua API.** Minimal runtime surface: show/hide, set text, set value, open dialog, bind action slot. Rewire existing scripted HUD behaviors (game-over, objective text).
+- **16c-vi — RTS-mobile variant.** Touch affordances, safe-area handling, mobile-tuned sizes. Android `uldum` auto-boots into it.
+- **16c-vii — RPG-desktop preset.** Action bar (actor-bound), player_frame, target_frame. Ship a small `rpg_demo.uldmap`.
+- **16c-viii — RPG-mobile variant.** Virtual joystick + touch action bar.
 
 **Phase 16d — Screen transitions + mobile polish**
 - Screen state machine; fades via RCSS transitions.
