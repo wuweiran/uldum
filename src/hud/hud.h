@@ -12,7 +12,8 @@
 // Forward-decls: keep the header free of vulkan.h / VMA.
 typedef struct VkCommandBuffer_T* VkCommandBuffer;
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi      { class VulkanRhi; }
+namespace uldum::platform { struct InputState; }
 
 namespace uldum::hud {
 
@@ -22,6 +23,9 @@ struct WorldOverlayConfig;     // world.h
 struct WorldContext;           // world.h
 struct TextTagId;              // text_tag.h
 struct TextTagCreateInfo;      // text_tag.h
+struct ActionBarConfig;        // action_bar.h
+enum class ActionBarHotkeyMode : u8;  // action_bar.h
+struct MinimapConfig;          // minimap.h
 
 // Packed RGBA color, 0xAABBGGRR on little-endian hosts. Use rgba() helper
 // to build one; the HUD pipeline expects u8×4 → normalized vec4 with the
@@ -68,6 +72,13 @@ public:
     // servers never render anyway, so the value there is moot.
     void set_local_player(u32 player_id);
     u32  local_player() const;
+
+    // ── Viewport ─────────────────────────────────────────────────────────
+    // Re-resolve every composite's absolute rect from its stored
+    // placement. Called from App when the window resizes so bars,
+    // minimaps, and their slots re-anchor correctly against the new
+    // viewport instead of staying pinned to the old dimensions.
+    void on_viewport_resized(u32 screen_w, u32 screen_h);
 
     // ── Per-frame ────────────────────────────────────────────────────────
     // begin_frame() resets the CPU-side draw list and stashes the viewport.
@@ -201,6 +212,68 @@ public:
     void set_text_tag_color   (TextTagId id, Color color);
     void set_text_tag_velocity(TextTagId id, f32 vx, f32 vy);
     void set_text_tag_visible (TextTagId id, bool visible);
+
+    // ── Composites ───────────────────────────────────────────────────────
+    // Engine-authored node groups whose layout + styling come from
+    // `composites.*` in hud.json. The action_bar's contents are
+    // selection-driven — whichever unit the local player has selected
+    // fills the slots, matched by hotkey letter (slot.hotkey ==
+    // ability.hotkey). No Lua binding is required for the common case.
+
+    // Install or replace the action_bar config (called by hud_loader.cpp
+    // when parsing the `composites.action_bar` block). Resets transient
+    // runtime state so stale state from a previous map can't leak.
+    void set_action_bar_config(const ActionBarConfig& cfg);
+
+    // Visibility — bar-level (hides the whole composite) and per-slot
+    // (hides a single slot while leaving others visible). No-op when the
+    // config is disabled or the slot index is out of range.
+    void action_bar_set_visible(bool visible);
+    void action_bar_set_slot_visible(u32 slot, bool visible);
+
+    // Manual slot → ability binding (takes effect when the bar's
+    // `binding_mode == Manual`). No-op on out-of-range slot index.
+    // Passive abilities can be bound but shouldn't be (convention) —
+    // nothing fires when the slot is triggered. Clearing removes the
+    // binding so the slot renders empty again.
+    void action_bar_set_slot(u32 slot, std::string_view ability_id);
+    void action_bar_clear_slot(u32 slot);
+
+    // Hotkey mode — driven by the global `input.action_bar_hotkey_mode`
+    // setting. App subscribes to the key on init and pushes the value
+    // here; resolve + keyboard dispatch consult it every frame so
+    // changes take effect immediately.
+    void action_bar_set_hotkey_mode(ActionBarHotkeyMode mode);
+
+    // Mark which ability is currently in targeting mode (empty = none).
+    // App pushes this each frame from the input preset so the classic_rts
+    // render path can render the matching slot "armed" (press_bg) while
+    // the player picks a target.
+    void action_bar_set_targeting_ability(std::string_view ability_id);
+
+    // Callback fired when a slot click OR slot hotkey press resolves to
+    // an ability. The HUD performs hit-testing, keyboard scanning, and
+    // selection-driven ability lookup internally; the app wires this up
+    // to the input preset (typically `InputPreset::queue_ability`).
+    using ActionBarCastFn = std::function<void(const std::string& ability_id)>;
+    void set_action_bar_cast_fn(ActionBarCastFn fn);
+
+    // Scan the action-bar slot hotkeys against the current platform
+    // input state and fire the cast callback on rising edges. Call once
+    // per frame (alongside handle_pointer) before the input preset's
+    // update so the queued ability is consumed in the same frame.
+    void handle_action_bar_keys(const platform::InputState& input);
+
+    // Minimap composite — schematic top-down view of the world. v1 is
+    // bg + border + unit dots (fog-filtered) + click-to-jump camera.
+    void set_minimap_config(const MinimapConfig& cfg);
+    void minimap_set_visible(bool visible);
+
+    // Fired when the player clicks inside the minimap. Coords are world
+    // X / Y in the ground plane (z = 0). App wires this to a camera
+    // pose change so the view snaps to that location.
+    using MinimapJumpFn = std::function<void(f32 world_x, f32 world_y)>;
+    void set_minimap_jump_fn(MinimapJumpFn fn);
 
     // ── Network sync (host-side) ─────────────────────────────────────────
     // Host installs a callback that turns local HUD mutations into

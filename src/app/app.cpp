@@ -4,6 +4,7 @@
 #include "hud/hud_loader.h"
 #include "hud/world.h"
 #include "hud/text_tag.h"
+#include "hud/action_bar.h"
 
 #ifdef ULDUM_SHELL_UI
 #include "shell/shell.h"
@@ -141,6 +142,19 @@ bool App::init(const LaunchArgs& args) {
         m_audio.set_volume(audio::Channel::Master, enabled ? 1.0f : 0.0f);
     });
     m_settings.set("audio.master_enabled", true);
+
+    // Action-bar hotkey mode — "ability" (WC3 mnemonic) or "positional"
+    // (MOBA grid). Player-level preference, not per-map. HUD consults
+    // this every frame for both resolve + keyboard dispatch so a flip
+    // takes effect immediately without a session restart.
+    m_settings.subscribe("input.action_bar_hotkey_mode", [this](const settings::Value& v) {
+        const std::string* s = std::get_if<std::string>(&v);
+        auto mode = (s && *s == "positional")
+                    ? hud::ActionBarHotkeyMode::Positional
+                    : hud::ActionBarHotkeyMode::Ability;
+        m_hud.action_bar_set_hotkey_mode(mode);
+    });
+    m_settings.set("input.action_bar_hotkey_mode", std::string("ability"));
 
     // Hardcoded local player name for now — carried over C_JOIN, shown in
     // lobbies, and surfaced to Lua as GetPlayerName(player). User-configurable
@@ -377,6 +391,54 @@ bool App::start_session() {
         }
     });
 
+    // Action-bar slot click → same path as pressing the ability's
+    // hotkey. HUD pointer dispatch runs just before the preset update
+    // each frame, so the queued request is consumed in that same
+    // update's trailing flush. Client mode has no input preset today —
+    // the callback is a no-op there until ability-cast-over-network
+    // lands as its own task.
+    m_hud.set_action_bar_cast_fn([this](const std::string& ability_id) {
+        if (m_input_preset) m_input_preset->queue_ability(ability_id);
+    });
+
+    // Minimap click → jump the camera so its ground-focus point lands
+    // at the clicked world coord. Preserves the current pitch/yaw so
+    // the player's view angle stays consistent across jumps.
+    m_hud.set_minimap_jump_fn([this](f32 wx, f32 wy) {
+        auto& cam = m_renderer.camera();
+        glm::vec3 pos = cam.position();
+        glm::vec3 fwd = cam.forward_dir();
+        if (fwd.z >= -0.001f) {
+            // Camera looking at or above the horizon — fall back to a
+            // direct XY snap without preserving the offset.
+            cam.set_pose({ wx, wy, pos.z }, cam.pitch(), cam.yaw());
+            return;
+        }
+        f32 t = -pos.z / fwd.z;
+        glm::vec3 focus  = pos + t * fwd;
+        glm::vec3 offset = pos - focus;
+        cam.set_pose({ wx + offset.x, wy + offset.y, pos.z },
+                     cam.pitch(), cam.yaw());
+    });
+
+    // Input wiring that the map's Lua may touch from main() — command
+    // submission, selection, and the script→input bridge. Must happen
+    // before `init_game` below, which runs the map's `main()` and is
+    // where scripts call SetControlledUnit / IssueOrder / etc.
+    if (!is_client) {
+        m_commands.init(&m_server.simulation().world());
+    } else {
+        m_commands.init(nullptr);  // no local world
+        m_commands.set_network_send([this](const input::GameCommand& cmd) {
+            m_network.send_order(cmd);
+        });
+    }
+    u32 local_player_id_early = is_client ? UINT32_MAX : m_args.local_slot;
+    m_selection.set_player(simulation::Player{local_player_id_early});
+    if (!is_client) {
+        m_server.script().set_input(&m_selection, &m_commands);
+    }
+
     // Game server phase 2 (offline/host only — client doesn't run the simulation)
     if (!is_client) {
         // Push finalized lobby names into the sim so Lua's GetPlayerName can
@@ -464,24 +526,13 @@ bool App::start_session() {
         };
     }
 
-    // Input: command system, selection, picking, preset
-    if (!is_client) {
-        m_commands.init(&m_server.simulation().world());
-    } else {
-        m_commands.init(nullptr);  // no local world
-        m_commands.set_network_send([this](const input::GameCommand& cmd) {
-            m_network.send_order(cmd);
-        });
-    }
-
-    u32 local_player_id = is_client ? UINT32_MAX : m_args.local_slot;  // client gets ID from S_WELCOME later
-    m_selection.set_player(simulation::Player{local_player_id});
-
+    // Picking: needs camera + terrain, both ready after map content load.
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
                   &active_world(),
                   m_platform->width(), m_platform->height());
 
-    // Load input configuration from manifest
+    // Input preset + bindings — preset is map-defined; bindings are the
+    // user-customizable layer on top of preset defaults.
     m_input_preset = input::create_preset(m_map.manifest().input_preset);
     m_bindings.load(m_map.manifest().input_bindings_json);
     m_bindings.apply_defaults(input::rts_default_bindings());
@@ -496,11 +547,6 @@ bool App::start_session() {
         // Client: renderer doesn't need simulation ref for fog filtering
         // (server already filters entities by fog)
         m_renderer.set_simulation(nullptr);
-    }
-
-    // Wire input to script engine (offline/host only)
-    if (!is_client) {
-        m_server.script().set_input(&m_selection, &m_commands);
     }
 
     // HUD world-UI context: supplies world / fog / camera / picker / selection
@@ -520,6 +566,7 @@ bool App::start_session() {
         // NetworkManager::set_type_registry earlier in start_session). Both
         // paths resolve to the same pointer — the server's simulation types.
         m_hud_world_ctx.types        = &m_server.simulation().types();
+        m_hud_world_ctx.abilities    = &m_server.simulation().abilities();
         m_hud_world_ctx.camera       = &m_renderer.camera();
         m_hud_world_ctx.picker       = &m_picker;
         m_hud_world_ctx.selection    = &m_selection;
@@ -552,6 +599,11 @@ void App::end_session() {
     m_renderer.set_simulation(nullptr);
     m_renderer.set_terrain_data(nullptr);
     m_renderer.set_fog_grid(nullptr, 0, 0);
+    // Free per-entity animation state so reused entity ids in the next
+    // session don't inherit stale bone buffers (visible as detached
+    // body parts). Runs after the simulation shuts down so no in-flight
+    // render references the instances.
+    m_renderer.end_session();
 
     m_session_active = false;
     m_lobby_active   = false;
@@ -588,6 +640,9 @@ void App::run() {
             m_renderer.handle_resize(aspect);
             if (m_session_active)
                 m_picker.set_screen_size(m_platform->width(), m_platform->height());
+            // Re-anchor HUD composites against the new viewport so bars
+            // stay pinned to their corners instead of the old extents.
+            m_hud.on_viewport_resized(m_platform->width(), m_platform->height());
 #ifdef ULDUM_SHELL_UI
             if (m_shell) m_shell->on_resize(m_platform->width(), m_platform->height());
 #endif
@@ -815,10 +870,33 @@ void App::run() {
             }
 
             {
+                // HUD input dispatch runs BEFORE the input preset so:
+                //   (1) slot clicks / slot hotkeys are queued as ability
+                //       requests in time for the preset's trailing flush,
+                //   (2) the preset can query `hud_captured` on the same
+                //       frame to suppress pointer-driven selection and
+                //       orders when the pointer is over UI.
+                const auto& in = m_platform->input();
+                m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
+                m_hud.handle_action_bar_keys(in);
+                // Push targeting-mode state so the classic_rts render
+                // highlights the armed slot. Reads empty when the preset
+                // isn't waiting on a target.
+                m_hud.action_bar_set_targeting_ability(
+                    m_input_preset ? m_input_preset->targeting_ability_id()
+                                   : std::string_view{});
+
+                // Same sub-tick interpolation factor the renderer uses.
+                // Clients don't run the tick loop locally, so they pin
+                // it at 1.0 (mirror snapshots are already at-the-tick).
+                bool  is_client_now = (m_args.net_mode == network::Mode::Client);
+                f32   preset_alpha  = is_client_now ? 1.0f : (accumulator / TICK_DT);
+
                 input::InputContext ictx{
                     m_platform->input(), m_selection, m_commands, m_picker,
                     m_renderer.camera(), m_bindings, m_server.simulation(),
-                    m_platform->width(), m_platform->height()
+                    m_platform->width(), m_platform->height(),
+                    m_hud.input_captured(), preset_alpha
                 };
                 m_input_preset->update(ictx, frame_dt);
             }
@@ -892,11 +970,11 @@ void App::run() {
                                          m_selection.selected(),
                                          simulation::Player{m_args.local_slot},
                                          alpha);
-                // HUD overlay. Feed the current mouse state in, walk the
-                // widget tree, and render.
+                // HUD overlay. Pointer is already dispatched earlier in
+                // the frame (before input preset update) so its captured
+                // state gates gameplay input correctly — here we just
+                // build + render the draw list.
                 {
-                    const auto& in = m_platform->input();
-                    m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
                     m_hud.update_text_tags(frame_dt);
                     m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
                     m_hud.draw_tree();

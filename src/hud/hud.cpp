@@ -4,6 +4,9 @@
 #include "hud/world.h"
 #include "hud/text_tag.h"
 #include "hud/hud_loader.h"
+#include "hud/action_bar.h"
+#include "hud/minimap.h"
+#include "hud/layout.h"
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +15,13 @@
 #include "asset/texture.h"
 #include "simulation/world.h"
 #include "simulation/components.h"
+#include "simulation/ability_def.h"
+#include "simulation/simulation.h"
+#include "simulation/fog_of_war.h"
+#include "map/terrain_data.h"
+#include "input/selection.h"
+#include "input/input_bindings.h"
+#include "platform/platform.h"
 #include "render/camera.h"
 #include "network/protocol.h"
 #include "core/log.h"
@@ -35,6 +45,22 @@ static constexpr const char* TAG = "HUD";
 // of the node it applies to. Host-side only; clients never set sync_fn.
 // Defined near the top so all Hud methods below can reference it.
 static void emit_sync(Hud::Impl& s, const std::vector<u8>& pkt, u32 owner);
+
+// Resolve the ability a given slot should display / fire. Defined later
+// in the file; forward-declared here so action-bar keyboard dispatch
+// (handle_action_bar_keys) can call it before the definition.
+static const simulation::AbilityInstance*
+resolve_slot_ability(u32 slot_index,
+                     const ActionBarConfig& cfg,
+                     const ActionBarRuntime& rt,
+                     const WorldContext& ctx,
+                     const simulation::AbilityDef*& out_def);
+
+// Same-file forward decl for the affordability + cooldown gate, used by
+// both click and keyboard dispatch. Defined alongside the render path.
+static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
+                              const simulation::AbilityInstance& inst,
+                              const simulation::AbilityDef& def);
 
 // Each batch = one draw call. Stage A uses a single implicit batch bound
 // to the 1×1 white texture. Later stages add batch splits when the bound
@@ -137,6 +163,33 @@ struct Hud::Impl {
     // Keyed by the top-level template id. Lua's CreateNode(id) copies the
     // matching JSON spec into a fresh node subtree under the root.
     std::unordered_map<std::string, nlohmann::json> node_templates;
+
+    // Action-bar composite — slot layout + style from hud.json, slot
+    // contents driven by the local selection each frame. Inert when
+    // `config.enabled` is false (no composite declared in the map).
+    ActionBarConfig  action_bar_cfg{};
+    ActionBarRuntime action_bar_rt{};
+    // Which slot the pointer is currently over / pressed on. -1 = none.
+    // Needed across frames so a drag-out then release doesn't fire a
+    // click, and so the hovered/pressed state updates lazily as the
+    // cursor moves across slot boundaries.
+    i32 action_bar_hover_slot   = -1;
+    i32 action_bar_pressed_slot = -1;
+
+    // Fired when a click on a slot resolves to an ability. App wires
+    // this to the input preset's queue_ability.
+    Hud::ActionBarCastFn action_bar_cast_fn;
+
+    // Ability id the input preset is currently waiting for a target
+    // on. Pushed by the app each frame; empty = no armed ability.
+    // Drives the slot "held down" render treatment so the player can
+    // see which ability they're about to commit.
+    std::string action_bar_targeting_ability;
+
+    // Minimap composite.
+    MinimapConfig  minimap_cfg{};
+    MinimapRuntime minimap_rt{};
+    Hud::MinimapJumpFn minimap_jump_fn;
 
     // Network sync + input-event callbacks (host-side wiring).
     Hud::SyncFn         sync_fn;
@@ -748,6 +801,35 @@ void Hud::shutdown() {
     m_impl = nullptr;
 }
 
+void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
+    if (!m_impl) return;
+    Rect viewport{ 0.0f, 0.0f,
+                   static_cast<f32>(screen_w),
+                   static_cast<f32>(screen_h) };
+
+    // Action bar — bar rect anchors against viewport; each slot then
+    // anchors against the new bar rect, so slot ordering matters.
+    auto& ab = m_impl->action_bar_cfg;
+    if (ab.enabled) {
+        ab.rect = resolve(viewport, ab.placement);
+        for (auto& slot : ab.slots) {
+            slot.rect = resolve(ab.rect, slot.placement);
+        }
+    }
+
+    // Minimap — single rect against viewport.
+    auto& mm = m_impl->minimap_cfg;
+    if (mm.enabled) {
+        mm.rect = resolve(viewport, mm.placement);
+    }
+
+    // Node-tree (hud.json `nodes`) rects are resolved at CreateNode time
+    // against the then-current viewport — they remain pinned to those
+    // coordinates. Lua can DestroyNode + CreateNode to re-anchor if a
+    // map cares; most tree content is positional rather than viewport-
+    // anchored so this rarely matters in practice.
+}
+
 void Hud::begin_frame(u32 screen_w, u32 screen_h) {
     if (!m_impl) return;
     m_impl->verts.clear();
@@ -793,6 +875,26 @@ static u32 premul_rgba(Color c) {
     g = static_cast<u8>((u32(g) * a) / 255);
     b = static_cast<u8>((u32(b) * a) / 255);
     return u32(r) | (u32(g) << 8) | (u32(b) << 16) | (u32(a) << 24);
+}
+
+// Append a single triangle into the current batch. Used for pie sectors
+// (cooldown radial) that don't fit the quad primitive. All three verts
+// sample the same texel — callers pass a UV that lands inside the
+// texture's opaque region (e.g. (0,0) on the 1×1 white texture).
+static void append_triangle(Hud::Impl& s,
+                            f32 x0, f32 y0,
+                            f32 x1, f32 y1,
+                            f32 x2, f32 y2,
+                            f32 u,  f32 v,
+                            u32 premul) {
+    if (s.verts.size() + 3 > MAX_VERTS) return;
+    u16 base = static_cast<u16>(s.verts.size());
+    s.verts.push_back({ { x0, y0 }, premul, { u, v } });
+    s.verts.push_back({ { x1, y1 }, premul, { u, v } });
+    s.verts.push_back({ { x2, y2 }, premul, { u, v } });
+    s.inds.push_back(base + 0);
+    s.inds.push_back(base + 1);
+    s.inds.push_back(base + 2);
 }
 
 // Append a textured quad into the current batch. Caller has already
@@ -1146,9 +1248,588 @@ void Hud::set_text_tag_visible(TextTagId id, bool visible) {
     if (auto* t = lookup_tag(*m_impl, id)) t->visible = visible;
 }
 
+// ── Action-bar composite ──────────────────────────────────────────────────
+// Phase A: static slot rendering (colored rects + hotkey label). Icons,
+// cooldown radial, and click/hotkey input arrive in later phases.
+
+void Hud::set_action_bar_config(const ActionBarConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->action_bar_cfg = cfg;
+    // Reset transient runtime state. Visibility defaults to "shown" so a
+    // declared bar renders immediately once a unit is selected — nothing
+    // else to prime.
+    m_impl->action_bar_rt = ActionBarRuntime{};
+}
+
+void Hud::action_bar_set_visible(bool visible) {
+    if (!m_impl) return;
+    m_impl->action_bar_rt.visible = visible;
+}
+
+void Hud::action_bar_set_slot_visible(u32 slot, bool visible) {
+    if (!m_impl) return;
+    auto& slots = m_impl->action_bar_cfg.slots;
+    if (slot >= slots.size()) return;
+    slots[slot].visible = visible;
+}
+
+void Hud::action_bar_set_slot(u32 slot, std::string_view ability_id) {
+    if (!m_impl) return;
+    auto& slots = m_impl->action_bar_cfg.slots;
+    if (slot >= slots.size()) return;
+    slots[slot].bound_ability.assign(ability_id);
+}
+
+void Hud::action_bar_clear_slot(u32 slot) {
+    if (!m_impl) return;
+    auto& slots = m_impl->action_bar_cfg.slots;
+    if (slot >= slots.size()) return;
+    slots[slot].bound_ability.clear();
+}
+
+void Hud::set_action_bar_cast_fn(ActionBarCastFn fn) {
+    if (m_impl) m_impl->action_bar_cast_fn = std::move(fn);
+}
+
+void Hud::action_bar_set_hotkey_mode(ActionBarHotkeyMode mode) {
+    if (!m_impl) return;
+    m_impl->action_bar_rt.hotkey_mode = mode;
+    // Reset rising-edge tracking — the key may be held at the moment the
+    // mode flips, and we don't want that to immediately fire a cast in
+    // the new resolution.
+    for (auto& slot : m_impl->action_bar_cfg.slots) slot.hotkey_prev_down = false;
+}
+
+void Hud::action_bar_set_targeting_ability(std::string_view ability_id) {
+    if (!m_impl) return;
+    m_impl->action_bar_targeting_ability.assign(ability_id);
+}
+
+// ── Minimap composite ────────────────────────────────────────────────────
+
+void Hud::set_minimap_config(const MinimapConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->minimap_cfg = cfg;
+    m_impl->minimap_rt  = MinimapRuntime{};
+}
+
+void Hud::minimap_set_visible(bool visible) {
+    if (m_impl) m_impl->minimap_rt.visible = visible;
+}
+
+void Hud::set_minimap_jump_fn(MinimapJumpFn fn) {
+    if (m_impl) m_impl->minimap_jump_fn = std::move(fn);
+}
+
+// True if (x, y) is inside the minimap panel AND the panel is enabled +
+// visible. Unlike the action bar, the minimap is a single rect so the
+// hit-test returns bool rather than an index.
+static bool minimap_hit_test(const Hud::Impl& s, f32 x, f32 y) {
+    const auto& cfg = s.minimap_cfg;
+    if (!cfg.enabled || !s.minimap_rt.visible) return false;
+    const Rect& r = cfg.rect;
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+// Convert a point inside the minimap rect into a world-space (x, y)
+// position on the ground plane. World coords are centered on (0, 0);
+// terrain extents come from WorldContext::terrain.
+static void minimap_point_to_world(const Rect& mm, const map::TerrainData& td,
+                                    f32 sx, f32 sy, f32& wx, f32& wy) {
+    f32 fx = (sx - mm.x) / mm.w;   // 0..1 across minimap
+    f32 fy = (sy - mm.y) / mm.h;
+    wx = td.origin_x() + fx * td.world_width();
+    wy = td.origin_y() + fy * td.world_height();
+}
+
+void Hud::handle_action_bar_keys(const platform::InputState& input) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+    const auto& cfg = s.action_bar_cfg;
+    if (!cfg.enabled || !s.action_bar_rt.visible) return;
+    if (!s.world_ctx || !s.action_bar_cast_fn) return;
+
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        auto& slot = s.action_bar_cfg.slots[i];
+        if (!slot.visible || slot.hotkey.empty()) continue;
+
+        bool down = input::InputBindings::resolve_key(slot.hotkey, input);
+        bool rising = down && !slot.hotkey_prev_down;
+        slot.hotkey_prev_down = down;
+        if (!rising) continue;
+
+        const simulation::AbilityDef* def = nullptr;
+        const simulation::AbilityInstance* inst =
+            resolve_slot_ability(i, cfg, s.action_bar_rt,
+                                 *s.world_ctx, def);
+        if (!inst || !def) continue;
+
+        // Same gate as the click path — refuse to fire while on cooldown
+        // or unaffordable so the sim doesn't have to reject the command.
+        u32 unit_id = s.world_ctx->selection
+                        ? s.world_ctx->selection->selected().front().id
+                        : UINT32_MAX;
+        if (unit_id == UINT32_MAX) continue;
+        if (!slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) continue;
+
+        s.action_bar_cast_fn(inst->ability_id);
+    }
+}
+
+// Return the slot index under the given pointer coords, or -1 if none.
+// Only enabled, visible slots participate — invisible slots (Lua
+// ActionBarSetSlotVisible(false)) and a disabled bar itself are skipped
+// so clicks fall through to the world underneath.
+static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
+    const auto& cfg = s.action_bar_cfg;
+    if (!cfg.enabled || !s.action_bar_rt.visible) return -1;
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+        const Rect& r = slot.rect;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+            return static_cast<i32>(i);
+        }
+    }
+    return -1;
+}
+
+// Pick the ability the given slot should display, based on the local
+// player's selection, the bar's binding mode, and (in Auto mode) the
+// user's hotkey-mode preference.
+//
+// Manual mode: the slot has an `bound_ability` id set by Lua. Return
+// the instance of that ability on the selected unit if it owns it,
+// else nullptr — the slot renders as "ability not available" (empty).
+//
+// Auto + Ability hotkey mode: first selected unit's non-hidden
+// abilities are searched for one whose def `hotkey` matches the slot's
+// hotkey letter.
+//
+// Auto + Positional hotkey mode: the slot's index selects the Nth
+// non-hidden ability in registration order; slot.hotkey is purely the
+// keybind.
+//
+// Returns nullptr when there's no selection, no ability fills that
+// slot, or the registry lookup fails.
+static const simulation::AbilityInstance*
+resolve_slot_ability(u32 slot_index,
+                     const ActionBarConfig& cfg,
+                     const ActionBarRuntime& rt,
+                     const WorldContext& ctx,
+                     const simulation::AbilityDef*& out_def) {
+    out_def = nullptr;
+    if (slot_index >= cfg.slots.size()) return nullptr;
+    if (!ctx.selection || !ctx.world || !ctx.abilities) return nullptr;
+    const auto& sel = ctx.selection->selected();
+    if (sel.empty()) return nullptr;
+    const auto* aset = ctx.world->ability_sets.get(sel.front().id);
+    if (!aset) return nullptr;
+
+    const auto& slot = cfg.slots[slot_index];
+
+    if (cfg.binding_mode == ActionBarBindingMode::Manual) {
+        if (slot.bound_ability.empty()) return nullptr;
+        for (const auto& inst : aset->abilities) {
+            if (inst.ability_id == slot.bound_ability) {
+                const auto* def = ctx.abilities->get(inst.ability_id);
+                if (!def) return nullptr;
+                out_def = def;
+                return &inst;
+            }
+        }
+        return nullptr;
+    }
+
+    if (rt.hotkey_mode == ActionBarHotkeyMode::Positional) {
+        // Nth non-hidden ability in registration order.
+        u32 nth = 0;
+        for (const auto& inst : aset->abilities) {
+            const auto* def = ctx.abilities->get(inst.ability_id);
+            if (!def || def->hidden) continue;
+            if (nth == slot_index) {
+                out_def = def;
+                return &inst;
+            }
+            ++nth;
+        }
+        return nullptr;
+    }
+
+    // Ability mode — match by ability def's hotkey letter.
+    if (slot.hotkey.empty()) return nullptr;
+    for (const auto& inst : aset->abilities) {
+        const auto* def = ctx.abilities->get(inst.ability_id);
+        if (!def || def->hidden) continue;
+        if (def->hotkey == slot.hotkey) {
+            out_def = def;
+            return &inst;
+        }
+    }
+    return nullptr;
+}
+
+// Map an angle (0 = 12 o'clock, grows clockwise) to a point on the
+// rectangle's perimeter — the ray from rect center at that angle hits
+// the nearest axis-aligned edge. Used to build a cooldown pie whose
+// outer boundary matches the slot's square outline instead of a circle
+// that would bulge past or fall short of the corners.
+static void perimeter_point(f32 cx, f32 cy, f32 hw, f32 hh,
+                             f32 theta, f32& out_x, f32& out_y) {
+    f32 dx = std::sin(theta);
+    f32 dy = -std::cos(theta);
+    f32 tx = (std::abs(dx) > 1e-5f) ? hw / std::abs(dx) : 1e9f;
+    f32 ty = (std::abs(dy) > 1e-5f) ? hh / std::abs(dy) : 1e9f;
+    f32 t  = std::min(tx, ty);
+    out_x = cx + dx * t;
+    out_y = cy + dy * t;
+}
+
+// Dark overlay covering the still-on-cooldown fraction of a slot.
+// Sweep grows clockwise from 12 o'clock as the ability ticks toward
+// ready; at fraction=1 the whole slot is covered, at 0 nothing draws.
+// Geometry is a triangle fan from the slot center through perimeter
+// points, so the shape hugs the rectangle even at corners.
+static void draw_cooldown_pie(Hud::Impl& s, const Rect& r, f32 fraction, Color overlay) {
+    if (fraction <= 0.0f) return;
+    if (fraction > 1.0f)  fraction = 1.0f;
+    ensure_batch(s, PIPE_SOLID, s.white_set);
+    u32 premul = premul_rgba(overlay);
+
+    f32 cx = r.x + r.w * 0.5f;
+    f32 cy = r.y + r.h * 0.5f;
+    f32 hw = r.w * 0.5f;
+    f32 hh = r.h * 0.5f;
+
+    // 48 segments around a full circle = 7.5° per segment — corner
+    // clipping is a sub-pixel chord under typical slot sizes.
+    constexpr u32 kSegmentsFull = 48;
+    u32 n = static_cast<u32>(std::ceil(kSegmentsFull * fraction));
+    if (n < 1) n = 1;
+
+    constexpr f32 TWO_PI = 6.2831853f;
+    f32 start = (1.0f - fraction) * TWO_PI;
+    f32 step  = (TWO_PI - start) / static_cast<f32>(n);
+
+    f32 px0, py0;
+    perimeter_point(cx, cy, hw, hh, start, px0, py0);
+    for (u32 i = 0; i < n; ++i) {
+        f32 a = start + step * static_cast<f32>(i + 1);
+        f32 px1, py1;
+        perimeter_point(cx, cy, hw, hh, a, px1, py1);
+        append_triangle(s, cx, cy, px0, py0, px1, py1, 0.0f, 0.0f, premul);
+        px0 = px1;
+        py0 = py1;
+    }
+}
+
+// True if `unit_id` has every cost of this ability level paid in full.
+// Cost keys map to `Health` (for "health") or to `StateBlock::states`
+// for map-defined resources (mana / energy / rage etc.). Missing state
+// entries fail closed — an ability that costs a resource the unit
+// doesn't have simply can't be cast.
+static bool can_afford(const simulation::World& world, u32 unit_id,
+                       const simulation::AbilityLevelDef& lvl) {
+    if (lvl.cost.empty()) return true;
+    for (const auto& [state_name, amount] : lvl.cost) {
+        if (amount <= 0.0f) continue;
+        if (state_name == "health") {
+            const auto* hp = world.healths.get(unit_id);
+            if (!hp || hp->current < amount) return false;
+            continue;
+        }
+        const auto* sb = world.state_blocks.get(unit_id);
+        if (!sb) return false;
+        auto it = sb->states.find(state_name);
+        if (it == sb->states.end() || it->second.current < amount) return false;
+    }
+    return true;
+}
+
+// True when this ability form can actually be triggered from the
+// action bar (as opposed to passives / auras that just exist on the
+// unit). Used to decide whether to apply the affordability gate — a
+// passive icon shouldn't render dimmed just because the unit is out of
+// mana it would never spend anyway.
+static bool is_castable_form(simulation::AbilityForm f) {
+    using F = simulation::AbilityForm;
+    return f == F::Instant || f == F::Toggle
+        || f == F::TargetUnit || f == F::TargetPoint
+        || f == F::Channel;
+}
+
+// Can the selected unit trigger this slot's ability right now? Combines
+// the cooldown-remaining check with the affordability check. A slot
+// whose ability isn't a castable form always returns true here — we
+// don't want to suppress passive/aura icons.
+static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
+                              const simulation::AbilityInstance& inst,
+                              const simulation::AbilityDef& def) {
+    if (!is_castable_form(def.form)) return true;
+    if (inst.cooldown_remaining > 0.0f) return false;
+    if (!ctx.world) return false;
+    return can_afford(*ctx.world, unit_id, def.level_data(inst.level));
+}
+
+// Format "seconds remaining" for the cooldown text. Integer above 1s
+// (e.g. "9", "3") — matches RTS convention where the small decimal is
+// noise. Sub-second values show one decimal ("0.6") so the last tick
+// isn't jarring.
+static void format_cooldown_secs(f32 remaining, char* buf, size_t buf_size) {
+    if (remaining >= 1.0f) {
+        int secs = static_cast<int>(std::ceil(remaining));
+        std::snprintf(buf, buf_size, "%d", secs);
+    } else if (remaining > 0.0f) {
+        std::snprintf(buf, buf_size, "%.1f", remaining);
+    } else {
+        buf[0] = '\0';
+    }
+}
+
+// ── classic_rts render variant ───────────────────────────────────────────
+// WC3-style: flat-colored square slots, square icon inset by the border,
+// dark pie overlay sweeping clockwise from 12 o'clock during cooldown,
+// remaining-seconds number centered over the overlay, and hotkey badge
+// in the top-right. Parameters come from ActionBarStyle.
+static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.action_bar_cfg;
+    const auto& rt  = s.action_bar_rt;
+
+    // When any slot is armed (targeting mode), non-armed slots get a
+    // dim wash so the armed slot reads as the single spotlighted
+    // command. Compute once — the check is identical for every slot.
+    bool any_armed = !s.action_bar_targeting_ability.empty();
+
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+
+        const simulation::AbilityDef* def = nullptr;
+        const simulation::AbilityInstance* inst = nullptr;
+        if (s.world_ctx) inst = resolve_slot_ability(i, cfg, rt, *s.world_ctx, def);
+
+        bool armed = any_armed && def && inst
+                  && inst->ability_id == s.action_bar_targeting_ability;
+
+        // Slot background. Mouse press wins; otherwise armed uses press_bg
+        // (the held-down look), else hover, else idle.
+        Color bg = slot.style.bg;
+        if (slot.pressed)      bg = slot.style.press_bg;
+        else if (armed)        bg = slot.style.press_bg;
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        hud.draw_rect(slot.rect, bg);
+
+        // Icon — inset by the slot's normal border width so the icon
+        // and border don't fight for the same pixels.
+        f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
+        Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
+                        slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
+        if (def && !def->icon.empty()) {
+            hud.draw_image(icon_rect, def->icon);
+        }
+
+        if (armed) {
+            // Armed slot: skip cooldown + affordability overlays. The
+            // player has committed to this ability; extra state
+            // overlays would muddy the spotlight.
+        } else if (any_armed) {
+            // Non-armed slot while targeting — wash it out so the
+            // spotlighted slot stands alone.
+            hud.draw_rect(icon_rect, cfg.style.disabled_tint);
+        } else {
+            // Normal state: cooldown radial + seconds text, or
+            // affordability dim if unaffordable and castable.
+            bool on_cooldown = def && inst && inst->cooldown_remaining > 0.05f
+                            && def->level_data(inst->level).cooldown > 0.0f;
+            if (on_cooldown) {
+                f32 total = def->level_data(inst->level).cooldown;
+                f32 frac  = inst->cooldown_remaining / total;
+                draw_cooldown_pie(s, icon_rect, frac, cfg.style.cooldown_overlay);
+
+                char buf[16];
+                format_cooldown_secs(inst->cooldown_remaining, buf, sizeof(buf));
+                if (buf[0] != '\0') {
+                    f32 px = cfg.style.cooldown_text_size;
+                    f32 tw = hud.text_width_px(buf, px);
+                    f32 line_h = hud.text_line_height_px(px);
+                    f32 ascent = hud.text_ascent_px(px);
+                    f32 tx = icon_rect.x + (icon_rect.w - tw) * 0.5f;
+                    f32 ty = icon_rect.y + (icon_rect.h - line_h) * 0.5f + ascent;
+                    hud.draw_text(tx, ty, buf, cfg.style.cooldown_text_color, px);
+                }
+            } else if (def && inst && s.world_ctx && is_castable_form(def->form)) {
+                u32 unit_id = s.world_ctx->selection
+                                ? s.world_ctx->selection->selected().front().id
+                                : UINT32_MAX;
+                if (unit_id != UINT32_MAX && s.world_ctx->world) {
+                    if (!can_afford(*s.world_ctx->world, unit_id,
+                                    def->level_data(inst->level))) {
+                        hud.draw_rect(icon_rect, cfg.style.disabled_tint);
+                    }
+                }
+            }
+        }
+
+        // Border. Armed slot gets the accent color at its thicker width
+        // (overriding the slot's normal border). Non-armed slots keep
+        // their normal border whether or not another slot is armed —
+        // the dim wash already communicates the inactive state.
+        Color border_color = slot.style.border_color;
+        f32   border_w     = bw;
+        if (armed) {
+            border_color = cfg.style.armed_border_color;
+            border_w     = cfg.style.armed_border_width;
+        }
+        if (border_w > 0.0f && (border_color.rgba >> 24) != 0) {
+            Rect r = slot.rect;
+            hud.draw_rect({ r.x, r.y, r.w, border_w }, border_color);
+            hud.draw_rect({ r.x, r.y + r.h - border_w, r.w, border_w }, border_color);
+            hud.draw_rect({ r.x, r.y, border_w, r.h }, border_color);
+            hud.draw_rect({ r.x + r.w - border_w, r.y, border_w, r.h }, border_color);
+        }
+
+        // Hotkey badge — only drawn when the slot resolves to a castable
+        // ability. Empty slots and passive / aura bindings both hide
+        // the label because pressing the key wouldn't do anything.
+        // A small dark pill sits under the letter so it stays legible
+        // against bright / busy icons (author-controlled via
+        // `hotkey_badge_bg` in style_params; transparent disables it).
+        bool show_hotkey = def && is_castable_form(def->form);
+        if (!slot.hotkey.empty() && show_hotkey) {
+            f32 px_size = slot.rect.h * 0.28f;
+            if (px_size < 10.0f) px_size = 10.0f;
+            f32 text_w = hud.text_width_px(slot.hotkey, px_size);
+            f32 x_left = slot.rect.x + slot.rect.w - text_w - 4.0f;
+            f32 ascent = hud.text_ascent_px(px_size);
+            f32 y_base = slot.rect.y + ascent + 2.0f;
+
+            // Backing pill. ~2px padding all around the glyph; stays
+            // inside the slot so it never hangs off the edge.
+            if ((cfg.style.hotkey_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f;
+                f32 pad_y = 1.0f;
+                Rect bg{
+                    x_left - pad_x,
+                    y_base - ascent - pad_y,
+                    text_w + pad_x * 2.0f,
+                    ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg, cfg.style.hotkey_badge_bg);
+            }
+
+            hud.draw_text(x_left, y_base, slot.hotkey, cfg.style.hotkey_color, px_size);
+        }
+    }
+}
+
+// Classification of a unit for minimap-dot coloring relative to the
+// local player. Order matters: own > ally > enemy > neutral.
+static Color minimap_dot_color(const WorldContext& ctx, u32 unit_id,
+                               const MinimapStyle& style) {
+    if (!ctx.world) return style.neutral_dot_color;
+    const auto* owner = ctx.world->owners.get(unit_id);
+    if (!owner) return style.neutral_dot_color;
+    simulation::Player p = owner->player;
+    if (p == ctx.local_player) return style.own_dot_color;
+    // Need the simulation for the alliance lookup. WorldContext doesn't
+    // carry it directly, but the Sim lives behind the AbilityRegistry
+    // we already ship through — that's a coincidence, so for color
+    // resolution we fall back to the raw comparison if we can't reach
+    // the sim. In practice the ally/enemy split will come from the sim
+    // once a minimap-owned `sim` pointer is added; keeping this gated.
+    // For v1: same player → own, else enemy. Allies get enemy color
+    // until the hook lands.
+    return style.enemy_dot_color;
+}
+
+// Render the minimap for the current frame. v1: bg, border, unit dots
+// (fog-filtered), hotkey label-less. No viewport outline yet — added in
+// v2 once frustum-to-ground projection math lands.
+static void draw_minimap(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.minimap_cfg;
+    if (!cfg.enabled || !s.minimap_rt.visible) return;
+
+    // Background + border.
+    hud.draw_rect(cfg.rect, cfg.style.bg);
+    f32 bw = cfg.style.border_width;
+    if (bw > 0.0f && (cfg.style.border_color.rgba >> 24) != 0) {
+        const Rect& r = cfg.rect;
+        hud.draw_rect({ r.x, r.y, r.w, bw }, cfg.style.border_color);
+        hud.draw_rect({ r.x, r.y + r.h - bw, r.w, bw }, cfg.style.border_color);
+        hud.draw_rect({ r.x, r.y, bw, r.h }, cfg.style.border_color);
+        hud.draw_rect({ r.x + r.w - bw, r.y, bw, r.h }, cfg.style.border_color);
+    }
+
+    // Unit dots. Need the world, terrain (for bounds mapping), and fog
+    // (for visibility gating). Units the local player can't see are
+    // skipped so the minimap doesn't leak enemy positions.
+    if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->terrain) return;
+    const auto& world = *s.world_ctx->world;
+    const auto& td    = *s.world_ctx->terrain;
+    const auto* fog   = s.world_ctx->fog;
+
+    f32 inv_w = (td.world_width()  > 0.0f) ? (cfg.rect.w / td.world_width())  : 0.0f;
+    f32 inv_h = (td.world_height() > 0.0f) ? (cfg.rect.h / td.world_height()) : 0.0f;
+
+    for (u32 i = 0; i < world.transforms.count(); ++i) {
+        u32 id = world.transforms.ids()[i];
+        const auto& tf = world.transforms.data()[i];
+
+        // Only real units with handle_info. Skip dead units so corpses
+        // don't clutter the map.
+        const auto* info = world.handle_infos.get(id);
+        if (!info || info->category != simulation::Category::Unit) continue;
+        if (const auto* hp = world.healths.get(id); hp && hp->current <= 0.0f) continue;
+
+        // Fog gate — tile lookup in terrain space.
+        if (fog) {
+            i32 tx = static_cast<i32>((tf.position.x - td.origin_x()) / td.tile_size);
+            i32 ty = static_cast<i32>((tf.position.y - td.origin_y()) / td.tile_size);
+            if (tx >= 0 && ty >= 0 &&
+                static_cast<u32>(tx) < td.tiles_x &&
+                static_cast<u32>(ty) < td.tiles_y) {
+                if (!fog->is_visible(s.world_ctx->local_player,
+                                     static_cast<u32>(tx), static_cast<u32>(ty))) {
+                    continue;
+                }
+            }
+        }
+
+        // Project to minimap pixels. Dot is a small centered square.
+        f32 sx = cfg.rect.x + (tf.position.x - td.origin_x()) * inv_w;
+        f32 sy = cfg.rect.y + (tf.position.y - td.origin_y()) * inv_h;
+        f32 half = cfg.style.dot_size * 0.5f;
+        Rect dot{ sx - half, sy - half, cfg.style.dot_size, cfg.style.dot_size };
+        hud.draw_rect(dot, minimap_dot_color(*s.world_ctx, id, cfg.style));
+    }
+}
+
+// Render the action bar for the current frame. Called from draw_tree()
+// so composites participate in the same frame-build as atom nodes.
+// Dispatches to the matching `style_id` render variant — each variant
+// has its own fixed layer order and parameter block (see action_bar.h).
+static void draw_action_bar(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.action_bar_cfg;
+    if (!cfg.enabled) return;
+    if (!s.action_bar_rt.visible) return;
+
+    // Optional bar-level background fill. Transparent by default.
+    if ((cfg.style.bg.rgba >> 24) != 0) {
+        hud.draw_rect(cfg.rect, cfg.style.bg);
+    }
+
+    switch (cfg.style_id) {
+        case ActionBarStyleId::ClassicRts:
+            draw_action_bar_classic_rts(hud, s);
+            break;
+    }
+}
+
 void Hud::draw_tree() {
     if (!m_impl || !m_impl->frame_open || !m_impl->root) return;
     m_impl->root->draw(*this);
+    draw_action_bar(*this, *m_impl);
+    draw_minimap(*this, *m_impl);
 }
 
 // Hit-test helper. Walks children back-to-front (reverse iteration) so a
@@ -1174,10 +1855,35 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     s.pointer_x = x;
     s.pointer_y = y;
 
-    Node* under = hit_test_tree(s.root.get(), x, y, s.local_player);
+    // Composites sit on top of the node tree (drawn last in draw_tree);
+    // hit-test them first so clicks beat anything underneath. Either
+    // capture suppresses the tree hit-test entirely.
+    i32  bar_slot    = action_bar_hit_test(s, x, y);
+    bool on_minimap  = (bar_slot < 0) && minimap_hit_test(s, x, y);
 
-    // Hover transitions. Widgets don't track hover across frames themselves
-    // — the HUD tells them when they enter / leave the pointer.
+    // Hover tracking for the bar. `slot.hovered` drives the classic_rts
+    // style's hover_bg swap; clearing the old slot before setting the
+    // new one avoids two slots visually hovered simultaneously.
+    if (bar_slot != s.action_bar_hover_slot) {
+        if (s.action_bar_hover_slot >= 0 &&
+            static_cast<u32>(s.action_bar_hover_slot) < s.action_bar_cfg.slots.size()) {
+            s.action_bar_cfg.slots[s.action_bar_hover_slot].hovered = false;
+        }
+        if (bar_slot >= 0) {
+            s.action_bar_cfg.slots[bar_slot].hovered = true;
+        }
+        s.action_bar_hover_slot = bar_slot;
+    }
+
+    Node* under = nullptr;
+    if (bar_slot < 0 && !on_minimap) {
+        under = hit_test_tree(s.root.get(), x, y, s.local_player);
+    }
+
+    // Hover transitions for the node tree. Widgets don't track hover
+    // across frames themselves — the HUD tells them when they enter /
+    // leave the pointer. When the bar captures the pointer, `under` is
+    // null, which naturally clears any previously-hovered tree node.
     if (under != s.hover) {
         if (s.hover)   s.hover->on_hover_change(false);
         s.hover = under;
@@ -1186,16 +1892,55 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
 
     // Press edge: down on this frame, was up last frame.
     if (button_down && !s.pointer_down_prev) {
-        s.pressed = under;
-        if (s.pressed) s.pressed->on_press();
+        if (bar_slot >= 0) {
+            s.action_bar_pressed_slot = bar_slot;
+            s.action_bar_cfg.slots[bar_slot].pressed = true;
+        } else if (on_minimap) {
+            // Minimap click — jump the camera. The terrain is needed to
+            // convert screen point to world point; silently ignore the
+            // click if there's no terrain (e.g. before session start).
+            if (s.world_ctx && s.world_ctx->terrain && s.minimap_jump_fn) {
+                f32 wx = 0.0f, wy = 0.0f;
+                minimap_point_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
+                                       x, y, wx, wy);
+                s.minimap_jump_fn(wx, wy);
+            }
+        } else {
+            s.pressed = under;
+            if (s.pressed) s.pressed->on_press();
+        }
     }
     // Release edge: up on this frame, was down last frame.
     if (!button_down && s.pointer_down_prev) {
-        if (s.pressed) {
-            // "Clicked" = released while still over the node that was
-            // pressed. If on_release returns true, the node registered a
-            // click — fire the engine-level event so the script trigger
-            // system (or network, for clients) can pick it up.
+        if (s.action_bar_pressed_slot >= 0) {
+            // "Clicked" = released while still over the slot that was
+            // pressed. Resolve the current selection → ability and fire
+            // the cast callback; app routes it to the input preset so
+            // the click behaves identically to pressing the slot's
+            // hotkey letter.
+            u32 idx = static_cast<u32>(s.action_bar_pressed_slot);
+            bool over = (bar_slot == s.action_bar_pressed_slot);
+            if (idx < s.action_bar_cfg.slots.size()) {
+                auto& slot = s.action_bar_cfg.slots[idx];
+                slot.pressed = false;
+                if (over && s.world_ctx && s.action_bar_cast_fn) {
+                    const simulation::AbilityDef* def = nullptr;
+                    const simulation::AbilityInstance* inst =
+                        resolve_slot_ability(idx, s.action_bar_cfg, s.action_bar_rt,
+                                             *s.world_ctx, def);
+                    if (inst && def) {
+                        u32 unit_id = s.world_ctx->selection
+                                        ? s.world_ctx->selection->selected().front().id
+                                        : UINT32_MAX;
+                        if (unit_id != UINT32_MAX &&
+                            slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) {
+                            s.action_bar_cast_fn(inst->ability_id);
+                        }
+                    }
+                }
+            }
+            s.action_bar_pressed_slot = -1;
+        } else if (s.pressed) {
             bool over = (under == s.pressed);
             std::string clicked_id = s.pressed->id;
             bool clicked = s.pressed->on_release(over);
@@ -1209,8 +1954,11 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
 
 bool Hud::input_captured() const {
     if (!m_impl) return false;
-    // Pointer is over a widget or a widget is currently held down.
-    return m_impl->hover != nullptr || m_impl->pressed != nullptr;
+    // Pointer over (or holding) any HUD surface that takes pointer input.
+    return m_impl->hover != nullptr || m_impl->pressed != nullptr
+        || m_impl->action_bar_hover_slot   >= 0
+        || m_impl->action_bar_pressed_slot >= 0
+        || minimap_hit_test(*m_impl, m_impl->pointer_x, m_impl->pointer_y);
 }
 
 f32 Hud::pointer_x() const { return m_impl ? m_impl->pointer_x : 0.0f; }

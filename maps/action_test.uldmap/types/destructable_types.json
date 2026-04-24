@@ -1,0 +1,9 @@
+{
+    "tree_ashenvale": {
+        "display_name": "Ashenvale Tree",
+        "model": "models/destructables/tree.gltf",
+        "health": { "max": 50 },
+        "attributes": { "armor": 0, "armor_type": "fortified" },
+        "variations": 3
+    }
+}

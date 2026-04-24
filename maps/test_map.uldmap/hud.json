@@ -1,7 +1,51 @@
 {
   "preset": "rts",
 
-  "composites": {},
+  "composites": {
+    "action_bar": {
+      "anchor": "bc", "x": 0, "y": -16, "w": 320, "h": 58,
+
+      "style": "classic_rts",
+      "style_params": {
+        "bg":                  "#14162088",
+        "cooldown_overlay":    "#000000C0",
+        "cooldown_text_color": "#FFFFFFFF",
+        "cooldown_text_size":  20,
+        "hotkey_color":        "#F0F0F0FF",
+        "disabled_tint":       "#00000080"
+      },
+      "slot_style": {
+        "bg":           "#303448F0",
+        "hover_bg":     "#484C60FA",
+        "press_bg":     "#666A84FF",
+        "disabled_bg":  "#1E2028F0",
+        "border_color": "#00000080",
+        "border_width": 1
+      },
+
+      "slots": [
+        { "anchor": "tl", "x":   5, "y": 5, "w": 50, "h": 50, "hotkey": "Q" },
+        { "anchor": "tl", "x":  58, "y": 5, "w": 50, "h": 50, "hotkey": "W" },
+        { "anchor": "tl", "x": 111, "y": 5, "w": 50, "h": 50, "hotkey": "E" },
+        { "anchor": "tl", "x": 164, "y": 5, "w": 50, "h": 50, "hotkey": "R" },
+        { "anchor": "tl", "x": 217, "y": 5, "w": 50, "h": 50, "hotkey": "T" },
+        { "anchor": "tl", "x": 270, "y": 5, "w": 50, "h": 50, "hotkey": "Y" }
+      ]
+    },
+
+    "minimap": {
+      "anchor": "br", "x": -10, "y": -10, "w": 200, "h": 200,
+      "style": "classic_rts",
+      "style_params": {
+        "bg":              "#0C0E14E6",
+        "border_color":    "#000000C8",
+        "border_width":    1,
+        "own_dot_color":   "#50DC5AFF",
+        "enemy_dot_color": "#DC4646FF",
+        "dot_size":        3
+      }
+    }
+  },
 
   "world_overlays": {
     "entity_bars": {

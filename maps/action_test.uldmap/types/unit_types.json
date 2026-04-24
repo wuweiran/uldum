@@ -1,0 +1,37 @@
+{
+    "paladin": {
+        "display_name": "Paladin",
+        "model_scale": 50.0,
+        "model": "models/knight.glb",
+        "health": { "max": 1200, "regen": 3.0 },
+        "states": { "mana": { "max": 255, "regen": 0.85 } },
+        "attributes": {
+            "armor": 4, "armor_type": "hero", "attack_type": "hero",
+            "strength": 22, "agility": 13, "intelligence": 17
+        },
+        "movement": { "speed": 350, "turn_rate": 0.6, "collision_radius": 28, "type": "ground" },
+        "animation": { "dmg_pt": 0.667, "cast_pt": 0.436, "walk_speed": 350 },
+        "combat": { "damage": 45, "range": 128, "cooldown": 1.7, "dmg_time": 0.4, "backsw_time": 0.3, "acquire_range": 600 },
+        "vision": { "range": 1800 },
+        "abilities": ["attack", "move", "holy_light", "devotion_aura"],
+        "inventory_size": 6,
+        "sounds": { "attack": "sounds/knifeSlice.ogg" },
+        "classifications": ["ground", "hero"],
+        "selection": { "radius": 48, "priority": 10 }
+    },
+    "creep": {
+        "display_name": "Creep",
+        "model": "models/barbarian.glb",
+        "model_scale": 40.0,
+        "health": { "max": 200, "regen": 0 },
+        "attributes": { "armor": 0, "armor_type": "unarmored", "attack_type": "normal" },
+        "movement": { "speed": 200, "turn_rate": 0.6, "collision_radius": 24, "type": "ground" },
+        "animation": { "dmg_pt": 0.667, "walk_speed": 240 },
+        "combat": { "damage": 12, "range": 128, "cooldown": 1.5, "dmg_time": 0.3, "backsw_time": 0.3, "acquire_range": 500 },
+        "vision": { "range": 800 },
+        "abilities": ["attack", "move"],
+        "classifications": ["ground"],
+        "sounds": { "attack": "sounds/chop.ogg" },
+        "selection": { "radius": 24, "priority": 3 }
+    }
+}

@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace uldum::simulation { struct World; class FogOfWar; class TypeRegistry; }
+namespace uldum::simulation { struct World; class FogOfWar; class TypeRegistry; class AbilityRegistry; }
 namespace uldum::render     { class Camera; }
 namespace uldum::input      { class Picker; class SelectionState; }
 namespace uldum::map        { struct TerrainData; }
@@ -74,7 +74,8 @@ struct WorldOverlayConfig {
 struct WorldContext {
     const simulation::World*        world     = nullptr;   // authoritative for host/offline, client mirror for client
     const simulation::FogOfWar*     fog       = nullptr;   // local-player fog (client or server-side)
-    const simulation::TypeRegistry* types     = nullptr;   // for resolving `type_id` → display_name
+    const simulation::TypeRegistry*    types     = nullptr;   // for resolving `type_id` → display_name
+    const simulation::AbilityRegistry* abilities = nullptr;   // for resolving ability_id → icon / cost / cooldown
     const render::Camera*           camera    = nullptr;
     const input::Picker*            picker    = nullptr;
     const input::SelectionState*    selection = nullptr;

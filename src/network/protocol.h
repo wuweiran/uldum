@@ -206,6 +206,9 @@ inline std::vector<u8> build_order(const input::GameCommand& cmd) {
             w.write_u32(payload.item.id);
             w.write_u32(payload.item.generation);
             w.write_vec3(payload.pos);
+        } else if constexpr (std::is_same_v<T, simulation::orders::MoveDirection>) {
+            w.write_f32(payload.dir.x);
+            w.write_f32(payload.dir.y);
         }
     }, cmd.order);
 
@@ -370,6 +373,12 @@ inline input::GameCommand parse_order(std::span<const u8> data, simulation::Play
         it.generation = r.read_u32();
         glm::vec3 p = r.read_vec3();
         cmd.order = simulation::orders::DropItem{it, p};
+        break;
+    }
+    case 12: {
+        f32 dx = r.read_f32();
+        f32 dy = r.read_f32();
+        cmd.order = simulation::orders::MoveDirection{{dx, dy}};
         break;
     }
     }

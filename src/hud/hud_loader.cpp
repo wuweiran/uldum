@@ -3,6 +3,9 @@
 #include "hud/hud.h"
 #include "hud/node.h"
 #include "hud/world.h"
+#include "hud/action_bar.h"
+#include "hud/minimap.h"
+#include "hud/layout.h"
 #include "asset/asset.h"
 #include "core/log.h"
 
@@ -52,31 +55,8 @@ Color parse_color(const nlohmann::json& j) {
     return rgba(255, 255, 255, 255);
 }
 
-// 9-point anchor → (horizontal_fraction, vertical_fraction) against parent.
-// l/c/r map to 0/0.5/1.0; t/m/b map to 0/0.5/1.0. Values outside the 9-
-// point vocabulary default to top-left.
-struct AnchorFrac { f32 h; f32 v; };
-AnchorFrac parse_anchor(std::string_view s) {
-    // Fixed 2-character codes: first char is vertical, second is horizontal.
-    // Match the ui.md convention: tl, tc, tr, ml, mc, mr, bl, bc, br.
-    if (s.size() != 2) return { 0.0f, 0.0f };
-    f32 v = (s[0] == 'm') ? 0.5f : (s[0] == 'b') ? 1.0f : 0.0f;  // t default
-    f32 h = (s[1] == 'c') ? 0.5f : (s[1] == 'r') ? 1.0f : 0.0f;  // l default
-    return { h, v };
-}
-
-// Resolve a (parent, anchor, offset, size) into an absolute rect. The
-// anchor picks a point on the parent rect AND a matching corner on the
-// child; the child's anchor corner is placed at the parent's anchor
-// point plus the (x, y) offset.
-Rect resolve_rect(const Rect& parent, AnchorFrac a, f32 x, f32 y, f32 w, f32 h) {
-    Rect r{};
-    r.x = parent.x + parent.w * a.h - w * a.h + x;
-    r.y = parent.y + parent.h * a.v - h * a.v + y;
-    r.w = w;
-    r.h = h;
-    return r;
-}
+// parse_anchor / resolve_rect live in hud/layout.h so the resize-time
+// recompute can reuse them.
 
 Label::Align parse_align(std::string_view s) {
     if (s == "center") return Label::Align::Center;
@@ -195,11 +175,10 @@ void parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect)
 } // namespace
 
 bool load_from_json(Hud& hud, const nlohmann::json& doc,
-                    u32 /*viewport_w*/, u32 /*viewport_h*/) {
-    // Viewport is unused here now that `nodes` entries are stored as
-    // templates rather than parsed into live nodes at load. It's still
-    // taken as a parameter for API compatibility and in case later
-    // sections add load-time layout work.
+                    u32 viewport_w, u32 viewport_h) {
+    // Viewport feeds the composite block (the action-bar anchor resolves
+    // against the viewport rect at load). Node templates don't need it
+    // because CreateNode() supplies placement at instantiation time.
     if (!doc.is_object()) { log::warn(TAG, "hud.json root must be an object"); return false; }
 
     // Clear any previously-attached nodes so a fresh session re-loads cleanly.
@@ -219,12 +198,162 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         log::info(TAG, "hud preset: '{}'", preset->get<std::string>());
     }
 
-    // composites block — recognized but not applied yet (composites land
-    // in a later sub-phase). Log whatever keys are present so authors get
-    // feedback while authoring.
+    // composites block — engine-authored node groups. Phase A wires up
+    // `action_bar`; `minimap`, `chat_box`, and `joystick` follow. Unknown
+    // keys are logged so authoring typos don't fail silently.
     if (auto comps = doc.find("composites"); comps != doc.end() && comps->is_object()) {
+        // Viewport rect — composite anchors resolve against this.
+        Rect viewport_rect{ 0.0f, 0.0f,
+                            static_cast<f32>(viewport_w),
+                            static_cast<f32>(viewport_h) };
+
+        if (auto ab = comps->find("action_bar"); ab != comps->end() && ab->is_object()) {
+            ActionBarConfig cfg{};
+            cfg.enabled = true;
+
+            // Bar-level placement (anchor + offset + size against viewport).
+            // Raw values are stashed so on_viewport_resized can re-resolve
+            // the absolute rect without re-parsing the JSON.
+            cfg.placement.anchor = parse_anchor(ab->value("anchor", "bc"));
+            cfg.placement.x      = ab->value("x", 0.0f);
+            cfg.placement.y      = ab->value("y", 0.0f);
+            cfg.placement.w      = ab->value("w", 0.0f);
+            cfg.placement.h      = ab->value("h", 0.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            // Style id selects the render prototype. `classic_rts` is the
+            // only variant shipped today; unknown names fall through with
+            // a warning so typos aren't silent. `style_params` overrides
+            // the variant's default colors / sizes.
+            if (auto sid = ab->find("style"); sid != ab->end() && sid->is_string()) {
+                const std::string s = sid->get<std::string>();
+                if (s == "classic_rts") {
+                    cfg.style_id = ActionBarStyleId::ClassicRts;
+                } else {
+                    log::warn(TAG, "action_bar: unknown style '{}', using classic_rts", s);
+                }
+            }
+
+            // Binding mode: who fills slots with abilities. Auto is the
+            // RTS default (derived from selection); manual is Lua-driven
+            // (action/MOBA-style maps that pick specific abilities).
+            if (auto bm = ab->find("binding_mode"); bm != ab->end() && bm->is_string()) {
+                const std::string s = bm->get<std::string>();
+                if (s == "auto") {
+                    cfg.binding_mode = ActionBarBindingMode::Auto;
+                } else if (s == "manual") {
+                    cfg.binding_mode = ActionBarBindingMode::Manual;
+                } else {
+                    log::warn(TAG, "action_bar: unknown binding_mode '{}', using auto", s);
+                }
+            }
+
+            if (auto sp = ab->find("style_params"); sp != ab->end() && sp->is_object()) {
+                if (auto v = sp->find("bg");                  v != sp->end()) cfg.style.bg                  = parse_color(*v);
+                if (auto v = sp->find("cooldown_overlay");    v != sp->end()) cfg.style.cooldown_overlay    = parse_color(*v);
+                if (auto v = sp->find("cooldown_text_color"); v != sp->end()) cfg.style.cooldown_text_color = parse_color(*v);
+                if (auto v = sp->find("cooldown_text_size");  v != sp->end() && v->is_number())
+                    cfg.style.cooldown_text_size = v->get<f32>();
+                if (auto v = sp->find("hotkey_color");        v != sp->end()) cfg.style.hotkey_color        = parse_color(*v);
+                if (auto v = sp->find("hotkey_badge_bg");     v != sp->end()) cfg.style.hotkey_badge_bg     = parse_color(*v);
+                if (auto v = sp->find("disabled_tint");       v != sp->end()) cfg.style.disabled_tint       = parse_color(*v);
+                if (auto v = sp->find("armed_border_color");  v != sp->end()) cfg.style.armed_border_color  = parse_color(*v);
+                if (auto v = sp->find("armed_border_width");  v != sp->end() && v->is_number())
+                    cfg.style.armed_border_width = v->get<f32>();
+            }
+
+            // Shared default style applied to every slot; per-slot
+            // overrides layer on top.
+            ActionBarSlotStyle default_slot_style{};
+            if (auto ss = ab->find("slot_style"); ss != ab->end() && ss->is_object()) {
+                if (auto v = ss->find("bg");           v != ss->end()) default_slot_style.bg           = parse_color(*v);
+                if (auto v = ss->find("hover_bg");     v != ss->end()) default_slot_style.hover_bg     = parse_color(*v);
+                if (auto v = ss->find("press_bg");     v != ss->end()) default_slot_style.press_bg     = parse_color(*v);
+                if (auto v = ss->find("disabled_bg");  v != ss->end()) default_slot_style.disabled_bg  = parse_color(*v);
+                if (auto v = ss->find("border_color"); v != ss->end()) default_slot_style.border_color = parse_color(*v);
+                if (auto v = ss->find("border_width"); v != ss->end() && v->is_number())
+                    default_slot_style.border_width = v->get<f32>();
+            }
+
+            if (auto slots = ab->find("slots"); slots != ab->end() && slots->is_array()) {
+                for (const auto& js : *slots) {
+                    if (!js.is_object()) continue;
+                    ActionBarSlot slot{};
+                    slot.style = default_slot_style;
+
+                    slot.placement.anchor = parse_anchor(js.value("anchor", "tl"));
+                    slot.placement.x      = js.value("x", 0.0f);
+                    slot.placement.y      = js.value("y", 0.0f);
+                    slot.placement.w      = js.value("w", 48.0f);
+                    slot.placement.h      = js.value("h", 48.0f);
+                    slot.rect = resolve(cfg.rect, slot.placement);
+
+                    if (auto v = js.find("hotkey"); v != js.end() && v->is_string()) {
+                        slot.hotkey = v->get<std::string>();
+                    }
+
+                    // Per-slot style override.
+                    if (auto st = js.find("style"); st != js.end() && st->is_object()) {
+                        if (auto v = st->find("bg");           v != st->end()) slot.style.bg           = parse_color(*v);
+                        if (auto v = st->find("hover_bg");     v != st->end()) slot.style.hover_bg     = parse_color(*v);
+                        if (auto v = st->find("press_bg");     v != st->end()) slot.style.press_bg     = parse_color(*v);
+                        if (auto v = st->find("disabled_bg");  v != st->end()) slot.style.disabled_bg  = parse_color(*v);
+                        if (auto v = st->find("border_color"); v != st->end()) slot.style.border_color = parse_color(*v);
+                        if (auto v = st->find("border_width"); v != st->end() && v->is_number())
+                            slot.style.border_width = v->get<f32>();
+                    }
+
+                    cfg.slots.push_back(std::move(slot));
+                }
+            }
+
+            hud.set_action_bar_config(cfg);
+            log::info(TAG, "action_bar: {} slots", cfg.slots.size());
+        }
+
+        if (auto mm = comps->find("minimap"); mm != comps->end() && mm->is_object()) {
+            MinimapConfig cfg{};
+            cfg.enabled = true;
+
+            cfg.placement.anchor = parse_anchor(mm->value("anchor", "br"));
+            cfg.placement.x      = mm->value("x", 0.0f);
+            cfg.placement.y      = mm->value("y", 0.0f);
+            cfg.placement.w      = mm->value("w", 0.0f);
+            cfg.placement.h      = mm->value("h", 0.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            if (auto sid = mm->find("style"); sid != mm->end() && sid->is_string()) {
+                const std::string s = sid->get<std::string>();
+                if (s == "classic_rts") {
+                    cfg.style_id = MinimapStyleId::ClassicRts;
+                } else {
+                    log::warn(TAG, "minimap: unknown style '{}', using classic_rts", s);
+                }
+            }
+
+            if (auto sp = mm->find("style_params"); sp != mm->end() && sp->is_object()) {
+                if (auto v = sp->find("bg");                v != sp->end()) cfg.style.bg                = parse_color(*v);
+                if (auto v = sp->find("border_color");      v != sp->end()) cfg.style.border_color      = parse_color(*v);
+                if (auto v = sp->find("border_width");      v != sp->end() && v->is_number())
+                    cfg.style.border_width = v->get<f32>();
+                if (auto v = sp->find("own_dot_color");     v != sp->end()) cfg.style.own_dot_color     = parse_color(*v);
+                if (auto v = sp->find("ally_dot_color");    v != sp->end()) cfg.style.ally_dot_color    = parse_color(*v);
+                if (auto v = sp->find("enemy_dot_color");   v != sp->end()) cfg.style.enemy_dot_color   = parse_color(*v);
+                if (auto v = sp->find("neutral_dot_color"); v != sp->end()) cfg.style.neutral_dot_color = parse_color(*v);
+                if (auto v = sp->find("dot_size");          v != sp->end() && v->is_number())
+                    cfg.style.dot_size = v->get<f32>();
+            }
+
+            hud.set_minimap_config(cfg);
+            log::info(TAG, "minimap: registered ({}x{})",
+                      static_cast<i32>(cfg.rect.w), static_cast<i32>(cfg.rect.h));
+        }
+
+        // Skim remaining composite keys so authoring feedback is consistent.
         for (auto it = comps->begin(); it != comps->end(); ++it) {
-            log::info(TAG, "composite '{}' declared (not yet implemented)", it.key());
+            const std::string& k = it.key();
+            if (k == "action_bar" || k == "minimap") continue;
+            log::info(TAG, "composite '{}' declared (not yet implemented)", k);
         }
     }
 

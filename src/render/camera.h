@@ -41,6 +41,8 @@ public:
 
     glm::vec3 position() const { return m_position; }
     glm::vec3 forward_dir() const;
+    f32       pitch()    const { return m_pitch; }
+    f32       yaw()      const { return m_yaw; }
 
     // Frustum culling: 6 planes extracted from the VP matrix (Gribb/Hartmann).
     // Each plane is (nx, ny, nz, d) — point visible if dot(n,p)+d >= 0.

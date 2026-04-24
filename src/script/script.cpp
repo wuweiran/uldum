@@ -1283,14 +1283,18 @@ void ScriptEngine::bind_input_api() {
         return m_selection ? m_selection->count() : 0;
     };
 
-    lua["SelectUnit"] = [this](u32 unit_id) {
-        if (!m_selection || !m_sim) return;
-        auto* info = m_sim->world().handle_infos.get(unit_id);
-        if (!info) return;
-        simulation::Unit u;
-        u.id = unit_id;
-        u.generation = info->generation;
-        m_selection->select(u);
+    lua["SelectUnit"] = [this](simulation::Unit unit) {
+        if (!m_selection) return;
+        m_selection->select(unit);
+    };
+
+    // SetControlledUnit(unit) — Action-preset semantic alias for
+    // SelectUnit. The Action preset locks selection to this unit
+    // (doesn't mutate it further), and the HUD action bar reads the
+    // unit's abilities for its slots.
+    lua["SetControlledUnit"] = [this](simulation::Unit unit) {
+        if (!m_selection) return;
+        m_selection->select(unit);
     };
 
     lua["SelectUnits"] = [this](sol::table tbl) {
@@ -1501,6 +1505,58 @@ void ScriptEngine::bind_hud_api() {
     lua["SetTextTagVisible"] = [this, unpack_id](u64 h, bool visible) {
         if (!m_hud) return;
         m_hud->set_text_tag_visible(unpack_id(h), visible);
+    };
+
+    // ── Action-bar composite ─────────────────────────────────────────────
+    // The bar is declared in hud.json (`composites.action_bar`). Two
+    // binding modes determine how slots fill with abilities:
+    //
+    //   auto   — slot contents come from the local player's selection,
+    //            resolved by the global hotkey-mode setting. No Lua
+    //            wiring needed. Default for RTS-style maps.
+    //   manual — each slot is explicitly bound to an ability by Lua
+    //            (ActionBarSetSlot). The slot renders + fires only
+    //            when the selected unit actually owns that ability.
+    //            Intended for action / MOBA-style maps where the
+    //            author curates the skill lineup.
+    //
+    // Passive abilities can be bound in manual mode but shouldn't —
+    // nothing fires when the slot is triggered (convention, not
+    // enforced). Slot indices are 1-based in Lua (WC3 convention),
+    // 0-based internally.
+
+    lua["ActionBarSetVisible"] = [this](bool visible) {
+        if (!m_hud) return;
+        m_hud->action_bar_set_visible(visible);
+    };
+    lua["ActionBarSetSlotVisible"] = [this](u32 slot_1based, bool visible) {
+        if (!m_hud || slot_1based == 0) return;
+        m_hud->action_bar_set_slot_visible(slot_1based - 1, visible);
+    };
+
+    // ActionBarSetSlot(slot, ability_id) — manual-mode binding. A log
+    // warning is issued if the ability is passive, but the binding
+    // still takes effect (no-op at cast time).
+    lua["ActionBarSetSlot"] = [this](u32 slot_1based, const std::string& ability_id) {
+        if (!m_hud || slot_1based == 0) return;
+        if (m_sim) {
+            if (const auto* def = m_sim->abilities().get(ability_id)) {
+                if (def->form == simulation::AbilityForm::Passive ||
+                    def->form == simulation::AbilityForm::Aura) {
+                    log::warn("HUD", "ActionBarSetSlot({}, '{}'): ability is passive/aura, nothing will fire",
+                              slot_1based, ability_id);
+                }
+            } else {
+                log::warn("HUD", "ActionBarSetSlot({}, '{}'): ability not in registry",
+                          slot_1based, ability_id);
+            }
+        }
+        m_hud->action_bar_set_slot(slot_1based - 1, ability_id);
+    };
+
+    lua["ActionBarClearSlot"] = [this](u32 slot_1based) {
+        if (!m_hud || slot_1based == 0) return;
+        m_hud->action_bar_clear_slot(slot_1based - 1);
     };
 }
 

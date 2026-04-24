@@ -3,6 +3,7 @@ add_library(uldum_input STATIC
     selection.cpp
     picking.cpp
     rts_preset.cpp
+    action_preset.cpp
     input_bindings.cpp
     input_preset.cpp
 )

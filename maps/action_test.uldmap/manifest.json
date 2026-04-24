@@ -1,0 +1,43 @@
+{
+    "id": "action_test",
+    "name": "Action Test",
+    "author": "Uldum Engine",
+    "description": "Test bed for the Action input preset: single controlled hero, WASD movement, click-to-attack, positional ability slots.",
+    "version": "1.0.0",
+    "engine_version": "0.1.0",
+    "game_mode": "test",
+    "suggested_players": "1",
+    "fog_of_war": "explored",
+
+    "input": { "preset": "action" },
+
+    "environment": {
+        "sun_direction": [0.3, -0.5, 0.8],
+        "sun_color": [1.0, 1.0, 0.9],
+        "sun_intensity": 1.0,
+        "ambient_color": [0.15, 0.15, 0.2],
+        "ambient_intensity": 0.25,
+        "fog_color": [0.5, 0.5, 0.6]
+    },
+
+    "players": [
+        { "team": 0, "color": "red" },
+        { "team": 1, "color": "green" }
+    ],
+    "teams": [
+        { "id": 0, "name": "Players", "allied": true, "shared_vision": true },
+        { "id": 1, "name": "Hostile", "allied": false, "shared_vision": false }
+    ],
+
+    "tileset": "tileset.json",
+    "start_scene": "scene_01",
+
+    "classifications": ["ground", "air", "hero", "structure", "mechanical", "undead", "worker", "summoned"],
+    "attack_types": ["normal", "pierce", "siege", "magic", "chaos", "hero"],
+    "armor_types": ["unarmored", "light", "medium", "heavy", "fortified", "hero"],
+    "damage_types": ["attack", "spell", "ability", "cleave"],
+    "states": [
+        { "id": "mana", "has_max": true, "has_regen": true }
+    ],
+    "attributes": ["strength", "agility", "intelligence"]
+}

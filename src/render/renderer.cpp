@@ -254,6 +254,20 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     return true;
 }
 
+void Renderer::end_session() {
+    if (!m_rhi) return;
+    VmaAllocator alloc = m_rhi->allocator();
+    // GPU must be idle before freeing any bone buffer still in flight.
+    vkDeviceWaitIdle(m_rhi->device());
+    for (auto& [eid, anim] : m_anim_instances) {
+        if (anim.bone_buffer) vmaDestroyBuffer(alloc, anim.bone_buffer, anim.bone_alloc);
+        // Descriptor sets will be freed when the pool is destroyed in
+        // shutdown(). They're cheap to leak per session for the small
+        // # of units we run; revisit when sessions are very long-lived.
+    }
+    m_anim_instances.clear();
+}
+
 void Renderer::shutdown() {
     if (!m_rhi) return;
     VkDevice device = m_rhi->device();

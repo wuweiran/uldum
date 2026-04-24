@@ -25,21 +25,6 @@ function main()
         owner  = GetPlayer(0),
     })
 
-    -- Smoke-test the test_panel button too — same ownership filter.
-    CreateNode("test_panel", {
-        anchor = "tl", x = 20, y = 20, w = 240, h = 200,
-        owner  = GetPlayer(0),
-    })
-
-    -- Trigger: respond to button clicks. GetTriggerPlayer() / GetTriggerNode()
-    -- tell us who clicked what.
-    local btn_trig = CreateTrigger()
-    TriggerRegisterPlayerEvent(btn_trig, GetPlayer(0), EVENT_BUTTON_PRESSED)
-    TriggerAddAction(btn_trig, function()
-        Log("[Button] player=" .. tostring(GetTriggerPlayer().id)
-            .. " node='" .. GetTriggerNode() .. "'")
-    end)
-
     -- Find preplaced heroes (world origin = map center)
     local units = GetUnitsInRange(0, 0, 1280)
     local footman, paladin
@@ -55,7 +40,10 @@ function main()
 
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
-    -- Give paladin abilities
+    -- Give paladin abilities. The action bar auto-populates from the
+    -- locally selected unit's abilities, matching slot.hotkey (authored
+    -- in hud.json) to ability.hotkey (in ability_types.json). No Lua
+    -- binding is needed for the bar contents.
     AddAbility(paladin, "devotion_aura")
     AddAbility(paladin, "holy_light")
 

@@ -49,6 +49,13 @@ public:
     bool init(rhi::VulkanRhi& rhi);
     void shutdown();
 
+    // Tear down anything scoped to a single game session — currently the
+    // per-entity animation instances. Must be called from App::end_session
+    // before the simulation handles get reused by the next map; otherwise
+    // reused entity ids pick up stale bone state from the previous
+    // session (visible as detached body parts / broken skeleton).
+    void end_session();
+
     void update_camera(const platform::InputState& input, f32 dt);
     void handle_resize(f32 aspect);
 

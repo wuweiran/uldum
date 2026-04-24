@@ -131,6 +131,65 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
+        // ── MoveDirection short-circuit ──────────────────────────────────
+        // Action-preset continuous move. No pathfinding: desired velocity
+        // is `dir * speed`; slide axis-aligned on collision; order stays
+        // latched (never consumed here — replaced by the preset when the
+        // player releases movement keys, which sends Stop).
+        if (oq->current) {
+            if (auto* md = std::get_if<orders::MoveDirection>(&oq->current->payload)) {
+                glm::vec2 dir = md->dir;
+                f32 mag = glm::length(dir);
+                if (mag > 0.001f) {
+                    if (mag > 1.0f) dir /= mag;   // clamp speed multiplier at 1
+                    // Face the movement direction — turn rate applies so
+                    // the hero doesn't snap instantly.
+                    f32 desired = std::atan2(dir.y, dir.x);
+                    f32 diff    = angle_diff(transform->facing, desired);
+                    f32 max_turn = mov.turn_rate * dt;
+                    if (std::abs(diff) > max_turn) {
+                        transform->facing += (diff > 0 ? max_turn : -max_turn);
+                    } else {
+                        transform->facing = desired;
+                    }
+                    transform->facing = normalize_angle(transform->facing);
+
+                    f32 step  = mov.speed * dt;
+                    f32 new_x = transform->position.x + dir.x * step;
+                    f32 new_y = transform->position.y + dir.y * step;
+                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.type)) {
+                        transform->position.x = new_x;
+                        transform->position.y = new_y;
+                    } else {
+                        // Axis-aligned slide — same trick the goal-based
+                        // code uses. Natural behavior: diagonal into a
+                        // vertical wall slides vertically, diagonal into
+                        // a horizontal wall slides horizontally, corner
+                        // impact stops movement.
+                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.type)) {
+                            transform->position.x = new_x;
+                        }
+                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.type)) {
+                            transform->position.y = new_y;
+                        }
+                    }
+                    mov.moving = true;
+                } else {
+                    mov.moving = false;
+                }
+                // Clear any latent pathfinding state from a previous goal
+                // so switching back to Move later re-plans cleanly.
+                mov.corridor.clear();
+                mov.has_waypoint = false;
+
+                if (terrain) {
+                    transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
+                }
+                mov.cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
+                continue;
+            }
+        }
+
         // ── Determine movement goal ──────────────────────────────────────
         glm::vec2 pos2d{transform->position.x, transform->position.y};
         glm::vec2 goal2d{0};

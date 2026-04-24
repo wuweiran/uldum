@@ -20,7 +20,21 @@ void RtsPreset::update(const InputContext& ctx, f32 dt) {
     handle_selection(ctx);
     handle_orders(ctx);
     handle_hotkeys(ctx);
+    // Service any HUD-button cast requests queued last frame. Runs after
+    // handle_orders so a targeting-mode click started last frame still
+    // resolves first, and before handle_camera because this call may
+    // submit a command or enter targeting mode that subsequent frame-
+    // based logic should see.
+    if (!m_pending_ability.empty()) {
+        std::string id = std::move(m_pending_ability);
+        m_pending_ability.clear();
+        dispatch_ability(ctx, id, false);
+    }
     handle_camera(ctx, dt);
+}
+
+void RtsPreset::queue_ability(std::string_view ability_id) {
+    m_pending_ability.assign(ability_id);
 }
 
 // ── Selection ────────────────────────────────────────────────────────────
@@ -29,8 +43,11 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
 
-    // Skip selection when in targeting mode (ability or attack-move)
+    // Skip selection when in targeting mode (ability or attack-move), and
+    // when the pointer is currently captured by the HUD (hovering a slot,
+    // open menu, etc.) so clicks on UI don't also drag a selection box.
     bool targeting = m_attack_move_mode || m_targeting_ability;
+    if (ctx.hud_captured) return;
 
     // Start box drag on left press
     if (input.mouse_left_pressed && !targeting) {
@@ -89,6 +106,17 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
 void RtsPreset::handle_orders(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
+
+    // HUD captures: skip pointer-driven orders (targeting click, attack-
+    // move click, right-click order). Key-driven cancels (Escape out of
+    // targeting) still run so the user can always bail out of a mode.
+    if (ctx.hud_captured) {
+        if (m_targeting_ability && input.key_escape) {
+            m_targeting_ability = false;
+            m_targeting_ability_id.clear();
+        }
+        return;
+    }
 
     // Ability targeting: hotkey was pressed, now left-click to pick target
     if (m_targeting_ability && input.mouse_left_pressed) {
@@ -280,41 +308,48 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
     select_hero(1, "select_hero_2");
     select_hero(2, "select_hero_3");
 
-    // Ability hotkeys: scan selected unit's abilities for matching hotkey
-    if (!sel.empty()) {
-        auto& world = ctx.simulation.world();
-        u32 lead_id = sel.selected().front().id;
-        auto* aset = world.ability_sets.get(lead_id);
-        if (aset) {
-            for (auto& inst : aset->abilities) {
-                const auto* def = ctx.simulation.abilities().get(inst.ability_id);
-                if (!def || def->hotkey.empty()) continue;
+    // Ability hotkeys: dispatched by the HUD action bar. The HUD scans
+    // slot hotkeys in its own handle_action_bar_keys pass (called
+    // before this update) and routes into queue_ability(), which the
+    // trailing flush in update() consumes via dispatch_ability.
+}
 
-                // Rising-edge detection for this hotkey
-                bool current = InputBindings::resolve_key(def->hotkey, input);
-                bool& prev = m_prev_hotkey[def->hotkey];
-                bool pressed = current && !prev;
-                prev = current;
-                if (!pressed) continue;
+void RtsPreset::dispatch_ability(const InputContext& ctx,
+                                 std::string_view ability_id,
+                                 bool queued_modifier) {
+    auto& sel = ctx.selection;
+    if (sel.empty()) return;
 
-                if (def->form == simulation::AbilityForm::Instant ||
-                    def->form == simulation::AbilityForm::Toggle) {
-                    GameCommand cmd;
-                    cmd.player = sel.player();
-                    cmd.units  = sel.selected();
-                    cmd.order  = simulation::orders::Cast{inst.ability_id, {}, {}};
-                    cmd.queued = input.key_shift;
-                    ctx.commands.submit(cmd);
-                } else if (def->form == simulation::AbilityForm::TargetUnit ||
-                           def->form == simulation::AbilityForm::TargetPoint) {
-                    m_targeting_ability = true;
-                    m_targeting_ability_id = inst.ability_id;
-                    m_attack_move_mode = false;
-                }
-                break;
-            }
-        }
+    // Require the lead unit to actually own this ability — HUD clicks
+    // could otherwise bypass ownership if the caller spoofed the id.
+    auto& world = ctx.simulation.world();
+    u32 lead_id = sel.selected().front().id;
+    const auto* aset = world.ability_sets.get(lead_id);
+    if (!aset) return;
+    bool owns = false;
+    for (const auto& inst : aset->abilities) {
+        if (inst.ability_id == ability_id) { owns = true; break; }
     }
+    if (!owns) return;
+
+    const auto* def = ctx.simulation.abilities().get(std::string(ability_id));
+    if (!def) return;
+
+    if (def->form == simulation::AbilityForm::Instant ||
+        def->form == simulation::AbilityForm::Toggle) {
+        GameCommand cmd;
+        cmd.player = sel.player();
+        cmd.units  = sel.selected();
+        cmd.order  = simulation::orders::Cast{std::string(ability_id), {}, {}};
+        cmd.queued = queued_modifier;
+        ctx.commands.submit(cmd);
+    } else if (def->form == simulation::AbilityForm::TargetUnit ||
+               def->form == simulation::AbilityForm::TargetPoint) {
+        m_targeting_ability = true;
+        m_targeting_ability_id = ability_id;
+        m_attack_move_mode = false;
+    }
+    // Passive / Aura / Channel: not directly triggerable from here.
 }
 
 // ── Camera ───────────────────────────────────────────────────────────────

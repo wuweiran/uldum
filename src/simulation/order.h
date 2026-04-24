@@ -2,6 +2,7 @@
 
 #include "simulation/handle_types.h"
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <string>
@@ -23,6 +24,13 @@ namespace orders {
     struct Build         { std::string building_type_id; glm::vec3 pos; };
     struct PickupItem    { Item item; };
     struct DropItem      { Item item; glm::vec3 pos; };
+    // Action-preset continuous directional move. `dir` is a 2D vector
+    // (usually normalized; magnitude <= 1 clamps speed). The unit keeps
+    // trying to move along `dir` every tick until the order is replaced
+    // or cleared — no pathfinding, no destination. Collisions slide
+    // axis-aligned: into a vertical wall only the Y component applies,
+    // into a horizontal wall only X applies, into a corner neither.
+    struct MoveDirection { glm::vec2 dir; };
 }
 
 using OrderPayload = std::variant<
@@ -37,7 +45,8 @@ using OrderPayload = std::variant<
     orders::Research,
     orders::Build,
     orders::PickupItem,
-    orders::DropItem
+    orders::DropItem,
+    orders::MoveDirection
 >;
 
 struct Order {
