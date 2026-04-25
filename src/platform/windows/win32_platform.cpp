@@ -122,6 +122,18 @@ bool Win32Platform::was_resized() {
     return r;
 }
 
+f32 Win32Platform::ui_scale() const {
+    if (!m_hwnd) return 1.0f;
+    UINT dpi = GetDpiForWindow(m_hwnd);
+    if (dpi == 0) return 1.0f;
+    // Microsoft's DIP baseline (1/96 inch per unit). Gives integer
+    // ui_scale at the common Windows scale settings: 100% → 1.0,
+    // 200% → 2.0, 300% → 3.0. 150%/125%/175% land at 1.5/1.25/1.75 —
+    // not integer, but uncommon enough to live with. A 48-dp slot
+    // renders at ~half inch on every Windows scale.
+    return static_cast<f32>(dpi) / 96.0f;
+}
+
 LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     Win32Platform* self = nullptr;
 

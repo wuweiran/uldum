@@ -5,6 +5,8 @@
 #include "hud/world.h"
 #include "hud/action_bar.h"
 #include "hud/minimap.h"
+#include "hud/command_bar.h"
+#include "hud/joystick.h"
 #include "hud/layout.h"
 #include "asset/asset.h"
 #include "core/log.h"
@@ -198,14 +200,19 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         log::info(TAG, "hud preset: '{}'", preset->get<std::string>());
     }
 
-    // composites block — engine-authored node groups. Phase A wires up
-    // `action_bar`; `minimap`, `chat_box`, and `joystick` follow. Unknown
-    // keys are logged so authoring typos don't fail silently.
+    // composites block — engine-authored node groups: `action_bar`,
+    // `command_bar`, `minimap`, `joystick`. Unknown keys are logged so
+    // authoring typos don't fail silently.
     if (auto comps = doc.find("composites"); comps != doc.end() && comps->is_object()) {
-        // Viewport rect — composite anchors resolve against this.
+        // Composite placements resolve against the HUD's logical (dp)
+        // space — the same space Hud::begin_frame exposes each frame.
+        // So a `br` anchor still lands at the physical corner; the
+        // uniform px-per-dp scale is applied by the renderer at draw.
+        f32 s = hud.ui_scale();
+        if (s <= 0.0f) s = 1.0f;
         Rect viewport_rect{ 0.0f, 0.0f,
-                            static_cast<f32>(viewport_w),
-                            static_cast<f32>(viewport_h) };
+                            static_cast<f32>(viewport_w) / s,
+                            static_cast<f32>(viewport_h) / s };
 
         if (auto ab = comps->find("action_bar"); ab != comps->end() && ab->is_object()) {
             ActionBarConfig cfg{};
@@ -349,10 +356,129 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                       static_cast<i32>(cfg.rect.w), static_cast<i32>(cfg.rect.h));
         }
 
+        if (auto cb = comps->find("command_bar"); cb != comps->end() && cb->is_object()) {
+            CommandBarConfig cfg{};
+            cfg.enabled = true;
+
+            cfg.placement.anchor = parse_anchor(cb->value("anchor", "br"));
+            cfg.placement.x      = cb->value("x", 0.0f);
+            cfg.placement.y      = cb->value("y", 0.0f);
+            cfg.placement.w      = cb->value("w", 0.0f);
+            cfg.placement.h      = cb->value("h", 0.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            if (auto sp = cb->find("style_params"); sp != cb->end() && sp->is_object()) {
+                if (auto v = sp->find("bg");               v != sp->end()) cfg.style.bg              = parse_color(*v);
+                if (auto v = sp->find("hotkey_color");     v != sp->end()) cfg.style.hotkey_color    = parse_color(*v);
+                if (auto v = sp->find("hotkey_badge_bg");  v != sp->end()) cfg.style.hotkey_badge_bg = parse_color(*v);
+            }
+
+            CommandBarSlotStyle default_slot_style{};
+            if (auto ss = cb->find("slot_style"); ss != cb->end() && ss->is_object()) {
+                if (auto v = ss->find("bg");           v != ss->end()) default_slot_style.bg           = parse_color(*v);
+                if (auto v = ss->find("hover_bg");     v != ss->end()) default_slot_style.hover_bg     = parse_color(*v);
+                if (auto v = ss->find("press_bg");     v != ss->end()) default_slot_style.press_bg     = parse_color(*v);
+                if (auto v = ss->find("border_color"); v != ss->end()) default_slot_style.border_color = parse_color(*v);
+                if (auto v = ss->find("border_width"); v != ss->end() && v->is_number())
+                    default_slot_style.border_width = v->get<f32>();
+            }
+
+            if (auto slots = cb->find("slots"); slots != cb->end() && slots->is_array()) {
+                for (const auto& js : *slots) {
+                    if (!js.is_object()) continue;
+                    CommandBarSlot slot{};
+                    slot.style = default_slot_style;
+
+                    slot.placement.anchor = parse_anchor(js.value("anchor", "tl"));
+                    slot.placement.x      = js.value("x", 0.0f);
+                    slot.placement.y      = js.value("y", 0.0f);
+                    slot.placement.w      = js.value("w", 48.0f);
+                    slot.placement.h      = js.value("h", 48.0f);
+                    slot.rect = resolve(cfg.rect, slot.placement);
+
+                    slot.command = js.value("command", "");
+                    slot.icon    = js.value("icon",    "");
+                    slot.hotkey  = js.value("hotkey",  "");
+
+                    if (auto st = js.find("style"); st != js.end() && st->is_object()) {
+                        if (auto v = st->find("bg");           v != st->end()) slot.style.bg           = parse_color(*v);
+                        if (auto v = st->find("hover_bg");     v != st->end()) slot.style.hover_bg     = parse_color(*v);
+                        if (auto v = st->find("press_bg");     v != st->end()) slot.style.press_bg     = parse_color(*v);
+                        if (auto v = st->find("border_color"); v != st->end()) slot.style.border_color = parse_color(*v);
+                        if (auto v = st->find("border_width"); v != st->end() && v->is_number())
+                            slot.style.border_width = v->get<f32>();
+                    }
+
+                    cfg.slots.push_back(std::move(slot));
+                }
+            }
+
+            hud.set_command_bar_config(cfg);
+            log::info(TAG, "command_bar: {} slots", cfg.slots.size());
+        }
+
+        if (auto jy = comps->find("joystick"); jy != comps->end() && jy->is_object()) {
+            // Desktop skips the joystick entirely — keyboard pan and
+            // click-to-select cover the same ground and a virtual stick
+            // on a mouse-driven build is just visual noise.
+            if (!hud.is_mobile()) {
+                log::info(TAG, "joystick: skipped (non-mobile platform)");
+                // Still eaten from the "not yet implemented" skim at
+                // the bottom so authors don't get a spurious warning.
+            } else {
+            JoystickConfig cfg{};
+            cfg.enabled = true;
+
+            cfg.placement.anchor = parse_anchor(jy->value("anchor", "bl"));
+            cfg.placement.x      = jy->value("x", 0.0f);
+            cfg.placement.y      = jy->value("y", 0.0f);
+            cfg.placement.w      = jy->value("w", 0.0f);
+            cfg.placement.h      = jy->value("h", 0.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            // Optional activation region. If omitted, the base rect
+            // doubles as the activation region (v1 behavior).
+            if (auto act = jy->find("activation"); act != jy->end() && act->is_object()) {
+                cfg.has_activation = true;
+                cfg.activation_placement.anchor = parse_anchor(act->value("anchor", "bl"));
+                cfg.activation_placement.x      = act->value("x", 0.0f);
+                cfg.activation_placement.y      = act->value("y", 0.0f);
+                cfg.activation_placement.w      = act->value("w", 0.0f);
+                cfg.activation_placement.h      = act->value("h", 0.0f);
+                cfg.activation_rect = resolve(viewport_rect, cfg.activation_placement);
+            } else {
+                cfg.activation_rect = cfg.rect;
+            }
+
+            if (auto sp = jy->find("style_params"); sp != jy->end() && sp->is_object()) {
+                if (auto v = sp->find("base_color");        v != sp->end()) cfg.style.base_color        = parse_color(*v);
+                if (auto v = sp->find("base_border");       v != sp->end()) cfg.style.base_border       = parse_color(*v);
+                if (auto v = sp->find("base_border_width"); v != sp->end() && v->is_number())
+                    cfg.style.base_border_width = v->get<f32>();
+                if (auto v = sp->find("knob_color");        v != sp->end()) cfg.style.knob_color        = parse_color(*v);
+                if (auto v = sp->find("knob_border");       v != sp->end()) cfg.style.knob_border       = parse_color(*v);
+                if (auto v = sp->find("knob_border_width"); v != sp->end() && v->is_number())
+                    cfg.style.knob_border_width = v->get<f32>();
+                if (auto v = sp->find("knob_size_frac");    v != sp->end() && v->is_number())
+                    cfg.style.knob_size_frac = v->get<f32>();
+                if (auto v = sp->find("deadzone_frac");     v != sp->end() && v->is_number())
+                    cfg.style.deadzone_frac = v->get<f32>();
+                if (auto v = sp->find("idle_alpha_frac");   v != sp->end() && v->is_number())
+                    cfg.style.idle_alpha_frac = v->get<f32>();
+            }
+
+            hud.set_joystick_config(cfg);
+            log::info(TAG, "joystick: registered ({}x{}, activation {}x{})",
+                      static_cast<i32>(cfg.rect.w), static_cast<i32>(cfg.rect.h),
+                      static_cast<i32>(cfg.activation_rect.w),
+                      static_cast<i32>(cfg.activation_rect.h));
+            } // end mobile-only branch
+        }
+
         // Skim remaining composite keys so authoring feedback is consistent.
         for (auto it = comps->begin(); it != comps->end(); ++it) {
             const std::string& k = it.key();
-            if (k == "action_bar" || k == "minimap") continue;
+            if (k == "action_bar" || k == "minimap" || k == "command_bar" || k == "joystick") continue;
             log::info(TAG, "composite '{}' declared (not yet implemented)", k);
         }
     }
@@ -420,6 +546,16 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         hud.set_world_overlay_config(cfg);
     }
 
+    // selection_marquee block — per-map colors for the box-drag
+    // rectangle the RTS preset draws when frame-selecting units.
+    // Default (no block): transparent fill + green border, outline-only.
+    if (auto sm = doc.find("selection_marquee"); sm != doc.end() && sm->is_object()) {
+        Hud::MarqueeStyle ms{};
+        if (auto v = sm->find("fill");   v != sm->end()) ms.fill   = parse_color(*v);
+        if (auto v = sm->find("border"); v != sm->end()) ms.border = parse_color(*v);
+        hud.set_marquee_style(ms);
+    }
+
     // nodes block — each entry is registered as a TEMPLATE keyed by its
     // id. Templates are definitions; they don't render until a Lua script
     // calls CreateNode(template_id) to instantiate one. A hud.json with
@@ -467,7 +603,14 @@ bool instantiate_template(Hud& hud, std::string_view template_id,
     patched["h"]            = placement.h;
     patched["owner_player"] = placement.owner_player;
 
-    Rect viewport{ 0.0f, 0.0f, static_cast<f32>(viewport_w), static_cast<f32>(viewport_h) };
+    // Same physical→dp conversion as the composite parser above so
+    // Lua-supplied placement coords are interpreted in dp, not raw
+    // framebuffer pixels.
+    f32 s = hud.ui_scale();
+    if (s <= 0.0f) s = 1.0f;
+    Rect viewport{ 0.0f, 0.0f,
+                   static_cast<f32>(viewport_w) / s,
+                   static_cast<f32>(viewport_h) / s };
     parse_node(patched, hud.root(), viewport);
     return true;
 }

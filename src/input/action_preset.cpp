@@ -49,9 +49,18 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     if (input.key_letter['D' - 'A']) dir.x += 1.0f;
     if (input.key_letter['A' - 'A']) dir.x -= 1.0f;
 
+    // Virtual stick — screen Y grows downward, world +Y is forward, so
+    // flip Y when folding the stick into movement. X maps 1:1. Stick
+    // magnitude already encodes speed (after deadzone rescale in
+    // joystick_update), so we add the raw components to the key input
+    // and only normalize when the sum exceeds unit length — keys +
+    // stick can't drive faster than full speed.
+    dir.x += ctx.joystick_x;
+    dir.y += -ctx.joystick_y;
+
     f32 mag = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-    if (mag > 0.001f) dir /= mag;
-    else              dir = {0.0f, 0.0f};
+    if (mag > 1.0f)        dir /= mag;     // cap at unit length
+    else if (mag < 0.001f) dir = {0.0f, 0.0f};
 
     // Re-issue only on change. MoveDirection is latched — the sim keeps
     // applying the direction tick after tick without further commands.

@@ -58,6 +58,16 @@ struct InputState {
     bool mouse_left_released = false;
     bool mouse_right_pressed  = false;
     bool mouse_right_released = false;
+
+    // Multi-touch state (mobile). First finger is mirrored into the
+    // mouse_* fields above so UI that only knows about mice still
+    // reacts. Gestures (two-finger pan / pinch zoom) read `touch_count`
+    // and the `touch_x/y` arrays directly. Unused slots are zero.
+    // Desktop platforms leave `touch_count` at 0.
+    static constexpr u32 MAX_TOUCHES = 4;
+    u32  touch_count = 0;
+    f32  touch_x[MAX_TOUCHES] = {};
+    f32  touch_y[MAX_TOUCHES] = {};
 };
 
 class Platform {
@@ -75,6 +85,32 @@ public:
     virtual u32 width() const = 0;
     virtual u32 height() const = 0;
     virtual bool was_resized() = 0;
+
+    // Physical pixels per dp (density-independent pixel, 1 dp = 1/160
+    // inch — Android's real-world unit). HUD authoring happens in dp;
+    // the platform layer reports this ratio so the engine multiplies
+    // dp → px uniformly at render time. Platforms without a density
+    // reading return 1.0 (treats the display as 160 DPI).
+    virtual f32 ui_scale() const { return 1.0f; }
+
+    // True on touch-first platforms (Android) — used by the HUD loader
+    // to gate mobile-only composites like the virtual joystick so a
+    // single hud.json can describe layouts for all platforms. Desktop
+    // returns false by default.
+    virtual bool is_mobile() const { return false; }
+
+    // Safe-area insets (physical pixels) describing regions obstructed
+    // by system UI / hardware (status bar, nav bar, notch, rounded
+    // corners). HUD anchor resolution excludes these so bars never
+    // land under the cutout on a phone. Desktop platforms without
+    // system bars return all zeros.
+    struct SafeInsets {
+        f32 left   = 0.0f;
+        f32 top    = 0.0f;
+        f32 right  = 0.0f;
+        f32 bottom = 0.0f;
+    };
+    virtual SafeInsets safe_insets() const { return {}; }
 
     // Vulkan surface creation needs these
     virtual void* native_window_handle() const = 0;

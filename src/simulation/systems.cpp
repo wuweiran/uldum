@@ -433,6 +433,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         auto* attack_order = oq->current ? std::get_if<orders::Attack>(&oq->current->payload) : nullptr;
         bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
         bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
+        bool is_holding = oq->current && std::get_if<orders::HoldPosition>(&oq->current->payload);
 
         // Unit has a Move order — don't attack, obey the order
         if (is_moving) {
@@ -479,16 +480,19 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             }
             // AttackMove: order stays — movement system picks up the destination next tick
 
-            // Auto-acquire: scan for nearby enemies
-            if (!is_casting && !is_moving && combat.acquire_range > 0 && combat.damage > 0) {
+            // Auto-acquire: scan for nearby enemies. Hold Position restricts
+            // scanning to the unit's own attack range so the unit never picks
+            // up a target it would then need to chase.
+            f32 acquire_r = is_holding ? combat.range : combat.acquire_range;
+            if (!is_casting && !is_moving && acquire_r > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;
                     filter.enemy_of = owner->player;
                     filter.alive_only = true;
-                    auto enemies = grid.units_in_range(world, transform->position, combat.acquire_range, filter);
+                    auto enemies = grid.units_in_range(world, transform->position, acquire_r, filter);
                     Unit best;
-                    f32 best_dist = combat.acquire_range + 1;
+                    f32 best_dist = acquire_r + 1;
                     for (auto& e : enemies) {
                         auto* et = world.transforms.get(e.id);
                         if (!et) continue;
@@ -537,12 +541,26 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         case AttackState::Idle:
         case AttackState::MovingToTarget: {
             if (dist > combat.range) {
-                // Delegate movement to the movement system via approach
-                combat.attack_state = AttackState::MovingToTarget;
-                auto* mov = world.movements.get(id);
-                if (mov) {
-                    mov->approach_target = target;
-                    mov->approach_range = combat.range;
+                if (is_holding) {
+                    // Hold Position: never pursue. Drop the target so next
+                    // tick's auto-acquire picks up only enemies already in
+                    // attack range. Leaving it latched would cause the
+                    // movement system to keep chasing via approach_target.
+                    combat.target = Unit{};
+                    combat.attack_state = AttackState::Idle;
+                    auto* mov = world.movements.get(id);
+                    if (mov) {
+                        mov->approach_range = 0;
+                        mov->approach_target = Unit{};
+                    }
+                } else {
+                    // Delegate movement to the movement system via approach
+                    combat.attack_state = AttackState::MovingToTarget;
+                    auto* mov = world.movements.get(id);
+                    if (mov) {
+                        mov->approach_target = target;
+                        mov->approach_range = combat.range;
+                    }
                 }
             } else {
                 // In range — stop approaching, begin attack
@@ -560,7 +578,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
         case AttackState::TurningToFace: {
             if (dist > combat.range * 1.2f) {
-                combat.attack_state = AttackState::MovingToTarget;
+                if (is_holding) {
+                    combat.target = Unit{};
+                    combat.attack_state = AttackState::Idle;
+                } else {
+                    combat.attack_state = AttackState::MovingToTarget;
+                }
                 break;
             }
             f32 desired = std::atan2(to_target.y, to_target.x);

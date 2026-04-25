@@ -88,6 +88,14 @@ private:
     // The World to render — server's world in offline/host, client world in client mode.
     simulation::World& active_world();
 
+    // Poll safe-area insets from the platform and re-push to the HUD
+    // only when they changed. Called per frame because Android's
+    // GameActivity_getWindowInsets returns zeros until after the first
+    // layout pass — insets "arrive" asynchronously, sometime after
+    // onCreate. Push-on-change keeps the hot path free of pointless
+    // HUD re-resolves on steady-state frames.
+    void refresh_safe_insets();
+
     LaunchArgs m_args;
     AppState   m_state = AppState::Menu;
 
@@ -100,6 +108,11 @@ private:
     // Lua stats JSON. Shown on the Results screen. Stays at 0 until the
     // first EndGame call.
     f32 m_last_elapsed_seconds = 0.0f;
+
+    // Last safe-area insets we pushed to the HUD. Compared on each
+    // refresh so the HUD doesn't re-resolve composites when nothing
+    // changed.
+    platform::Platform::SafeInsets m_last_pushed_insets{};
 
     // ── Persistent (survive across sessions) ────────────────────────────
     std::unique_ptr<platform::Platform> m_platform;

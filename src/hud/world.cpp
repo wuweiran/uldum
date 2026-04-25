@@ -210,7 +210,17 @@ void draw_unit_name_label_impl(Hud& hud,
     f32 my = hud.pointer_y();
     if (mx <= 0.0f && my <= 0.0f) return;  // no pointer seen this frame
 
-    simulation::Unit hovered = ctx.picker->pick_target(mx, my);
+    // Picker still operates in physical framebuffer pixels (its screen
+    // size is set from m_platform->width/height). HUD pointer coords
+    // were divided by ui_scale on entry to live in dp space — convert
+    // back so the picker projects correctly. On desktop ui_scale ≈ 1
+    // so this is a no-op; on Android xxhdpi (~2.6×) it matters a lot.
+    f32 s = hud.ui_scale();
+    if (s <= 0.0f) s = 1.0f;
+    f32 picker_x = mx * s;
+    f32 picker_y = my * s;
+
+    simulation::Unit hovered = ctx.picker->pick_target(picker_x, picker_y);
     if (hovered.id == simulation::Unit{}.id) return;  // nothing under cursor
 
     const auto& world = *ctx.world;

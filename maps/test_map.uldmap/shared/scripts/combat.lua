@@ -54,7 +54,7 @@ function register_damage_text()
             text      = string.format("-%d", math.floor(GetDamageAmount() + 0.5)),
             unit      = target,
             z_offset  = 120.0,
-            size      = 18,
+            size      = 12,
             color     = "#FF5050FF",
             velocity  = { 0, -40 },     -- rise up the screen (y-down)
             lifespan  = 1.2,

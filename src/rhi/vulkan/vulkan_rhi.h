@@ -42,6 +42,21 @@ public:
 
     void handle_resize(u32 width, u32 height);
 
+    // Android lifecycle plumbing: called when the ANativeWindow the
+    // surface was bound to has been replaced (foreground → background →
+    // foreground, or rotation). Destroys the old VkSurfaceKHR +
+    // swapchain and builds new ones against the platform's current
+    // native window handle. Safe to call when the RHI has never been
+    // initialized (early return). Caller must only invoke after the
+    // platform reports a non-null native_window_handle().
+    void recreate_surface(platform::Platform& platform);
+
+    // Opaque pointer to the native window (ANativeWindow* / HWND) the
+    // current VkSurfaceKHR is bound to. Used by the main loop to detect
+    // a window handoff and trigger `recreate_surface` exactly when the
+    // platform gives us a new window, not every frame.
+    void* native_window_handle() const { return m_native_window; }
+
     // Accessors for renderer
     VkInstance       instance()  const { return m_instance; }
     VkDevice         device()    const { return m_device; }
@@ -81,6 +96,11 @@ private:
     // Instance
     VkInstance       m_instance        = VK_NULL_HANDLE;
     VkSurfaceKHR     m_surface         = VK_NULL_HANDLE;
+    // Cached native window pointer the current surface was created
+    // against. Opaque (HWND on Win32, ANativeWindow* on Android).
+    // Compared against the platform's latest handle to detect
+    // Android's post-background surface handoff.
+    void*            m_native_window   = nullptr;
     VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
     VkDevice         m_device          = VK_NULL_HANDLE;
     VmaAllocator     m_allocator       = VK_NULL_HANDLE;

@@ -3,7 +3,7 @@
 
   "composites": {
     "action_bar": {
-      "anchor": "bc", "x": 0, "y": -16, "w": 226, "h": 58,
+      "anchor": "bc", "x": 0, "y": -16, "w": 179, "h": 50,
 
       "style": "classic_rts",
       "binding_mode": "manual",
@@ -25,10 +25,10 @@
       },
 
       "slots": [
-        { "anchor": "tl", "x":   5, "y": 5, "w": 50, "h": 50, "hotkey": "1" },
-        { "anchor": "tl", "x":  58, "y": 5, "w": 50, "h": 50, "hotkey": "2" },
-        { "anchor": "tl", "x": 111, "y": 5, "w": 50, "h": 50, "hotkey": "3" },
-        { "anchor": "tl", "x": 164, "y": 5, "w": 50, "h": 50, "hotkey": "4" }
+        { "anchor": "tl", "x":   5, "y": 5, "w": 40, "h": 40, "hotkey": "1" },
+        { "anchor": "tl", "x":  48, "y": 5, "w": 40, "h": 40, "hotkey": "2" },
+        { "anchor": "tl", "x":  91, "y": 5, "w": 40, "h": 40, "hotkey": "3" },
+        { "anchor": "tl", "x": 134, "y": 5, "w": 40, "h": 40, "hotkey": "4" }
       ]
     },
 
@@ -42,6 +42,20 @@
         "own_dot_color":   "#50DC5AFF",
         "enemy_dot_color": "#DC4646FF",
         "dot_size":        3
+      }
+    },
+
+    "joystick": {
+      "anchor": "bl", "x": 20, "y": -20, "w": 140, "h": 140,
+      "style_params": {
+        "base_color":        "#141620A0",
+        "base_border":       "#000000C8",
+        "base_border_width": 2,
+        "knob_color":        "#C8CEE0DC",
+        "knob_border":       "#000000C8",
+        "knob_border_width": 2,
+        "knob_size_frac":    0.5,
+        "deadzone_frac":     0.12
       }
     }
   },

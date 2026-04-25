@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <functional>
+#include <thread>
 
 namespace uldum {
 
@@ -38,6 +39,21 @@ simulation::World& App::active_world() {
     if (m_args.net_mode == network::Mode::Client)
         return m_network.client_world();
     return m_server.simulation().world();
+}
+
+void App::refresh_safe_insets() {
+    if (!m_platform) return;
+    auto cur = m_platform->safe_insets();
+    if (cur.left   == m_last_pushed_insets.left  &&
+        cur.top    == m_last_pushed_insets.top   &&
+        cur.right  == m_last_pushed_insets.right &&
+        cur.bottom == m_last_pushed_insets.bottom) {
+        return;
+    }
+    m_last_pushed_insets = cur;
+    m_hud.set_safe_insets(hud::Hud::SafeInsets{
+        cur.left, cur.top, cur.right, cur.bottom
+    });
 }
 
 bool App::init(const LaunchArgs& args) {
@@ -115,6 +131,22 @@ bool App::init(const LaunchArgs& args) {
     if (!m_hud.init(m_rhi)) {
         log::error(TAG, "HUD init failed");
         return false;
+    }
+    // Authored HUD units are dp (1 dp = 1/160 inch). Platform reports
+    // physical-pixels-per-dp — on Windows derived from the monitor
+    // DPI, on Android from AConfiguration density. Setting once at
+    // init is fine: a window resize doesn't change dp, only the total
+    // px count that covers a given dp extent.
+    if (m_platform) {
+        m_hud.set_ui_scale(m_platform->ui_scale());
+        m_hud.set_is_mobile(m_platform->is_mobile());
+        // Safe-area insets for anchoring composites away from system bars
+        // / notch. Desktop returns zeros so this is a no-op there; Android
+        // reads GameActivity's SYSTEM_BARS union. May return zeros on
+        // first call if the activity hasn't run its first layout pass
+        // yet; the per-frame refresh_safe_insets() picks up the real
+        // values once Android populates them.
+        refresh_safe_insets();
     }
 
     // Selection circles — ground rings under selected units. 3D decals,
@@ -401,6 +433,13 @@ bool App::start_session() {
         if (m_input_preset) m_input_preset->queue_ability(ability_id);
     });
 
+    // Command-bar slot tap → dispatches an engine-built-in command
+    // ("stop", "move", etc.). Same plumbing as the ability callback
+    // above; the preset handles the actual work.
+    m_hud.set_command_bar_fn([this](const std::string& command_id) {
+        if (m_input_preset) m_input_preset->queue_command(command_id);
+    });
+
     // Minimap click → jump the camera so its ground-focus point lands
     // at the clicked world coord. Preserves the current pitch/yaw so
     // the player's view angle stays consistent across jumps.
@@ -634,14 +673,47 @@ void App::run() {
         previous_time = current_time;
         if (frame_dt > 0.25f) frame_dt = 0.25f;
 
+        // Android surface lifecycle. Going to background fires
+        // APP_CMD_TERM_WINDOW → platform clears the native window
+        // pointer; coming back fires APP_CMD_INIT_WINDOW with a *new*
+        // ANativeWindow. We need to skip rendering entirely while no
+        // window exists, and rebuild the VkSurfaceKHR + swapchain the
+        // moment a new one arrives — the old surface is bound to a
+        // destroyed ANativeWindow and acquire on it would fail
+        // catastrophically (this is the "black screen after resume"
+        // bug). On desktop the handle is stable, so these are no-ops.
+        void* native_win = m_platform->native_window_handle();
+        if (!native_win) {
+            // Paused — sleep briefly so we don't spin-poll the OS.
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+        if (native_win != m_rhi.native_window_handle()) {
+            m_rhi.recreate_surface(*m_platform);
+            // Re-push HUD viewport + insets — dims / ui_scale / insets
+            // may have shifted across the background span.
+            m_hud.set_ui_scale(m_platform->ui_scale());
+            refresh_safe_insets();
+            m_hud.on_viewport_resized(m_platform->width(), m_platform->height());
+        }
+
         if (m_platform->was_resized()) {
             m_rhi.handle_resize(m_platform->width(), m_platform->height());
             f32 aspect = static_cast<f32>(m_platform->width()) / static_cast<f32>(m_platform->height());
             m_renderer.handle_resize(aspect);
             if (m_session_active)
                 m_picker.set_screen_size(m_platform->width(), m_platform->height());
-            // Re-anchor HUD composites against the new viewport so bars
-            // stay pinned to their corners instead of the old extents.
+            // Re-query the platform's px-per-dp BEFORE re-anchoring HUD
+            // composites. A window drag between monitors of different
+            // DPI triggers WM_DPICHANGED → WM_SIZE on Windows; the new
+            // scale must be in place before on_viewport_resized's
+            // physical→dp conversion, otherwise composites anchor with
+            // the old scale and jump next frame.
+            m_hud.set_ui_scale(m_platform->ui_scale());
+            // Android can change insets on rotation or system-bar
+            // show/hide — refresh alongside the ui_scale query so the
+            // on_viewport_resized below re-anchors composites correctly.
+            refresh_safe_insets();
             m_hud.on_viewport_resized(m_platform->width(), m_platform->height());
 #ifdef ULDUM_SHELL_UI
             if (m_shell) m_shell->on_resize(m_platform->width(), m_platform->height());
@@ -876,14 +948,40 @@ void App::run() {
                 //   (2) the preset can query `hud_captured` on the same
                 //       frame to suppress pointer-driven selection and
                 //       orders when the pointer is over UI.
+                // Prune dead / destroyed units from selection before the
+                // preset runs. A unit the player had selected stays in
+                // `m_selected` until something clears it — without this
+                // step, rings + action_bar + commands keep pretending
+                // the corpse is a live unit.
+                {
+                    const auto& world = m_server.simulation().world();
+                    const auto& cur = m_selection.selected();
+                    bool any_dead = false;
+                    for (auto& u : cur) {
+                        if (!simulation::is_alive(world, u)) { any_dead = true; break; }
+                    }
+                    if (any_dead) {
+                        std::vector<simulation::Unit> live;
+                        live.reserve(cur.size());
+                        for (auto& u : cur) {
+                            if (simulation::is_alive(world, u)) live.push_back(u);
+                        }
+                        m_selection.select_multiple(std::move(live));
+                    }
+                }
+
                 const auto& in = m_platform->input();
                 m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
-                m_hud.handle_action_bar_keys(in);
+                m_hud.handle_hotkeys(in);
+                m_hud.joystick_update(in);
                 // Push targeting-mode state so the classic_rts render
                 // highlights the armed slot. Reads empty when the preset
                 // isn't waiting on a target.
                 m_hud.action_bar_set_targeting_ability(
                     m_input_preset ? m_input_preset->targeting_ability_id()
+                                   : std::string_view{});
+                m_hud.command_bar_set_armed_command(
+                    m_input_preset ? m_input_preset->active_command_id()
                                    : std::string_view{});
 
                 // Same sub-tick interpolation factor the renderer uses.
@@ -892,11 +990,15 @@ void App::run() {
                 bool  is_client_now = (m_args.net_mode == network::Mode::Client);
                 f32   preset_alpha  = is_client_now ? 1.0f : (accumulator / TICK_DT);
 
+                f32 jx = 0.0f, jy = 0.0f;
+                m_hud.joystick_vector(jx, jy);
+
                 input::InputContext ictx{
                     m_platform->input(), m_selection, m_commands, m_picker,
                     m_renderer.camera(), m_bindings, m_server.simulation(),
                     m_platform->width(), m_platform->height(),
-                    m_hud.input_captured(), preset_alpha
+                    m_hud.input_captured(), preset_alpha,
+                    jx, jy,
                 };
                 m_input_preset->update(ictx, frame_dt);
             }
@@ -963,13 +1065,18 @@ void App::run() {
                 // Selection circles — ground rings under selected units.
                 // Drawn after the 3D scene so they can be occluded by
                 // buildings, before HUD so bars / labels stack above.
-                const map::TerrainData* sel_terrain =
-                    m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
-                m_selection_circles.draw(cmd, m_renderer.camera(), world,
-                                         sel_terrain,
-                                         m_selection.selected(),
-                                         simulation::Player{m_args.local_slot},
-                                         alpha);
+                // Gated on the preset: action-style presets suppress
+                // them since the camera already tracks the controlled
+                // hero.
+                if (!m_input_preset || m_input_preset->show_selection_circles()) {
+                    const map::TerrainData* sel_terrain =
+                        m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
+                    m_selection_circles.draw(cmd, m_renderer.camera(), world,
+                                             sel_terrain,
+                                             m_selection.selected(),
+                                             simulation::Player{m_args.local_slot},
+                                             alpha);
+                }
                 // HUD overlay. Pointer is already dispatched earlier in
                 // the frame (before input preset update) so its captured
                 // state gates gameplay input correctly — here we just
@@ -979,6 +1086,19 @@ void App::run() {
                     m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
                     m_hud.draw_tree();
                     m_hud.draw_world_overlays(alpha);
+                    // Box-select marquee (RTS preset's drag-rectangle).
+                    // The preset records mouse coords in physical
+                    // pixels (same space the Picker takes for world
+                    // hits); HUD draw calls take dp. Convert once here
+                    // so the rectangle tracks the cursor at any ui_scale.
+                    if (m_input_preset) {
+                        auto bs = m_input_preset->box_selection();
+                        if (bs.active) {
+                            f32 inv = 1.0f / m_hud.ui_scale();
+                            m_hud.draw_marquee(bs.x0 * inv, bs.y0 * inv,
+                                               bs.x1 * inv, bs.y1 * inv);
+                        }
+                    }
                     m_hud.render(cmd);
                 }
 #ifdef ULDUM_SHELL_UI

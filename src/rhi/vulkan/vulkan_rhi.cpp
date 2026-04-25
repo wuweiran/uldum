@@ -232,7 +232,44 @@ bool VulkanRhi::create_surface(platform::Platform& platform) {
     }
 #endif
 
+    m_native_window = platform.native_window_handle();
     return true;
+}
+
+void VulkanRhi::recreate_surface(platform::Platform& platform) {
+    if (m_device == VK_NULL_HANDLE) return;  // not initialized yet
+
+    // The old swapchain and surface are tied to a now-destroyed
+    // ANativeWindow. Drain any in-flight work before tearing them down
+    // so we don't free resources the GPU is still using; then rebuild
+    // bottom-up against the new native window.
+    vkDeviceWaitIdle(m_device);
+    destroy_swapchain();
+    if (m_surface != VK_NULL_HANDLE) {
+        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+        m_surface = VK_NULL_HANDLE;
+    }
+    m_native_window = nullptr;
+
+    if (!create_surface(platform)) {
+        log::error(TAG, "recreate_surface: create_surface failed — rendering will stay black until the next resume");
+        return;
+    }
+    // Rebuild sync primitives that may have been signaled against the
+    // old surface's present engine. Semaphore is the only one with a
+    // pairing to present; fences are wholly CPU-side.
+    for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        vkDestroySemaphore(m_device, m_image_available[i], nullptr);
+        VkSemaphoreCreateInfo sem_ci{};
+        sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_image_available[i]);
+    }
+
+    if (!create_swapchain(platform.width(), platform.height())) {
+        log::error(TAG, "recreate_surface: swapchain creation failed");
+        return;
+    }
+    log::info(TAG, "Surface + swapchain recreated after window handoff");
 }
 
 // ---------------------------------------------------------------------------

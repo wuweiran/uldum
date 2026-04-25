@@ -56,16 +56,18 @@ private:
     void recalculate();
 
     // Game coordinates: X=right, Y=forward, Z=up. World origin is the
-    // map center (WC3 convention). Default sits south of origin, elevated,
-    // pitched down so the camera looks at the map center. Any map can
-    // override this via `cameras[0]` in its scene objects.json.
-    glm::vec3 m_position{0.0f, -1024.0f, 1650.0f};
-    f32 m_pitch = -0.98f;  // ~56 degrees down (WC3 angle of attack ~304)
-    f32 m_yaw   = 0.0f;    // 0 = looking toward +Y (forward)
+    // map center (WC3 convention). Defaults match WC3's built-in game
+    // camera exactly: target-distance 1650 along a 56°-below-horizontal
+    // ray (WC3 angle-of-attack 304°), FOV 70°. Camera sits south of
+    // origin at y = -1650*cos(56°) ≈ -923, height = 1650*sin(56°) ≈ 1370.
+    // Any map can override this via `cameras[0]` in its objects.json.
+    glm::vec3 m_position{0.0f, -923.0f, 1370.0f};
+    f32 m_pitch = -0.977f;  // -56° (WC3 angle of attack 304°)
+    f32 m_yaw   = 0.0f;     // 0 = looking toward +Y (forward)
 
     f32 m_move_speed   = 1280.0f;
     f32 m_height_speed = 640.0f;
-    f32 m_fov    = 1.22f;   // ~70 degrees (WC3-like)
+    f32 m_fov    = 1.22f;   // ~70° (WC3 game camera FOV)
     f32 m_aspect = 16.0f / 9.0f;
     f32 m_near   = 1.0f;
     f32 m_far    = 64000.0f;

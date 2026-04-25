@@ -26,6 +26,8 @@ struct TextTagCreateInfo;      // text_tag.h
 struct ActionBarConfig;        // action_bar.h
 enum class ActionBarHotkeyMode : u8;  // action_bar.h
 struct MinimapConfig;          // minimap.h
+struct CommandBarConfig;       // command_bar.h
+struct JoystickConfig;         // joystick.h
 
 // Packed RGBA color, 0xAABBGGRR on little-endian hosts. Use rgba() helper
 // to build one; the HUD pipeline expects u8×4 → normalized vec4 with the
@@ -73,6 +75,33 @@ public:
     void set_local_player(u32 player_id);
     u32  local_player() const;
 
+    // Real-world-sized HUD authoring. The canonical unit is Android's
+    // `dp` (1 dp = 1/160 inch). Every `"w": 50` in hud.json renders at
+    // 50/160 inch on any device, regardless of resolution or density.
+    // The platform layer reports `physical pixels per dp` at init — on
+    // Android it's (density / 160), on Windows it's (DPI / 160),
+    // default 1.0 elsewhere. The engine assumes the physical screen is
+    // at least 800×600 dp (≈ 5×3.75 inches) — smaller devices are not
+    // targeted.
+    void set_ui_scale(f32 px_per_dp);
+    f32  ui_scale() const;
+
+    // True on touch-first platforms. App pushes this once from
+    // `Platform::is_mobile()` at init so the hud.json loader can gate
+    // mobile-only composites (virtual joystick) without duplicating
+    // the map.
+    void set_is_mobile(bool mobile);
+    bool is_mobile() const;
+
+    // Safe-area insets in physical pixels — the region that's blocked
+    // by system UI on the target device (Android status/nav bars,
+    // notch, etc.). HUD composites + tree root anchor against the
+    // inner rect so nothing lands under a system bar. App pushes
+    // these from `Platform::safe_insets()` at init and on resize.
+    struct SafeInsets { f32 left = 0, top = 0, right = 0, bottom = 0; };
+    void set_safe_insets(const SafeInsets& insets);
+    SafeInsets safe_insets() const;
+
     // ── Viewport ─────────────────────────────────────────────────────────
     // Re-resolve every composite's absolute rect from its stored
     // placement. Called from App when the window resizes so bars,
@@ -92,6 +121,21 @@ public:
     // internally; callers usually add Panel / Button nodes via the tree
     // instead.
     void draw_rect(const Rect& r, Color color);
+
+    // Transient selection-marquee rectangle (the rect the player drags
+    // across the world to box-select units). Draws with the colors
+    // authored in hud.json's `selection_marquee` block; fill defaults
+    // to transparent (outline-only) so a busy terrain stays readable.
+    // Coords are in the same logical-pixel space as draw_rect.
+    void draw_marquee(f32 x0, f32 y0, f32 x1, f32 y1);
+
+    // Per-map styling for the selection marquee. Authored in hud.json
+    // (`selection_marquee: { fill, border }`). Called by the loader.
+    struct MarqueeStyle {
+        Color fill   = rgba(0,   0,   0,   0);     // transparent by default
+        Color border = rgba(80,  220, 90,  220);
+    };
+    void set_marquee_style(const MarqueeStyle& style);
 
     // Low-level primitive — draw a texture, stretched to fill the rect.
     // `asset_path` is resolved by the asset manager (KTX2 / PNG); the
@@ -258,11 +302,14 @@ public:
     using ActionBarCastFn = std::function<void(const std::string& ability_id)>;
     void set_action_bar_cast_fn(ActionBarCastFn fn);
 
-    // Scan the action-bar slot hotkeys against the current platform
-    // input state and fire the cast callback on rising edges. Call once
-    // per frame (alongside handle_pointer) before the input preset's
-    // update so the queued ability is consumed in the same frame.
-    void handle_action_bar_keys(const platform::InputState& input);
+    // Keyboard hotkey dispatch for every HUD-owned source — command_bar
+    // slots, action_bar slots, and hidden abilities on the selected
+    // unit. Walks them in that priority order and claims keys as it
+    // goes, so if two sources share a letter only the highest-priority
+    // one fires. Call once per frame (alongside handle_pointer) before
+    // the input preset's update so queued actions are consumed in the
+    // same frame.
+    void handle_hotkeys(const platform::InputState& input);
 
     // Minimap composite — schematic top-down view of the world. v1 is
     // bg + border + unit dots (fog-filtered) + click-to-jump camera.
@@ -274,6 +321,36 @@ public:
     // pose change so the view snaps to that location.
     using MinimapJumpFn = std::function<void(f32 world_x, f32 world_y)>;
     void set_minimap_jump_fn(MinimapJumpFn fn);
+
+    // Command-bar composite — grid of engine-built-in commands (Attack,
+    // Move, Stop, Hold, Patrol). Maps opt in via `composites.command_bar`
+    // in hud.json. Tapping a slot fires the callback with the command
+    // id ("attack", "move", etc.); the app routes to the input preset
+    // which dispatches the same order the keyboard binding would.
+    void set_command_bar_config(const CommandBarConfig& cfg);
+    void command_bar_set_visible(bool visible);
+
+    using CommandFn = std::function<void(const std::string& command_id)>;
+    void set_command_bar_fn(CommandFn fn);
+
+    // Mark which command the preset is waiting on (targeting mode).
+    // Passed through from the app each frame; the classic_rts render
+    // highlights the matching slot so the player sees what's armed.
+    void command_bar_set_armed_command(std::string_view command_id);
+
+    // Joystick composite — virtual analog stick for touch-screen camera
+    // pan. Per-frame flow is: App calls `joystick_update(input)` which
+    // captures a finger on press and tracks it until release; App then
+    // reads `joystick_vector(dx, dy)` to get a normalized [-1,1]² input
+    // and feeds it to the camera. Touch-and-mouse input both drive it;
+    // desktop maps simply don't declare the composite.
+    void set_joystick_config(const JoystickConfig& cfg);
+    void joystick_set_visible(bool visible);
+    void joystick_update(const platform::InputState& input);
+    void joystick_vector(f32& dx, f32& dy) const;
+    // True if the joystick currently owns a finger / mouse button. Used
+    // by the preset so drag-selection / tap-to-order don't double-fire.
+    bool joystick_active() const;
 
     // ── Network sync (host-side) ─────────────────────────────────────────
     // Host installs a callback that turns local HUD mutations into

@@ -54,13 +54,15 @@ extern "C" void android_main(struct android_app* app) {
 #ifdef ULDUM_ANDROID_DEV
     // Dev APK (libuldum_dev.so, "Uldum Dev"): engine iteration build. Every
     // maps/*.uldmap/ from the engine repo is bundled in APK assets; we load
-    // test_map by default and auto-start since there's no dev console on
-    // Android yet. auto_start = true drives Menu → Lobby → Loading → Playing
-    // without UI interaction (same as `uldum_dev --map ...` on desktop),
-    // avoiding the black screen that would come from sitting at Menu with
-    // nothing to render. A future imgui-based dev console on Android will
-    // replace the auto-start with a map picker + lobby.
-    args.map_path   = "maps/test_map.uldmap";
+    // action_test by default and auto-start since there's no dev console on
+    // Android yet — action_test exercises the action preset + joystick,
+    // which is the current focus of mobile dev. auto_start = true drives
+    // Menu → Lobby → Loading → Playing without UI interaction (same as
+    // `uldum_dev --map ...` on desktop), avoiding the black screen that
+    // would come from sitting at Menu with nothing to render. A future
+    // imgui-based dev console on Android will replace the auto-start
+    // with a map picker + lobby.
+    args.map_path   = "maps/action_test.uldmap";
     args.auto_start = true;
 #else
     // Game APK: should read default_map from game.json in APK assets.

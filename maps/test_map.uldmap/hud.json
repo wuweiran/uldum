@@ -2,8 +2,31 @@
   "preset": "rts",
 
   "composites": {
+    "command_bar": {
+      "anchor": "br", "x": -10, "y": -103, "w": 179, "h": 50,
+      "style_params": {
+        "bg":              "#14162088",
+        "hotkey_color":    "#F0F0F0FF",
+        "hotkey_badge_bg": "#000000B4"
+      },
+      "slot_style": {
+        "bg":           "#2C303CF0",
+        "hover_bg":     "#464A56FA",
+        "press_bg":     "#646878FF",
+        "border_color": "#00000080",
+        "border_width": 1
+      },
+
+      "slots": [
+        { "anchor": "tl", "x":   5, "y": 5, "w": 40, "h": 40, "command": "move",          "hotkey": "M", "icon": "shared/assets/textures/icons/move.ktx2" },
+        { "anchor": "tl", "x":  48, "y": 5, "w": 40, "h": 40, "command": "stop",          "hotkey": "S", "icon": "shared/assets/textures/icons/stop.ktx2" },
+        { "anchor": "tl", "x":  91, "y": 5, "w": 40, "h": 40, "command": "hold_position", "hotkey": "H", "icon": "shared/assets/textures/icons/hold_position.ktx2" },
+        { "anchor": "tl", "x": 134, "y": 5, "w": 40, "h": 40, "command": "attack",        "hotkey": "A", "icon": "shared/assets/textures/icons/attack.ktx2" }
+      ]
+    },
+
     "action_bar": {
-      "anchor": "bc", "x": 0, "y": -16, "w": 320, "h": 58,
+      "anchor": "br", "x": -10, "y": -10, "w": 179, "h": 93,
 
       "style": "classic_rts",
       "style_params": {
@@ -24,17 +47,17 @@
       },
 
       "slots": [
-        { "anchor": "tl", "x":   5, "y": 5, "w": 50, "h": 50, "hotkey": "Q" },
-        { "anchor": "tl", "x":  58, "y": 5, "w": 50, "h": 50, "hotkey": "W" },
-        { "anchor": "tl", "x": 111, "y": 5, "w": 50, "h": 50, "hotkey": "E" },
-        { "anchor": "tl", "x": 164, "y": 5, "w": 50, "h": 50, "hotkey": "R" },
-        { "anchor": "tl", "x": 217, "y": 5, "w": 50, "h": 50, "hotkey": "T" },
-        { "anchor": "tl", "x": 270, "y": 5, "w": 50, "h": 50, "hotkey": "Y" }
+        { "anchor": "tl", "x":  48, "y":  5, "w": 40, "h": 40, "hotkey": "T" },
+        { "anchor": "tl", "x":  91, "y":  5, "w": 40, "h": 40, "hotkey": "Y" },
+        { "anchor": "tl", "x":   5, "y": 48, "w": 40, "h": 40, "hotkey": "Q" },
+        { "anchor": "tl", "x":  48, "y": 48, "w": 40, "h": 40, "hotkey": "W" },
+        { "anchor": "tl", "x":  91, "y": 48, "w": 40, "h": 40, "hotkey": "E" },
+        { "anchor": "tl", "x": 134, "y": 48, "w": 40, "h": 40, "hotkey": "R" }
       ]
     },
 
     "minimap": {
-      "anchor": "br", "x": -10, "y": -10, "w": 200, "h": 200,
+      "anchor": "bl", "x": 10, "y": -10, "w": 150, "h": 150,
       "style": "classic_rts",
       "style_params": {
         "bg":              "#0C0E14E6",

@@ -43,6 +43,10 @@ void SelectionState::assign_group(u32 group) {
 
 void SelectionState::recall_group(u32 group) {
     if (group >= NUM_CONTROL_GROUPS) return;
+    // Unassigned groups leave the current selection alone — RTS
+    // convention. Overwriting with an empty vector would look like
+    // pressing the key deselects, which was confusing.
+    if (m_groups[group].empty()) return;
     m_selected = m_groups[group];
     if (on_change) on_change();
 }

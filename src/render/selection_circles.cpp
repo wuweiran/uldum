@@ -316,6 +316,7 @@ void SelectionCircles::draw(VkCommandBuffer cmd,
         f32 cx = ip.x, cy = ip.y;
 
         f32 base_r = (sel->selection_radius > 0.0f) ? sel->selection_radius : 48.0f;
+
         // Constant world-unit stroke width regardless of unit size. The
         // ring sits just outside the selection radius and extends inward
         // by kStrokeWidth, so the outer edge grows with the unit but the

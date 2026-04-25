@@ -15,9 +15,9 @@ class Hud;
 // parent-relative anchors + offsets into the absolute screen-pixel rects
 // the existing node atoms expect.
 //
-// The `composites` block is recognized but not yet applied — v1 composites
-// (action_bar, minimap, chat_box, joystick) land in a later sub-phase.
-// The `preset` string is read but currently unused beyond being logged.
+// The `composites` block is recognized and applied for the v1 set:
+// action_bar, command_bar, minimap, joystick. The `preset` string is
+// read but currently unused beyond being logged.
 //
 // `viewport_w`, `viewport_h` are the current window size in logical pixels;
 // they become the root's rect for anchoring. Returns true if the document

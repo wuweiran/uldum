@@ -113,9 +113,9 @@ Four composites, all singletons. All have a Lua content API; none accept style c
 | Composite | Role | Content API |
 |---|---|---|
 | `action_bar` | ability-button slot group. Each slot shows icon / cooldown ring / hotkey badge / disabled overlay for its bound ability. Click / hotkey issues the ability. | `ActionBarSetActor`, `ActionBarSetSlot`, ... |
+| `command_bar` | engine-command slot group (Attack, Move, Stop, Hold, Patrol). Click / hotkey issues the order. | no Lua binding — purely map-authored |
 | `minimap` | Scaled terrain + fog + entity dots + click-to-pan. | `MinimapSetVisible` |
-| `chat_box` | MP text input + scrollback. | `ChatSend` |
-| `joystick` | Virtual analog stick (action preset, mobile). | reads output vector; no Lua binding needed |
+| `joystick` | Virtual analog stick (mobile only; desktop skips it at load). | reads output vector; no Lua binding needed |
 
 Deferred composites (may ship later; v1 doesn't include them):
 
@@ -233,10 +233,6 @@ ActionBarSetVisible(true)
 -- minimap composite
 MinimapSetVisible(true)
 
--- chat_box composite
-ChatSend(local_player, "gg")
-ChatSetVisible(true)
-
 ```
 
 Hardcoded action_bar behavior (no Lua wiring required):
@@ -245,50 +241,6 @@ Hardcoded action_bar behavior (no Lua wiring required):
 - Click / hotkey press → issues the ability on the bound actor through CommandSystem.
 - Empty slot binding → slot renders empty.
 - No bound actor → entire bar renders at `disabled_tint`.
-
-### `chat_box`
-
-MP text input + scrollback. Enter focuses the input, Enter again sends, Esc cancels. Messages arrive from the network; scrollback holds the last `max_lines`. Fades after idle, reappears on new message. On offline sessions the input is disabled; scrollback still renders for Lua-posted lines (which in turn go out on the network in MP).
-
-```json
-"composites": {
-  "chat_box": {
-    "anchor": "bl", "x": 20, "y": -280, "w": 420, "h": 180,
-
-    "style": {
-      "prototype":    "default",
-      "bg":           "#00000060",
-      "border_color": "#FFFFFF20",
-      "border_width": 1,
-      "font_size":    14,
-      "line_spacing": 2,
-      "max_lines":    64,
-
-      "input": {
-        "bg":                "#000000C0",
-        "border_color":      "#FFFFFF40",
-        "border_width":      1,
-        "placeholder":       "Press Enter to chat",
-        "placeholder_color": "#FFFFFF60"
-      },
-
-      "fade": {
-        "idle_seconds": 5,
-        "fade_seconds": 2
-      }
-    }
-  }
-}
-```
-
-Each line's color is the sender's **player color** (from the alliance / lobby palette) — no per-relationship mapping in the composite style. A designated system-player id carries its own color in the palette for messages the engine posts directly.
-
-Lua API:
-
-- `ChatSend(player, msg)` — posts a line as the given Player. The Enter-key path uses the local player automatically; Lua can post as any player for scripted scenes (NPC dialogue in a cutscene, etc.).
-- `ChatSetVisible(bool)`
-
-No separate "system message" API. Real system announcements ("Player X disconnected", "Game paused") are a different composite, not yet designed — added when needed.
 
 ### `joystick`
 

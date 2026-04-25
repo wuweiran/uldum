@@ -23,6 +23,13 @@ public:
     u32 height() const override { return m_height; }
     bool was_resized() override;
 
+    // Windows reports DPI (dots per inch). Convert to px-per-dp using
+    // the dp baseline of 160 DPI. At 100% Windows scale the monitor
+    // is assumed 96 DPI, so px-per-dp = 0.6; at 150% scale (144 DPI),
+    // 0.9; at 200% (192 DPI), 1.2. The HUD looks the same physical
+    // size as on an Android device at the same density bucket.
+    f32 ui_scale() const override;
+
     void* native_window_handle() const override { return m_hwnd; }
     void* native_instance_handle() const override { return m_hinstance; }
 

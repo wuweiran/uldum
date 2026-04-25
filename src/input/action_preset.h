@@ -25,6 +25,7 @@ public:
         return m_targeting_ability ? std::string_view{m_targeting_ability_id}
                                     : std::string_view{};
     }
+    bool show_selection_circles() const override { return false; }
 
 private:
     void handle_movement(const InputContext& ctx);

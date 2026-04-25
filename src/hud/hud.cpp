@@ -6,6 +6,8 @@
 #include "hud/hud_loader.h"
 #include "hud/action_bar.h"
 #include "hud/minimap.h"
+#include "hud/command_bar.h"
+#include "hud/joystick.h"
 #include "hud/layout.h"
 
 #include <nlohmann/json.hpp>
@@ -35,6 +37,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace uldum::hud {
@@ -61,6 +64,7 @@ resolve_slot_ability(u32 slot_index,
 static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
                               const simulation::AbilityInstance& inst,
                               const simulation::AbilityDef& def);
+static bool is_castable_form(simulation::AbilityForm f);
 
 // Each batch = one draw call. Stage A uses a single implicit batch bound
 // to the 1×1 white texture. Later stages add batch splits when the bound
@@ -136,8 +140,17 @@ struct Hud::Impl {
     std::vector<Vertex> verts;
     std::vector<u16>    inds;
     std::vector<Batch>  batches;
+    // `screen_w/h` = logical (dp) HUD dimensions — what author-facing
+    // coordinates live in. Computed each frame as physical / ui_scale.
+    // `physical_w/h` = raw framebuffer extent for the Vulkan viewport.
+    // `ui_scale` = physical pixels per dp, set from the platform layer.
     u32 screen_w = 0;
     u32 screen_h = 0;
+    u32 physical_w = 0;
+    u32 physical_h = 0;
+    f32 ui_scale = 1.0f;
+    bool is_mobile = false;
+    Hud::SafeInsets safe_insets{};
     bool frame_open = false;
 
     // Retained widget tree. Root Panel is always present; its rect is
@@ -190,6 +203,35 @@ struct Hud::Impl {
     MinimapConfig  minimap_cfg{};
     MinimapRuntime minimap_rt{};
     Hud::MinimapJumpFn minimap_jump_fn;
+    // True between press-on-minimap and the matching release. While set,
+    // pointer moves keep firing minimap_jump_fn so the camera follows
+    // the finger across the minimap (RTS convention). Latches across
+    // pointer leaves so dragging off the minimap edge still scrolls
+    // the world to the projected position.
+    bool minimap_dragging = false;
+
+    // Command-bar composite. Same hit-test machinery pattern as
+    // action_bar (per-slot hovered/pressed + -1-indexed latches).
+    CommandBarConfig  command_bar_cfg{};
+    CommandBarRuntime command_bar_rt{};
+    i32 command_bar_hover_slot   = -1;
+    i32 command_bar_pressed_slot = -1;
+    Hud::CommandFn command_bar_fn;
+    std::string command_bar_armed_command;
+
+    // Joystick composite. Captured touch slot + last knob offset live
+    // in JoystickRuntime; `joystick_update` re-evaluates them each
+    // frame against the current InputState.
+    JoystickConfig  joystick_cfg{};
+    JoystickRuntime joystick_rt{};
+
+    // Rising-edge tracking for hidden-ability hotkeys (abilities
+    // authored with `hidden: true` that don't live in any bar slot
+    // but are still keyboard-triggerable).
+    std::unordered_map<std::string, bool> hidden_hotkey_prev;
+
+    // Box-select marquee — per-map style, authored in hud.json.
+    Hud::MarqueeStyle marquee_style{};
 
     // Network sync + input-event callbacks (host-side wiring).
     Hud::SyncFn         sync_fn;
@@ -599,7 +641,12 @@ static bool create_hud_image(Hud::Impl& s, const u8* rgba, u32 w, u32 h, HudImag
     VkImageCreateInfo ici{};
     ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    // Icon PNGs are authored in sRGB; the swapchain is sRGB too. Using an
+    // _SRGB image view lets the sampler de-gamma on read so the shader sees
+    // linear values, which the framebuffer then re-encodes correctly. Using
+    // _UNORM here would feed sRGB-encoded bytes through as "linear", which
+    // the sRGB framebuffer re-encodes a second time — washed-out mid-tones.
+    ici.format        = VK_FORMAT_R8G8B8A8_SRGB;
     ici.extent        = { w, h, 1 };
     ici.mipLevels     = 1;
     ici.arrayLayers   = 1;
@@ -655,7 +702,7 @@ static bool create_hud_image(Hud::Impl& s, const u8* rgba, u32 w, u32 h, HudImag
     vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image            = out.image;
     vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.format           = VK_FORMAT_R8G8B8A8_SRGB;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (vkCreateImageView(device, &vci, nullptr, &out.view) != VK_SUCCESS) {
         vmaDestroyImage(s.rhi->allocator(), out.image, out.alloc);
@@ -803,9 +850,30 @@ void Hud::shutdown() {
 
 void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
     if (!m_impl) return;
-    Rect viewport{ 0.0f, 0.0f,
-                   static_cast<f32>(screen_w),
-                   static_cast<f32>(screen_h) };
+    // Caller supplies physical framebuffer dims; convert to logical
+    // (dp) before re-resolving composite rects so anchors match what
+    // begin_frame will use next frame.
+    f32 s = m_impl->ui_scale;
+    if (s <= 0.0f) s = 1.0f;
+    f32 view_w_dp = static_cast<f32>(screen_w) / s;
+    f32 view_h_dp = static_cast<f32>(screen_h) / s;
+
+    // Safe-area insets come from the platform in physical pixels
+    // (Android's GameActivity insets are px-units, Windows reports zero).
+    // Convert to dp and shrink the viewport so composites anchored `tr`
+    // don't slide under the status bar / notch, and `br` anchors don't
+    // slide under the navigation bar. Clamp the resulting interior to
+    // non-negative in case insets somehow exceed the framebuffer.
+    const auto& ins = m_impl->safe_insets;
+    f32 left   = ins.left   / s;
+    f32 top    = ins.top    / s;
+    f32 right  = ins.right  / s;
+    f32 bottom = ins.bottom / s;
+    f32 inner_w = view_w_dp - left - right;
+    f32 inner_h = view_h_dp - top  - bottom;
+    if (inner_w < 0.0f) inner_w = 0.0f;
+    if (inner_h < 0.0f) inner_h = 0.0f;
+    Rect viewport{ left, top, inner_w, inner_h };
 
     // Action bar — bar rect anchors against viewport; each slot then
     // anchors against the new bar rect, so slot ordering matters.
@@ -823,6 +891,28 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
         mm.rect = resolve(viewport, mm.placement);
     }
 
+    // Command bar — same structure as action_bar: bar anchors against
+    // viewport, slots anchor against the new bar rect.
+    auto& cb = m_impl->command_bar_cfg;
+    if (cb.enabled) {
+        cb.rect = resolve(viewport, cb.placement);
+        for (auto& slot : cb.slots) {
+            slot.rect = resolve(cb.rect, slot.placement);
+        }
+    }
+
+    // Joystick — base rect + optional larger activation rect. Both
+    // anchor against the viewport.
+    auto& js = m_impl->joystick_cfg;
+    if (js.enabled) {
+        js.rect = resolve(viewport, js.placement);
+        if (js.has_activation) {
+            js.activation_rect = resolve(viewport, js.activation_placement);
+        } else {
+            js.activation_rect = js.rect;
+        }
+    }
+
     // Node-tree (hud.json `nodes`) rects are resolved at CreateNode time
     // against the then-current viewport — they remain pinned to those
     // coordinates. Lua can DestroyNode + CreateNode to re-anchor if a
@@ -835,15 +925,19 @@ void Hud::begin_frame(u32 screen_w, u32 screen_h) {
     m_impl->verts.clear();
     m_impl->inds.clear();
     m_impl->batches.clear();
-    m_impl->screen_w = screen_w;
-    m_impl->screen_h = screen_h;
+    // Caller passes physical framebuffer pixels. Divide by the
+    // platform-provided px-per-dp to get logical dims (dp) — that's
+    // the space every HUD coordinate and hit-test lives in.
+    f32 s = m_impl->ui_scale;
+    m_impl->physical_w = screen_w;
+    m_impl->physical_h = screen_h;
+    m_impl->screen_w   = static_cast<u32>(static_cast<f32>(screen_w) / s);
+    m_impl->screen_h   = static_cast<u32>(static_cast<f32>(screen_h) / s);
     m_impl->frame_open = true;
-    // Root fills the viewport so children anchored to corners resolve
-    // against the full window.
     if (m_impl->root) {
         m_impl->root->rect = { 0.0f, 0.0f,
-                               static_cast<f32>(screen_w),
-                               static_cast<f32>(screen_h) };
+                               static_cast<f32>(m_impl->screen_w),
+                               static_cast<f32>(m_impl->screen_h) };
     }
 }
 
@@ -932,6 +1026,37 @@ void Hud::set_local_player(u32 player_id) {
 }
 u32 Hud::local_player() const {
     return m_impl ? m_impl->local_player : UINT32_MAX;
+}
+
+void Hud::set_ui_scale(f32 px_per_dp) {
+    if (!m_impl) return;
+    // Guard against non-positive values from misbehaving platform code —
+    // dividing by zero later would zero the whole HUD into a point.
+    m_impl->ui_scale = (px_per_dp > 0.0f) ? px_per_dp : 1.0f;
+}
+f32 Hud::ui_scale() const { return m_impl ? m_impl->ui_scale : 1.0f; }
+
+void Hud::set_is_mobile(bool mobile) {
+    if (m_impl) m_impl->is_mobile = mobile;
+}
+bool Hud::is_mobile() const { return m_impl ? m_impl->is_mobile : false; }
+
+void Hud::set_safe_insets(const SafeInsets& insets) {
+    if (!m_impl) return;
+    m_impl->safe_insets = insets;
+    // If a viewport has already been established, re-resolve composite
+    // rects immediately so the new insets take effect this frame. (Init
+    // order: on desktop app pushes insets before the first begin_frame,
+    // so physical_w/h are still 0 and the next begin_frame picks them
+    // up for free. On Android's insets-change-without-resize path we
+    // need the re-resolve.)
+    if (m_impl->physical_w > 0 && m_impl->physical_h > 0) {
+        on_viewport_resized(m_impl->physical_w, m_impl->physical_h);
+    }
+}
+
+Hud::SafeInsets Hud::safe_insets() const {
+    return m_impl ? m_impl->safe_insets : SafeInsets{};
 }
 
 // Recursive search for a node with a matching id. Depth-first. Returns
@@ -1339,40 +1464,472 @@ static void minimap_point_to_world(const Rect& mm, const map::TerrainData& td,
     f32 fx = (sx - mm.x) / mm.w;   // 0..1 across minimap
     f32 fy = (sy - mm.y) / mm.h;
     wx = td.origin_x() + fx * td.world_width();
-    wy = td.origin_y() + fy * td.world_height();
+    // Minimap Y is flipped (north at top, south at bottom) to match WC3.
+    // Invert fy so the click lands at the world position the dot sat on.
+    wy = td.origin_y() + (1.0f - fy) * td.world_height();
 }
 
-void Hud::handle_action_bar_keys(const platform::InputState& input) {
+// ── Command-bar composite ────────────────────────────────────────────────
+
+void Hud::set_command_bar_config(const CommandBarConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->command_bar_cfg = cfg;
+    m_impl->command_bar_rt  = CommandBarRuntime{};
+    m_impl->command_bar_hover_slot   = -1;
+    m_impl->command_bar_pressed_slot = -1;
+}
+
+void Hud::command_bar_set_visible(bool visible) {
+    if (m_impl) m_impl->command_bar_rt.visible = visible;
+}
+
+void Hud::set_command_bar_fn(CommandFn fn) {
+    if (m_impl) m_impl->command_bar_fn = std::move(fn);
+}
+
+void Hud::command_bar_set_armed_command(std::string_view command_id) {
+    if (m_impl) m_impl->command_bar_armed_command.assign(command_id);
+}
+
+// Return the command-bar slot index under (x, y), or -1 if none.
+// Mirrors action_bar_hit_test — same shape, different struct.
+static i32 command_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
+    const auto& cfg = s.command_bar_cfg;
+    if (!cfg.enabled || !s.command_bar_rt.visible) return -1;
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+        const Rect& r = slot.rect;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+            return static_cast<i32>(i);
+        }
+    }
+    return -1;
+}
+
+// Render the command bar for the current frame. Reuses the classic_rts
+// look the action_bar uses. Armed state (slot whose command matches
+// the preset's current targeting mode) renders with press_bg + the
+// accent border, identical to the action_bar's armed ability slot.
+static void draw_command_bar(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.command_bar_cfg;
+    if (!cfg.enabled || !s.command_bar_rt.visible) return;
+
+    if ((cfg.style.bg.rgba >> 24) != 0) hud.draw_rect(cfg.rect, cfg.style.bg);
+
+    const std::string& armed = s.command_bar_armed_command;
+
+    for (const auto& slot : cfg.slots) {
+        if (!slot.visible) continue;
+        bool is_armed = (!armed.empty() && slot.command == armed);
+
+        Color bg = slot.style.bg;
+        if (slot.pressed)      bg = slot.style.press_bg;
+        else if (is_armed)     bg = slot.style.press_bg;   // "held down" look
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        hud.draw_rect(slot.rect, bg);
+
+        f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
+        Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
+                        slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
+        if (!slot.icon.empty()) {
+            hud.draw_image(icon_rect, slot.icon);
+        }
+
+        // Border — armed gets the accent color + thicker stroke.
+        Color border_color = slot.style.border_color;
+        f32   border_w     = bw;
+        if (is_armed) {
+            border_color = cfg.style.armed_border_color;
+            border_w     = cfg.style.armed_border_width;
+        }
+        if (border_w > 0.0f && (border_color.rgba >> 24) != 0) {
+            Rect r = slot.rect;
+            hud.draw_rect({ r.x, r.y, r.w, border_w }, border_color);
+            hud.draw_rect({ r.x, r.y + r.h - border_w, r.w, border_w }, border_color);
+            hud.draw_rect({ r.x, r.y, border_w, r.h }, border_color);
+            hud.draw_rect({ r.x + r.w - border_w, r.y, border_w, r.h }, border_color);
+        }
+
+        if (!slot.hotkey.empty()) {
+            f32 px_size = slot.rect.h * 0.28f;
+            if (px_size < 10.0f) px_size = 10.0f;
+            f32 text_w = hud.text_width_px(slot.hotkey, px_size);
+            f32 x_left = slot.rect.x + slot.rect.w - text_w - 4.0f;
+            f32 ascent = hud.text_ascent_px(px_size);
+            f32 y_base = slot.rect.y + ascent + 2.0f;
+            if ((cfg.style.hotkey_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f, pad_y = 1.0f;
+                Rect bg_pill{
+                    x_left - pad_x, y_base - ascent - pad_y,
+                    text_w + pad_x * 2.0f, ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg_pill, cfg.style.hotkey_badge_bg);
+            }
+            hud.draw_text(x_left, y_base, slot.hotkey, cfg.style.hotkey_color, px_size);
+        }
+    }
+}
+
+// ── Joystick composite ───────────────────────────────────────────────────
+
+static void draw_filled_circle(Hud::Impl& s, f32 cx, f32 cy, f32 r, Color color) {
+    if (r <= 0.0f) return;
+    if ((color.rgba >> 24) == 0) return;
+    ensure_batch(s, PIPE_SOLID, s.white_set);
+    u32 premul = premul_rgba(color);
+
+    constexpr u32 kSegments = 32;
+    constexpr f32 TWO_PI = 6.2831853f;
+    f32 step = TWO_PI / static_cast<f32>(kSegments);
+
+    f32 px0 = cx + r;
+    f32 py0 = cy;
+    for (u32 i = 0; i < kSegments; ++i) {
+        f32 a = step * static_cast<f32>(i + 1);
+        f32 px1 = cx + std::cos(a) * r;
+        f32 py1 = cy + std::sin(a) * r;
+        append_triangle(s, cx, cy, px0, py0, px1, py1, 0.0f, 0.0f, premul);
+        px0 = px1;
+        py0 = py1;
+    }
+}
+
+// Border as a ring of quads between radius r_outer and r_inner. Simpler
+// than a stroked circle and uses the same PIPE_SOLID batch.
+static void draw_ring(Hud::Impl& s, f32 cx, f32 cy, f32 r_outer, f32 r_inner, Color color) {
+    if (r_outer <= r_inner || r_outer <= 0.0f) return;
+    if ((color.rgba >> 24) == 0) return;
+    ensure_batch(s, PIPE_SOLID, s.white_set);
+    u32 premul = premul_rgba(color);
+
+    constexpr u32 kSegments = 32;
+    constexpr f32 TWO_PI = 6.2831853f;
+    f32 step = TWO_PI / static_cast<f32>(kSegments);
+
+    for (u32 i = 0; i < kSegments; ++i) {
+        f32 a0 = step * static_cast<f32>(i);
+        f32 a1 = step * static_cast<f32>(i + 1);
+        f32 c0 = std::cos(a0), s0 = std::sin(a0);
+        f32 c1 = std::cos(a1), s1 = std::sin(a1);
+        // Quad: outer(i), outer(i+1), inner(i+1), inner(i) — emitted as
+        // two triangles.
+        f32 ox0 = cx + c0 * r_outer, oy0 = cy + s0 * r_outer;
+        f32 ox1 = cx + c1 * r_outer, oy1 = cy + s1 * r_outer;
+        f32 ix0 = cx + c0 * r_inner, iy0 = cy + s0 * r_inner;
+        f32 ix1 = cx + c1 * r_inner, iy1 = cy + s1 * r_inner;
+        append_triangle(s, ox0, oy0, ox1, oy1, ix1, iy1, 0.0f, 0.0f, premul);
+        append_triangle(s, ox0, oy0, ix1, iy1, ix0, iy0, 0.0f, 0.0f, premul);
+    }
+}
+
+void Hud::set_joystick_config(const JoystickConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->joystick_cfg = cfg;
+    m_impl->joystick_rt  = JoystickRuntime{};
+    // Seed the runtime's base center at the home rect center so the
+    // first frame's render doesn't snap from (0, 0).
+    m_impl->joystick_rt.base_cx = cfg.rect.x + cfg.rect.w * 0.5f;
+    m_impl->joystick_rt.base_cy = cfg.rect.y + cfg.rect.h * 0.5f;
+}
+
+void Hud::joystick_set_visible(bool visible) {
+    if (m_impl) m_impl->joystick_rt.visible = visible;
+}
+
+void Hud::joystick_vector(f32& dx, f32& dy) const {
+    if (!m_impl) { dx = 0; dy = 0; return; }
+    dx = m_impl->joystick_rt.out_x;
+    dy = m_impl->joystick_rt.out_y;
+}
+
+bool Hud::joystick_active() const {
+    return m_impl && m_impl->joystick_rt.captured_slot >= 0;
+}
+
+// Does (x, y) fall inside the joystick's activation region? That's the
+// area where a press captures the stick (v2: optionally larger than the
+// visible base so the player doesn't have to aim). Uses a rect — not a
+// circle — so authors can cover an entire screen corner.
+static bool joystick_hit_test_point(const JoystickConfig& cfg, f32 x, f32 y) {
+    if (!cfg.enabled) return false;
+    const Rect& r = cfg.activation_rect;
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+void Hud::joystick_update(const platform::InputState& input) {
     if (!m_impl) return;
     auto& s = *m_impl;
-    const auto& cfg = s.action_bar_cfg;
-    if (!cfg.enabled || !s.action_bar_rt.visible) return;
-    if (!s.world_ctx || !s.action_bar_cast_fn) return;
+    auto& cfg = s.joystick_cfg;
+    auto& rt  = s.joystick_rt;
 
-    for (u32 i = 0; i < cfg.slots.size(); ++i) {
-        auto& slot = s.action_bar_cfg.slots[i];
-        if (!slot.visible || slot.hotkey.empty()) continue;
+    // Default: no output. Set below if a finger is driving the stick.
+    rt.out_x = 0.0f;
+    rt.out_y = 0.0f;
 
-        bool down = input::InputBindings::resolve_key(slot.hotkey, input);
-        bool rising = down && !slot.hotkey_prev_down;
-        slot.hotkey_prev_down = down;
-        if (!rising) continue;
+    // Home position — where the base rests when idle.
+    f32 home_cx = cfg.rect.x + cfg.rect.w * 0.5f;
+    f32 home_cy = cfg.rect.y + cfg.rect.h * 0.5f;
 
-        const simulation::AbilityDef* def = nullptr;
-        const simulation::AbilityInstance* inst =
-            resolve_slot_ability(i, cfg, s.action_bar_rt,
-                                 *s.world_ctx, def);
-        if (!inst || !def) continue;
+    if (!cfg.enabled || !rt.visible) {
+        rt.captured_slot = -1;
+        rt.knob_dx = rt.knob_dy = 0.0f;
+        rt.base_cx = home_cx;
+        rt.base_cy = home_cy;
+        return;
+    }
 
-        // Same gate as the click path — refuse to fire while on cooldown
-        // or unaffordable so the sim doesn't have to reject the command.
-        u32 unit_id = s.world_ctx->selection
-                        ? s.world_ctx->selection->selected().front().id
-                        : UINT32_MAX;
-        if (unit_id == UINT32_MAX) continue;
-        if (!slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) continue;
+    f32 base_r = std::min(cfg.rect.w, cfg.rect.h) * 0.5f;
+    f32 knob_r = base_r * cfg.style.knob_size_frac * 0.5f;
+    // Travel radius: how far the knob center can move from the base
+    // center. Keep it >= 1 px to avoid divide-by-zero in normalization.
+    f32 travel = base_r - knob_r;
+    if (travel < 1.0f) travel = 1.0f;
 
-        s.action_bar_cast_fn(inst->ability_id);
+    // Translate input from physical pixels (what Platform::input delivers)
+    // to the logical dp space the HUD lives in.
+    f32 scale = s.ui_scale > 0.0f ? s.ui_scale : 1.0f;
+    auto map_x = [scale](f32 px) { return px / scale; };
+    auto map_y = [scale](f32 px) { return px / scale; };
+
+    // Find the driver of the stick. Priority: if we already captured a
+    // slot, keep following that slot until it releases. Otherwise, on a
+    // fresh press look for any touch (or mouse, if no touches) inside
+    // the activation region and capture it.
+    auto finger_pos = [&](i32 slot, f32& fx, f32& fy) -> bool {
+        if (slot < 0) return false;
+        if (slot == 0 && input.touch_count == 0) {
+            // Mouse path — primary pointer.
+            fx = map_x(input.mouse_x);
+            fy = map_y(input.mouse_y);
+            return input.mouse_left;
+        }
+        if (static_cast<u32>(slot) < input.touch_count) {
+            fx = map_x(input.touch_x[slot]);
+            fy = map_y(input.touch_y[slot]);
+            return true;
+        }
+        return false;
+    };
+
+    if (rt.captured_slot >= 0) {
+        f32 fx, fy;
+        if (!finger_pos(rt.captured_slot, fx, fy)) {
+            // Finger released (or touch slot re-used by a different
+            // gesture — safer to drop than risk a jump). Return the
+            // base to its home position so the next idle render shows
+            // the configured anchor, not the last press point.
+            rt.captured_slot = -1;
+            rt.knob_dx = rt.knob_dy = 0.0f;
+            rt.base_cx = home_cx;
+            rt.base_cy = home_cy;
+            return;
+        }
+        // Knob offset is relative to the re-anchored base center, not
+        // the home center. That way the resting-finger position is the
+        // knob's neutral.
+        f32 ex = fx - rt.base_cx;
+        f32 ey = fy - rt.base_cy;
+        f32 mag2 = ex * ex + ey * ey;
+        if (mag2 > travel * travel) {
+            f32 mag = std::sqrt(mag2);
+            ex = ex / mag * travel;
+            ey = ey / mag * travel;
+        }
+        rt.knob_dx = ex;
+        rt.knob_dy = ey;
+
+        // Normalize + deadzone. Y is NOT flipped here: positive screen-Y
+        // means "pull stick downward" = pan camera south. The app /
+        // preset decides what that means for the world.
+        f32 nx = ex / travel;
+        f32 ny = ey / travel;
+        f32 mag = std::sqrt(nx * nx + ny * ny);
+        if (mag < cfg.style.deadzone_frac) {
+            rt.out_x = rt.out_y = 0.0f;
+        } else {
+            // Rescale so output crosses 0 at the deadzone edge instead
+            // of snapping. Keeps fine control near center.
+            f32 scale_out = (mag - cfg.style.deadzone_frac)
+                          / (1.0f - cfg.style.deadzone_frac) / mag;
+            rt.out_x = nx * scale_out;
+            rt.out_y = ny * scale_out;
+        }
+        return;
+    }
+
+    // No capture yet. Keep the base pinned at home while idle. Scan for
+    // a fresh press inside the activation region; on capture, re-anchor
+    // the base to the press point.
+    rt.base_cx = home_cx;
+    rt.base_cy = home_cy;
+
+    auto try_capture = [&](i32 slot, f32 fx, f32 fy) -> bool {
+        if (!joystick_hit_test_point(cfg, fx, fy)) return false;
+        rt.captured_slot = slot;
+        rt.base_cx = fx;
+        rt.base_cy = fy;
+        rt.knob_dx = rt.knob_dy = 0.0f;
+        return true;
+    };
+
+    if (input.touch_count > 0) {
+        for (u32 t = 0; t < input.touch_count; ++t) {
+            if (try_capture(static_cast<i32>(t),
+                            map_x(input.touch_x[t]),
+                            map_y(input.touch_y[t]))) {
+                break;
+            }
+        }
+    } else if (input.mouse_left_pressed) {
+        try_capture(0, map_x(input.mouse_x), map_y(input.mouse_y));
+    }
+}
+
+// Scale the alpha channel of a packed RGBA color by `frac` in [0, 1].
+// Used to dim the joystick base + knob while idle — keeps hue/lightness
+// authored by the map and only bleeds the opacity.
+static Color scale_color_alpha(Color c, f32 frac) {
+    if (frac >= 1.0f) return c;
+    if (frac <= 0.0f) frac = 0.0f;
+    u32 a = (c.rgba >> 24) & 0xFFu;
+    u32 a2 = static_cast<u32>(static_cast<f32>(a) * frac + 0.5f);
+    if (a2 > 255u) a2 = 255u;
+    return Color{ (c.rgba & 0x00FFFFFFu) | (a2 << 24) };
+}
+
+static void draw_joystick(Hud&, Hud::Impl& s) {
+    const auto& cfg = s.joystick_cfg;
+    const auto& rt  = s.joystick_rt;
+    if (!cfg.enabled || !rt.visible) return;
+
+    // Base center follows rt.base_cx/cy — equals home while idle, jumps
+    // to the press point while captured.
+    f32 cx = rt.base_cx;
+    f32 cy = rt.base_cy;
+    f32 base_r = std::min(cfg.rect.w, cfg.rect.h) * 0.5f;
+    f32 knob_r = base_r * cfg.style.knob_size_frac * 0.5f;
+
+    bool active = rt.captured_slot >= 0;
+    f32 alpha_frac = active ? 1.0f : cfg.style.idle_alpha_frac;
+
+    draw_filled_circle(s, cx, cy, base_r,
+                       scale_color_alpha(cfg.style.base_color, alpha_frac));
+    if (cfg.style.base_border_width > 0.0f) {
+        draw_ring(s, cx, cy, base_r, base_r - cfg.style.base_border_width,
+                  scale_color_alpha(cfg.style.base_border, alpha_frac));
+    }
+
+    f32 kx = cx + rt.knob_dx;
+    f32 ky = cy + rt.knob_dy;
+    draw_filled_circle(s, kx, ky, knob_r,
+                       scale_color_alpha(cfg.style.knob_color, alpha_frac));
+    if (cfg.style.knob_border_width > 0.0f) {
+        draw_ring(s, kx, ky, knob_r, knob_r - cfg.style.knob_border_width,
+                  scale_color_alpha(cfg.style.knob_border, alpha_frac));
+    }
+}
+
+void Hud::handle_hotkeys(const platform::InputState& input) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+
+    // Priority walk. A key letter fires at most one source per frame,
+    // even if it appears in multiple places. Order: command_bar ↓
+    // action_bar (declaration order) ↓ hidden abilities. Non-rising
+    // edges still update each slot's prev-down so a held key doesn't
+    // "re-fire" when it's claimed by a later source on a later frame.
+    std::unordered_set<std::string> claimed;
+
+    // 1. Command bar.
+    {
+        auto& cfg = s.command_bar_cfg;
+        if (cfg.enabled && s.command_bar_rt.visible && s.command_bar_fn) {
+            for (auto& slot : cfg.slots) {
+                if (!slot.visible || slot.hotkey.empty() || slot.command.empty()) continue;
+                bool down   = input::InputBindings::resolve_key(slot.hotkey, input);
+                bool rising = down && !slot.hotkey_prev_down;
+                slot.hotkey_prev_down = down;
+                if (!rising) continue;
+                if (claimed.count(slot.hotkey)) continue;
+                claimed.insert(slot.hotkey);
+                s.command_bar_fn(slot.command);
+            }
+        }
+    }
+
+    // 2. Action bar. Slots iterate in declaration order; lower index
+    // wins on conflict, per the authoring contract. While we're here,
+    // collect the set of ability ids that *did* resolve to a slot —
+    // stage 3 uses it to decide which unit abilities are "not on any
+    // slot" and therefore free to dispatch via their def->hotkey.
+    std::unordered_set<std::string> slotted_abilities;
+    {
+        auto& cfg = s.action_bar_cfg;
+        if (cfg.enabled && s.action_bar_rt.visible && s.world_ctx && s.action_bar_cast_fn) {
+            for (u32 i = 0; i < cfg.slots.size(); ++i) {
+                auto& slot = cfg.slots[i];
+
+                const simulation::AbilityDef* def = nullptr;
+                const simulation::AbilityInstance* inst =
+                    resolve_slot_ability(i, cfg, s.action_bar_rt,
+                                         *s.world_ctx, def);
+                if (inst) slotted_abilities.insert(inst->ability_id);
+
+                if (!slot.visible || slot.hotkey.empty()) continue;
+                bool down   = input::InputBindings::resolve_key(slot.hotkey, input);
+                bool rising = down && !slot.hotkey_prev_down;
+                slot.hotkey_prev_down = down;
+                if (!rising) continue;
+                if (claimed.count(slot.hotkey)) continue;
+                if (!inst || !def) continue;
+
+                u32 unit_id = s.world_ctx->selection
+                                ? s.world_ctx->selection->selected().front().id
+                                : UINT32_MAX;
+                if (unit_id == UINT32_MAX) continue;
+                if (!slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) continue;
+
+                claimed.insert(slot.hotkey);
+                s.action_bar_cast_fn(inst->ability_id);
+            }
+        }
+    }
+
+    // 3. Hidden abilities on the selected unit. "Hidden" here means
+    // either explicitly `hidden: true` in the type def OR simply not
+    // resolved into any action_bar slot this frame (e.g. slot count
+    // too small in positional mode, no slot matches its letter in
+    // ability mode, or Lua didn't bind it in manual mode). Both cases
+    // fall out naturally from the slotted_abilities set above — any
+    // non-slotted ability is fair game to dispatch via its own hotkey.
+    if (s.world_ctx && s.world_ctx->world && s.world_ctx->abilities
+        && s.world_ctx->selection && s.action_bar_cast_fn) {
+        const auto& sel = s.world_ctx->selection->selected();
+        if (!sel.empty()) {
+            const auto* aset = s.world_ctx->world->ability_sets.get(sel.front().id);
+            if (aset) {
+                u32 unit_id = sel.front().id;
+                for (const auto& inst : aset->abilities) {
+                    if (slotted_abilities.count(inst.ability_id)) continue;
+
+                    const auto* def = s.world_ctx->abilities->get(inst.ability_id);
+                    if (!def || def->hotkey.empty()) continue;
+                    if (!is_castable_form(def->form)) continue;  // passive/aura aren't triggerable
+
+                    bool down   = input::InputBindings::resolve_key(def->hotkey, input);
+                    bool& prev  = s.hidden_hotkey_prev[def->hotkey];
+                    bool rising = down && !prev;
+                    prev = down;
+                    if (!rising) continue;
+                    if (claimed.count(def->hotkey)) continue;
+                    if (!slot_castable_now(*s.world_ctx, unit_id, inst, *def)) continue;
+
+                    claimed.insert(def->hotkey);
+                    s.action_bar_cast_fn(inst.ability_id);
+                }
+            }
+        }
     }
 }
 
@@ -1708,13 +2265,13 @@ static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
             if ((cfg.style.hotkey_badge_bg.rgba >> 24) != 0) {
                 f32 pad_x = 3.0f;
                 f32 pad_y = 1.0f;
-                Rect bg{
+                Rect bg_pill{
                     x_left - pad_x,
                     y_base - ascent - pad_y,
                     text_w + pad_x * 2.0f,
                     ascent + pad_y * 2.0f,
                 };
-                hud.draw_rect(bg, cfg.style.hotkey_badge_bg);
+                hud.draw_rect(bg_pill, cfg.style.hotkey_badge_bg);
             }
 
             hud.draw_text(x_left, y_base, slot.hotkey, cfg.style.hotkey_color, px_size);
@@ -1795,9 +2352,11 @@ static void draw_minimap(Hud& hud, Hud::Impl& s) {
             }
         }
 
-        // Project to minimap pixels. Dot is a small centered square.
+        // Project to minimap pixels. World +Y is "forward" / north; screen Y
+        // grows downward. Flip Y so north lands at the top of the minimap
+        // (WC3 convention). Dot is a small centered square.
         f32 sx = cfg.rect.x + (tf.position.x - td.origin_x()) * inv_w;
-        f32 sy = cfg.rect.y + (tf.position.y - td.origin_y()) * inv_h;
+        f32 sy = cfg.rect.y + cfg.rect.h - (tf.position.y - td.origin_y()) * inv_h;
         f32 half = cfg.style.dot_size * 0.5f;
         Rect dot{ sx - half, sy - half, cfg.style.dot_size, cfg.style.dot_size };
         hud.draw_rect(dot, minimap_dot_color(*s.world_ctx, id, cfg.style));
@@ -1829,7 +2388,9 @@ void Hud::draw_tree() {
     if (!m_impl || !m_impl->frame_open || !m_impl->root) return;
     m_impl->root->draw(*this);
     draw_action_bar(*this, *m_impl);
+    draw_command_bar(*this, *m_impl);
     draw_minimap(*this, *m_impl);
+    draw_joystick(*this, *m_impl);
 }
 
 // Hit-test helper. Walks children back-to-front (reverse iteration) so a
@@ -1852,14 +2413,28 @@ static Node* hit_test_tree(Node* node, f32 x, f32 y, u32 local_player) {
 void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     if (!m_impl) return;
     auto& s = *m_impl;
+    // Pointer arrives in physical framebuffer pixels. Convert to dp
+    // so hit-tests run in the same space composite rects live in.
+    f32 inv = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
+    x *= inv;
+    y *= inv;
     s.pointer_x = x;
     s.pointer_y = y;
 
     // Composites sit on top of the node tree (drawn last in draw_tree);
-    // hit-test them first so clicks beat anything underneath. Either
-    // capture suppresses the tree hit-test entirely.
+    // hit-test them first so clicks beat anything underneath. Priority
+    // order: action_bar > command_bar > minimap > joystick > tree.
+    // Joystick is LAST of the composites so explicit UI (buttons, bar
+    // slots, minimap dots) inside an otherwise-blank activation region
+    // still wins. `on_joystick` also fires when slot 0 (the primary
+    // finger) has already captured the stick — that suppresses tree /
+    // drag-select from the same finger while dragging the knob.
     i32  bar_slot    = action_bar_hit_test(s, x, y);
-    bool on_minimap  = (bar_slot < 0) && minimap_hit_test(s, x, y);
+    i32  cmd_slot    = (bar_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
+    bool on_minimap  = (bar_slot < 0) && (cmd_slot < 0) && minimap_hit_test(s, x, y);
+    bool on_joystick = (bar_slot < 0) && (cmd_slot < 0) && !on_minimap
+                       && (s.joystick_rt.captured_slot == 0
+                           || joystick_hit_test_point(s.joystick_cfg, x, y));
 
     // Hover tracking for the bar. `slot.hovered` drives the classic_rts
     // style's hover_bg swap; clearing the old slot before setting the
@@ -1874,9 +2449,19 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
         }
         s.action_bar_hover_slot = bar_slot;
     }
+    if (cmd_slot != s.command_bar_hover_slot) {
+        if (s.command_bar_hover_slot >= 0 &&
+            static_cast<u32>(s.command_bar_hover_slot) < s.command_bar_cfg.slots.size()) {
+            s.command_bar_cfg.slots[s.command_bar_hover_slot].hovered = false;
+        }
+        if (cmd_slot >= 0) {
+            s.command_bar_cfg.slots[cmd_slot].hovered = true;
+        }
+        s.command_bar_hover_slot = cmd_slot;
+    }
 
     Node* under = nullptr;
-    if (bar_slot < 0 && !on_minimap) {
+    if (bar_slot < 0 && cmd_slot < 0 && !on_minimap && !on_joystick) {
         under = hit_test_tree(s.root.get(), x, y, s.local_player);
     }
 
@@ -1895,11 +2480,16 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
         if (bar_slot >= 0) {
             s.action_bar_pressed_slot = bar_slot;
             s.action_bar_cfg.slots[bar_slot].pressed = true;
+        } else if (cmd_slot >= 0) {
+            s.command_bar_pressed_slot = cmd_slot;
+            s.command_bar_cfg.slots[cmd_slot].pressed = true;
         } else if (on_minimap) {
-            // Minimap click — jump the camera. The terrain is needed to
-            // convert screen point to world point; silently ignore the
-            // click if there's no terrain (e.g. before session start).
+            // Minimap press — start a drag that pans the camera. Each
+            // pointer move while held re-fires minimap_jump_fn (handled
+            // below the press/release edges); release clears the latch.
+            // Silently ignore if the session isn't fully up yet.
             if (s.world_ctx && s.world_ctx->terrain && s.minimap_jump_fn) {
+                s.minimap_dragging = true;
                 f32 wx = 0.0f, wy = 0.0f;
                 minimap_point_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
                                        x, y, wx, wy);
@@ -1940,6 +2530,22 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 }
             }
             s.action_bar_pressed_slot = -1;
+        } else if (s.command_bar_pressed_slot >= 0) {
+            // Click on a command-bar slot → fire the command callback
+            // with the slot's command id. App routes to the input
+            // preset so the tap dispatches the same order the keyboard
+            // binding would (Stop / HoldPosition immediate, Attack /
+            // Move entering targeting mode).
+            u32 idx = static_cast<u32>(s.command_bar_pressed_slot);
+            bool over = (cmd_slot == s.command_bar_pressed_slot);
+            if (idx < s.command_bar_cfg.slots.size()) {
+                auto& slot = s.command_bar_cfg.slots[idx];
+                slot.pressed = false;
+                if (over && s.command_bar_fn && !slot.command.empty()) {
+                    s.command_bar_fn(slot.command);
+                }
+            }
+            s.command_bar_pressed_slot = -1;
         } else if (s.pressed) {
             bool over = (under == s.pressed);
             std::string clicked_id = s.pressed->id;
@@ -1949,16 +2555,40 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
         }
     }
 
+    // Minimap drag: while the latch is set, every pointer move re-fires
+    // the jump callback so the camera follows the finger across the
+    // minimap. Latch survives the pointer leaving the minimap rect (the
+    // projected world point is just clamped by the terrain bounds), and
+    // clears on release. Held-but-not-moved frames re-issue the same
+    // world point — cheap, idempotent.
+    if (s.minimap_dragging) {
+        if (!button_down) {
+            s.minimap_dragging = false;
+        } else if (s.world_ctx && s.world_ctx->terrain && s.minimap_jump_fn) {
+            f32 wx = 0.0f, wy = 0.0f;
+            minimap_point_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
+                                   x, y, wx, wy);
+            s.minimap_jump_fn(wx, wy);
+        }
+    }
+
     s.pointer_down_prev = button_down;
 }
 
 bool Hud::input_captured() const {
     if (!m_impl) return false;
     // Pointer over (or holding) any HUD surface that takes pointer input.
+    // Joystick only counts when the primary finger (slot 0) is driving
+    // it — if a secondary finger grabbed the stick, the preset's
+    // primary-pointer code is still free to run.
     return m_impl->hover != nullptr || m_impl->pressed != nullptr
-        || m_impl->action_bar_hover_slot   >= 0
-        || m_impl->action_bar_pressed_slot >= 0
-        || minimap_hit_test(*m_impl, m_impl->pointer_x, m_impl->pointer_y);
+        || m_impl->action_bar_hover_slot    >= 0
+        || m_impl->action_bar_pressed_slot  >= 0
+        || m_impl->command_bar_hover_slot   >= 0
+        || m_impl->command_bar_pressed_slot >= 0
+        || minimap_hit_test(*m_impl, m_impl->pointer_x, m_impl->pointer_y)
+        || m_impl->minimap_dragging
+        || m_impl->joystick_rt.captured_slot == 0;
 }
 
 f32 Hud::pointer_x() const { return m_impl ? m_impl->pointer_x : 0.0f; }
@@ -2044,6 +2674,31 @@ void Hud::draw_rect(const Rect& r, Color color) {
     append_quad(*m_impl, r, 0.0f, 0.0f, 1.0f, 1.0f, premul_rgba(color));
 }
 
+void Hud::draw_marquee(f32 x0, f32 y0, f32 x1, f32 y1) {
+    if (!m_impl || !m_impl->frame_open) return;
+    // Normalize so a drag from any corner lays down a well-formed rect.
+    f32 xa = std::min(x0, x1), xb = std::max(x0, x1);
+    f32 ya = std::min(y0, y1), yb = std::max(y0, y1);
+    Rect r{ xa, ya, xb - xa, yb - ya };
+    if (r.w <= 0.0f || r.h <= 0.0f) return;
+
+    const auto& style = m_impl->marquee_style;
+    if ((style.fill.rgba >> 24) != 0) draw_rect(r, style.fill);
+
+    // 1-pixel border strips on all four sides so the marquee remains
+    // readable over bright ground tiles.
+    if ((style.border.rgba >> 24) != 0) {
+        draw_rect({ r.x, r.y, r.w, 1.0f },               style.border);
+        draw_rect({ r.x, r.y + r.h - 1.0f, r.w, 1.0f },  style.border);
+        draw_rect({ r.x, r.y, 1.0f, r.h },               style.border);
+        draw_rect({ r.x + r.w - 1.0f, r.y, 1.0f, r.h },  style.border);
+    }
+}
+
+void Hud::set_marquee_style(const MarqueeStyle& style) {
+    if (m_impl) m_impl->marquee_style = style;
+}
+
 void Hud::draw_image(const Rect& r, std::string_view asset_path, Color tint) {
     if (!m_impl || !m_impl->frame_open) return;
     HudImage* img = get_or_load_image(*m_impl, asset_path);
@@ -2124,23 +2779,27 @@ void Hud::render(VkCommandBuffer cmd) {
     std::memcpy(ring.vb_mapped, s.verts.data(), s.verts.size() * sizeof(Vertex));
     std::memcpy(ring.ib_mapped, s.inds.data(),  s.inds.size()  * sizeof(u16));
 
+    // Viewport covers the whole physical framebuffer; the ortho below
+    // projects reference-pixel geometry across it, so HUD content
+    // scales uniformly by `hud_scale` on the GPU.
     VkViewport vp{};
     vp.x        = 0.0f;
     vp.y        = 0.0f;
-    vp.width    = static_cast<f32>(s.screen_w);
-    vp.height   = static_cast<f32>(s.screen_h);
+    vp.width    = static_cast<f32>(s.physical_w);
+    vp.height   = static_cast<f32>(s.physical_h);
     vp.minDepth = 0.0f;
     vp.maxDepth = 1.0f;
     vkCmdSetViewport(cmd, 0, 1, &vp);
 
     VkRect2D scissor{};
     scissor.offset = {0, 0};
-    scissor.extent = { s.screen_w, s.screen_h };
+    scissor.extent = { s.physical_w, s.physical_h };
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Ortho mapping screen-space (0,0) top-left → (w,h) bottom-right into
-    // Vulkan NDC. Vulkan's NDC is +Y down; glm::ortho is OpenGL convention
-    // (+Y up), so we pass bottom=0, top=h to flip Y into Vulkan's space.
+    // Ortho is sized to the logical HUD dimensions (≥ reference along
+    // the limiting axis, with bonus space on the longer axis). Vulkan
+    // NDC is +Y down; glm::ortho is OpenGL +Y up, so we pass bottom=0,
+    // top=h to flip Y into Vulkan's space.
     glm::mat4 mvp = glm::ortho(0.0f, static_cast<f32>(s.screen_w),
                                0.0f, static_cast<f32>(s.screen_h),
                                -1.0f, 1.0f);

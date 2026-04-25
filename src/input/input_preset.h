@@ -36,6 +36,14 @@ struct InputContext {
     // (e.g. the Action preset's hero-tracking camera) read this so
     // they stay visually in sync with the interpolated unit render.
     f32 alpha = 1.0f;
+    // Virtual-stick output for this frame, normalized to [-1, 1]². Zero
+    // when the HUD joystick composite isn't present or no finger is on
+    // it. Screen-space axes — presets decide what they mean (the RTS
+    // preset pans the camera; the action preset drives unit movement).
+    // `(0, 0)` is center / idle; `(+x, +y)` is the screen's bottom-right
+    // quadrant.
+    f32 joystick_x = 0.0f;
+    f32 joystick_y = 0.0f;
 };
 
 // Base class for input presets. Each preset translates raw input into
@@ -53,11 +61,44 @@ public:
     // for presets that don't support ability casts.
     virtual void queue_ability(std::string_view /*ability_id*/) {}
 
+    // Ask the preset to run one of the engine-built-in commands —
+    // `"stop"`, `"hold_position"`, `"attack"`, `"attack_move"`,
+    // `"move"`, `"patrol"`. Instant ones submit orders immediately;
+    // targeting ones enter a mode where the next world-click commits.
+    // Same zero-latency processing as queue_ability.
+    virtual void queue_command(std::string_view /*command_id*/) {}
+
     // Id of the ability currently in "pick a target" mode, or empty
     // when the preset isn't waiting for a cast target. Used by the HUD
     // to highlight the armed slot so the player knows which ability
     // is about to fire. Default: never armed.
     virtual std::string_view targeting_ability_id() const { return {}; }
+
+    // Command id currently in targeting mode — mirror of the above,
+    // for the command_bar composite. Empty when no command is armed.
+    // Today: "attack" / "attack_move" (→ m_attack_move_mode), "move"
+    // (→ m_move_targeting_mode). Instant commands (stop / hold) never
+    // stay armed. Default: never armed.
+    virtual std::string_view active_command_id() const { return {}; }
+
+    // Whether ground-plane selection rings should render for this
+    // preset. RTS-style presets return true (you're commanding any
+    // number of units and need to see which are selected); action-
+    // style presets return false (the camera already tracks the
+    // player hero, so the ring is just clutter). Default: true.
+    virtual bool show_selection_circles() const { return true; }
+
+    // Frame-selection drag state. `active == true` while the player is
+    // dragging a rectangle across the world to box-select units. Coords
+    // are screen-space physical pixels (the same space the pointer
+    // hit-tests HUD atoms in). App reads this each frame and draws a
+    // marquee via the HUD. Default: never dragging.
+    struct BoxSelection {
+        bool active = false;
+        f32  x0 = 0, y0 = 0;   // drag start
+        f32  x1 = 0, y1 = 0;   // current pointer
+    };
+    virtual BoxSelection box_selection() const { return {}; }
 };
 
 // Create an input preset by name ("rts", future: "action_rpg").

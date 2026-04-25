@@ -7,12 +7,20 @@
         AppCompatDelegateImpl.createSubDecor with "You need to use a
         Theme.AppCompat theme (or descendant) with this activity").
 
-        Theme.AppCompat.NoActionBar hides the action bar; the fullscreen /
-        no-title behavior is achieved via the window flags below so the game
-        can draw edge-to-edge over the status/nav bars.
+        The action bar is hidden via the parent theme. Edge-to-edge drawing
+        is opted into imperatively from MainActivity.onCreate via
+        WindowCompat.setDecorFitsSystemWindows(false) — we deliberately do
+        NOT set android:windowFullscreen=true here, because that hides the
+        status bar while leaving the framebuffer excluded from the nav-bar
+        region, which makes GameActivity's SYSTEM_BARS insets report zero
+        and the HUD has no way to know where to pull back from.
+
+        With edge-to-edge on: framebuffer spans the whole display, insets
+        are reported correctly for both bars, and bars remain visible so
+        the user can still navigate system UI. A future "sticky immersive"
+        mode can hide the bars via WindowInsetsControllerCompat.
     -->
     <style name="Theme.Uldum" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:windowActionBar">false</item>
     </style>
