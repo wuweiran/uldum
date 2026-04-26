@@ -978,9 +978,21 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
         filter.exclude_buildings = true;
         auto nearby = grid.units_in_range(world, transform->position, self_radius * 4.0f, filter);
 
+        const auto* self_owner = world.owners.get(id);
         for (auto& other : nearby) {
             if (other.id <= id) continue;
             if (world.dead_states.has(other.id)) continue;
+
+            // Push only between units owned by the same player. Enemy /
+            // neutral units pass through each other at this layer — combat
+            // does the gating that matters there. Without this, a kiting
+            // enemy could shove your held units off-position, and two
+            // hostile mobs collide-jostling looks awful.
+            const auto* other_owner = world.owners.get(other.id);
+            if (!self_owner || !other_owner ||
+                self_owner->player.id != other_owner->player.id) {
+                continue;
+            }
 
             auto* other_t = world.transforms.get(other.id);
             if (!other_t) continue;
