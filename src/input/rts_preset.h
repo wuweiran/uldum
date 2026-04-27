@@ -37,6 +37,15 @@ public:
     }
 
 private:
+    // Each left-press/release pair is one "press cycle" with a single
+    // intent, set at the press edge and read at release. None is the
+    // resting state between cycles. Selection commits selection
+    // changes on release; Ignored does nothing world-side (the press
+    // is owned by HUD / targeting / multi-touch). A Selection cycle
+    // can demote to Ignored mid-cycle if a blocker arrives (HUD
+    // pointer-enter, second finger lands), but never the reverse.
+    enum class PressIntent : u8 { None, Selection, Ignored };
+
     void handle_selection(const InputContext& ctx);
     void handle_orders(const InputContext& ctx);
     void handle_hotkeys(const InputContext& ctx);
@@ -63,11 +72,12 @@ private:
     f32   m_box_start_y = 0;
     f32   m_box_end_x   = 0;
     f32   m_box_end_y   = 0;
-    // When true, the current left-button hold must not start a drag —
-    // set if the press arrived while in targeting / attack-move mode
-    // so the click that commits the cast doesn't flash a marquee once
-    // targeting resolves. Cleared on the next left-release.
-    bool  m_suppress_drag_until_release = false;
+    // Active press cycle's intent. Set on press edge, demoted to
+    // Ignored if a blocker arrives mid-cycle, reset to None on
+    // release. Replaces the older "suppress-drag-until-release"
+    // latch, which couldn't distinguish "press happened while
+    // blocked" from "release frame happened to be unblocked."
+    PressIntent m_press_intent = PressIntent::None;
     static constexpr f32 BOX_DRAG_THRESHOLD = 4.0f; // pixels before drag starts
 
     // Attack-move mode: press A, then left-click target

@@ -52,104 +52,83 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
 
-    // A drag-select is a real thing only when ALL of these are true:
-    //   - left button / primary touch is held,
-    //   - not in an ability-targeting or attack-move mode,
-    //   - the HUD isn't claiming the pointer (slot / minimap / menu),
-    //   - we're not in a multi-touch gesture (pan / pinch).
-    // Any of these flipping mid-drag cancels the drag. A press that
-    // arrived while any were true is suppressed through to release —
-    // that's what stops a click-to-cast (or a 2-finger pan) from
-    // flashing a marquee once the blocking condition clears but the
-    // finger is still down.
-    bool targeting    = m_attack_move_mode
-                      || m_move_targeting_mode
-                      || m_targeting_ability;
-    bool multi_touch  = input.touch_count >= 2;
-    bool drag_blocked = targeting || ctx.hud_captured || multi_touch;
+    // A press is "blocked" from being a selection press when its
+    // outcome belongs to someone else: the HUD, an active targeting
+    // mode (cast / move / attack-move), or a multi-touch gesture.
+    // Evaluated at the press edge to decide intent, and again
+    // mid-cycle to demote a Selection press if a blocker arrives.
+    auto is_blocked = [&]() {
+        return ctx.hud_captured
+            || input.touch_count >= 2
+            || m_attack_move_mode
+            || m_move_targeting_mode
+            || m_targeting_ability;
+    };
 
-    // Release always runs so the suppression latch + drag state can
-    // clear regardless of whether we're still over the HUD etc.
-    if (input.mouse_left_released) {
-        m_suppress_drag_until_release = false;
-    }
-
-    // Press edge: prime a fresh drag, or arm suppression.
+    // ── Press edge: classify the cycle ──────────────────────────────
     if (input.mouse_left_pressed) {
-        if (drag_blocked) {
-            m_suppress_drag_until_release = true;
+        if (is_blocked()) {
+            m_press_intent = PressIntent::Ignored;
         } else {
+            m_press_intent = PressIntent::Selection;
             m_box_dragging = false;
             m_box_start_x = input.mouse_x;
             m_box_start_y = input.mouse_y;
-            m_suppress_drag_until_release = false;
         }
     }
 
-    // Mid-drag cancel: user started a valid drag, then a blocker
-    // appeared (e.g. second finger landed, or pointer entered the HUD).
-    // Stop dragging and latch suppression so the marquee doesn't
-    // reappear when the blocker clears while the press is still held.
-    if (m_box_dragging && drag_blocked) {
+    // ── Mid-cycle demotion: blocker appeared while button is held ──
+    // (e.g. second finger lands, pointer enters the HUD). Selection →
+    // Ignored is the only allowed transition; once Ignored, the cycle
+    // stays Ignored even if the blocker clears later.
+    if (m_press_intent == PressIntent::Selection && is_blocked()) {
+        m_press_intent = PressIntent::Ignored;
         m_box_dragging = false;
-        m_suppress_drag_until_release = true;
     }
 
-    // Threshold promotion from "press down" to "dragging".
-    if (input.mouse_left && !m_box_dragging && !drag_blocked
-        && !m_suppress_drag_until_release) {
+    // ── Drag promotion (Selection only) ────────────────────────────
+    if (m_press_intent == PressIntent::Selection
+        && input.mouse_left && !m_box_dragging) {
         f32 dx = input.mouse_x - m_box_start_x;
         f32 dy = input.mouse_y - m_box_start_y;
         if (std::sqrt(dx * dx + dy * dy) > BOX_DRAG_THRESHOLD) {
             m_box_dragging = true;
         }
     }
-    // Keep `m_box_end_x/y` live while dragging so the HUD marquee can
-    // follow the pointer smoothly via box_selection().
     if (m_box_dragging) {
         m_box_end_x = input.mouse_x;
         m_box_end_y = input.mouse_y;
     }
 
-    // Release commits the selection change. Blocked / suppressed
-    // presses don't become selection changes — the user was casting,
-    // gesturing, or poking a button, none of which should reshape the
-    // selection on release.
-    if (input.mouse_left_released && !targeting && !ctx.hud_captured
-        && !m_suppress_drag_until_release) {
-        if (m_box_dragging) {
-            auto units = ctx.picker.pick_units_in_box(
-                m_box_start_x, m_box_start_y,
-                input.mouse_x, input.mouse_y,
-                sel.player());
-
-            if (input.key_shift) {
-                for (auto& u : units) {
-                    if (!sel.is_selected(u) && sel.count() < MAX_SELECTION) {
-                        sel.toggle(u);
-                    }
-                }
-            } else if (!units.empty()) {
-                sel.select_multiple(std::move(units));
-            }
-            // Empty box drag: don't change selection
-        } else {
-            auto unit = ctx.picker.pick_unit(input.mouse_x, input.mouse_y, sel.player());
-            if (unit.is_valid()) {
+    // ── Release: commit if Selection, then end the cycle ───────────
+    if (input.mouse_left_released) {
+        if (m_press_intent == PressIntent::Selection) {
+            if (m_box_dragging) {
+                auto units = ctx.picker.pick_units_in_box(
+                    m_box_start_x, m_box_start_y,
+                    input.mouse_x, input.mouse_y,
+                    sel.player());
                 if (input.key_shift) {
-                    sel.toggle(unit);
-                } else {
-                    sel.select(unit);
+                    for (auto& u : units) {
+                        if (!sel.is_selected(u) && sel.count() < MAX_SELECTION) {
+                            sel.toggle(u);
+                        }
+                    }
+                } else if (!units.empty()) {
+                    sel.select_multiple(std::move(units));
                 }
+                // Empty box drag: don't change selection
+            } else {
+                auto unit = ctx.picker.pick_unit(input.mouse_x, input.mouse_y, sel.player());
+                if (unit.is_valid()) {
+                    if (input.key_shift) sel.toggle(unit);
+                    else                 sel.select(unit);
+                }
+                // No unit found: don't change selection
             }
-            // No unit found: don't change selection
         }
         m_box_dragging = false;
-    } else if (input.mouse_left_released) {
-        // Still want to drop the drag flag on a release that didn't
-        // commit — otherwise a subsequent non-blocked press would see
-        // stale dragging=true for an instant.
-        m_box_dragging = false;
+        m_press_intent = PressIntent::None;
     }
 }
 
