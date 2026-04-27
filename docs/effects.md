@@ -116,6 +116,6 @@ The engine does not define any effects. It provides:
 Maps define all visual effect content:
 
 - Register effects via Lua `DefineEffect` or JSON files
-- Provide particle textures and effect model files in `shared/assets/`
+- Provide particle textures and effect model files at any path under the map root (e.g. `textures/`, `models/`)
 - Wire effects to gameplay via Lua triggers (on_damage, on_death, on_cast, etc.)
 - Define which attachment points to use per effect

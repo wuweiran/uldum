@@ -91,7 +91,7 @@ bool GameServer::init_game(map::MapManager& map,
     // Configure Lua require() search paths: scene → shared → engine
     {
         std::string scene_scripts = map.map_root() + "/scenes/" + map.manifest().start_scene + "/scripts";
-        std::string shared_scripts = map.map_root() + "/shared/scripts";
+        std::string shared_scripts = map.map_root() + "/scripts";
         std::string engine_scripts = "engine/scripts";
         m_script.set_script_paths(scene_scripts, shared_scripts, engine_scripts);
     }
@@ -124,7 +124,7 @@ bool GameServer::init_game(map::MapManager& map,
     m_script.load_script("engine/scripts/constants.lua");
 
     // Load and run per-scene main script. Every map MUST define `main()`
-    // in its scene's scripts/main.lua (or fall back to shared/scripts/main.lua
+    // in its scene's scripts/main.lua (or fall back to <map>/scripts/main.lua
     // for maps that share a single entry across scenes). Missing main() is
     // a hard error — "a map without gameplay logic" isn't a state we support.
     {
@@ -132,14 +132,14 @@ bool GameServer::init_game(map::MapManager& map,
                                 + "/scripts/main.lua";
         bool loaded = m_script.load_script(main_script);
         if (!loaded) {
-            std::string fallback = map.map_root() + "/shared/scripts/main.lua";
+            std::string fallback = map.map_root() + "/scripts/main.lua";
             loaded = m_script.load_script(fallback);
         }
         if (!loaded) {
             log::error(TAG,
-                "Map '{}' has no scripts/main.lua at '{}' (or shared/scripts/main.lua). "
+                "Map '{}' has no scripts/main.lua at '{}' (or {}/scripts/main.lua). "
                 "Every map must define a main() entry point.",
-                map.manifest().name, main_script);
+                map.manifest().name, main_script, map.map_root());
             return false;
         }
         if (!m_script.call_function("main")) {

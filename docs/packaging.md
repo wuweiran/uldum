@@ -68,7 +68,7 @@ Paths are normalized before lookup (and before the hash is computed):
 - Forward slashes only (`/` not `\`)
 - Lowercase
 - No leading `./` or `/`
-- Example: `shared/assets/textures/terrain/grass.ktx2`
+- Example: `textures/terrain/grass.ktx2`
 
 Hash function (FNV-1a 64-bit), used internally for fast lookup:
 ```

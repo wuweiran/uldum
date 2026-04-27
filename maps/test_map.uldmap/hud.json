@@ -18,10 +18,10 @@
       },
 
       "slots": [
-        { "anchor": "tl", "x":   5, "y": 5, "w": 40, "h": 40, "command": "move",          "hotkey": "M", "icon": "shared/assets/textures/icons/move.ktx2" },
-        { "anchor": "tl", "x":  48, "y": 5, "w": 40, "h": 40, "command": "stop",          "hotkey": "S", "icon": "shared/assets/textures/icons/stop.ktx2" },
-        { "anchor": "tl", "x":  91, "y": 5, "w": 40, "h": 40, "command": "hold_position", "hotkey": "H", "icon": "shared/assets/textures/icons/hold_position.ktx2" },
-        { "anchor": "tl", "x": 134, "y": 5, "w": 40, "h": 40, "command": "attack",        "hotkey": "A", "icon": "shared/assets/textures/icons/attack.ktx2" }
+        { "anchor": "tl", "x":   5, "y": 5, "w": 40, "h": 40, "command": "move",          "hotkey": "M", "icon": "textures/icons/move.ktx2" },
+        { "anchor": "tl", "x":  48, "y": 5, "w": 40, "h": 40, "command": "stop",          "hotkey": "S", "icon": "textures/icons/stop.ktx2" },
+        { "anchor": "tl", "x":  91, "y": 5, "w": 40, "h": 40, "command": "hold_position", "hotkey": "H", "icon": "textures/icons/hold_position.ktx2" },
+        { "anchor": "tl", "x": 134, "y": 5, "w": 40, "h": 40, "command": "attack",        "hotkey": "A", "icon": "textures/icons/attack.ktx2" }
       ]
     },
 
@@ -162,7 +162,7 @@
           "type":   "image",
           "anchor": "tl",
           "x": 10, "y": 66, "w": 40, "h": 40,
-          "source": "shared/assets/textures/terrain/grass.ktx2"
+          "source": "textures/terrain/grass.ktx2"
         },
 
         {

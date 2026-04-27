@@ -113,7 +113,7 @@ Phase 16b complete. Next up: Phase 16c (HUD system — custom, Lua-driven in-gam
   - Listener updated from camera position each frame
   - Animation-driven sounds: attack, death, birth sounds defined per unit type in JSON
   - Sound callback system: simulation fires events, audio engine plays them (no coupling)
-  - Path resolution: map shared/assets first, then engine root
+  - Path resolution: AssetManager mount chain (active map's pak first, then engine.uldpak)
   - Lua API: PlaySound, PlaySoundAtPoint, PlaySound2D, PlayMusic, StopMusic, PlayAmbientLoop, StopAmbientLoop, SetVolume
 - Input system (Phase 12):
   - Command system: GameCommand struct, ownership validation, Lua on_order filter

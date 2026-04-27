@@ -1,7 +1,7 @@
 {
     "devotion_aura": {
         "name": "Devotion Aura",
-        "icon": "shared/assets/textures/icons/devotion_aura.ktx2",
+        "icon": "textures/icons/devotion_aura.ktx2",
         "hotkey": "W",
         "form": "aura",
         "max_level": 3,
@@ -32,7 +32,7 @@
     },
     "holy_light": {
         "name": "Holy Light",
-        "icon": "shared/assets/textures/icons/holy_light.ktx2",
+        "icon": "textures/icons/holy_light.ktx2",
         "form": "instant",
         "hotkey": "Q",
         "max_level": 3,
@@ -44,7 +44,7 @@
     },
     "consecration": {
         "name": "Consecration",
-        "icon": "shared/assets/textures/icons/consecration.ktx2",
+        "icon": "textures/icons/consecration.ktx2",
         "hotkey": "E",
         "form": "target_point",
         "shape": "area",

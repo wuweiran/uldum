@@ -77,7 +77,7 @@ SetVolume("voice", 1.0)
 - **Format**: OGG Vorbis (.ogg)
 - **SFX / Ambient / Voice**: short files, loaded into memory
 - **Music**: streamed from disk
-- **Path resolution**: map `shared/assets/` first, then engine root
+- **Path resolution**: passed verbatim to the AssetManager. Mount prefixes (active map's pak, then `engine.uldpak`) decide which package answers.
 
 ## Map Integration
 

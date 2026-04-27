@@ -2367,8 +2367,10 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     // Don't retry paths that already failed
     if (m_model_failed.contains(model_path)) return nullptr;
 
-    // Resolve path: prefer map shared assets, fall back to engine-relative.
-    // Both candidates are probed against mounted packages via AssetManager.
+    // Path is what the author put in JSON — passed straight to the
+    // AssetManager. Mount prefixes do the lookup; no path massaging
+    // so the engine doesn't impose a folder convention on author
+    // content.
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) {
         log::warn(TAG, "Model load without AssetManager: '{}'", model_path);
@@ -2376,24 +2378,14 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
         return nullptr;
     }
 
-    std::vector<u8> bytes;
-    std::string resolved;
-
-    if (!m_map_root.empty()) {
-        resolved = m_map_root + "/shared/assets/" + model_path;
-        bytes = mgr->read_file_bytes(resolved);
-    }
-    if (bytes.empty()) {
-        resolved = model_path;
-        bytes = mgr->read_file_bytes(resolved);
-    }
+    auto bytes = mgr->read_file_bytes(model_path);
     if (bytes.empty()) {
         log::warn(TAG, "Model not found: '{}'", model_path);
         m_model_failed.insert(model_path);
         return nullptr;
     }
 
-    auto result = asset::load_model_from_memory(bytes.data(), static_cast<u32>(bytes.size()), resolved);
+    auto result = asset::load_model_from_memory(bytes.data(), static_cast<u32>(bytes.size()), model_path);
     if (!result) {
         log::error(TAG, "Failed to load model '{}': {}", model_path, result.error());
         m_model_failed.insert(model_path);

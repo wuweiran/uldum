@@ -1,12 +1,12 @@
 {
     "name": "Default",
     "layers": [
-        { "id": 0, "name": "grass",  "diffuse": "shared/assets/textures/terrain/grass.ktx2",  "normal": "shared/assets/textures/terrain/grass_normal.ktx2" },
-        { "id": 1, "name": "dirt",   "diffuse": "shared/assets/textures/terrain/dirt.ktx2",   "normal": "shared/assets/textures/terrain/dirt_normal.ktx2" },
-        { "id": 2, "name": "stone",  "diffuse": "shared/assets/textures/terrain/stone.ktx2",  "normal": "shared/assets/textures/terrain/stone_normal.ktx2" },
+        { "id": 0, "name": "grass",  "diffuse": "textures/terrain/grass.ktx2",  "normal": "textures/terrain/grass_normal.ktx2" },
+        { "id": 1, "name": "dirt",   "diffuse": "textures/terrain/dirt.ktx2",   "normal": "textures/terrain/dirt_normal.ktx2" },
+        { "id": 2, "name": "stone",  "diffuse": "textures/terrain/stone.ktx2",  "normal": "textures/terrain/stone_normal.ktx2" },
         { "id": 3, "name": "shallow_water", "type": "water_shallow",
-          "diffuse": "shared/assets/textures/terrain/riverbed.ktx2",
-          "normal": "shared/assets/textures/terrain/riverbed_normal.ktx2",
+          "diffuse": "textures/terrain/riverbed.ktx2",
+          "normal": "textures/terrain/riverbed_normal.ktx2",
           "color": [0.18, 0.45, 0.55] },
         { "id": 4, "name": "deep_water", "type": "water_deep",
           "color": [0.05, 0.12, 0.25] }

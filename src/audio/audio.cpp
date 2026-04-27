@@ -355,11 +355,10 @@ std::string AudioEngine::resolve_path(std::string_view path) const {
         return it->first;
     };
 
-    if (!m_map_root.empty()) {
-        if (auto r = try_candidate(m_map_root + "/shared/assets/" + std::string(path)); !r.empty())
-            return r;
-    }
-    if (auto r = try_candidate("engine/" + std::string(path)); !r.empty()) return r;
+    // The path is what the author put in JSON — passed through to the
+    // AssetManager as-is. Mount prefixes (engine.uldpak, the active
+    // map's pak) handle resolution. No path massaging here so the
+    // engine doesn't impose a folder convention on author content.
     if (auto r = try_candidate(std::string(path)); !r.empty()) return r;
 
     log::warn(TAG, "Sound not found: '{}'", path);

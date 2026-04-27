@@ -10,7 +10,7 @@ using Lua instead of a custom language.
 
 ```
 my_map.uldmap/
-├── shared/scripts/           -- shared across all scenes
+├── scripts/                  -- map-wide modules (shared across all scenes)
 │   ├── combat.lua            -- reusable combat systems
 │   └── utils.lua             -- helper functions
 └── scenes/
@@ -22,8 +22,8 @@ my_map.uldmap/
 ```
 
 Each scene has its own `main.lua` entry point. Scripts use `require()` to include
-other files from the scene's scripts directory, the shared scripts directory, or the
-engine scripts directory.
+other files from the scene's scripts directory, the map-wide scripts directory, or
+the engine scripts directory.
 
 ### Key Files
 
@@ -31,13 +31,13 @@ engine scripts directory.
 |------|---------|
 | `engine/scripts/constants.lua` | Engine-defined constants (event names, priority levels). Available via `require("constants")`. |
 | `engine/scripts/api.lua` | API documentation stubs for IDE autocomplete. NOT loaded at runtime. |
-| `<map>/shared/scripts/*.lua` | Shared modules available to all scenes via `require()`. |
+| `<map>/scripts/*.lua` | Map-wide modules available to all scenes via `require()`. |
 | `<map>/scenes/<scene>/scripts/main.lua` | Per-scene entry point. Defines `main()` function. |
 
 ### Execution Order
 
 1. Engine initializes Lua VM (sandboxed — no os, io, dofile, loadfile)
-2. Engine configures `package.path`: scene scripts → shared scripts → engine scripts
+2. Engine configures `package.path`: scene scripts → map scripts → engine scripts
 3. Engine configures save data path (`%APPDATA%/Uldum/saves/<map>/`)
 4. Engine loads `engine/scripts/constants.lua` (event constants)
 5. Engine loads and executes `scenes/<start_scene>/scripts/main.lua`
@@ -50,10 +50,10 @@ engine scripts directory.
 When a script calls `require("combat")`, Lua searches these directories in order:
 
 1. `scenes/<active_scene>/scripts/combat.lua` — scene-specific
-2. `shared/scripts/combat.lua` — map-wide shared
+2. `<map>/scripts/combat.lua` — map-wide
 3. `engine/scripts/combat.lua` — engine-provided
 
-The first match wins. This lets a scene override a shared module if needed.
+The first match wins. This lets a scene override a map-wide module if needed.
 
 ## Lua VM
 

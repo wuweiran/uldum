@@ -242,7 +242,7 @@ RestoreHeroState(hero, hero_data)
 5. Engine loads the start scene:
    a. Load `terrain.bin` → build terrain mesh, set up pathing
    b. Load `objects.json` → create preplaced entities
-6. Engine loads `shared/scripts/main.lua` → map initialization runs
+6. Engine loads `scenes/<start>/scripts/main.lua` (falling back to `<map>/scripts/main.lua`) → map initialization runs
 7. Game loop begins
 
 ## Map Unloading
