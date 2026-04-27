@@ -603,14 +603,16 @@ Custom retained-mode UI stack, separate from RmlUi. Available in both dev and ga
 - **16c-iv — `hud.json` loader + RTS desktop preset.** Parser for the `hud.json` schema from [ui.md](ui.md). Port today's hardcoded HUD to a declarative `hud.json`; `test_map` declares `"preset": "rts"`. RTS preset behavior matrix lives in [input-system.md](input-system.md).
 - **16c-v — Lua API + server/client sync.** Single authoritative Lua VM on the server. Bindings follow the WC3-style flat naming in [ui.md](ui.md): `GetNode`, `SetNodeVisible`, `SetLabelText`, `SetBarFill`, `CreateNode`, `DestroyNode`, `TriggerRegisterNodeEvent`, `CreateTextTag` / `SetTextTag*` / `DestroyTextTag`, etc. Networking: atom node state changes broadcast as `S_HUD_UPDATE` deltas; transient targeted / broadcast events use `S_HUD_EVENT`; client atom input forwarded as `C_NODE_EVENT`. Composite actions (action_bar slot press → ability cast) ride existing game-command protocols, no new messages.
 - **16c-vi — RTS mobile variant.** Touch affordances, safe-area handling, mobile-tuned sizes. Android `uldum` auto-boots into it.
-- **16c-vii — Action preset (desktop).** `action_rpg` input preset + `action_bar` bound to a hero actor. Ship a minimal `action_demo.uldmap` that boots into it.
-- **16c-viii — Action preset (mobile).** `joystick` composite active; touch action_bar; swipe-camera.
+- **16c-vii — Action preset (desktop).** `action_rpg` input preset + `action_bar` bound to a hero actor. `action_test.uldmap` is the dev test bed.
+- **16c-viii — Action preset (mobile).** `joystick` composite active; touch action_bar. Swipe-look deferred — minimap pan covers camera for v1.
 
-**Phase 16d — Screen transitions + mobile polish**
-- Screen state machine; fades via RCSS transitions.
-- GameActivity touch → RmlUi `pointerdown` / `pointerup`.
-- RCSS sizing rules for mobile tap targets.
-- IME plumbing for text-entry fields — deferred until needed.
+**Phase 16d — Android dev parity + Shell polish**
+
+- **16d-i — Android dev console.** Map picker + ImGui dev console on Android, reusing `uldum_dev`'s code paths. Boots into the picker instead of auto-starting on a hardcoded map.
+- **16d-ii — Shell screen transitions.** State machine for Menu → Lobby → Loading → Playing → Results, with fades / slides via RCSS `transition` / `animation`.
+- **16d-iii — Shell mobile input.** GameActivity touch → `Rml::Context::ProcessMouseButton*`.
+- **16d-iv — Mobile tap-target sizing.** RCSS rules for minimum touch sizes + scaled fonts when host is mobile.
+- IME plumbing — deferred until needed.
 
 ## 16. Deferred / Future Work
 
