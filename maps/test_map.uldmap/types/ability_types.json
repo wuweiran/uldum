@@ -47,10 +47,17 @@
         "name": "Consecration",
         "icon": "shared/assets/textures/icons/consecration.ktx2",
         "hotkey": "C",
-        "form": "passive",
+        "form": "target_point",
+        "shape": "area",
         "max_level": 1,
         "levels": [
-            { "damage": 15 }
+            { "range": 700,
+              "area":  { "radius": 300 },
+              "damage": 80,
+              "cooldown": 8.0,
+              "cost":  { "mana": 75 },
+              "cast_time": 0.4
+            }
         ]
     }
 }

@@ -149,6 +149,17 @@ struct ActionBarStyle {
     // than the normal border by default; tunable per map.
     Color armed_border_color  = rgba(255, 214, 0,   255);   // gold
     f32   armed_border_width  = 3.0f;
+
+    // Drag-cast cancel zone (drawn only while a drag-cast is active).
+    // `idle_*` is the dim-red appearance when the gesture is in
+    // Pressed/Aiming; `active_*` is the bright-red appearance when the
+    // finger is actually over the zone (Cancelling). The "✕" glyph in
+    // the middle uses `glyph_color`.
+    Color cancel_zone_idle_bg     = rgba(180, 40, 40, 140);
+    Color cancel_zone_idle_border = rgba(255, 90, 90, 200);
+    Color cancel_zone_active_bg   = rgba(220, 40, 40, 220);
+    Color cancel_zone_active_border = rgba(255, 200, 200, 255);
+    Color cancel_zone_glyph_color = rgba(255, 255, 255, 235);
 };
 
 struct ActionBarConfig {
@@ -161,6 +172,17 @@ struct ActionBarConfig {
     Placement placement{};
     ActionBarStyle style;
     std::vector<ActionBarSlot> slots;
+
+    // AoV-style mobile drag-cast cancel zone — a separate rect on the
+    // screen that, when the player drags into it, transitions the
+    // gesture to Cancelling (release = no cast). Visible only while a
+    // drag-cast gesture is active. If `cancel_zone_authored` is false,
+    // the loader fills in a sensible default at right-center so maps
+    // get the behavior without needing to author it. The rect is
+    // resolved against the viewport, not the bar rect.
+    Rect      cancel_zone_rect{};
+    Placement cancel_zone_placement{};
+    bool      cancel_zone_authored = false;
 };
 
 // Runtime state — separate from config because it changes at runtime

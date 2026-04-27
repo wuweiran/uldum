@@ -89,6 +89,14 @@ function GetSpellTargetUnit() end
 --- @return number, number   x, y
 function GetSpellTargetPoint() end
 
+--- Target point X of a point-targeted ability (convenience scalar accessor).
+--- @return number
+function GetSpellTargetX() end
+
+--- Target point Y of a point-targeted ability (convenience scalar accessor).
+--- @return number
+function GetSpellTargetY() end
+
 --- Source of the current damage event.
 --- @return unit
 function GetDamageSource() end

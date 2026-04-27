@@ -10,7 +10,7 @@ namespace uldum::render {
 
 static constexpr const char* TAG = "GpuTexture";
 
-GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width, u32 height) {
+GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width, u32 height, bool srgb, bool clamp) {
     VkDevice device = rhi.device();
     VmaAllocator allocator = rhi.allocator();
     VkDeviceSize image_size = static_cast<VkDeviceSize>(width) * height * 4;
@@ -47,7 +47,7 @@ GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width,
     VkImageCreateInfo img_ci{};
     img_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     img_ci.imageType     = VK_IMAGE_TYPE_2D;
-    img_ci.format        = VK_FORMAT_R8G8B8A8_SRGB;
+    img_ci.format        = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     img_ci.extent        = {width, height, 1};
     img_ci.mipLevels     = 1;
     img_ci.arrayLayers   = 1;
@@ -117,7 +117,7 @@ GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width,
     view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_ci.image    = tex.image;
     view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_ci.format   = VK_FORMAT_R8G8B8A8_SRGB;
+    view_ci.format   = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     view_ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     if (vkCreateImageView(device, &view_ci, nullptr, &tex.view) != VK_SUCCESS) {
@@ -131,9 +131,10 @@ GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width,
     sampler_ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_ci.magFilter    = VK_FILTER_LINEAR;
     sampler_ci.minFilter    = VK_FILTER_LINEAR;
-    sampler_ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_ci.addressModeU = clamp ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+                                    : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_ci.addressModeV = sampler_ci.addressModeU;
+    sampler_ci.addressModeW = sampler_ci.addressModeU;
     sampler_ci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sampler_ci.maxLod       = 0.0f;
 

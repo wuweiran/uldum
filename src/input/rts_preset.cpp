@@ -172,6 +172,32 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         return;
     }
 
+    // Drop ability targeting mode if the armed ability is no longer
+    // castable — typically because the previous cast just resolved and
+    // its cooldown started, but also covers selection switching to a
+    // unit that doesn't own this ability, the ability being removed
+    // by Lua, the unit dying, etc. Without this, the indicator lingers
+    // and the next click commits a Cast that the simulation then
+    // silently drops at submit-time.
+    if (m_targeting_ability) {
+        bool still_castable = false;
+        if (!sel.empty()) {
+            auto caster = sel.selected().front();
+            if (auto* aset = ctx.simulation.world().ability_sets.get(caster.id)) {
+                for (const auto& a : aset->abilities) {
+                    if (a.ability_id == m_targeting_ability_id) {
+                        still_castable = (a.cooldown_remaining <= 0.0f);
+                        break;
+                    }
+                }
+            }
+        }
+        if (!still_castable) {
+            m_targeting_ability = false;
+            m_targeting_ability_id.clear();
+        }
+    }
+
     // Ability targeting: hotkey was pressed, now left-click to pick target
     if (m_targeting_ability && input.mouse_left_pressed) {
         if (!sel.empty()) {
@@ -261,6 +287,21 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             }
         }
         m_attack_move_mode = false;
+        return;
+    }
+
+    // Right-click while in any targeting mode = cancel; no smart order
+    // is issued. Matches WC3 / SC2 behavior where a stray right-click
+    // bails out of targeting rather than firing a Move at the mouse
+    // point. The recompute on m_targeting_ability above (uncastable
+    // exit) means a right-click here only consumes the click when
+    // we're actually still aiming something.
+    if (input.mouse_right_pressed &&
+        (m_targeting_ability || m_move_targeting_mode || m_attack_move_mode)) {
+        m_targeting_ability   = false;
+        m_targeting_ability_id.clear();
+        m_move_targeting_mode = false;
+        m_attack_move_mode    = false;
         return;
     }
 

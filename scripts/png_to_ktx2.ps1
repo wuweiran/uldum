@@ -44,7 +44,11 @@ foreach ($inPath in $Paths) {
     $outPath = [IO.Path]::ChangeExtension($inPath, '.ktx2')
     Write-Host "Converting `"$inPath`" -> `"$outPath`""
 
-    $basisuArgs = @('-ktx2','-uastc','-uastc_level','2','-mipmap',
+    # `-ktx2_no_zstandard` is mandatory: this project's KTX2 loader
+    # (basisu transcoder path) can't handle Zstandard-supercompressed
+    # KTX2 — it rejects them at start_transcoding(). All shipped
+    # textures must use Supercompression Scheme: NONE.
+    $basisuArgs = @('-ktx2','-ktx2_no_zstandard','-uastc','-uastc_level','2','-mipmap',
                     '-output_file', $outPath, $inPath)
     if ($Linear) { $basisuArgs = @('-linear') + $basisuArgs }
 

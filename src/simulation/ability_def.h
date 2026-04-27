@@ -12,7 +12,9 @@ namespace uldum::asset { class AssetManager; struct JsonDocument; }
 
 namespace uldum::simulation {
 
-// Ability forms — engine-provided mechanical primitives.
+// Ability forms — engine-provided mechanical primitives. Channel is
+// not a form: any form can declare a `channel_time` on its level data
+// to make the cast sustained.
 enum class AbilityForm : u8 {
     Passive,      // always active, modifiers + optional duration
     Aura,         // scan radius, apply/remove passive to nearby units
@@ -20,10 +22,33 @@ enum class AbilityForm : u8 {
     TargetUnit,   // + range + target validation + optional projectile
     TargetPoint,  // + range + ground position
     Toggle,       // on/off, periodic cost drain
-    Channel,      // sustained cast for duration, interrupted by stun/move
 };
 
 AbilityForm parse_ability_form(const std::string& s);
+
+// Visual shape of the cast indicator drawn during targeting / drag-cast
+// — purely a UI concept, simulation does not branch on it. Only meaningful
+// for `target_point` abilities; `target_unit` always has the implicit
+// "circle around target unit" shape (driven by the level's optional
+// `area.radius`). Defaults to Point, which draws no AoE indicator.
+enum class IndicatorShape : u8 {
+    Point = 0,    // no AoE; the drag-point reticle is the indicator
+    Area,         // filled disc at the drag point; uses level.area.radius
+    Line,         // rectangle from caster toward drag direction; uses level.area.width, length = level.range
+    Cone,         // sector at caster toward drag direction; uses level.area.angle, length = level.range
+};
+
+IndicatorShape parse_indicator_shape(const std::string& s);
+
+// Shape-specific size data on a level. Only one of `radius`/`width`/
+// `angle` is meaningful per shape (per the table above); fields default
+// to zero so a missing JSON key is harmless. `radius` doubles for both
+// `target_unit` AoE-around-target and `target_point` shape=area.
+struct AbilityArea {
+    f32 radius = 0;
+    f32 width  = 0;
+    f32 angle  = 0;   // degrees
+};
 
 struct TargetFilter {
     bool ally   = false;
@@ -53,8 +78,17 @@ struct AbilityLevelDef {
     f32         aura_radius  = 0;
     std::string aura_ability;  // passive ability id to apply
 
-    // Channel
-    f32 channel_duration = 0;
+    // Sustained-cast time (any form). Zero = instant resolution after
+    // cast_time. Non-zero = the unit holds the cast for this many
+    // seconds, interrupted by stun / move / damage per gameplay rules.
+    f32 channel_time = 0;
+
+    // Indicator-shape-specific size data; presence + meaning is driven
+    // by the ability's `shape` (see `IndicatorShape`). Absent in JSON →
+    // zeroed. Mirrors as `target_unit`'s AoE-around-target radius when
+    // present on a unit-targeted ability.
+    AbilityArea area;
+    bool        has_area = false;
 
     // Toggle
     std::map<std::string, f32> toggle_cost_per_sec;
@@ -64,15 +98,16 @@ struct AbilityLevelDef {
 };
 
 struct AbilityDef {
-    std::string  id;
-    std::string  name;
-    std::string  icon;
-    std::string  hotkey;              // RTS preset key (e.g., "T"). Empty = no hotkey.
-    AbilityForm  form      = AbilityForm::Passive;
-    bool         stackable = false;
-    bool         hidden    = false;   // hidden abilities don't auto-assign to slots
-    u32          max_level  = 1;
-    TargetFilter target_filter;
+    std::string    id;
+    std::string    name;
+    std::string    icon;
+    std::string    hotkey;              // RTS preset key (e.g., "T"). Empty = no hotkey.
+    AbilityForm    form      = AbilityForm::Passive;
+    IndicatorShape shape     = IndicatorShape::Point;  // UI only; only meaningful for target_point
+    bool           stackable = false;
+    bool           hidden    = false;   // hidden abilities don't auto-assign to slots
+    u32            max_level  = 1;
+    TargetFilter   target_filter;
 
     std::vector<AbilityLevelDef> levels;
 

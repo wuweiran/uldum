@@ -106,6 +106,23 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     world.ability_sets.add(id, AbilitySet{});
     world.classifications.add(id, UnitClassificationComp{def->classifications});
 
+    // Seed ability_set from the unit type's `abilities` list. Each id
+    // is looked up in the AbilityRegistry; unknowns are logged once
+    // and skipped so a typo'd ability id doesn't take a slot. Lua can
+    // still add more via `AddAbility` for runtime / script-driven
+    // abilities (e.g. ones whose mechanics live entirely in script).
+    if (world.abilities && !def->abilities.empty()) {
+        Unit u{ id, h.generation };
+        for (const auto& ability_id : def->abilities) {
+            if (!world.abilities->get(ability_id)) {
+                log::warn(TAG, "Unit '{}' references unknown ability '{}'",
+                          type_id, ability_id);
+                continue;
+            }
+            add_ability(world, *world.abilities, u, ability_id, /*level=*/1);
+        }
+    }
+
     // Renderable
     if (!def->model_path.empty()) {
         world.renderables.add(id, Renderable{def->model_path, true});
@@ -281,6 +298,23 @@ void issue_order(World& world, Unit unit, Order order) {
         if (combat) {
             combat->target = Unit{};
             combat->attack_state = AttackState::Idle;
+        }
+
+        // Reset any in-flight ability cast — a new order semantically
+        // supersedes whatever the unit was doing, including a half-
+        // started spell that's still walking toward its old target.
+        // Without this, an out-of-range Cast that the unit can't reach
+        // pins `cast_state` non-None forever, blocking every future
+        // Cast (the cast pump only starts a new one when cast_state ==
+        // None). Cooldown is left alone — already-fired casts that
+        // are mid-backswing get cancelled cleanly.
+        auto* aset = world.ability_sets.get(unit.id);
+        if (aset) {
+            aset->cast_state = CastState::None;
+            aset->casting_id.clear();
+            aset->cast_target_unit = Unit{};
+            aset->cast_target_pos  = glm::vec3{0};
+            aset->cast_timer       = 0;
         }
     }
 }

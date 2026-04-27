@@ -4,7 +4,7 @@
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "asset/asset.h"
 #include "render/renderer.h"
-#include "render/selection_circles.h"
+#include "render/world_overlays.h"
 #include "audio/audio.h"
 #include "core/settings.h"
 #include "network/game_server.h"
@@ -119,7 +119,7 @@ private:
     rhi::VulkanRhi           m_rhi;
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
-    render::SelectionCircles m_selection_circles;
+    render::WorldOverlays    m_world_overlays;
     audio::AudioEngine       m_audio;
     settings::Store          m_settings;
     hud::Hud                 m_hud;

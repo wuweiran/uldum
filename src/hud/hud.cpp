@@ -8,6 +8,7 @@
 #include "hud/minimap.h"
 #include "hud/command_bar.h"
 #include "hud/joystick.h"
+#include "hud/cast_indicator.h"
 #include "hud/layout.h"
 
 #include <nlohmann/json.hpp>
@@ -23,6 +24,7 @@
 #include "map/terrain_data.h"
 #include "input/selection.h"
 #include "input/input_bindings.h"
+#include "input/picking.h"
 #include "platform/platform.h"
 #include "render/camera.h"
 #include "network/protocol.h"
@@ -191,6 +193,39 @@ struct Hud::Impl {
     // Fired when a click on a slot resolves to an ability. App wires
     // this to the input preset's queue_ability.
     Hud::ActionBarCastFn action_bar_cast_fn;
+    Hud::ActionBarCastAtTargetFn action_bar_cast_at_target_fn;
+
+    // Mobile drag-cast gesture state. One slot owns the gesture at a
+    // time (mobile = single-finger drag). All fields meaningful only
+    // while phase != Idle. Coordinates are in dp (HUD logical space).
+    enum class DragCastPhase : u8 { Idle, Pressed, Aiming, Cancelling };
+    struct DragCastState {
+        DragCastPhase phase = DragCastPhase::Idle;
+        i32          slot_index = -1;
+        f32          press_x = 0, press_y = 0;
+        f32          current_x = 0, current_y = 0;
+        // Caster handle snapshotted on press; the *position* is read
+        // live each frame from the world so a unit moving mid-drag
+        // drags its range ring along (and the drag-point's world
+        // origin updates accordingly).
+        simulation::Unit caster{};
+        f32          caster_x = 0, caster_y = 0, caster_z = 0;
+        // Drag point in world space, recomputed each frame.
+        f32          drag_world_x = 0, drag_world_y = 0, drag_world_z = 0;
+        // Ability snapshotted on press (id + range + form). Snapshot
+        // because the unit's ability list can mutate mid-drag.
+        std::string  ability_id;
+        f32          range = 0;
+        simulation::AbilityForm form = simulation::AbilityForm::Passive;
+        simulation::IndicatorShape shape = simulation::IndicatorShape::Point;
+        f32          area_radius = 0;
+        f32          area_width  = 0;   // Line
+        f32          area_angle  = 0;   // Cone, degrees
+        // Snapped target unit (target_unit form only). Invalid when
+        // not snapped.
+        simulation::Unit snapped_target{};
+    };
+    DragCastState drag_cast;
 
     // Ability id the input preset is currently waiting for a target
     // on. Pushed by the app each frame; empty = no armed ability.
@@ -223,6 +258,11 @@ struct Hud::Impl {
     // frame against the current InputState.
     JoystickConfig  joystick_cfg{};
     JoystickRuntime joystick_rt{};
+
+    // Cast indicator style — applied to range ring, arrow, reticle,
+    // AoE indicator, target-unit ring, and per-phase tints. Drives
+    // AbilityIndicators calls in the app each frame.
+    CastIndicatorConfig cast_indicator_cfg{};
 
     // Rising-edge tracking for hidden-ability hotkeys (abilities
     // authored with `hidden: true` that don't live in any bar slot
@@ -882,6 +922,10 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
         for (auto& slot : ab.slots) {
             slot.rect = resolve(ab.rect, slot.placement);
         }
+        // Cancel zone anchors against the viewport (NOT the bar rect)
+        // — its job is to be reachable from anywhere on screen during
+        // a drag, so it shouldn't shrink with the bar's footprint.
+        ab.cancel_zone_rect = resolve(viewport, ab.cancel_zone_placement);
     }
 
     // Minimap — single rect against viewport.
@@ -1415,6 +1459,10 @@ void Hud::set_action_bar_cast_fn(ActionBarCastFn fn) {
     if (m_impl) m_impl->action_bar_cast_fn = std::move(fn);
 }
 
+void Hud::set_action_bar_cast_at_target_fn(ActionBarCastAtTargetFn fn) {
+    if (m_impl) m_impl->action_bar_cast_at_target_fn = std::move(fn);
+}
+
 void Hud::action_bar_set_hotkey_mode(ActionBarHotkeyMode mode) {
     if (!m_impl) return;
     m_impl->action_bar_rt.hotkey_mode = mode;
@@ -1632,6 +1680,16 @@ void Hud::set_joystick_config(const JoystickConfig& cfg) {
     m_impl->joystick_rt.base_cy = cfg.rect.y + cfg.rect.h * 0.5f;
 }
 
+void Hud::set_cast_indicator_config(const CastIndicatorConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->cast_indicator_cfg = cfg;
+}
+
+const CastIndicatorStyle& Hud::cast_indicator_style() const {
+    static const CastIndicatorStyle kDefaultFallback{};
+    return m_impl ? m_impl->cast_indicator_cfg.style : kDefaultFallback;
+}
+
 void Hud::joystick_set_visible(bool visible) {
     if (m_impl) m_impl->joystick_rt.visible = visible;
 }
@@ -1783,6 +1841,386 @@ void Hud::joystick_update(const platform::InputState& input) {
     } else if (input.mouse_left_pressed) {
         try_capture(0, map_x(input.mouse_x), map_y(input.mouse_y));
     }
+}
+
+// True if (px, py) in dp lies inside the action_bar's cancel zone.
+// Margin tolerates finger drift on the boundary so the Aiming ↔
+// Cancelling transition doesn't flicker pixel-by-pixel.
+static bool action_bar_cancel_zone_contains(const Hud::Impl& s,
+                                            f32 px, f32 py, f32 margin) {
+    const auto& r = s.action_bar_cfg.cancel_zone_rect;
+    if (r.w <= 0.0f || r.h <= 0.0f) return false;
+    return px >= r.x - margin && px < r.x + r.w + margin
+        && py >= r.y - margin && py < r.y + r.h + margin;
+}
+
+void Hud::action_bar_drag_update(const platform::InputState& input) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+    if (!s.is_mobile) return;
+    if (s.drag_cast.phase == Impl::DragCastPhase::Idle) return;
+    if (!s.world_ctx || !s.world_ctx->camera || !s.world_ctx->world) return;
+
+    using Phase = Impl::DragCastPhase;
+
+    // Refresh caster world position each frame — if the unit moved
+    // mid-drag we want the range ring + drag arrow origin to follow
+    // along, not stay anchored where the press happened. Bail (cancel
+    // the gesture) if the caster handle no longer validates (died,
+    // recycled, etc.).
+    if (!s.world_ctx->world->validate(s.drag_cast.caster)) {
+        if (s.drag_cast.slot_index >= 0 &&
+            static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size()) {
+            s.action_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+        }
+        s.drag_cast = Impl::DragCastState{};
+        return;
+    }
+    if (auto* tf = s.world_ctx->world->transforms.get(s.drag_cast.caster.id)) {
+        s.drag_cast.caster_x = tf->position.x;
+        s.drag_cast.caster_y = tf->position.y;
+        s.drag_cast.caster_z = tf->position.z;
+    }
+
+    // Pointer in dp (same space as handle_pointer's coords).
+    f32 inv = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
+    f32 px = input.mouse_x * inv;
+    f32 py = input.mouse_y * inv;
+    s.drag_cast.current_x = px;
+    s.drag_cast.current_y = py;
+
+    // Recompute drag-point world position from finger displacement,
+    // projected onto the camera's ground-plane axes. Sensitivity is
+    // fixed for v1 (~6 world units per dp); enough thumb travel to
+    // reach the edge of a 600-range cast in roughly one comfortable
+    // arc. Tunable later via hud.json or settings.
+    constexpr f32 SENS = 6.0f;
+    f32 yaw = s.world_ctx->camera->yaw();
+    f32 cyaw = std::cos(yaw), syaw = std::sin(yaw);
+    glm::vec3 right{cyaw, syaw, 0.0f};
+    glm::vec3 forward{-syaw, cyaw, 0.0f};
+    f32 ddx = px - s.drag_cast.press_x;
+    f32 ddy = py - s.drag_cast.press_y;
+    glm::vec3 caster{s.drag_cast.caster_x, s.drag_cast.caster_y, s.drag_cast.caster_z};
+    glm::vec3 drag = caster + right * (ddx * SENS) - forward * (ddy * SENS);
+    if (s.world_ctx->terrain) {
+        drag.z = map::sample_height(*s.world_ctx->terrain, drag.x, drag.y);
+    }
+    s.drag_cast.drag_world_x = drag.x;
+    s.drag_cast.drag_world_y = drag.y;
+    s.drag_cast.drag_world_z = drag.z;
+
+    // Snap (target_unit only). Pick the nearest valid candidate within
+    // a snap radius of the drag point; static target_filter eval, no
+    // network round-trip. Snap radius scales with cast range so close-
+    // range and long-range abilities both feel similar.
+    s.drag_cast.snapped_target = simulation::Unit{};
+    if (s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+        s.world_ctx->simulation) {
+        const auto& world = *s.world_ctx->world;
+        const auto* def = s.world_ctx->abilities
+                            ? s.world_ctx->abilities->get(s.drag_cast.ability_id)
+                            : nullptr;
+        if (def) {
+            simulation::Unit caster_unit{};
+            if (s.world_ctx->selection &&
+                !s.world_ctx->selection->selected().empty()) {
+                caster_unit = s.world_ctx->selection->selected().front();
+            }
+            f32 snap_r = std::max(64.0f, s.drag_cast.range * 0.15f);
+            f32 best_d2 = snap_r * snap_r;
+            simulation::Unit best{};
+            for (u32 i = 0; i < world.transforms.count(); ++i) {
+                u32 id = world.transforms.ids()[i];
+                const auto* hinfo = world.handle_infos.get(id);
+                if (!hinfo || hinfo->category != simulation::Category::Unit) continue;
+                simulation::Unit cand{};
+                cand.id = id;
+                cand.generation = hinfo->generation;
+                if (cand.id == caster_unit.id && def->target_filter.self_ == false) {
+                    // self-cast only allowed if filter says so
+                    continue;
+                }
+                if (!s.world_ctx->simulation->target_filter_passes(
+                        def->target_filter, caster_unit, cand)) {
+                    continue;
+                }
+                const auto* tf = world.transforms.get(id);
+                if (!tf) continue;
+                f32 dx2 = tf->position.x - drag.x;
+                f32 dy2 = tf->position.y - drag.y;
+                f32 d2  = dx2 * dx2 + dy2 * dy2;
+                if (d2 < best_d2) { best_d2 = d2; best = cand; }
+            }
+            s.drag_cast.snapped_target = best;
+        }
+    }
+
+    // Phase transitions:
+    //   - Press → Aiming when finger leaves the originating slot rect.
+    //     Tap-without-drag (release while still on the slot) is treated
+    //     as cancel by the release handler below.
+    //   - Aiming ↔ Cancelling driven by the AoV-style cancel zone, NOT
+    //     the slot itself. Dragging back over the slot used to trigger
+    //     cancel; that was awkward (the finger naturally returns near
+    //     the slot during fine-aiming) so we moved it to a dedicated
+    //     screen rect that the player explicitly drags into.
+    constexpr f32 CANCEL_MARGIN     = 16.0f;
+    constexpr f32 SLOT_LEAVE_MARGIN = 8.0f;
+    const auto& slot_rect = (s.drag_cast.slot_index >= 0 &&
+                             static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size())
+                              ? s.action_bar_cfg.slots[s.drag_cast.slot_index].rect
+                              : Rect{};
+    bool over_slot   = (slot_rect.w > 0.0f && slot_rect.h > 0.0f) &&
+                       (px >= slot_rect.x - SLOT_LEAVE_MARGIN &&
+                        px <  slot_rect.x + slot_rect.w + SLOT_LEAVE_MARGIN &&
+                        py >= slot_rect.y - SLOT_LEAVE_MARGIN &&
+                        py <  slot_rect.y + slot_rect.h + SLOT_LEAVE_MARGIN);
+    bool over_cancel = action_bar_cancel_zone_contains(s, px, py, CANCEL_MARGIN);
+    bool button_down = input.mouse_left;
+
+    if (button_down) {
+        if (s.drag_cast.phase == Phase::Pressed) {
+            // Leaving the slot rect commits to Aiming. Once Aiming, we
+            // never go back to Pressed; instead Cancelling is the only
+            // way to "abort" the gesture without firing.
+            if (!over_slot) s.drag_cast.phase = Phase::Aiming;
+        } else if (s.drag_cast.phase == Phase::Aiming) {
+            if (over_cancel) s.drag_cast.phase = Phase::Cancelling;
+        } else if (s.drag_cast.phase == Phase::Cancelling) {
+            if (!over_cancel) s.drag_cast.phase = Phase::Aiming;
+        }
+        return;
+    }
+
+    // Release: decide commit vs. cancel based on phase.
+    bool commit = (s.drag_cast.phase == Phase::Aiming);
+    if (commit && s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+        !s.drag_cast.snapped_target.is_valid()) {
+        // Unit-targeted but the player released without snapping to
+        // anything — treat as cancel (Cast order has no target).
+        commit = false;
+    }
+    if (commit && s.action_bar_cast_at_target_fn) {
+        u32 target_uid = s.drag_cast.snapped_target.is_valid()
+                           ? s.drag_cast.snapped_target.id
+                           : UINT32_MAX;
+        s.action_bar_cast_at_target_fn(s.drag_cast.ability_id, target_uid,
+                                       s.drag_cast.drag_world_x,
+                                       s.drag_cast.drag_world_y,
+                                       s.drag_cast.drag_world_z);
+    }
+
+    // Reset visual + state regardless of commit/cancel.
+    if (s.drag_cast.slot_index >= 0 &&
+        static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size()) {
+        s.action_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+    }
+    s.drag_cast = Impl::DragCastState{};
+}
+
+Hud::AbilityAimState Hud::aim_state() const {
+    AbilityAimState out{};
+    if (!m_impl) return out;
+    const auto& dc = m_impl->drag_cast;
+
+    // Mobile drag-cast path — feeds aim state directly from the gesture.
+    if (dc.phase != Impl::DragCastPhase::Idle) {
+        out.active        = true;
+        out.is_drag_cast  = true;
+        out.caster_x   = dc.caster_x;
+        out.caster_y   = dc.caster_y;
+        out.caster_z   = dc.caster_z;
+        out.drag_x     = dc.drag_world_x;
+        out.drag_y     = dc.drag_world_y;
+        out.drag_z     = dc.drag_world_z;
+        out.range      = dc.range;
+        out.is_unit_target = (dc.form == simulation::AbilityForm::TargetUnit);
+
+        // Shape mirrors the ability's indicator shape. For target_unit
+        // forms, an area_radius > 0 still draws a circle around the
+        // snapped unit even though def->shape is Point.
+        switch (dc.shape) {
+            case simulation::IndicatorShape::Area: out.area_shape = AimAreaShape::Circle; break;
+            case simulation::IndicatorShape::Line: out.area_shape = AimAreaShape::Line;   break;
+            case simulation::IndicatorShape::Cone: out.area_shape = AimAreaShape::Cone;   break;
+            default:                                out.area_shape = AimAreaShape::None;   break;
+        }
+        if (out.is_unit_target && dc.area_radius > 0.0f) {
+            out.area_shape = AimAreaShape::Circle;
+        }
+        out.area_radius = dc.area_radius;
+        out.area_width  = dc.area_width;
+        out.area_angle  = dc.area_angle;
+        out.has_area    = (out.area_shape != AimAreaShape::None);
+
+        if (dc.snapped_target.is_valid() && m_impl->world_ctx &&
+            m_impl->world_ctx->world) {
+            const auto* tf = m_impl->world_ctx->world->transforms.get(
+                                 dc.snapped_target.id);
+            if (tf) {
+                out.snapped_id = dc.snapped_target.id;
+                out.snapped_x  = tf->position.x;
+                out.snapped_y  = tf->position.y;
+                out.snapped_z  = tf->position.z;
+                const auto* sel = m_impl->world_ctx->world->selectables.get(
+                                      dc.snapped_target.id);
+                out.snapped_radius = sel ? sel->selection_radius : 48.0f;
+            }
+        }
+
+        // Distance from caster to the *anchor the cast will resolve at*.
+        f32 anchor_x = out.drag_x;
+        f32 anchor_y = out.drag_y;
+        if (out.is_unit_target && out.snapped_id != 0xFFFFFFFFu) {
+            anchor_x = out.snapped_x;
+            anchor_y = out.snapped_y;
+        }
+        f32 dx = anchor_x - out.caster_x;
+        f32 dy = anchor_y - out.caster_y;
+        out.distance = std::sqrt(dx * dx + dy * dy);
+
+        if (dc.phase == Impl::DragCastPhase::Cancelling) {
+            out.phase = AimPhase::Cancelling;
+        } else if (out.range > 0 && out.distance > out.range) {
+            out.phase = AimPhase::OutOfRange;
+        } else {
+            out.phase = AimPhase::Normal;
+        }
+        return out;
+    }
+
+    // Desktop targeting-mode path — preset has armed an ability and is
+    // waiting on a world click. Indicator follows the mouse-ground-pick
+    // and snaps to a unit (for target_unit forms) using the same
+    // target_filter the mobile drag-cast snap consults.
+    if (m_impl->action_bar_targeting_ability.empty()) return out;
+    if (!m_impl->world_ctx) return out;
+    const auto& ctx = *m_impl->world_ctx;
+    if (!ctx.world || !ctx.abilities || !ctx.selection || !ctx.picker) return out;
+
+    const auto* def = ctx.abilities->get(m_impl->action_bar_targeting_ability);
+    if (!def) return out;
+    bool is_unit  = (def->form == simulation::AbilityForm::TargetUnit);
+    bool is_point = (def->form == simulation::AbilityForm::TargetPoint);
+    if (!is_unit && !is_point) return out;
+
+    if (ctx.selection->selected().empty()) return out;
+    simulation::Unit caster_unit = ctx.selection->selected().front();
+    const auto* caster_tf = ctx.world->transforms.get(caster_unit.id);
+    if (!caster_tf) return out;
+
+    out.active   = true;
+    out.caster_x = caster_tf->position.x;
+    out.caster_y = caster_tf->position.y;
+    out.caster_z = caster_tf->position.z;
+    out.is_unit_target = is_unit;
+
+    // Find the ability instance to get its current level (for the
+    // level-data range / area_radius). Falls back to level 1 data if
+    // the unit doesn't actually own the ability — the preset's
+    // targeting-mode logic accepts any armed id, so be defensive.
+    u32 level = 1;
+    if (const auto* aset = ctx.world->ability_sets.get(caster_unit.id)) {
+        for (const auto& a : aset->abilities) {
+            if (a.ability_id == m_impl->action_bar_targeting_ability) {
+                level = a.level; break;
+            }
+        }
+    }
+    const auto& lvl = def->level_data(level);
+    out.range = lvl.range;
+    switch (def->shape) {
+        case simulation::IndicatorShape::Area: out.area_shape = AimAreaShape::Circle; break;
+        case simulation::IndicatorShape::Line: out.area_shape = AimAreaShape::Line;   break;
+        case simulation::IndicatorShape::Cone: out.area_shape = AimAreaShape::Cone;   break;
+        default:                                out.area_shape = AimAreaShape::None;   break;
+    }
+    if (is_unit && lvl.area.radius > 0.0f) {
+        out.area_shape = AimAreaShape::Circle;
+    }
+    out.area_radius = lvl.area.radius;
+    out.area_width  = lvl.area.width;
+    out.area_angle  = lvl.area.angle;
+    out.has_area    = (out.area_shape != AimAreaShape::None);
+
+    // Pointer is stored in dp; Picker expects physical px.
+    f32 s = (m_impl->ui_scale > 0.0f) ? m_impl->ui_scale : 1.0f;
+    f32 mx = m_impl->pointer_x * s;
+    f32 my = m_impl->pointer_y * s;
+
+    glm::vec3 ground{};
+    if (ctx.picker->screen_to_world(mx, my, ground)) {
+        out.drag_x = ground.x;
+        out.drag_y = ground.y;
+        out.drag_z = ground.z;
+    } else {
+        // Off-terrain pointer (above horizon, sky, etc.) — keep the
+        // indicator at the caster so it doesn't drift into nonsense.
+        out.drag_x = out.caster_x;
+        out.drag_y = out.caster_y;
+        out.drag_z = out.caster_z;
+    }
+
+    // Unit snap for target_unit — magnetic, mirroring the mobile drag
+    // logic so both platforms feel identical. The drag point itself
+    // stays at the cursor's ground projection (NO repositioning); we
+    // just light up the snapped unit's ring + suppress the reticle
+    // when a valid candidate is within the snap radius. Snap radius
+    // scales with cast range so close- and long-range abilities feel
+    // proportionate.
+    if (is_unit && ctx.simulation) {
+        f32 snap_r = std::max(64.0f, out.range * 0.15f);
+        f32 best_d2 = snap_r * snap_r;
+        simulation::Unit best{};
+        for (u32 i = 0; i < ctx.world->transforms.count(); ++i) {
+            u32 id = ctx.world->transforms.ids()[i];
+            const auto* hi = ctx.world->handle_infos.get(id);
+            if (!hi || hi->category != simulation::Category::Unit) continue;
+            simulation::Unit cand{ id, hi->generation };
+            if (!ctx.simulation->target_filter_passes(def->target_filter,
+                                                      caster_unit, cand)) {
+                continue;
+            }
+            const auto* tf = ctx.world->transforms.get(id);
+            if (!tf) continue;
+            f32 dx2 = tf->position.x - out.drag_x;
+            f32 dy2 = tf->position.y - out.drag_y;
+            f32 d2  = dx2 * dx2 + dy2 * dy2;
+            if (d2 < best_d2) { best_d2 = d2; best = cand; }
+        }
+        if (best.is_valid()) {
+            const auto* tf = ctx.world->transforms.get(best.id);
+            if (tf) {
+                out.snapped_id = best.id;
+                out.snapped_x  = tf->position.x;
+                out.snapped_y  = tf->position.y;
+                out.snapped_z  = tf->position.z;
+                const auto* sel = ctx.world->selectables.get(best.id);
+                out.snapped_radius = sel ? sel->selection_radius : 48.0f;
+            }
+        }
+    }
+
+    // Distance + phase resolution — same logic as the mobile branch.
+    f32 anchor_x = out.drag_x;
+    f32 anchor_y = out.drag_y;
+    if (out.is_unit_target && out.snapped_id != 0xFFFFFFFFu) {
+        anchor_x = out.snapped_x;
+        anchor_y = out.snapped_y;
+    }
+    f32 ddx = anchor_x - out.caster_x;
+    f32 ddy = anchor_y - out.caster_y;
+    out.distance = std::sqrt(ddx * ddx + ddy * ddy);
+    if (out.range > 0 && out.distance > out.range) {
+        out.phase = AimPhase::OutOfRange;
+    } else {
+        out.phase = AimPhase::Normal;
+    }
+    // No Cancelling on desktop — pressing Esc / right-click clears the
+    // armed ability via the preset path; the HUD just stops seeing
+    // `action_bar_targeting_ability`.
+    return out;
 }
 
 // Scale the alpha channel of a packed RGBA color by `frac` in [0, 1].
@@ -2115,8 +2553,7 @@ static bool can_afford(const simulation::World& world, u32 unit_id,
 static bool is_castable_form(simulation::AbilityForm f) {
     using F = simulation::AbilityForm;
     return f == F::Instant || f == F::Toggle
-        || f == F::TargetUnit || f == F::TargetPoint
-        || f == F::Channel;
+        || f == F::TargetUnit || f == F::TargetPoint;
 }
 
 // Can the selected unit trigger this slot's ability right now? Combines
@@ -2381,6 +2818,41 @@ static void draw_minimap(Hud& hud, Hud::Impl& s) {
 // so composites participate in the same frame-build as atom nodes.
 // Dispatches to the matching `style_id` render variant — each variant
 // has its own fixed layer order and parameter block (see action_bar.h).
+// Cancel-zone overlay — drawn only while a drag-cast gesture is
+// active. Filled circle background (idle vs. active palette per
+// current phase) plus an "✕" glyph centered.
+static void draw_action_bar_cancel_zone(Hud& hud, Hud::Impl& s) {
+    if (s.drag_cast.phase == Hud::Impl::DragCastPhase::Idle) return;
+    const auto& cfg = s.action_bar_cfg;
+    const Rect& r = cfg.cancel_zone_rect;
+    if (r.w <= 0.0f || r.h <= 0.0f) return;
+
+    bool active = (s.drag_cast.phase == Hud::Impl::DragCastPhase::Cancelling);
+    Color bg     = active ? cfg.style.cancel_zone_active_bg     : cfg.style.cancel_zone_idle_bg;
+    Color border = active ? cfg.style.cancel_zone_active_border : cfg.style.cancel_zone_idle_border;
+    f32 cx = r.x + r.w * 0.5f;
+    f32 cy = r.y + r.h * 0.5f;
+    f32 radius = std::min(r.w, r.h) * 0.5f;
+    f32 border_width = active ? 4.0f : 3.0f;
+
+    draw_filled_circle(s, cx, cy, radius, bg);
+    if ((border.rgba >> 24) != 0) {
+        draw_ring(s, cx, cy, radius, radius - border_width, border);
+    }
+
+    // "✕" glyph centered. Sized so it occupies ~50% of the zone — visible
+    // on a 100dp default zone, scales with author-provided sizes too.
+    f32 px_size = radius * 1.0f;
+    if (px_size < 16.0f) px_size = 16.0f;
+    std::string_view glyph = "X";
+    f32 text_w = hud.text_width_px(glyph, px_size);
+    f32 ascent = hud.text_ascent_px(px_size);
+    f32 line_h = hud.text_line_height_px(px_size);
+    f32 x_left = cx - text_w * 0.5f;
+    f32 y_base = cy + ascent - line_h * 0.5f;
+    hud.draw_text(x_left, y_base, glyph, cfg.style.cancel_zone_glyph_color, px_size);
+}
+
 static void draw_action_bar(Hud& hud, Hud::Impl& s) {
     const auto& cfg = s.action_bar_cfg;
     if (!cfg.enabled) return;
@@ -2396,6 +2868,10 @@ static void draw_action_bar(Hud& hud, Hud::Impl& s) {
             draw_action_bar_classic_rts(hud, s);
             break;
     }
+
+    // Cancel zone draws on top of everything else in the bar's render
+    // pass — finger lands on it = visible target during the drag.
+    draw_action_bar_cancel_zone(hud, s);
 }
 
 void Hud::draw_tree() {
@@ -2492,8 +2968,63 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // Press edge: down on this frame, was up last frame.
     if (button_down && !s.pointer_down_prev) {
         if (bar_slot >= 0) {
-            s.action_bar_pressed_slot = bar_slot;
-            s.action_bar_cfg.slots[bar_slot].pressed = true;
+            // On mobile, a press on a *targetable* and *castable-now*
+            // slot starts a drag-cast gesture instead of the normal
+            // press-and-release click flow. Drag-cast owns the slot
+            // until release; the regular pressed_slot path is bypassed
+            // so action_bar_cast_fn (which would enter desktop-style
+            // targeting mode) doesn't fire here. Desktop falls through
+            // to the existing path.
+            bool drag_cast_started = false;
+            if (s.is_mobile && s.world_ctx && s.action_bar_cast_at_target_fn) {
+                const simulation::AbilityDef* def = nullptr;
+                const simulation::AbilityInstance* inst =
+                    resolve_slot_ability(static_cast<u32>(bar_slot),
+                                         s.action_bar_cfg, *s.world_ctx, def);
+                bool targetable = def &&
+                    (def->form == simulation::AbilityForm::TargetUnit ||
+                     def->form == simulation::AbilityForm::TargetPoint);
+                u32 caster_id = s.world_ctx->selection &&
+                                !s.world_ctx->selection->selected().empty()
+                                  ? s.world_ctx->selection->selected().front().id
+                                  : UINT32_MAX;
+                if (targetable && inst && caster_id != UINT32_MAX &&
+                    slot_castable_now(*s.world_ctx, caster_id, *inst, *def)) {
+                    auto* tf = s.world_ctx->world->transforms.get(caster_id);
+                    auto* hi = s.world_ctx->world->handle_infos.get(caster_id);
+                    if (tf && hi) {
+                        s.drag_cast.phase       = Hud::Impl::DragCastPhase::Pressed;
+                        s.drag_cast.slot_index  = bar_slot;
+                        s.drag_cast.press_x     = x;
+                        s.drag_cast.press_y     = y;
+                        s.drag_cast.current_x   = x;
+                        s.drag_cast.current_y   = y;
+                        s.drag_cast.caster.id         = caster_id;
+                        s.drag_cast.caster.generation = hi->generation;
+                        s.drag_cast.caster_x    = tf->position.x;
+                        s.drag_cast.caster_y    = tf->position.y;
+                        s.drag_cast.caster_z    = tf->position.z;
+                        s.drag_cast.drag_world_x = tf->position.x;
+                        s.drag_cast.drag_world_y = tf->position.y;
+                        s.drag_cast.drag_world_z = tf->position.z;
+                        s.drag_cast.ability_id  = inst->ability_id;
+                        const auto& lvl = def->level_data(inst->level);
+                        s.drag_cast.range       = lvl.range;
+                        s.drag_cast.form        = def->form;
+                        s.drag_cast.shape       = def->shape;
+                        s.drag_cast.area_radius = lvl.area.radius;
+                        s.drag_cast.area_width  = lvl.area.width;
+                        s.drag_cast.area_angle  = lvl.area.angle;
+                        s.drag_cast.snapped_target = simulation::Unit{};
+                        s.action_bar_cfg.slots[bar_slot].pressed = true;
+                        drag_cast_started = true;
+                    }
+                }
+            }
+            if (!drag_cast_started) {
+                s.action_bar_pressed_slot = bar_slot;
+                s.action_bar_cfg.slots[bar_slot].pressed = true;
+            }
         } else if (cmd_slot >= 0) {
             s.command_bar_pressed_slot = cmd_slot;
             s.command_bar_cfg.slots[cmd_slot].pressed = true;

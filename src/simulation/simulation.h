@@ -76,6 +76,15 @@ public:
     // Query: does player_a share vision with player_b?
     bool has_shared_vision(Player a, Player b) const;
 
+    // Static target-filter evaluation. Pure read of world + alliance
+    // state — no side effects, no Lua. Both client and server reach
+    // the same answer given the same world snapshot. Returns true iff
+    // `target` is a valid candidate for an ability authored with this
+    // `filter` cast by `caster`. Used by the HUD's drag-cast snap to
+    // pick candidate units, and as the canonical commit-time check.
+    bool target_filter_passes(const TargetFilter& filter,
+                              Unit caster, Unit target) const;
+
     // Per-player names. Indexed by Player.id; empty string for unknown ids.
     // Populated by App::start_session from the finalized lobby, surfaced to
     // Lua via GetPlayerName(player).

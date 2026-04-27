@@ -13,6 +13,7 @@
 namespace uldum::simulation {
 
 class TypeRegistry;
+class AbilityRegistry;
 
 struct World {
     // ── Component storage (handle.id-indexed) ──────────────────────────
@@ -46,6 +47,11 @@ struct World {
 
     // Type registry (not owned — set during init)
     const TypeRegistry* types = nullptr;
+    // Ability registry (not owned — set during init). Used by create_unit
+    // to seed ability_set from the unit type's `abilities` list, and by
+    // any helper that needs to look up an ability def from inside the
+    // simulation without taking it as an argument.
+    const AbilityRegistry* abilities = nullptr;
 
     // Damage callback — set by script engine to intercept damage events.
     // Parameters: source, target, amount (mutable), damage_type.

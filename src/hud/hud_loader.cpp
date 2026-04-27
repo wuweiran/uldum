@@ -7,6 +7,7 @@
 #include "hud/minimap.h"
 #include "hud/command_bar.h"
 #include "hud/joystick.h"
+#include "hud/cast_indicator.h"
 #include "hud/layout.h"
 #include "asset/asset.h"
 #include "core/log.h"
@@ -314,6 +315,37 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 }
             }
 
+            // Drag-cast cancel zone — optional. If hud.json doesn't
+            // specify one, default to a 100×100 dp area at right-center
+            // of the viewport (AoV's "drag-here-to-cancel" placement).
+            if (auto cz = ab->find("cancel_zone"); cz != ab->end() && cz->is_object()) {
+                cfg.cancel_zone_authored      = true;
+                cfg.cancel_zone_placement.anchor = parse_anchor(cz->value("anchor", "mr"));
+                cfg.cancel_zone_placement.x      = cz->value("x", -30.0f);
+                cfg.cancel_zone_placement.y      = cz->value("y",   0.0f);
+                cfg.cancel_zone_placement.w      = cz->value("w", 100.0f);
+                cfg.cancel_zone_placement.h      = cz->value("h", 100.0f);
+            } else {
+                cfg.cancel_zone_authored      = false;
+                cfg.cancel_zone_placement.anchor = parse_anchor("mr");
+                cfg.cancel_zone_placement.x      = -30.0f;
+                cfg.cancel_zone_placement.y      = 0.0f;
+                cfg.cancel_zone_placement.w      = 100.0f;
+                cfg.cancel_zone_placement.h      = 100.0f;
+            }
+            cfg.cancel_zone_rect = resolve(viewport_rect, cfg.cancel_zone_placement);
+
+            // Optional cancel-zone color overrides on the bar's style_params.
+            // Re-fetch sp here because the earlier scope ended; cleaner than
+            // hoisting the lookup.
+            if (auto sp = ab->find("style_params"); sp != ab->end() && sp->is_object()) {
+                if (auto v = sp->find("cancel_zone_idle_bg");        v != sp->end()) cfg.style.cancel_zone_idle_bg        = parse_color(*v);
+                if (auto v = sp->find("cancel_zone_idle_border");    v != sp->end()) cfg.style.cancel_zone_idle_border    = parse_color(*v);
+                if (auto v = sp->find("cancel_zone_active_bg");      v != sp->end()) cfg.style.cancel_zone_active_bg      = parse_color(*v);
+                if (auto v = sp->find("cancel_zone_active_border");  v != sp->end()) cfg.style.cancel_zone_active_border  = parse_color(*v);
+                if (auto v = sp->find("cancel_zone_glyph_color");    v != sp->end()) cfg.style.cancel_zone_glyph_color    = parse_color(*v);
+            }
+
             hud.set_action_bar_config(cfg);
             log::info(TAG, "action_bar: {} slots", cfg.slots.size());
         }
@@ -475,10 +507,52 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
             } // end mobile-only branch
         }
 
+        if (auto ci = comps->find("cast_indicator"); ci != comps->end() && ci->is_object()) {
+            CastIndicatorConfig cfg{};
+            cfg.enabled = ci->value("enabled", true);
+            if (auto sp = ci->find("style_params"); sp != ci->end() && sp->is_object()) {
+                if (auto v = sp->find("range_color");          v != sp->end()) cfg.style.range_color          = parse_color(*v);
+                if (auto v = sp->find("range_thickness");      v != sp->end() && v->is_number())
+                    cfg.style.range_thickness = v->get<f32>();
+                if (auto v = sp->find("arrow_color");          v != sp->end()) cfg.style.arrow_color          = parse_color(*v);
+                if (auto v = sp->find("arrow_thickness");      v != sp->end() && v->is_number())
+                    cfg.style.arrow_thickness = v->get<f32>();
+                if (auto v = sp->find("head_height");          v != sp->end() && v->is_number())
+                    cfg.style.head_height = v->get<f32>();
+                if (auto v = sp->find("arc_height");           v != sp->end() && v->is_number())
+                    cfg.style.arc_height = v->get<f32>();
+                if (auto v = sp->find("reticle_color");        v != sp->end()) cfg.style.reticle_color        = parse_color(*v);
+                if (auto v = sp->find("reticle_radius");       v != sp->end() && v->is_number())
+                    cfg.style.reticle_radius = v->get<f32>();
+                if (auto v = sp->find("area_color");           v != sp->end()) cfg.style.area_color           = parse_color(*v);
+                if (auto v = sp->find("target_unit_color");    v != sp->end()) cfg.style.target_unit_color    = parse_color(*v);
+                if (auto v = sp->find("target_unit_thickness"); v != sp->end() && v->is_number())
+                    cfg.style.target_unit_thickness = v->get<f32>();
+                if (auto v = sp->find("out_of_range_tint");    v != sp->end()) cfg.style.out_of_range_tint    = parse_color(*v);
+                if (auto v = sp->find("cancel_tint");          v != sp->end()) cfg.style.cancel_tint          = parse_color(*v);
+                // Optional texture overrides — paths resolve via the
+                // active map's asset bundle. Empty string keeps the
+                // procedural engine default.
+                auto str = [&](const char* k, std::string& dst) {
+                    if (auto v = sp->find(k); v != sp->end() && v->is_string())
+                        dst = v->get<std::string>();
+                };
+                str("range_texture",       cfg.style.range_texture);
+                str("arrow_texture",       cfg.style.arrow_texture);
+                str("reticle_texture",     cfg.style.reticle_texture);
+                str("area_texture",        cfg.style.area_texture);
+                str("target_unit_texture", cfg.style.target_unit_texture);
+                str("selection_texture",   cfg.style.selection_texture);
+            }
+            hud.set_cast_indicator_config(cfg);
+            log::info(TAG, "cast_indicator: registered");
+        }
+
         // Skim remaining composite keys so authoring feedback is consistent.
         for (auto it = comps->begin(); it != comps->end(); ++it) {
             const std::string& k = it.key();
-            if (k == "action_bar" || k == "minimap" || k == "command_bar" || k == "joystick") continue;
+            if (k == "action_bar" || k == "minimap" || k == "command_bar" ||
+                k == "joystick"   || k == "cast_indicator") continue;
             log::info(TAG, "composite '{}' declared (not yet implemented)", k);
         }
     }

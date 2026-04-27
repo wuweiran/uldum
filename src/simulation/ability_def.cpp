@@ -13,8 +13,15 @@ AbilityForm parse_ability_form(const std::string& s) {
     if (s == "target_unit")  return AbilityForm::TargetUnit;
     if (s == "target_point") return AbilityForm::TargetPoint;
     if (s == "toggle")       return AbilityForm::Toggle;
-    if (s == "channel")      return AbilityForm::Channel;
     return AbilityForm::Passive;
+}
+
+IndicatorShape parse_indicator_shape(const std::string& s) {
+    if (s == "point") return IndicatorShape::Point;
+    if (s == "area")  return IndicatorShape::Area;
+    if (s == "line")  return IndicatorShape::Line;
+    if (s == "cone")  return IndicatorShape::Cone;
+    return IndicatorShape::Point;
 }
 
 static TargetFilter parse_target_filter(const nlohmann::json& j) {
@@ -56,7 +63,15 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
 
     lvl.aura_radius   = j.value("aura_radius", 0.0f);
     lvl.aura_ability  = j.value("aura_ability", "");
-    lvl.channel_duration = j.value("channel_duration", 0.0f);
+    lvl.channel_time  = j.value("channel_time", 0.0f);
+
+    if (j.contains("area")) {
+        const auto& a = j["area"];
+        lvl.area.radius = a.value("radius", 0.0f);
+        lvl.area.width  = a.value("width",  0.0f);
+        lvl.area.angle  = a.value("angle",  0.0f);
+        lvl.has_area    = true;
+    }
 
     if (j.contains("toggle_cost_per_sec")) {
         for (auto& [k, v] : j["toggle_cost_per_sec"].items()) {
@@ -83,6 +98,7 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
         def.name      = val.value("name", key);
         def.icon      = val.value("icon", "");
         def.form      = parse_ability_form(val.value("form", "passive"));
+        def.shape     = parse_indicator_shape(val.value("shape", "point"));
         def.hotkey    = val.value("hotkey", "");
         def.stackable = val.value("stackable", false);
         def.hidden    = val.value("hidden", false);

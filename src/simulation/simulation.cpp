@@ -9,7 +9,8 @@ namespace uldum::simulation {
 static constexpr const char* TAG = "Simulation";
 
 bool Simulation::init(asset::AssetManager& /*assets*/) {
-    m_world.types = &m_types;
+    m_world.types     = &m_types;
+    m_world.abilities = &m_abilities;
 
     // Wire pathing unblock: when a building is destroyed, release its blocked vertices
     m_world.on_pathing_unblock = [this](const std::vector<glm::ivec2>& verts) {
@@ -81,6 +82,58 @@ bool Simulation::has_shared_vision(Player a, Player b) const {
     if (a.id == b.id) return true;
     if (a.id >= m_player_count || b.id >= m_player_count) return false;
     return m_alliances[a.id * m_player_count + b.id].shared_vision;
+}
+
+bool Simulation::target_filter_passes(const TargetFilter& filter,
+                                      Unit caster, Unit target) const {
+    if (!m_world.validate(target)) return false;
+
+    // Liveness gate. `alive` defaults true in JSON (parser-side), so
+    // most filters only accept living targets. `dead` lets resurrect-
+    // style abilities target corpses; both can be true for either.
+    bool dead = m_world.dead_states.has(target.id);
+    if (!filter.alive && !filter.dead) return false;
+    if (dead) {
+        if (!filter.dead) return false;
+    } else {
+        if (!filter.alive) return false;
+    }
+
+    // Self / ally / enemy gate. At least one of these must be set for
+    // the filter to accept ANY unit; an empty filter (all three false)
+    // rejects everything by design — authors must opt in to who can
+    // be targeted.
+    bool is_self = (caster.id == target.id) && (caster.generation == target.generation);
+    if (is_self) {
+        if (!filter.self_) return false;
+    } else {
+        const auto* caster_owner = m_world.owners.get(caster.id);
+        const auto* target_owner = m_world.owners.get(target.id);
+        if (!caster_owner || !target_owner) return false;
+        bool allied = is_allied(caster_owner->player, target_owner->player);
+        if (allied) {
+            if (!filter.ally) return false;
+        } else {
+            if (!filter.enemy) return false;
+        }
+    }
+
+    // Optional classification list. If non-empty, the target's
+    // classification set must contain at least one of the listed tags.
+    if (!filter.classifications.empty()) {
+        const auto* cls = m_world.classifications.get(target.id);
+        if (!cls) return false;
+        bool any = false;
+        for (const auto& want : filter.classifications) {
+            for (const auto& have : cls->flags) {
+                if (have == want) { any = true; break; }
+            }
+            if (any) break;
+        }
+        if (!any) return false;
+    }
+
+    return true;
 }
 
 void Simulation::tick(float dt) {

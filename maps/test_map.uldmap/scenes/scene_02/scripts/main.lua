@@ -40,12 +40,15 @@ function main()
 
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
-    -- Give paladin abilities. The action bar auto-populates from the
-    -- locally selected unit's abilities, matching slot.hotkey (authored
-    -- in hud.json) to ability.hotkey (in ability_types.json). No Lua
-    -- binding is needed for the bar contents.
+    -- Engine-authored abilities (holy_light, consecration) are seeded
+    -- from the paladin's `abilities` list in unit_types.json at create
+    -- time — no Lua AddAbility needed for them. devotion_aura's effects
+    -- are simulated entirely in this script (aura damage tick + buff
+    -- VFX), so we keep adding it here so its def is bound to the
+    -- caster for the action_bar to render the icon. If a future engine
+    -- aura mechanic supplants the script side, this line moves into
+    -- unit_types.json alongside the others.
     AddAbility(paladin, "devotion_aura")
-    AddAbility(paladin, "holy_light")
 
     -- Register standard combat systems (shared)
     register_armor_system()
@@ -83,22 +86,58 @@ function main()
     Log("[Scene02] Cleave trigger registered on Footman")
 
     ---------------------------------------------------------------------------
-    -- Consecration: every 1 second, Paladin deals 15 damage to nearby enemies
+    -- Consecration: target-point AoE cast (declared in ability_types.json,
+    -- seeded onto the paladin via unit_types.json). On cast resolution,
+    -- deals ability.damage to every enemy in `area.radius` around the
+    -- target point and bursts a particle effect there. Mobile uses
+    -- drag-cast to pick the target point; desktop uses click-to-cast
+    -- targeting.
     ---------------------------------------------------------------------------
-    AddAbility(paladin, "consecration")
-    CreateTimer(1.0, true, function()
+    local consecration_trig = CreateTrigger()
+    TriggerRegisterUnitEvent(consecration_trig, paladin, EVENT_UNIT_ABILITY_EFFECT)
+    TriggerAddCondition(consecration_trig, function()
+        return GetTriggerAbilityId() == "consecration"
+    end)
+    TriggerAddAction(consecration_trig, function()
+        local caster = GetTriggerUnit()
+        local tx = GetSpellTargetX()
+        local ty = GetSpellTargetY()
+        local radius = 300
+        local damage = 80
+        PlayEffect("consecration_burst", tx, ty, 0)
+        local caster_owner = GetUnitOwner(caster)
+        local nearby = GetUnitsInRange(tx, ty, radius,
+            { enemy_of = caster_owner, alive_only = true })
+        for _, u in ipairs(nearby) do
+            DamageUnit(caster, u, damage, "ability")
+        end
+        Log(string.format("[Consecration] %d enemies hit for %d at (%.0f,%.0f)",
+            #nearby, damage, tx, ty))
+    end)
+    Log("[Scene02] Consecration ability registered (target_point, AoE)")
+
+    ---------------------------------------------------------------------------
+    -- Devotion Aura: bonus to allies (handled by engine aura system) AND
+    -- a slow holy-damage tick to surrounding enemies. The buff side is
+    -- driven by the engine's aura scan (see ability_types.json); this
+    -- timer adds the offensive half map-side, which is also where the
+    -- pulse VFX lives.
+    ---------------------------------------------------------------------------
+    local AURA_DAMAGE_INTERVAL = 1.5
+    local AURA_RADIUS          = 600
+    local AURA_DAMAGE          = 6
+    CreateTimer(AURA_DAMAGE_INTERVAL, true, function()
         if not IsUnitAlive(paladin) then return end
         local px = GetUnitX(paladin)
         local py = GetUnitY(paladin)
-        local nearby = GetUnitsInRange(px, py, 325, { enemy_of = player1, alive_only = true })
+        local nearby = GetUnitsInRange(px, py, AURA_RADIUS, { enemy_of = player1, alive_only = true })
+        if #nearby == 0 then return end
+        PlayEffectOnUnit("devotion_pulse", paladin, "overhead")
         for _, u in ipairs(nearby) do
-            DamageUnit(paladin, u, 15, "ability")
-        end
-        if #nearby > 0 then
-            Log("[Consecration] Hit " .. #nearby .. " enemies for 15 damage each")
+            DamageUnit(paladin, u, AURA_DAMAGE, "aura")
         end
     end)
-    Log("[Scene02] Consecration timer active on Paladin")
+    Log("[Scene02] Devotion Aura damage tick active on Paladin")
 
     ---------------------------------------------------------------------------
     -- Holy Light: on_ability_effect handler — heals the target

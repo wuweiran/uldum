@@ -2,6 +2,7 @@
 #include "core/log.h"
 #include "hud/node.h"
 #include "hud/hud_loader.h"
+#include "hud/cast_indicator.h"
 #include "hud/world.h"
 #include "hud/text_tag.h"
 #include "hud/action_bar.h"
@@ -149,10 +150,11 @@ bool App::init(const LaunchArgs& args) {
         refresh_safe_insets();
     }
 
-    // Selection circles — ground rings under selected units. 3D decals,
-    // rendered inside the main pass after the 3D scene but before HUD.
-    if (!m_selection_circles.init(m_rhi)) {
-        log::error(TAG, "Selection circles init failed");
+    // World overlays — unified ground-decal renderer for selection
+    // rings, ability targeting indicators, future build-placement
+    // ghosts and debug gizmos. One pipeline, one VBO, per-draw texture.
+    if (!m_world_overlays.init(m_rhi)) {
+        log::error(TAG, "World overlays init failed");
         return false;
     }
 
@@ -410,6 +412,24 @@ bool App::start_session() {
         hud::load_from_asset(m_hud, hud_path,
                              m_rhi.extent().width, m_rhi.extent().height);
     }
+    // Apply per-slot world-overlay texture overrides declared in
+    // hud.json. Empty strings keep the engine's procedural defaults;
+    // non-empty paths replace the slot's image with a map-supplied
+    // KTX2. WorldOverlays caches one VkImage per slot, so this
+    // happens once per session.
+    {
+        const auto& s = m_hud.cast_indicator_style();
+        using TexId = render::WorldOverlays::TextureId;
+        auto apply = [&](TexId id, const std::string& path) {
+            if (!path.empty()) m_world_overlays.set_texture(id, path);
+        };
+        apply(TexId::SelectionRing, s.selection_texture);
+        apply(TexId::RangeRing,     s.range_texture);
+        apply(TexId::TargetUnit,    s.target_unit_texture);
+        apply(TexId::CastCurve,     s.arrow_texture);
+        apply(TexId::Reticle,       s.reticle_texture);
+        apply(TexId::AoeCircle,     s.area_texture);
+    }
     m_hud.set_local_player(m_args.local_slot);
     m_network.set_hud(&m_hud);
     // Button click callback. Host / offline fires the server trigger
@@ -432,6 +452,33 @@ bool App::start_session() {
     m_hud.set_action_bar_cast_fn([this](const std::string& ability_id) {
         if (m_input_preset) m_input_preset->queue_ability(ability_id);
     });
+
+    // Mobile drag-cast commit. HUD has already collected the target
+    // (snapped unit or ground point), so we bypass the preset's
+    // targeting-mode entry path and submit a Cast command directly.
+    // Same plumbing CommandSystem uses for everything else — local in
+    // offline / host, network forward in client mode.
+    m_hud.set_action_bar_cast_at_target_fn(
+        [this](const std::string& ability_id, u32 target_unit_id,
+               f32 target_x, f32 target_y, f32 target_z) {
+            input::GameCommand cmd;
+            cmd.player = m_selection.player();
+            cmd.units  = m_selection.selected();
+            simulation::orders::Cast c;
+            c.ability_id = ability_id;
+            if (target_unit_id != UINT32_MAX) {
+                // Look up generation so the order references a stable
+                // handle that survives ID reuse.
+                const auto& world = m_server.simulation().world();
+                if (auto* hi = world.handle_infos.get(target_unit_id)) {
+                    c.target_unit.id = target_unit_id;
+                    c.target_unit.generation = hi->generation;
+                }
+            }
+            c.target_pos = glm::vec3{target_x, target_y, target_z};
+            cmd.order = std::move(c);
+            m_commands.submit(cmd);
+        });
 
     // Command-bar slot tap → dispatches an engine-built-in command
     // ("stop", "move", etc.). Same plumbing as the ability callback
@@ -606,6 +653,7 @@ bool App::start_session() {
         // paths resolve to the same pointer — the server's simulation types.
         m_hud_world_ctx.types        = &m_server.simulation().types();
         m_hud_world_ctx.abilities    = &m_server.simulation().abilities();
+        m_hud_world_ctx.simulation   = &m_server.simulation();
         m_hud_world_ctx.camera       = &m_renderer.camera();
         m_hud_world_ctx.picker       = &m_picker;
         m_hud_world_ctx.selection    = &m_selection;
@@ -974,6 +1022,7 @@ void App::run() {
                 m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
                 m_hud.handle_hotkeys(in);
                 m_hud.joystick_update(in);
+                m_hud.action_bar_drag_update(in);
                 // Push targeting-mode state so the classic_rts render
                 // highlights the armed slot. Reads empty when the preset
                 // isn't waiting on a target.
@@ -1062,20 +1111,206 @@ void App::run() {
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
                 m_renderer.draw(cmd, m_rhi.extent(), world, alpha);
-                // Selection circles — ground rings under selected units.
-                // Drawn after the 3D scene so they can be occluded by
-                // buildings, before HUD so bars / labels stack above.
-                // Gated on the preset: action-style presets suppress
-                // them since the camera already tracks the controlled
-                // hero.
-                if (!m_input_preset || m_input_preset->show_selection_circles()) {
-                    const map::TerrainData* sel_terrain =
+
+                // World overlays — selection rings, ability indicators,
+                // future build-placement ghosts. Drawn after the 3D
+                // scene so they can be occluded by buildings, before
+                // HUD so bars / labels stack above.
+                {
+                    m_world_overlays.begin_frame();
+                    using TexId = render::WorldOverlays::TextureId;
+                    const map::TerrainData* terrain =
                         m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
-                    m_selection_circles.draw(cmd, m_renderer.camera(), world,
-                                             sel_terrain,
-                                             m_selection.selected(),
-                                             simulation::Player{m_args.local_slot},
-                                             alpha);
+
+                    // ── Selection rings ──────────────────────────────
+                    // Gated on the preset: action-style presets suppress
+                    // them since the camera already tracks the
+                    // controlled hero.
+                    if (terrain && (!m_input_preset || m_input_preset->show_selection_circles())) {
+                        constexpr u32  kSelectionSamples = 48;
+                        constexpr f32  kSelectionStroke  = 4.0f;
+                        constexpr glm::vec4 kColorLocal{ 0.24f, 1.00f, 0.36f, 0.8f };
+                        constexpr glm::vec4 kColorOther{ 1.00f, 0.28f, 0.24f, 0.8f };
+                        constexpr u32 kMaxSelectionRings = 48;
+
+                        u32 emitted = 0;
+                        std::vector<glm::vec3> samples;
+                        samples.reserve(kSelectionSamples + 1);
+                        for (auto unit : m_selection.selected()) {
+                            if (emitted >= kMaxSelectionRings) break;
+                            const auto* tf  = world.transforms.get(unit.id);
+                            const auto* sel = world.selectables.get(unit.id);
+                            if (!tf || !sel) continue;
+
+                            glm::vec3 ip = tf->interp_position(alpha);
+                            f32 base_r = (sel->selection_radius > 0.0f) ? sel->selection_radius : 48.0f;
+                            // Center the stroke just inside the selection radius
+                            // so the outer edge matches `base_r` (matches the
+                            // previous SelectionCircles visual).
+                            f32 ring_r = base_r - kSelectionStroke * 0.5f;
+                            if (ring_r < kSelectionStroke * 0.5f) ring_r = kSelectionStroke * 0.5f;
+
+                            samples.clear();
+                            for (u32 i = 0; i <= kSelectionSamples; ++i) {
+                                f32 a  = (static_cast<f32>(i % kSelectionSamples) / kSelectionSamples) * 6.28318530718f;
+                                f32 sx = ip.x + ring_r * std::cos(a);
+                                f32 sy = ip.y + ring_r * std::sin(a);
+                                f32 sz = map::sample_height(*terrain, sx, sy);
+                                samples.push_back({sx, sy, sz});
+                            }
+                            const auto* owner = world.owners.get(unit.id);
+                            bool is_local = owner && owner->player.id == m_args.local_slot;
+                            m_world_overlays.add_path(samples, kSelectionStroke,
+                                                     is_local ? kColorLocal : kColorOther,
+                                                     TexId::SelectionRing);
+                            ++emitted;
+                        }
+                    }
+
+                    // ── Ability targeting indicators ──────────────────
+                    // Drawn after selection rings so a snapped target's
+                    // ring sits on top of its selection ring.
+                    auto aim = m_hud.aim_state();
+                    if (aim.active) {
+                        using Phase = hud::Hud::AimPhase;
+                        const auto& s = m_hud.cast_indicator_style();
+                        auto unpack = [](hud::Color c) -> glm::vec4 {
+                            return { ((c.rgba >>  0) & 0xFFu) / 255.0f,
+                                     ((c.rgba >>  8) & 0xFFu) / 255.0f,
+                                     ((c.rgba >> 16) & 0xFFu) / 255.0f,
+                                     ((c.rgba >> 24) & 0xFFu) / 255.0f };
+                        };
+                        // Phase tint behavior: Normal uses base RGB+A;
+                        // OutOfRange / Cancelling fully replace with the
+                        // configured tint color (cool blue / warm red).
+                        auto phase_color = [&](hud::Color base) -> glm::vec4 {
+                            switch (aim.phase) {
+                                case Phase::Normal:     return unpack(base);
+                                case Phase::OutOfRange: return unpack(s.out_of_range_tint);
+                                case Phase::Cancelling: return unpack(s.cancel_tint);
+                            }
+                            return unpack(base);
+                        };
+
+                        glm::vec3 caster{aim.caster_x, aim.caster_y, aim.caster_z};
+                        glm::vec3 drag  {aim.drag_x,   aim.drag_y,   aim.drag_z};
+
+                        // 1) Range ring at caster — always neutral
+                        //    (the ring is the reachability map,
+                        //    independent of where the player is aiming).
+                        m_world_overlays.add_ring(caster, aim.range,
+                                                  s.range_thickness,
+                                                  unpack(s.range_color),
+                                                  TexId::RangeRing);
+
+                        // 2) AoE indicator. Shape comes from the
+                        //    ability's `shape` field; target_unit
+                        //    abilities with area_radius > 0 still
+                        //    draw a circle around the snapped unit.
+                        //    Line and Cone always anchor at the
+                        //    caster and orient toward the drag point.
+                        if (aim.has_area) {
+                            using Shape = hud::Hud::AimAreaShape;
+                            switch (aim.area_shape) {
+                                case Shape::Circle: {
+                                    glm::vec3 area_at = drag;
+                                    if (aim.is_unit_target && aim.snapped_id != UINT32_MAX) {
+                                        area_at = glm::vec3{aim.snapped_x, aim.snapped_y, aim.snapped_z};
+                                    }
+                                    if (!aim.is_unit_target || aim.snapped_id != UINT32_MAX) {
+                                        m_world_overlays.add_quad(area_at, aim.area_radius,
+                                                                  phase_color(s.area_color),
+                                                                  TexId::AoeCircle);
+                                    }
+                                    break;
+                                }
+                                case Shape::Line: {
+                                    // Strip from caster, in caster→drag
+                                    // direction, length = aim.range,
+                                    // width = aim.area_width. Two-sample
+                                    // path is enough since the line is
+                                    // straight in XY (terrain z is
+                                    // sampled per endpoint).
+                                    f32 dx = drag.x - caster.x;
+                                    f32 dy = drag.y - caster.y;
+                                    f32 d  = std::sqrt(dx*dx + dy*dy);
+                                    if (d > 1e-3f && aim.range > 0) {
+                                        f32 inv = 1.0f / d;
+                                        glm::vec3 end{
+                                            caster.x + dx * inv * aim.range,
+                                            caster.y + dy * inv * aim.range,
+                                            drag.z   // approximate; flat path is fine for v1
+                                        };
+                                        std::vector<glm::vec3> samples = { caster, end };
+                                        m_world_overlays.add_path(samples, aim.area_width,
+                                                                  phase_color(s.area_color),
+                                                                  TexId::AoeLine);
+                                    }
+                                    break;
+                                }
+                                case Shape::Cone: {
+                                    // Wedge from caster, oriented toward
+                                    // drag, half-angle from area_angle
+                                    // (degrees → radians), radius = range.
+                                    f32 dx = drag.x - caster.x;
+                                    f32 dy = drag.y - caster.y;
+                                    f32 d  = std::sqrt(dx*dx + dy*dy);
+                                    if (d > 1e-3f && aim.range > 0 && aim.area_angle > 0) {
+                                        glm::vec3 dir{ dx / d, dy / d, 0.0f };
+                                        f32 half_angle_rad = aim.area_angle * 0.5f
+                                                             * 3.14159265358979323846f / 180.0f;
+                                        m_world_overlays.add_cone(caster, dir, half_angle_rad,
+                                                                  aim.range,
+                                                                  phase_color(s.area_color),
+                                                                  TexId::AoeCone);
+                                    }
+                                    break;
+                                }
+                                case Shape::None: break;
+                            }
+                        }
+
+                        // 3) Curved 3D arrow from caster ground to drag.
+                        //    Only emitted in mobile drag-cast mode —
+                        //    on desktop the player clicks to fire, so
+                        //    there's no "drag from caster" semantics
+                        //    and the arrow is just visual noise.
+                        if (aim.is_drag_cast) {
+                            constexpr u32 kCurveSamples = 24;
+                            std::vector<glm::vec3> curve;
+                            curve.reserve(kCurveSamples + 1);
+                            for (u32 i = 0; i <= kCurveSamples; ++i) {
+                                f32 t = static_cast<f32>(i) / static_cast<f32>(kCurveSamples);
+                                glm::vec3 p = caster * (1.0f - t) + drag * t;
+                                p.z += 4.0f * t * (1.0f - t) * s.arc_height;
+                                curve.push_back(p);
+                            }
+                            m_world_overlays.add_path(curve, s.arrow_thickness,
+                                                     phase_color(s.arrow_color),
+                                                     TexId::CastCurve);
+                        }
+
+                        // 4) Reticle — shown for ground-target without
+                        //    AoE, or for unit-target while not snapped.
+                        bool show_reticle = !aim.is_unit_target ||
+                                            (aim.snapped_id == UINT32_MAX);
+                        if (aim.has_area && !aim.is_unit_target) show_reticle = false;
+                        if (show_reticle) {
+                            m_world_overlays.add_quad(drag, s.reticle_radius,
+                                                      phase_color(s.reticle_color),
+                                                      TexId::Reticle);
+                        }
+
+                        // 5) Snapped-unit ring.
+                        if (aim.is_unit_target && aim.snapped_id != UINT32_MAX) {
+                            glm::vec3 sp{aim.snapped_x, aim.snapped_y, aim.snapped_z};
+                            m_world_overlays.add_ring(sp, aim.snapped_radius,
+                                                      s.target_unit_thickness,
+                                                      phase_color(s.target_unit_color),
+                                                      TexId::TargetUnit);
+                        }
+                    }
+                    m_world_overlays.draw(cmd, m_renderer.camera().view_projection());
                 }
                 // HUD overlay. Pointer is already dispatched earlier in
                 // the frame (before input preset update) so its captured
@@ -1166,7 +1401,7 @@ void App::shutdown() {
 #endif
     m_audio.shutdown();
     m_hud.shutdown();
-    m_selection_circles.shutdown();
+    m_world_overlays.shutdown();
     m_renderer.shutdown();
     m_asset.shutdown();
     m_rhi.shutdown();

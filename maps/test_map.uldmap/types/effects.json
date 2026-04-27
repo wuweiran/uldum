@@ -22,5 +22,17 @@
         "texture": "spark",
         "start_color": { "r": 0.3, "g": 0.5, "b": 1, "a": 1 },
         "end_color": { "r": 0.1, "g": 0.2, "b": 0.8, "a": 0 }
+    },
+    "consecration_burst": {
+        "count": 80, "speed": 280, "life": 0.9, "size": 20, "gravity": -120, "spread": 0.20,
+        "texture": "glow",
+        "start_color": { "r": 1.0, "g": 0.85, "b": 0.35, "a": 1 },
+        "end_color":   { "r": 1.0, "g": 0.55, "b": 0.10, "a": 0 }
+    },
+    "devotion_pulse": {
+        "count": 6, "speed": 80, "life": 0.5, "size": 14, "gravity": 0, "spread": 0.05,
+        "texture": "glow",
+        "start_color": { "r": 1.0, "g": 0.9, "b": 0.4, "a": 0.9 },
+        "end_color":   { "r": 1.0, "g": 0.7, "b": 0.2, "a": 0 }
     }
 }

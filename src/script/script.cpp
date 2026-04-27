@@ -1167,6 +1167,18 @@ void ScriptEngine::bind_trigger_api() {
         warn_wrong_event("GetSpellTargetUnit", {"global_ability_effect", "unit_ability_effect"});
         return unit_or_nil(make_unit(sim.world(), m_ctx_spell_target_unit));
     };
+    lua["GetSpellTargetX"] = [&, warn_wrong_event]() -> f32 {
+        warn_wrong_event("GetSpellTargetX", {"global_ability_effect", "unit_ability_effect"});
+        return m_ctx_spell_target_x;
+    };
+    lua["GetSpellTargetY"] = [&, warn_wrong_event]() -> f32 {
+        warn_wrong_event("GetSpellTargetY", {"global_ability_effect", "unit_ability_effect"});
+        return m_ctx_spell_target_y;
+    };
+    lua["GetSpellTargetPoint"] = [&, warn_wrong_event]() -> std::tuple<f32, f32> {
+        warn_wrong_event("GetSpellTargetPoint", {"global_ability_effect", "unit_ability_effect"});
+        return {m_ctx_spell_target_x, m_ctx_spell_target_y};
+    };
 
 }
 

@@ -13,7 +13,7 @@
         "animation": { "dmg_pt": 0.667, "cast_pt": 0.436, "walk_speed": 350 },
         "combat": { "damage": 45, "range": 128, "cooldown": 1.7, "dmg_time": 0.4, "backsw_time": 0.3, "acquire_range": 600 },
         "vision": { "range": 1800 },
-        "abilities": ["attack", "move", "holy_light", "devotion_aura"],
+        "abilities": ["holy_light", "consecration"],
         "inventory_size": 6,
         "sounds": { "attack": "sounds/knifeSlice.ogg" },
         "classifications": ["ground", "hero"],
@@ -29,7 +29,7 @@
         "animation": { "dmg_pt": 0.667, "walk_speed": 240 },
         "combat": { "damage": 12, "range": 128, "cooldown": 1.5, "dmg_time": 0.3, "backsw_time": 0.3, "acquire_range": 500 },
         "vision": { "range": 800 },
-        "abilities": ["attack", "move"],
+        "abilities": [],
         "classifications": ["ground"],
         "sounds": { "attack": "sounds/chop.ogg" },
         "selection": { "radius": 24, "priority": 3 }

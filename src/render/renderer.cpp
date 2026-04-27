@@ -2581,16 +2581,16 @@ bool Renderer::create_shadow_pipeline() {
         terrain_binding.stride    = sizeof(TerrainVertex);
         terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        VkVertexInputAttributeDescription terrain_attrs[5]{};
+        // Shadow pass only reads vertex position. Listing fewer attrs
+        // than the binding stride covers is fine — the shader never
+        // touches the remaining bytes. Keeps validation clean by
+        // matching the shader's location-0-only declaration.
+        VkVertexInputAttributeDescription terrain_attrs[1]{};
         terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
-        terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal)};
-        terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(TerrainVertex, texcoord)};
-        terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, layer_corners)};
-        terrain_attrs[4] = {4, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, case_info)};
 
         auto tcfg = make_common_pipeline_state();
         tcfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
-        tcfg.vertex_input.vertexAttributeDescriptionCount  = 5;
+        tcfg.vertex_input.vertexAttributeDescriptionCount  = 1;
         tcfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
 
         tcfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

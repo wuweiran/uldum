@@ -54,40 +54,79 @@ bool Picker::screen_to_world(f32 screen_x, f32 screen_y, glm::vec3& world_pos) c
     glm::vec3 origin = ray_origin(screen_x, screen_y);
     glm::vec3 dir = screen_to_ray(screen_x, screen_y);
 
-    // March along ray until we hit terrain. World is centered on (0,0) —
-    // the SW corner is at (origin_x, origin_y) = (-W/2, -H/2). Without the
-    // shift the bounds check rejects points in the lower-left quadrant and
-    // the tile lookup picks the wrong cell.
     const f32 ox = m_terrain->origin_x();
     const f32 oy = m_terrain->origin_y();
     const f32 wx = m_terrain->world_width();
     const f32 wy = m_terrain->world_height();
-    f32 step = m_terrain->tile_size * 0.5f;
-    for (f32 t = 0.0f; t < 100000.0f; t += step) {
-        glm::vec3 p = origin + dir * t;
-        if (p.x < ox || p.y < oy || p.x > ox + wx || p.y > oy + wy)
-            continue;
 
-        f32 fx = (p.x - ox) / m_terrain->tile_size;
-        f32 fy = (p.y - oy) / m_terrain->tile_size;
+    // Bilinear terrain Z lookup at world (x, y). Returns the height of
+    // the height-map sampled across the cell containing (x, y); used by
+    // both the march and the bisection refinement.
+    auto sample_z = [&](f32 wx_, f32 wy_) -> f32 {
+        f32 fx = (wx_ - ox) / m_terrain->tile_size;
+        f32 fy = (wy_ - oy) / m_terrain->tile_size;
         u32 ix = std::min(static_cast<u32>(fx), m_terrain->tiles_x - 1);
         u32 iy = std::min(static_cast<u32>(fy), m_terrain->tiles_y - 1);
         f32 lx = fx - static_cast<f32>(ix);
         f32 ly = fy - static_cast<f32>(iy);
-
         f32 h00 = m_terrain->world_z_at(ix, iy);
         f32 h10 = m_terrain->world_z_at(ix + 1, iy);
         f32 h01 = m_terrain->world_z_at(ix, iy + 1);
         f32 h11 = m_terrain->world_z_at(ix + 1, iy + 1);
-        f32 terrain_z = h00 + lx * (h10 - h00) + ly * (h01 - h00) + lx * ly * (h00 - h10 - h01 + h11);
+        return h00 + lx * (h10 - h00) + ly * (h01 - h00) + lx * ly * (h00 - h10 - h01 + h11);
+    };
 
-        if (p.z <= terrain_z) {
-            world_pos = p;
-            world_pos.z = terrain_z;
-            return true;
+    auto in_bounds = [&](glm::vec3 p) {
+        return p.x >= ox && p.y >= oy && p.x <= ox + wx && p.y <= oy + wy;
+    };
+
+    // Coarse march finds the bracket: last `t` where the ray is *above*
+    // terrain (`signed_dist > 0`) and first `t` where it has crossed
+    // *below* (`signed_dist <= 0`). Step size = half a tile; finer than
+    // tile-size avoids skipping over a cell ridge but coarse enough
+    // that a 100k-unit ray finishes in ~1500 iterations.
+    f32 step = m_terrain->tile_size * 0.5f;
+    f32 prev_t = -1.0f;     // last in-bounds t (above terrain)
+    f32 hit_t  = -1.0f;     // first in-bounds t (below terrain)
+    for (f32 t = 0.0f; t < 100000.0f; t += step) {
+        glm::vec3 p = origin + dir * t;
+        if (!in_bounds(p)) continue;
+        f32 sd = p.z - sample_z(p.x, p.y);  // >0 above, <=0 below
+        if (sd <= 0.0f) {
+            hit_t = t;
+            break;
         }
+        prev_t = t;
     }
-    return false;
+    if (hit_t < 0.0f) return false;
+    if (prev_t < 0.0f) {
+        // Ray started below terrain in the very first step (camera dipped
+        // under the ground? unlikely). Just return the hit point as-is.
+        glm::vec3 p = origin + dir * hit_t;
+        world_pos = p;
+        world_pos.z = sample_z(p.x, p.y);
+        return true;
+    }
+
+    // Bisect until the bracket is sub-tile to remove the 64-unit
+    // quantization the march alone produces. A handful of iterations
+    // brings (hit_t - prev_t) into floating-point noise territory.
+    constexpr int kBisectIters = 16;
+    for (int i = 0; i < kBisectIters; ++i) {
+        f32 mid_t = 0.5f * (prev_t + hit_t);
+        glm::vec3 p = origin + dir * mid_t;
+        if (!in_bounds(p)) {
+            // Shouldn't happen — both endpoints are in-bounds.
+            break;
+        }
+        f32 sd = p.z - sample_z(p.x, p.y);
+        if (sd > 0.0f) prev_t = mid_t;
+        else           hit_t  = mid_t;
+    }
+    glm::vec3 hit = origin + dir * hit_t;
+    world_pos = hit;
+    world_pos.z = sample_z(hit.x, hit.y);
+    return true;
 }
 
 // Ray-cylinder intersection: find closest distance between ray and a vertical

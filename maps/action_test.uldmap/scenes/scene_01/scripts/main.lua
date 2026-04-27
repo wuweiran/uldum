@@ -3,7 +3,7 @@
 -- Action preset test bed. One Paladin at the center controlled by the
 -- player via WASD + left-click. Creeps spawn in waves from the edges to
 -- give the hero something to fight. Hero has Holy Light (Q in positional
--- mode) for self-heal testing and Consecration as a passive.
+-- mode) for self-heal testing and Consecration as a target-point AoE.
 --------------------------------------------------------------------------------
 
 require("constants")
@@ -31,8 +31,8 @@ function main()
         return
     end
 
-    AddAbility(paladin, "holy_light")
-    AddAbility(paladin, "consecration")
+    -- Engine-authored abilities (holy_light, consecration) are seeded
+    -- onto the paladin from unit_types.json — no Lua AddAbility needed.
 
     -- Holy Light is `instant` in this map: no target pick, heals the
     -- caster. The sim handles cooldown + mana cost via the ability
@@ -51,6 +51,36 @@ function main()
         end
     end)
 
+    -- Consecration is `target_point` + `shape: area` (300-radius AoE,
+    -- 700-range cast). On effect, damage every enemy in the AoE and
+    -- play the burst particle at the target point. Mobile drag-cast +
+    -- desktop click-to-cast both produce the same Cast order; this
+    -- handler closes the loop server-side.
+    local cons_trig = CreateTrigger()
+    TriggerRegisterUnitEvent(cons_trig, paladin, EVENT_UNIT_ABILITY_EFFECT)
+    TriggerAddCondition(cons_trig, function()
+        return GetTriggerAbilityId() == "consecration"
+    end)
+    TriggerAddAction(cons_trig, function()
+        local caster = GetTriggerUnit()
+        local tx = GetSpellTargetX()
+        local ty = GetSpellTargetY()
+        local radius = 300
+        local damage = 80
+        PlayEffect("consecration_burst", tx, ty, 0)
+        -- "enemy_of = X" means "find units that are X's enemies", so we
+        -- pass the caster's own player (the heroes) to get hostile
+        -- units in the AoE — independent of map variable naming.
+        local caster_owner = GetUnitOwner(caster)
+        local nearby = GetUnitsInRange(tx, ty, radius,
+            { enemy_of = caster_owner, alive_only = true })
+        for _, u in ipairs(nearby) do
+            DamageUnit(caster, u, damage, "ability")
+        end
+        Log(string.format("[Action] Consecration hit %d at (%.0f,%.0f)",
+            #nearby, tx, ty))
+    end)
+
     -- Lock the selection to the controlled hero. The Action preset never
     -- mutates selection; the HUD action bar reads it to fill the slot
     -- icons and abilities.
@@ -62,8 +92,6 @@ function main()
     -- non-passive abilities make sense here (passive abilities bound
     -- to a slot draw the icon but ignore clicks/hotkeys).
     ActionBarSetSlot(1, "holy_light")
-    -- Slot 2 intentionally bound to a passive as a test of the
-    -- soft-convention: icon renders, key label suppressed, cast no-ops.
     ActionBarSetSlot(2, "consecration")
 
     -- Periodic creep spawner so there's something to hit. Waves cap at

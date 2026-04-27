@@ -28,6 +28,8 @@ enum class ActionBarHotkeyMode : u8;  // action_bar.h
 struct MinimapConfig;          // minimap.h
 struct CommandBarConfig;       // command_bar.h
 struct JoystickConfig;         // joystick.h
+struct CastIndicatorConfig;    // cast_indicator.h
+struct CastIndicatorStyle;     // cast_indicator.h
 
 // Packed RGBA color, 0xAABBGGRR on little-endian hosts. Use rgba() helper
 // to build one; the HUD pipeline expects u8×4 → normalized vec4 with the
@@ -301,6 +303,100 @@ public:
     // to the input preset (typically `InputPreset::queue_ability`).
     using ActionBarCastFn = std::function<void(const std::string& ability_id)>;
     void set_action_bar_cast_fn(ActionBarCastFn fn);
+
+    // Mobile drag-cast commit callback. Fired by the HUD when a drag
+    // gesture on a targetable slot completes with a valid target —
+    // either a snapped unit (target_unit form) or a ground point
+    // (target_point form). The app wires this to the input preset's
+    // direct-cast entry point so the resulting `Cast` order goes
+    // through CommandSystem the same way a desktop click-targeting
+    // commit does. `target_unit_id` is `UINT32_MAX` for ground casts.
+    using ActionBarCastAtTargetFn = std::function<void(
+        const std::string& ability_id,
+        u32                target_unit_id,
+        f32 target_x, f32 target_y, f32 target_z
+    )>;
+    void set_action_bar_cast_at_target_fn(ActionBarCastAtTargetFn fn);
+
+    // Per-frame mobile drag-cast update. Reads the platform input state
+    // (touch positions, primary pointer) and advances the drag-cast
+    // state machine: press → aim → release. No-op on desktop (gated on
+    // `is_mobile()`). Call alongside `joystick_update` each frame.
+    void action_bar_drag_update(const platform::InputState& input);
+
+    // What the HUD is currently aiming with — drives the ability
+    // indicator renderer. Plain data, no render-side types, so callers
+    // can decide how to draw (sub-phase D's `AbilityIndicators` reads
+    // this each frame and emits ground decals). `active == false` means
+    // nothing to draw. Coordinates are world-space; `area_*` mirror
+    // the active ability level's `area` block when set.
+    // Tri-state aim phase consumed by the indicator renderer to pick
+    // colors. White / blue / red feel — exact RGBA values are app
+    // (engine default) or hud.json (per-map override) decisions.
+    enum class AimPhase : u8 {
+        Normal      = 0,   // in cast range, will fire on release
+        OutOfRange  = 1,   // beyond cast range — release still casts;
+                           // sim approaches the target then casts
+        Cancelling  = 2,   // finger is over the cancel rect — release
+                           // cancels with no cast
+    };
+
+    // AoE shape for the cast indicator. Mirrors simulation::IndicatorShape
+    // but stays in HUD-land so render-side code doesn't need to pull in
+    // simulation headers.
+    enum class AimAreaShape : u8 {
+        None   = 0,   // no AoE indicator
+        Circle = 1,   // disc at the cast/snap point — uses area_radius
+        Line   = 2,   // rectangle from caster toward drag — uses area_width + range as length
+        Cone   = 3,   // wedge from caster toward drag — uses area_angle (degrees) + range as radius
+    };
+
+    struct AbilityAimState {
+        bool active = false;
+        AimPhase phase = AimPhase::Normal;
+        // Caster + drag point in world space (z is terrain-sampled).
+        f32  caster_x = 0, caster_y = 0, caster_z = 0;
+        f32  drag_x   = 0, drag_y   = 0, drag_z   = 0;
+        // Cast range (drives the range ring radius). For Line / Cone
+        // it's also the indicator's extent along the cast direction.
+        f32  range = 0;
+        // 2D world distance from caster to the *anchor* the cast will
+        // resolve at — the snapped unit's pos for unit-target, the
+        // drag point for ground-target. Used by callers that want to
+        // make their own range judgement.
+        f32  distance = 0;
+        // Optional area-of-effect; valid when has_area == true.
+        bool        has_area    = false;
+        AimAreaShape area_shape = AimAreaShape::None;
+        f32         area_radius = 0;   // Circle (and target_unit-around-target)
+        f32         area_width  = 0;   // Line
+        f32         area_angle  = 0;   // Cone, degrees
+        // Unit-targeted snap state. snapped_id == UINT32_MAX when not
+        // snapped (or form != target_unit).
+        u32  snapped_id     = 0xFFFFFFFFu;
+        f32  snapped_x = 0, snapped_y = 0, snapped_z = 0;
+        f32  snapped_radius = 0;
+        // Whether the active ability is unit-targeted. Affects whether
+        // the renderer should hide the reticle (in favor of the snap
+        // ring) when snapped.
+        bool is_unit_target = false;
+        // True when the aim state comes from a mobile drag-cast
+        // gesture (finger held on an action-bar slot, dragging to
+        // pick a target). False for desktop targeting mode. The
+        // cast-arrow / curve indicator only reads naturally in the
+        // mobile case — on desktop there's no "from" point, so the
+        // renderer hides the curve when this is false.
+        bool is_drag_cast = false;
+    };
+    AbilityAimState aim_state() const;
+
+    // Per-map style for the cast/drag indicators (range ring, arrow,
+    // reticle, AoE, target-unit ring, per-phase tints). Defaults are
+    // engine-defined; hud.json's `composites.cast_indicator` block
+    // overrides any subset. Read by the app each frame when feeding
+    // AbilityIndicators draw calls.
+    void set_cast_indicator_config(const CastIndicatorConfig& cfg);
+    const CastIndicatorStyle& cast_indicator_style() const;
 
     // Keyboard hotkey dispatch for every HUD-owned source — command_bar
     // slots, action_bar slots, and hidden abilities on the selected
