@@ -15,10 +15,12 @@ void CommandSystem::submit(const GameCommand& cmd) {
 
     if (!m_world) return;
 
-    // Filter: let Lua (or other hooks) cancel the command
-    if (m_filter && !m_filter(cmd)) return;
-
-    // Issue order to each unit
+    // Issue order to each unit. Cast validity (target filter, range,
+    // cooldown, cost) is enforced upstream by the ability system at
+    // arming time, not here — submit is a "do it" call, not a "should
+    // I do it" call. Ownership validation is the single guard kept
+    // here because it spans player boundaries and isn't visible to
+    // the upstream caller.
     for (auto& unit : cmd.units) {
         if (!m_world->validate(unit)) continue;
 
@@ -31,6 +33,12 @@ void CommandSystem::submit(const GameCommand& cmd) {
         order.queued  = cmd.queued;
         simulation::issue_order(*m_world, unit, std::move(order));
     }
+
+    // Post-issuance observer. Pure notification — fires once per
+    // submit after all units have received the order. Map scripts
+    // hook in here to react (count orders, play SFX, update HUD,
+    // etc.); they cannot cancel from this hook by design.
+    if (m_observer) m_observer(cmd);
 }
 
 } // namespace uldum::input

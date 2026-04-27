@@ -126,7 +126,7 @@ Phase 16b complete. Next up: Phase 16c (HUD system — custom, Lua-driven in-gam
   - Ability `"hidden"` field for system-level passives (no UI slot)
   - Commands vs ability slots design: built-in commands (attack, move, stop, hold) separate from ability slots
   - Lua selection API: GetSelectedUnits, SelectUnit, ClearSelection, IsUnitSelected
-  - Lua events: on_order (cancellable via CancelOrder), on_select
+  - Lua events: on_order (post-issuance observer, non-cancellable), on_select
   - Platform: key_letter[26] array for arbitrary A-Z key detection
 - Networking — local server (Phase 13a):
   - GameServer class: owns Simulation + ScriptEngine (server-side state)

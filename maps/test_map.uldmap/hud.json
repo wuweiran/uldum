@@ -47,12 +47,12 @@
       },
 
       "slots": [
-        { "anchor": "tl", "x":  48, "y":  5, "w": 40, "h": 40, "hotkey": "T" },
-        { "anchor": "tl", "x":  91, "y":  5, "w": 40, "h": 40, "hotkey": "Y" },
         { "anchor": "tl", "x":   5, "y": 48, "w": 40, "h": 40, "hotkey": "Q" },
         { "anchor": "tl", "x":  48, "y": 48, "w": 40, "h": 40, "hotkey": "W" },
         { "anchor": "tl", "x":  91, "y": 48, "w": 40, "h": 40, "hotkey": "E" },
-        { "anchor": "tl", "x": 134, "y": 48, "w": 40, "h": 40, "hotkey": "R" }
+        { "anchor": "tl", "x": 134, "y": 48, "w": 40, "h": 40, "hotkey": "R" },
+        { "anchor": "tl", "x":  48, "y":  5, "w": 40, "h": 40, "hotkey": "T" },
+        { "anchor": "tl", "x":  91, "y":  5, "w": 40, "h": 40, "hotkey": "Y" }
       ]
     },
 

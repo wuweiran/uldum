@@ -55,7 +55,6 @@ static void emit_sync(Hud::Impl& s, const std::vector<u8>& pkt, u32 owner);
 static const simulation::AbilityInstance*
 resolve_slot_ability(u32 slot_index,
                      const ActionBarConfig& cfg,
-                     const ActionBarRuntime& rt,
                      const WorldContext& ctx,
                      const simulation::AbilityDef*& out_def);
 
@@ -1872,16 +1871,29 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
 
                 const simulation::AbilityDef* def = nullptr;
                 const simulation::AbilityInstance* inst =
-                    resolve_slot_ability(i, cfg, s.action_bar_rt,
-                                         *s.world_ctx, def);
+                    resolve_slot_ability(i, cfg, *s.world_ctx, def);
                 if (inst) slotted_abilities.insert(inst->ability_id);
 
-                if (!slot.visible || slot.hotkey.empty()) continue;
-                bool down   = input::InputBindings::resolve_key(slot.hotkey, input);
+                if (!slot.visible) continue;
+                // Which key triggers this slot depends on the keymap
+                // mode: Positional → slot.hotkey (Q/W/E/R from layout);
+                // Ability → def->hotkey (the letter authored on the
+                // ability itself). Both modes resolve the *same* slot
+                // to the *same* ability — only the trigger key differs.
+                const std::string* trigger_key = nullptr;
+                if (s.action_bar_rt.hotkey_mode == ActionBarHotkeyMode::Ability) {
+                    if (!def || def->hotkey.empty()) continue;
+                    trigger_key = &def->hotkey;
+                } else {
+                    if (slot.hotkey.empty()) continue;
+                    trigger_key = &slot.hotkey;
+                }
+
+                bool down   = input::InputBindings::resolve_key(*trigger_key, input);
                 bool rising = down && !slot.hotkey_prev_down;
                 slot.hotkey_prev_down = down;
                 if (!rising) continue;
-                if (claimed.count(slot.hotkey)) continue;
+                if (claimed.count(*trigger_key)) continue;
                 if (!inst || !def) continue;
 
                 u32 unit_id = s.world_ctx->selection
@@ -1890,7 +1902,7 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
                 if (unit_id == UINT32_MAX) continue;
                 if (!slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) continue;
 
-                claimed.insert(slot.hotkey);
+                claimed.insert(*trigger_key);
                 s.action_bar_cast_fn(inst->ability_id);
             }
         }
@@ -1959,20 +1971,20 @@ static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
 // the instance of that ability on the selected unit if it owns it,
 // else nullptr — the slot renders as "ability not available" (empty).
 //
-// Auto + Ability hotkey mode: first selected unit's non-hidden
-// abilities are searched for one whose def `hotkey` matches the slot's
-// hotkey letter.
-//
-// Auto + Positional hotkey mode: the slot's index selects the Nth
-// non-hidden ability in registration order; slot.hotkey is purely the
-// keybind.
+// Auto mode: slot assignment is ALWAYS positional — the slot's index
+// selects the Nth non-hidden ability in the unit's registration order.
+// `hotkey_mode` does NOT affect *which* ability fills *which* slot —
+// it only governs which keyboard key triggers the slot and which letter
+// gets drawn in the badge. (Earlier code path matched by hotkey letter
+// here, which meant changing an ability's `hotkey` in JSON re-shuffled
+// or hid abilities entirely. That was a bug; slot binding is decoupled
+// from the keymap-mode setting.)
 //
 // Returns nullptr when there's no selection, no ability fills that
 // slot, or the registry lookup fails.
 static const simulation::AbilityInstance*
 resolve_slot_ability(u32 slot_index,
                      const ActionBarConfig& cfg,
-                     const ActionBarRuntime& rt,
                      const WorldContext& ctx,
                      const simulation::AbilityDef*& out_def) {
     out_def = nullptr;
@@ -1998,30 +2010,22 @@ resolve_slot_ability(u32 slot_index,
         return nullptr;
     }
 
-    if (rt.hotkey_mode == ActionBarHotkeyMode::Positional) {
-        // Nth non-hidden ability in registration order.
-        u32 nth = 0;
-        for (const auto& inst : aset->abilities) {
-            const auto* def = ctx.abilities->get(inst.ability_id);
-            if (!def || def->hidden) continue;
-            if (nth == slot_index) {
-                out_def = def;
-                return &inst;
-            }
-            ++nth;
-        }
-        return nullptr;
-    }
-
-    // Ability mode — match by ability def's hotkey letter.
-    if (slot.hotkey.empty()) return nullptr;
+    // Auto mode (regardless of hotkey_mode): Nth non-hidden ability in
+    // registration order. The keymap setting only affects which key
+    // triggers each slot and which letter the badge shows — see the
+    // hotkey dispatch loop and the slot draw site for those branches.
+    // Passives / auras count toward slot positions (they show their
+    // icon WC3-command-card style, just don't fire on click); only
+    // explicitly hidden abilities are skipped.
+    u32 nth = 0;
     for (const auto& inst : aset->abilities) {
         const auto* def = ctx.abilities->get(inst.ability_id);
         if (!def || def->hidden) continue;
-        if (def->hotkey == slot.hotkey) {
+        if (nth == slot_index) {
             out_def = def;
             return &inst;
         }
+        ++nth;
     }
     return nullptr;
 }
@@ -2163,7 +2167,7 @@ static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
 
         const simulation::AbilityDef* def = nullptr;
         const simulation::AbilityInstance* inst = nullptr;
-        if (s.world_ctx) inst = resolve_slot_ability(i, cfg, rt, *s.world_ctx, def);
+        if (s.world_ctx) inst = resolve_slot_ability(i, cfg, *s.world_ctx, def);
 
         bool armed = any_armed && def && inst
                   && inst->ability_id == s.action_bar_targeting_ability;
@@ -2251,11 +2255,21 @@ static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
         // A small dark pill sits under the letter so it stays legible
         // against bright / busy icons (author-controlled via
         // `hotkey_badge_bg` in style_params; transparent disables it).
+        // Which letter shows follows the keymap setting: Positional →
+        // slot.hotkey (Q/W/E/R); Ability → def->hotkey (the ability's
+        // own letter). The slot ASSIGNMENT is unaffected by this — see
+        // resolve_slot_ability.
         bool show_hotkey = def && is_castable_form(def->form);
-        if (!slot.hotkey.empty() && show_hotkey) {
+        std::string_view badge_key;
+        if (show_hotkey) {
+            badge_key = (rt.hotkey_mode == ActionBarHotkeyMode::Ability)
+                            ? std::string_view{def->hotkey}
+                            : std::string_view{slot.hotkey};
+        }
+        if (!badge_key.empty()) {
             f32 px_size = slot.rect.h * 0.28f;
             if (px_size < 10.0f) px_size = 10.0f;
-            f32 text_w = hud.text_width_px(slot.hotkey, px_size);
+            f32 text_w = hud.text_width_px(badge_key, px_size);
             f32 x_left = slot.rect.x + slot.rect.w - text_w - 4.0f;
             f32 ascent = hud.text_ascent_px(px_size);
             f32 y_base = slot.rect.y + ascent + 2.0f;
@@ -2274,7 +2288,7 @@ static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
                 hud.draw_rect(bg_pill, cfg.style.hotkey_badge_bg);
             }
 
-            hud.draw_text(x_left, y_base, slot.hotkey, cfg.style.hotkey_color, px_size);
+            hud.draw_text(x_left, y_base, badge_key, cfg.style.hotkey_color, px_size);
         }
     }
 }
@@ -2516,7 +2530,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 if (over && s.world_ctx && s.action_bar_cast_fn) {
                     const simulation::AbilityDef* def = nullptr;
                     const simulation::AbilityInstance* inst =
-                        resolve_slot_ability(idx, s.action_bar_cfg, s.action_bar_rt,
+                        resolve_slot_ability(idx, s.action_bar_cfg,
                                              *s.world_ctx, def);
                     if (inst && def) {
                         u32 unit_id = s.world_ctx->selection

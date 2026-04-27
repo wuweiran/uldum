@@ -2,7 +2,7 @@
     "devotion_aura": {
         "name": "Devotion Aura",
         "icon": "shared/assets/textures/icons/devotion_aura.ktx2",
-        "hotkey": "W",
+        "hotkey": "V",
         "form": "aura",
         "max_level": 3,
         "target_filter": { "ally": true, "self": true },
@@ -34,7 +34,7 @@
         "name": "Holy Light",
         "icon": "shared/assets/textures/icons/holy_light.ktx2",
         "form": "target_unit",
-        "hotkey": "Q",
+        "hotkey": "T",
         "max_level": 3,
         "target_filter": { "ally": true, "self": true },
         "levels": [
@@ -46,7 +46,7 @@
     "consecration": {
         "name": "Consecration",
         "icon": "shared/assets/textures/icons/consecration.ktx2",
-        "hotkey": "E",
+        "hotkey": "C",
         "form": "passive",
         "max_level": 1,
         "levels": [

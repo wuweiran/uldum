@@ -1211,13 +1211,15 @@ void ScriptEngine::set_input(input::SelectionState* selection, input::CommandSys
         };
     }
 
-    // Wire order filter → on_order event
+    // Wire order observer → on_order event. Fires AFTER the command
+    // has been issued; handlers can read the order's context but
+    // cannot cancel — cast validity is data-driven by ability
+    // target_filter, not script-overridable from this hook.
     if (m_commands) {
-        m_commands->set_order_filter([this](const input::GameCommand& cmd) -> bool {
+        m_commands->set_order_observer([this](const input::GameCommand& cmd) {
             // Decompose command into context
             m_ctx_order_player = cmd.player.id;
             m_ctx_order_queued = cmd.queued;
-            m_ctx_order_cancelled = false;
             m_ctx_order_target_x = 0;
             m_ctx_order_target_y = 0;
             m_ctx_order_target_unit = UINT32_MAX;
@@ -1257,7 +1259,6 @@ void ScriptEngine::set_input(input::SelectionState* selection, input::CommandSys
 
             fire_event("global_order", UINT32_MAX, "", cmd.player.id);
             fire_event("player_order", UINT32_MAX, "", cmd.player.id);
-            return !m_ctx_order_cancelled;
         });
     }
 }
@@ -1335,7 +1336,6 @@ void ScriptEngine::bind_input_api() {
     lua["GetOrderTargetUnit"] = [this]() -> u32 { return m_ctx_order_target_unit; };
     lua["GetOrderPlayer"] = [this]() -> u32 { return m_ctx_order_player; };
     lua["IsOrderQueued"] = [this]() -> bool { return m_ctx_order_queued; };
-    lua["CancelOrder"] = [this]() { m_ctx_order_cancelled = true; };
 }
 
 // ── HUD bindings ─────────────────────────────────────────────────────────

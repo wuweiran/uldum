@@ -298,7 +298,13 @@ with built-in bindings.
 
 ### on_order
 
-Fired before a command executes. Can be cancelled.
+Fired AFTER a command has been issued to its target units. Pure observer
+— handlers can read the command context and trigger side effects (logs,
+SFX, score updates, follow-up `IssueOrder` calls), but cannot cancel
+the order. Cast validity is decided upstream by the ability's
+`target_filter` (which both client and server evaluate against the
+same synced state); this hook is for "an order *was* issued"
+reactions, not for last-mile validation.
 
 ```lua
 local trig = CreateTrigger()
@@ -310,10 +316,10 @@ TriggerAddAction(trig, function()
     local target     = GetOrderTargetUnit()
     local units      = GetOrderUnits()
 
-    -- Cancel: prevent the order from executing
-    -- To replace: cancel + IssueOrder() a new one
-    if order_type == "move" and IsUnitFrozen(units[1]) then
-        CancelOrder()
+    -- Reactions, not gating: count orders, play SFX, log telemetry,
+    -- chain a follow-up IssueOrder, etc.
+    if order_type == "cast" then
+        increment_cast_counter(player)
     end
 end)
 ```

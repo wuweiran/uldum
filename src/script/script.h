@@ -185,7 +185,6 @@ private:
     u32  m_ctx_order_target_unit = UINT32_MAX;
     u32  m_ctx_order_player      = UINT32_MAX;
     bool m_ctx_order_queued      = false;
-    bool m_ctx_order_cancelled   = false;
 
     // Triggers
     std::unordered_map<u32, Trigger> m_triggers;
