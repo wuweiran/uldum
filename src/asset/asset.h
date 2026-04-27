@@ -52,6 +52,13 @@ public:
     // non-Android builds or if `asset_manager` is null.
     bool mount_apk_assets(void* asset_manager, std::string_view prefix = "");
 
+    // Remove every mount whose prefix matches `prefix` (after the same
+    // normalize-and-add-trailing-slash rule used at mount time). Used
+    // by MapManager::unload_map to release a map's package mount on
+    // session end so the mount list doesn't accumulate stale entries
+    // across sessions. Returns the number of mounts removed.
+    u32 unmount(std::string_view prefix);
+
     // Get loaded data by handle (nullptr if invalid/released).
     TextureData*  get(Handle<TextureData> h)  { return m_textures.get(h); }
     ModelData*    get(Handle<ModelData> h)     { return m_models.get(h); }

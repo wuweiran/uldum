@@ -47,6 +47,12 @@ public:
     // Set the map root for resolving sound paths
     void set_map_root(std::string_view root) { m_map_root = root; }
 
+    // Stop every active sound and free per-session caches. Called by
+    // App::end_session() so the next session starts with no leftover
+    // SFX, ambient loops, or registered sound bytes from the previous
+    // map. Engine state (ma_engine, sound groups, volumes) survives.
+    void reset_session_state();
+
 private:
     std::string resolve_path(std::string_view path) const;
 

@@ -313,6 +313,25 @@ bool WorldOverlays::init(rhi::VulkanRhi& rhi) {
     return true;
 }
 
+void WorldOverlays::reset_session_state() {
+    if (!m_impl || !m_impl->rhi) return;
+    VkDevice device = m_impl->rhi->device();
+    // Wait for any in-flight frame to stop sampling these images
+    // before we destroy them. Called rarely (once per session end),
+    // so the stall is acceptable.
+    vkDeviceWaitIdle(device);
+    for (auto& d : m_impl->decals) {
+        if (d.set != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(device, m_impl->desc_pool, 1, &d.set);
+            d.set = VK_NULL_HANDLE;
+        }
+        destroy_texture(*m_impl->rhi, d.tex);
+        d.tex = {};
+    }
+    m_impl->next_vertex = 0;
+    m_impl->cmds.clear();
+}
+
 void WorldOverlays::shutdown() {
     if (!m_impl) return;
     VkDevice device = m_impl->rhi ? m_impl->rhi->device() : VK_NULL_HANDLE;

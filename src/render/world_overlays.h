@@ -78,6 +78,14 @@ public:
     bool init(rhi::VulkanRhi& rhi);
     void shutdown();
 
+    // Free every slot's GpuTexture and descriptor set. Called by
+    // App::end_session() so the next session starts with all slots
+    // unbound; without this, an override texture from session A
+    // persists into session B if B doesn't override that slot.
+    // Engine state (pipeline, descriptor pool/layout, VBO, sampler
+    // resources) is preserved.
+    void reset_session_state();
+
     // Reset draw / vertex state for a new frame. Call once per frame
     // before any add_*, then `draw()` to flush.
     void begin_frame();

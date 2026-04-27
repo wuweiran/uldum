@@ -214,11 +214,16 @@ private:
     bool load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
     bool load_placements(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
 
-    bool        m_loaded = false;
-    std::string m_map_root;
-    MapManifest m_manifest;
-    Tileset     m_tileset;
-    SceneData   m_scene;
+    bool                  m_loaded = false;
+    std::string           m_map_root;
+    MapManifest           m_manifest;
+    Tileset               m_tileset;
+    SceneData             m_scene;
+    // Non-owning. Set by load_manifest_only() at the time the map is
+    // mounted; used by unload_map() to release the mount so the
+    // AssetManager's mount list doesn't accumulate stale entries
+    // across sessions.
+    asset::AssetManager*  m_assets = nullptr;
 };
 
 } // namespace uldum::map

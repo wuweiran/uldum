@@ -228,6 +228,25 @@ bool AssetManager::mount_directory(std::string_view fs_dir, std::string_view pre
     return true;
 }
 
+u32 AssetManager::unmount(std::string_view prefix) {
+    auto target = normalize_prefix(prefix);
+    u32 removed = 0;
+    auto it = m_mounts.begin();
+    while (it != m_mounts.end()) {
+        bool match = std::visit([&](auto& m) { return m.prefix == target; }, **it);
+        if (match) {
+            it = m_mounts.erase(it);
+            ++removed;
+        } else {
+            ++it;
+        }
+    }
+    if (removed > 0) {
+        log::info(TAG, "Unmounted {} mount(s) at prefix '{}'", removed, target);
+    }
+    return removed;
+}
+
 bool AssetManager::mount_apk_assets(void* asset_manager, std::string_view prefix) {
 #ifdef ULDUM_PLATFORM_ANDROID
     if (!asset_manager) return false;

@@ -178,6 +178,14 @@ public:
     // nodes we're about to free.
     void clear_nodes();
 
+    // Reset every piece of HUD state that's tied to the active session
+    // (widget tree, text tags, composite configs + runtime, slot
+    // interaction state, drag-cast state, hidden-hotkey edge tracking,
+    // pointer state). Called by App::end_session() so the next session
+    // starts from a clean slate. Engine-level state (Vulkan pipelines,
+    // font, image cache) is preserved.
+    void reset_session_state();
+
     // Walk the tree and return the first node with the matching JSON id.
     // O(N) in the number of nodes — N is small in practice (tens to a few
     // hundred); revisit with a hash map if profiling shows hot lookups.

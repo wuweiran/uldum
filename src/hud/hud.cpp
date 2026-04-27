@@ -1064,6 +1064,75 @@ void Hud::clear_nodes() {
     m_impl->pressed = nullptr;
 }
 
+void Hud::reset_session_state() {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+
+    // Widget tree + transient input pointers (uses clear_nodes path).
+    if (s.root) s.root->clear_children();
+    s.hover   = nullptr;
+    s.pressed = nullptr;
+
+    // Text tags — the user-reported leak. Without this, tags created
+    // by session A's Lua scripts kept rendering at session B's start
+    // because the pool just kept its TextTagEntry vector intact.
+    s.text_tags.clear();
+
+    // Mobile drag-cast: whatever was in flight at session end is gone.
+    s.drag_cast = Impl::DragCastState{};
+
+    // Composite slot interaction state (hover/pressed/armed).
+    s.action_bar_hover_slot      = -1;
+    s.action_bar_pressed_slot    = -1;
+    s.action_bar_targeting_ability.clear();
+    s.command_bar_hover_slot     = -1;
+    s.command_bar_pressed_slot   = -1;
+    s.command_bar_armed_command.clear();
+    s.minimap_dragging           = false;
+
+    // Composite configs + runtime. The next map's hud.json reload
+    // refills any composite it declares; clearing here ensures a
+    // map that omits a composite doesn't inherit the previous map's
+    // config.
+    s.action_bar_cfg     = {};
+    s.action_bar_rt      = {};
+    s.command_bar_cfg    = {};
+    s.command_bar_rt     = {};
+    s.minimap_cfg        = {};
+    s.minimap_rt         = {};
+    s.joystick_cfg       = {};
+    s.joystick_rt        = {};
+    s.cast_indicator_cfg = {};
+    s.world_cfg          = {};
+    s.marquee_style      = {};
+
+    // Node templates from previous map's `nodes` block.
+    s.node_templates.clear();
+
+    // Edge-tracking for hidden-ability hotkeys (rising-edge map keyed
+    // by ability id). Stale entries from session A would mis-fire
+    // (or fail to fire) on session B's first frame.
+    s.hidden_hotkey_prev.clear();
+
+    // Pointer state — fresh session, no in-progress press.
+    s.pointer_x = 0;
+    s.pointer_y = 0;
+    s.pointer_down_prev = false;
+
+    // Local player will be set again by App on session start.
+    s.local_player = UINT32_MAX;
+
+    // Callbacks (sync_fn / button_event_fn / action_bar_cast_*) are
+    // re-installed by App in start_session(); leaving stale ones here
+    // could fire into a dead App state in the gap. Clear them.
+    s.sync_fn = {};
+    s.button_event_fn = {};
+    s.action_bar_cast_fn = {};
+    s.action_bar_cast_at_target_fn = {};
+    s.minimap_jump_fn = {};
+    s.command_bar_fn = {};
+}
+
 void Hud::set_local_player(u32 player_id) {
     if (m_impl) m_impl->local_player = player_id;
 }

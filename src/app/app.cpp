@@ -671,26 +671,41 @@ void App::end_session() {
     if (!m_session_active) return;
     log::info(TAG, "=== Ending session ===");
 
+    // Input — drop the preset (RTS / Action) and reset its dependents.
     m_input_preset.reset();
-    m_bindings = input::InputBindings{};
-    m_commands = input::CommandSystem{};
+    m_bindings  = input::InputBindings{};
+    m_commands  = input::CommandSystem{};
     m_selection = input::SelectionState{};
 
+    // HUD — full session reset: widget tree, text tags, composite
+    // configs + slot interaction, drag-cast, hidden-hotkey edges,
+    // pointer state, callbacks. Detach from the world context first
+    // so any hud-side update mid-tear-down can't read freed sim data.
     m_hud.set_world_context(nullptr);
     m_hud_world_ctx = hud::WorldContext{};
-    m_hud.clear_nodes();
+    m_hud.reset_session_state();
+
+    // Audio — stop every active sound and drop the per-session sound
+    // cache + miniaudio resource-manager registrations.
+    m_audio.reset_session_state();
+
+    // Networking + simulation + map. m_map.shutdown() also unmounts
+    // the map's package from the AssetManager so mounts don't pile up
+    // across sessions.
     m_network.shutdown();
     m_map.shutdown();
     m_server.shutdown();
 
+    // Renderer — drop session-scoped resources. Animations must clear
+    // *after* the simulation tears down so no in-flight render
+    // references the instances. Also reset world-overlay slot
+    // textures so a future map's slot defaults aren't shadowed by
+    // the previous map's overrides.
     m_renderer.set_simulation(nullptr);
     m_renderer.set_terrain_data(nullptr);
     m_renderer.set_fog_grid(nullptr, 0, 0);
-    // Free per-entity animation state so reused entity ids in the next
-    // session don't inherit stale bone buffers (visible as detached
-    // body parts). Runs after the simulation shuts down so no in-flight
-    // render references the instances.
     m_renderer.end_session();
+    m_world_overlays.reset_session_state();
 
     m_session_active = false;
     m_lobby_active   = false;

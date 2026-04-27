@@ -24,6 +24,7 @@ bool MapManager::load_manifest_only(std::string_view path, asset::AssetManager& 
                                     bool allow_directory) {
     unload_map();
     m_map_root = std::string(path);
+    m_assets   = &assets;
 
     bool is_dir = std::filesystem::is_directory(std::filesystem::path(m_map_root));
     if (is_dir) {
@@ -70,9 +71,16 @@ void MapManager::unload_map() {
         log::info(TAG, "Unloading map '{}'", m_manifest.name);
         m_loaded = false;
     }
+    // Release the package / directory mount we installed for this map
+    // so the AssetManager's mount chain doesn't accumulate one stale
+    // entry per session played.
+    if (m_assets && !m_map_root.empty()) {
+        m_assets->unmount(m_map_root);
+    }
     m_manifest = {};
     m_scene = {};
     m_map_root.clear();
+    m_assets = nullptr;
 }
 
 std::vector<std::string> MapManager::list_scenes() const {

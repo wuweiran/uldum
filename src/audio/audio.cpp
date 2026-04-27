@@ -98,6 +98,57 @@ void AudioEngine::shutdown() {
     log::info(TAG, "AudioEngine shut down");
 }
 
+void AudioEngine::reset_session_state() {
+    if (!m_initialized) return;
+
+    // Stop every per-session sound. Same uninit pattern as shutdown(),
+    // but the ma_engine + groups stay alive so the next session can
+    // start playing immediately without re-init.
+    for (auto& sfx : m_active_sfx) {
+        if (sfx.sound) {
+            ma_sound_uninit(sfx.sound);
+            delete sfx.sound;
+        }
+    }
+    m_active_sfx.clear();
+
+    for (auto& [id, amb] : m_ambients) {
+        if (amb.sound) {
+            ma_sound_uninit(amb.sound);
+            delete amb.sound;
+        }
+    }
+    m_ambients.clear();
+    m_next_handle = 1;
+
+    if (m_music) {
+        ma_sound_uninit(m_music);
+        delete m_music;
+        m_music = nullptr;
+    }
+    if (m_music_prev) {
+        ma_sound_uninit(m_music_prev);
+        delete m_music_prev;
+        m_music_prev = nullptr;
+    }
+    m_music_fade_in = m_music_fade_out = 0;
+    m_music_fade_timer = m_music_prev_fade_timer = 0;
+
+    // Drop the cached encoded bytes. Sounds were registered with
+    // miniaudio's resource manager keyed by their virtual path; once
+    // the underlying ma_sound objects are gone, the resource manager
+    // doesn't need the bytes either. Next session re-registers fresh.
+    if (m_engine) {
+        auto* rm = ma_engine_get_resource_manager(m_engine);
+        for (auto& [key, bytes] : m_sound_cache) {
+            ma_resource_manager_unregister_data(rm, key.c_str());
+        }
+    }
+    m_sound_cache.clear();
+
+    m_map_root.clear();
+}
+
 void AudioEngine::update() {
     if (!m_initialized) return;
 
