@@ -467,8 +467,15 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             }
 
             // Clear approach so movement system stops chasing the dead target
+            // — but NOT when the unit is mid-cast: the cast pump owns
+            // approach_range / approach_target while a Cast order is active
+            // (walk-to-target until in range). Clearing them here every tick
+            // pinned the unit after one step of out-of-range cast walk-up.
             auto* mov = world.movements.get(id);
-            if (mov) { mov->approach_target = Unit{}; mov->approach_range = 0; }
+            if (mov && !is_casting) {
+                mov->approach_target = Unit{};
+                mov->approach_range = 0;
+            }
 
             if (attack_order) {
                 // Explicit Attack order finished — advance queue
