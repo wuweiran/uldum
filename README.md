@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 16b complete. Next up: Phase 16c (HUD system — custom, Lua-driven in-game widgets).
+Phase 16d (Android dev parity + Shell polish) in progress; 16a / 16b / 16c (HUD system) complete. Next: Phase 17 (Items).
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -197,6 +197,29 @@ Phase 16b complete. Next up: Phase 16c (HUD system — custom, Lua-driven in-gam
   - `uldum_pack pack <dir> <output> [--encrypt --key <secret>]`
   - `uldum_pack unpack <input> <dir> [--key <secret>]`
   - `uldum_pack list <input>`
+- Android port (Phase 15c/d):
+  - GameActivity-based Android entry, native_app_glue lifecycle
+  - AAssetManager-backed AssetManager mount, density-aware ui_scale, safe-area insets
+  - Two flavors: `dev` APK (engine iteration) and `game` APK (per-project ship build)
+- Shell UI — game-flavor menus (Phase 16a/b):
+  - RmlUi 6 with custom Vulkan / file / system interfaces; single Rml::Context
+  - Project-supplied `<game>/shell/*.rml + *.rcss + fonts/` drive the menu look
+  - Sample game ships main menu / options / lobby / loading / results screens
+  - Networked lobby (host-authoritative slot table, S_LOBBY_STATE / S_LOBBY_COMMIT)
+- HUD system — custom Lua-driven in-game UI (Phase 16c):
+  - 2D quad batcher + MSDF text + retained node tree, dp-based authoring
+  - Atom nodes (panel, label, image, bar, button) and engine composites (action_bar, command_bar, minimap, joystick)
+  - World-anchored overlays (entity health bars, name labels, WC3-style text tags)
+  - Selection circles + cast/range/AoE/reticle indicators via unified WorldOverlays decal renderer (one shader, per-slot textures)
+  - Mobile drag-cast: hold ability slot → drag-aim → release to fire (with cancel zone)
+  - `hud.json` per-map: composite layouts, world-overlay style, cast-indicator decal overrides
+  - Lua API: GetNode / SetLabelText / SetBarFill / CreateNode / DestroyNode / TriggerRegisterNodeEvent / CreateTextTag / etc.
+  - Server-authoritative HUD state, S_HUD_UPDATE deltas
+- Android dev parity + Shell polish (Phase 16d):
+  - ImGui dev console on Android — same map picker / session controls as `uldum_dev` on desktop
+  - Shell screen transitions (Menu → Lobby → Loading → Playing → Results) with RCSS fade animations
+  - GameActivity touch routed through the existing mouse-mirror path to RmlUi
+  - Mobile-tuned tap targets (64dp buttons, dp font sizes)
 - Ninja build system for parallel compilation
 
 ## Prerequisites
@@ -238,17 +261,17 @@ cd build\bin
 uldum_dev.exe
 ```
 
-The engine loads the test map from `maps/test_map.uldmap/` automatically. The test scene spawns units with real glTF models, skeletal animation, combat, and abilities.
+`uldum_dev` boots into an ImGui dev console that lists every `.uldmap` in `build/bin/maps/` — pick a map, choose Offline / Host / Client, and the session starts. The same dev console flow runs on Android via the dev-flavor APK (Phase 16d-i). To skip the picker for CLI-driven iteration, pass `--map <path>` to auto-start a session on that map.
 
 **Multiplayer (LAN):**
 ```cmd
 :: Terminal 1 — host
-uldum_dev.exe --host
+uldum_dev.exe --host --map maps/test_map.uldmap
 
 :: Terminal 2 — join
 uldum_dev.exe --connect 127.0.0.1
 ```
-Default port is 7777. Override with `--port <n>`. Specify map with `--map <path>` (default: `maps/test_map.uldmap`). Without `--host` or `--connect`, the engine runs in single-player mode (same as before).
+Default port is 7777. Override with `--port <n>`. Without `--host` or `--connect`, the engine runs in single-player mode.
 
 In host mode, the simulation waits for all expected players (from manifest) before starting. Lua scripts call `EndGame(winner, stats_json)` to end the session.
 
@@ -259,7 +282,7 @@ In host mode, the simulation waits for all expected players (from manifest) befo
 - **Right click enemy** — attack order
 - **A + left click** — attack-move (ground) or force-attack (unit)
 - **S** — stop, **H** — hold position
-- **T** — Holy Light (test map paladin ability hotkey)
+- Ability hotkeys come from the map's `ability_types.json` `"hotkey"` field — the action_bar surfaces them automatically
 - **Ctrl+0-9** — assign control group, **0-9** — recall
 - **F1-F3** — select hero 1-3
 - **Arrow keys** — pan camera
@@ -280,14 +303,18 @@ src/
 ├── platform/       Window, input, filesystem (Win32 / Android)
 ├── rhi/            Vulkan 1.3 abstraction
 ├── asset/          Resource manager, format loaders (glTF, KTX2, JSON)
-├── render/         Pipelines, camera, terrain, animation, particles, effects
+├── render/         Pipelines, camera, terrain, animation, particles, effects, world overlays
 ├── audio/          3D positional audio, music, ambient (miniaudio)
 ├── script/         Lua 5.4 VM, engine API bindings, triggers
-├── simulation/     ECS, units, abilities, pathfinding, combat, AI
-├── network/        GameServer, NetworkManager (ENet transport pending)
-├── map/            Map format, terrain data, overrides
+├── simulation/     ECS, units, abilities, pathfinding, combat, projectiles
+├── input/          Command system, selection, picker, RTS / action presets, hotkey bindings
+├── hud/            Custom retained-mode in-game UI (atoms, composites, world overlays, text tags)
+├── shell/          RmlUi-backed around-game UI (menus, lobby, loading, results) — game builds only
+├── network/        GameServer, NetworkManager, ENet transport
+├── map/            Map format, terrain data, scene loader
 ├── editor/         Map editor executable — terrain tools, cliff/ramp editing
-└── app/            Engine core + entry points (dev, editor)
+├── tools/          Build-time CLI utilities (uldum_pack, uldum_gen_overlays)
+└── app/            Engine core + entry points (uldum_dev, uldum_game, uldum_server, uldum_editor, android_main)
 ```
 
 ## Documentation

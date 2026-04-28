@@ -614,6 +614,37 @@ Custom retained-mode UI stack, separate from RmlUi. Available in both dev and ga
 - **16d-iv — Mobile tap-target sizing.** RCSS rules for minimum touch sizes + scaled fonts when host is mobile.
 - IME plumbing — deferred until needed.
 
+### Phase 17 — Items
+
+The engine's first gameplay primitive beyond combat / abilities. Items are common across nearly every map style — pickups, equipables, consumables, key items, charges-based usables. WC3-flavored: each item is a JSON-defined type with classifications, optional on-use ability, optional on-equip modifiers; units carry an inventory of slots. Lua API mirrors WC3's `CreateItem` / `UnitAddItem` / `RemoveItem` / `UnitUseItem` shape.
+
+- Item type schema (icon, classifications, usable, stackable, charges, on-use ability id, on-equip modifiers).
+- Inventory component on units; slot count from the existing unit_type's `inventory_size`.
+- Orders: PickUp, Drop, Use; same submit/sync path as combat orders.
+- Lua bindings: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitHasItem`, `GetItemCharges`, etc.
+- HUD: inventory atom (slot row, drag/drop on desktop, tap-to-use on mobile).
+- Network: item state riding existing entity sync; no new message kinds.
+- Demo: `action_test` gets a few item types (potion, sword) and the hero picks them up.
+
+### Phase 18 — Regions + Dialogs + Camera scripting
+
+Three thin Lua-binding categories that together turn the engine into a genuine map-authoring platform. Bundled because each is small on its own and they compose — a typical map uses regions to detect the player reaching a story beat, fires a camera pan, then opens a dialog.
+
+- **Regions.** Rect / circle zones registered by Lua. Trigger events fire on enter / leave. Lua: `CreateRegion`, `AddRegionRect`, `AddRegionCircle`, `TriggerRegisterEnterRegion`, `IsUnitInRegion`, `GetUnitsInRegion`. The single biggest authoring primitive WC3 had outside of triggers themselves — without it, "step into the cave" / "kill zone" / "spawn-on-approach" all need hand-rolled distance polling.
+- **Dialogs.** Modal HUD overlay (new composite) with text + ordered button list. Tutorial prompts, story beats, NPC chat, victory / defeat screens. Lua: `CreateDialog`, `AddDialogButton`, `ShowDialog`, button-press fires a trigger event.
+- **Camera scripting.** Programmatic pan / zoom / shake / lock-to-unit. Lua: `PanCamera`, `SetCameraPosition`, `SetCameraZoom`, `SetCameraLockUnit`, `CameraShake`, `CinematicMode(on)` (hides HUD, optional letterbox). Tiny API but elevates production quality of small games disproportionately — boss reveals, screen-shake on big hits, scripted intros.
+
+### Phase 19 — Editor expansion
+
+Authoring efficiency becomes the bottleneck once 17 + 18 land — the existing terrain editor doesn't know about units, items, regions, or triggers. This phase fills that out:
+
+- Unit / item placement on the terrain canvas.
+- Region tool — draw rect / circle, name it, persist into the scene.
+- Doodad placement (decorative non-interactive props).
+- Basic trigger editor — pick an event from a dropdown (region-enter, item-pickup, unit-dies), bind to a Lua snippet or a script file.
+
+By this point items + regions + dialogs + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports.
+
 ## 16. Deferred / Future Work
 
 Topics scoped out of current phases — revisit when the time comes.
