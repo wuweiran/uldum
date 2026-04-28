@@ -83,9 +83,10 @@ private:
     void draw_pause_overlay(network::NetworkManager& net);
     void draw_disconnected_overlay();
 
-    rhi::VulkanRhi* m_rhi = nullptr;
-    void*           m_imgui_pool = nullptr;  // VkDescriptorPool, opaque here
-    bool            m_initialized = false;
+    rhi::VulkanRhi*     m_rhi = nullptr;
+    platform::Platform* m_platform = nullptr;  // for input feed + map enumeration
+    void*               m_imgui_pool = nullptr;  // VkDescriptorPool, opaque here
+    bool                m_initialized = false;
 
     // Cached list of discoverable maps, populated at init and on demand.
     std::vector<std::string> m_map_paths;   // e.g. "maps/test_map.uldmap"

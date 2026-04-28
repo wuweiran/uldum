@@ -46,8 +46,14 @@ if(ANDROID)
     # Gradle's `arguments += "-DULDUM_ANDROID_DEV=1"` sets a CMake cache
     # variable, not a preprocessor macro. Propagate it explicitly so the
     # `#ifdef ULDUM_ANDROID_DEV` branch in android_main.cpp actually fires.
+    # Also bring the ImGui-based dev console into the dev APK so the
+    # engine team gets the desktop-equivalent map picker + session
+    # controls on a real device. Game-flavor APKs skip this — they
+    # ship Shell UI / RmlUi instead.
     if(ULDUM_ANDROID_DEV)
-        target_compile_definitions(uldum PRIVATE ULDUM_ANDROID_DEV)
+        target_compile_definitions(uldum PRIVATE ULDUM_ANDROID_DEV ULDUM_DEV_UI)
+        target_sources(uldum PRIVATE dev_console.cpp)
+        target_link_libraries(uldum PRIVATE imgui)
     endif()
 
 

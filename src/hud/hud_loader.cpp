@@ -704,7 +704,19 @@ bool load_from_asset(Hud& hud, std::string_view asset_path, u32 viewport_w, u32 
         log::error(TAG, "hud.json parse failed ({}): {}", asset_path, e.what());
         return false;
     }
-    return load_from_json(hud, doc, viewport_w, viewport_h);
+    if (!load_from_json(hud, doc, viewport_w, viewport_h)) return false;
+
+    // The composite parser resolves bar / minimap / joystick rects
+    // against the FULL viewport (no inset shrinkage). That's a holdover
+    // from before safe-area handling existed; calling on_viewport_resized
+    // here re-runs the resolve with the inset-aware viewport so
+    // composites land above the gesture bar / notch on first session
+    // load too. Without this, insets only get applied on the next
+    // *resize* event — which doesn't fire when a user taps "Offline"
+    // and enters a session, so the first-session-after-launch HUD
+    // ignored insets entirely.
+    hud.on_viewport_resized(viewport_w, viewport_h);
+    return true;
 }
 
 } // namespace uldum::hud

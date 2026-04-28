@@ -1,6 +1,7 @@
 #include "platform/android/android_platform.h"
 #include "core/log.h"
 
+#include <android/asset_manager.h>
 #include <android/log.h>
 #include <android/configuration.h>
 #include <android/input.h>
@@ -267,6 +268,20 @@ void* AndroidPlatform::asset_manager() const {
     // app->activity->assetManager is an AAssetManager*; returned as void* so
     // callers in platform-agnostic code don't need <android/asset_manager.h>.
     return m_app ? m_app->activity->assetManager : nullptr;
+}
+
+std::vector<std::string> AndroidPlatform::list_files(std::string_view prefix) const {
+    std::vector<std::string> out;
+    if (!m_app || !m_app->activity || !m_app->activity->assetManager) return out;
+    AAssetManager* mgr = m_app->activity->assetManager;
+    std::string p(prefix);
+    AAssetDir* dir = AAssetManager_openDir(mgr, p.c_str());
+    if (!dir) return out;
+    while (const char* name = AAssetDir_getNextFileName(dir)) {
+        out.emplace_back(name);
+    }
+    AAssetDir_close(dir);
+    return out;
 }
 
 void AndroidPlatform::on_surface_changed(ANativeWindow* window, u32 w, u32 h) {

@@ -33,6 +33,8 @@ public:
     void* native_window_handle() const override { return m_hwnd; }
     void* native_instance_handle() const override { return m_hinstance; }
 
+    std::vector<std::string> list_files(std::string_view prefix) const override;
+
 private:
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 

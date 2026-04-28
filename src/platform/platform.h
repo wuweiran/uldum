@@ -4,7 +4,9 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace uldum::platform {
 
@@ -120,6 +122,14 @@ public:
     // nullptr on desktop. Returned as void* so callers compile on both.
     // Used by AssetManager to mount the APK's asset root.
     virtual void* asset_manager() const { return nullptr; }
+
+    // Enumerate regular files directly under a directory (no recursion).
+    // `prefix` is interpreted relative to the platform's asset root —
+    // CWD on desktop, the APK's `assets/` dir on Android. Returns the
+    // file basenames (no directory part). Used by the dev console to
+    // discover bundled `.uldmap` archives without each call site
+    // hand-rolling filesystem-vs-AAssetManager dispatch.
+    virtual std::vector<std::string> list_files(std::string_view prefix) const = 0;
 
     // Optional message hook — called before default processing.
     // Return true to consume the message (skip default handling).

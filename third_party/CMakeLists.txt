@@ -74,32 +74,33 @@ FetchContent_Declare(sol2
 )
 FetchContent_MakeAvailable(sol2)
 
-# ── Dear ImGui (editor UI) ────────────────────────────────────────────────
-# Only used by uldum_editor (desktop-only). Skipped entirely on Android to
-# avoid the fetch + compile overhead of a library no Android target links.
-if(NOT ANDROID)
-    message(STATUS "Fetching Dear ImGui...")
-    FetchContent_Declare(imgui
-        URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
-    )
-    FetchContent_Populate(imgui)
+# ── Dear ImGui (dev console + editor) ─────────────────────────────────────
+# Used by uldum_editor and the dev console (uldum_dev on desktop, dev APK
+# on Android via Phase 16d-i). Only the Vulkan backend is portable; the
+# Win32 backend is desktop-only and excluded on Android.
+message(STATUS "Fetching Dear ImGui...")
+FetchContent_Declare(imgui
+    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
+)
+FetchContent_Populate(imgui)
 
-    set(IMGUI_SOURCES
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_demo.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-    )
+set(IMGUI_SOURCES
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+)
+if(WIN32)
+    list(APPEND IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
+endif()
 
-    add_library(imgui STATIC ${IMGUI_SOURCES})
-    target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-    target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
-    if(MSVC)
-        target_compile_options(imgui PRIVATE /W0)
-    endif()
+add_library(imgui STATIC ${IMGUI_SOURCES})
+target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+if(MSVC)
+    target_compile_options(imgui PRIVATE /W0)
 endif()
 
 # ── miniaudio (audio playback) — header-only ──────────────────────────────

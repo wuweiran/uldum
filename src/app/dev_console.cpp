@@ -5,21 +5,26 @@
 
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
+
+#ifdef _WIN32
+// Win32 path: ImGui's Win32 backend handles WM_* → ImGui IO (mouse,
+// keyboard, char input, focus, cursor shape). We keep using it on
+// desktop because it's the proven path.
 #include <imgui_impl_win32.h>
-
 #include <Windows.h>
-#include <algorithm>
-#include <filesystem>
-
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+#endif
+
+#include <algorithm>
 
 namespace uldum {
 
 static constexpr const char* TAG = "DevUI";
 
 bool DevConsole::init(rhi::VulkanRhi& rhi, platform::Platform& platform) {
-    m_rhi = &rhi;
+    m_rhi      = &rhi;
+    m_platform = &platform;
 
     // Descriptor pool — ImGui needs one slot per font texture and per custom
     // image; 100 is far more than we need for dev widgets.
@@ -44,18 +49,38 @@ bool DevConsole::init(rhi::VulkanRhi& rhi, platform::Platform& platform) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // Don't consume input when the dev console isn't actively being used —
-    // gameplay keys (WASD camera, selection clicks) need to pass through.
-    // We'll adjust this per-widget via ImGui::Begin flags instead of a
-    // global input capture.
+    ImGui::StyleColorsDark();
 
+    // Per-platform input plumbing + DPI scaling.
+#ifdef _WIN32
     HWND hwnd = static_cast<HWND>(platform.native_window_handle());
     float dpi_scale = static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f;
     ImGui::GetStyle().ScaleAllSizes(dpi_scale);
     io.FontGlobalScale = dpi_scale;
-    ImGui::StyleColorsDark();
 
     ImGui_ImplWin32_Init(hwnd);
+
+    // Forward Win32 messages to ImGui so it receives keyboard / mouse /
+    // char input, focus changes, etc.
+    platform.set_message_hook([](void* h, u32 msg, uintptr_t wparam, intptr_t lparam) -> bool {
+        LRESULT r = ImGui_ImplWin32_WndProcHandler(
+            static_cast<HWND>(h), msg,
+            static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam));
+        return r != 0;
+    });
+#else
+    // Android / non-Win32: feed ImGui IO manually from the platform's
+    // InputState each frame (see feed_input_manual). Touch-as-mouse is
+    // already mirrored by the platform layer's first-finger rule, so
+    // ImGui's mouse-only widget code works out of the box.
+    float ui_scale = platform.ui_scale();
+    if (ui_scale > 0.0f) {
+        // Android pixel densities are much higher than desktop's 1×;
+        // scale ImGui sizes + font so widgets are readable on phones.
+        ImGui::GetStyle().ScaleAllSizes(ui_scale);
+        io.FontGlobalScale = ui_scale;
+    }
+#endif
 
     ImGui_ImplVulkan_InitInfo init_info{};
     init_info.Instance       = rhi.instance();
@@ -79,14 +104,6 @@ bool DevConsole::init(rhi::VulkanRhi& rhi, platform::Platform& platform) {
 
     ImGui_ImplVulkan_Init(&init_info);
 
-    // Forward Win32 messages to ImGui so it receives keyboard/mouse input.
-    platform.set_message_hook([](void* h, u32 msg, uintptr_t wparam, intptr_t lparam) -> bool {
-        LRESULT r = ImGui_ImplWin32_WndProcHandler(
-            static_cast<HWND>(h), msg,
-            static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam));
-        return r != 0;
-    });
-
     rescan_map_list();
 
     m_initialized = true;
@@ -98,7 +115,9 @@ void DevConsole::shutdown() {
     if (!m_initialized) return;
     vkDeviceWaitIdle(m_rhi->device());
     ImGui_ImplVulkan_Shutdown();
+#ifdef _WIN32
     ImGui_ImplWin32_Shutdown();
+#endif
     ImGui::DestroyContext();
     if (m_imgui_pool) {
         vkDestroyDescriptorPool(m_rhi->device(),
@@ -108,31 +127,63 @@ void DevConsole::shutdown() {
     m_initialized = false;
 }
 
+#ifndef _WIN32
+// Manual per-frame ImGui IO feed for platforms without a native ImGui
+// backend (Android). Mirrors the touch-first input from
+// `Platform::input()` into ImGui's queued event API. Buttons + lists
+// work; full keyboard / IME for text fields is out of scope for v1
+// (deferred with the rest of mobile IME).
+static void feed_imgui_input_manual(const platform::Platform& platform, f32 dt) {
+    ImGuiIO& io = ImGui::GetIO();
+    const auto& in = platform.input();
+
+    io.DeltaTime    = dt > 0.0f ? dt : (1.0f / 60.0f);
+    io.DisplaySize  = ImVec2(static_cast<float>(platform.width()),
+                              static_cast<float>(platform.height()));
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+    io.AddMousePosEvent(in.mouse_x, in.mouse_y);
+    io.AddMouseButtonEvent(0, in.mouse_left);
+    io.AddMouseButtonEvent(1, in.mouse_right);
+    io.AddMouseButtonEvent(2, in.mouse_middle);
+    if (in.scroll_delta != 0.0f) io.AddMouseWheelEvent(0.0f, in.scroll_delta);
+
+    io.AddKeyEvent(ImGuiMod_Shift, in.key_shift);
+    io.AddKeyEvent(ImGuiMod_Ctrl,  in.key_ctrl);
+    io.AddKeyEvent(ImGuiMod_Alt,   in.key_alt);
+    io.AddKeyEvent(ImGuiKey_Escape, in.key_escape);
+}
+#endif
+
 void DevConsole::rescan_map_list() {
     m_map_paths.clear();
-    // Scan the runtime map directory — `maps/*.uldmap` packed archives,
-    // produced by the desktop build into build/bin/maps/. These are what
-    // AssetManager actually resolves at runtime, so offering them is honest.
-    std::error_code ec;
-    for (auto& entry : std::filesystem::directory_iterator("maps", ec)) {
-        if (!entry.is_regular_file()) continue;
-        auto p = entry.path();
-        if (p.extension() != ".uldmap") continue;
-        // Store with forward slashes to match engine path convention.
-        std::string s = "maps/" + p.filename().string();
-        m_map_paths.push_back(std::move(s));
+    if (!m_platform) return;
+
+    // Cross-platform map enumeration — Platform::list_files dispatches
+    // to filesystem on desktop and AAssetManager_openDir on Android,
+    // both yielding the basenames in `maps/`. Filter to `.uldmap`
+    // archives because those are what AssetManager actually mounts.
+    auto files = m_platform->list_files("maps");
+    for (auto& name : files) {
+        if (name.size() < 7 || name.compare(name.size() - 7, 7, ".uldmap") != 0)
+            continue;
+        m_map_paths.push_back("maps/" + name);
     }
     std::sort(m_map_paths.begin(), m_map_paths.end());
     m_map_selected = std::min(m_map_selected, static_cast<i32>(m_map_paths.size()) - 1);
     if (m_map_selected < 0 && !m_map_paths.empty()) m_map_selected = 0;
 }
 
-void DevConsole::update(f32 /*dt*/, AppState state, network::NetworkManager& net) {
+void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::NetworkManager& net) {
     if (!m_initialized) return;
     m_state = state;
 
     ImGui_ImplVulkan_NewFrame();
+#ifdef _WIN32
     ImGui_ImplWin32_NewFrame();
+#else
+    if (m_platform) feed_imgui_input_manual(*m_platform, dt);
+#endif
     ImGui::NewFrame();
 
     switch (state) {

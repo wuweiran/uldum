@@ -145,8 +145,9 @@ bool App::init(const LaunchArgs& args) {
         // / notch. Desktop returns zeros so this is a no-op there; Android
         // reads GameActivity's SYSTEM_BARS union. May return zeros on
         // first call if the activity hasn't run its first layout pass
-        // yet; the per-frame refresh_safe_insets() picks up the real
-        // values once Android populates them.
+        // yet; the APP_CMD_WINDOW_INSETS_CHANGED event sets the platform's
+        // resize flag once the real values land, which fires the main
+        // loop's resize branch (refresh_safe_insets + on_viewport_resized).
         refresh_safe_insets();
     }
 

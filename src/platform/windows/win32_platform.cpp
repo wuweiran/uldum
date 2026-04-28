@@ -1,6 +1,8 @@
 #include "platform/windows/win32_platform.h"
 #include "core/log.h"
 
+#include <filesystem>
+
 namespace uldum::platform {
 
 static constexpr const char* TAG = "Platform";
@@ -120,6 +122,17 @@ bool Win32Platform::was_resized() {
     bool r = m_resized;
     m_resized = false;
     return r;
+}
+
+std::vector<std::string> Win32Platform::list_files(std::string_view prefix) const {
+    std::vector<std::string> out;
+    std::error_code ec;
+    std::filesystem::path dir(std::string{prefix});
+    for (auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
+        out.push_back(entry.path().filename().string());
+    }
+    return out;
 }
 
 f32 Win32Platform::ui_scale() const {
