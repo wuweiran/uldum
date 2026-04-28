@@ -3,7 +3,7 @@
     <title>Results</title>
     <link type="text/rcss" href="main_menu.rcss"/>
 </head>
-<body>
+<body class="screen">
     <div id="root">
         <div id="title">Mission Complete</div>
         <div id="time_label">Time: --</div>

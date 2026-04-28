@@ -74,9 +74,9 @@ endif()
 # Shell UI (RmlUi + FreeType) is compiled into game builds only. Derived
 # from ULDUM_GAME_PROJECT_DIR so third_party/ can gate its fetch up front —
 # dev/editor/server builds avoid the ~minute-long FreeType+RmlUi build.
-# (Android handling: when the game flavor is built via Gradle, ULDUM_GAME_PROJECT_DIR
-# is set by -DULDUM_GAME_PROJECT_DIR=... in the flavor's cmake arguments.)
-if(ULDUM_GAME_PROJECT_DIR AND NOT ANDROID)
+# Game flavor on Android sets ULDUM_GAME_PROJECT_DIR via Gradle's
+# -DULDUM_GAME_PROJECT_DIR=... cmake argument, so this catches it too.
+if(ULDUM_GAME_PROJECT_DIR)
     set(ULDUM_SHELL_UI TRUE)
 endif()
 

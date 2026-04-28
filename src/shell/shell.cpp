@@ -67,9 +67,20 @@ bool Shell::init(rhi::VulkanRhi& rhi, u32 window_w, u32 window_h) {
         return false;
     }
 
-    // Load the game project's fonts. Hardwired to sample_game's path for
-    // now; 16b can scan a list from game.json or auto-discover under shell/fonts/.
-    if (!Rml::LoadFontFace("shell/fonts/Lato-Regular.ttf")) {
+    // Load the game project's fonts. Hardwired to sample_game's path
+    // for now; 16b can scan a list from game.json or auto-discover
+    // under shell/fonts/. Two project conventions matter:
+    //   1. Path is all-lowercase. AssetManager normalizes lookups to
+    //      lowercase (package format is case-insensitive), but Android's
+    //      AAssetManager_open is case-sensitive, so any uppercase
+    //      letters in the filename break Android resolution silently.
+    //   2. Family name comes from the TTF's metadata, NOT the file name.
+    //      sample_game's lato-regular.ttf reports family "LatoLatin",
+    //      so RCSS must use `font-family: "LatoLatin"`. Check
+    //      RmlUi's "Loaded font face '<name>'" log line to confirm
+    //      the registered name; mismatched RCSS produces empty text
+    //      without a hard error.
+    if (!Rml::LoadFontFace("shell/fonts/lato-regular.ttf")) {
         log::warn(TAG, "Shell UI font failed to load (text won't render)");
     }
 

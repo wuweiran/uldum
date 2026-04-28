@@ -42,6 +42,47 @@ simulation::World& App::active_world() {
     return m_server.simulation().world();
 }
 
+#ifdef ULDUM_SHELL_UI
+void App::update_shell_for_state() {
+    if (!m_shell) return;
+    // First call: snapshot current state without firing a transition,
+    // because App::init has already loaded main_menu.rml manually.
+    if (!m_shell_state_initialized) {
+        m_shell_state = m_state;
+        m_shell_state_initialized = true;
+        return;
+    }
+    if (m_state == m_shell_state) return;
+    AppState prev = m_shell_state;
+    m_shell_state = m_state;
+
+    // Options is a sub-screen of Menu — it's loaded by the Options
+    // button click handler, not by AppState. So when re-entering Menu
+    // (e.g. from Results → back) we always reload main_menu.rml,
+    // regardless of whether Options was the previously-shown doc.
+    switch (m_state) {
+        case AppState::Menu:
+            m_shell->load_document("shell/main_menu.rml");
+            break;
+        case AppState::Lobby:
+            m_shell->load_document("shell/lobby.rml");
+            break;
+        case AppState::Loading:
+            m_shell->load_document("shell/loading.rml");
+            break;
+        case AppState::Playing:
+            // 3D scene + HUD own the screen during play.
+            m_shell->hide_current_document();
+            break;
+        case AppState::Results:
+            m_shell->load_document("shell/results.rml");
+            break;
+    }
+    log::info(TAG, "Shell screen: {} -> {}",
+              static_cast<int>(prev), static_cast<int>(m_state));
+}
+#endif
+
 void App::refresh_safe_insets() {
     if (!m_platform) return;
     auto cur = m_platform->safe_insets();
@@ -227,11 +268,10 @@ bool App::init(const LaunchArgs& args) {
     m_shell->set_click_handler([this](std::string_view id) {
         if (id == "play") {
             if (m_state == AppState::Menu) {
-                // Same AppState sequence as uldum_dev: Menu → Lobby → Loading
-                // → Playing → Results. Shell has no lobby RML yet, so the
-                // main loop auto-advances through Lobby (see the Lobby case
-                // in run()). When a game-build lobby screen lands, remove
-                // that auto-advance and let the user click Start.
+                // Menu → Lobby → Loading → Playing → Results. Lobby
+                // currently auto-advances offline (no lobby UI here);
+                // update_shell_for_state() drives RML loads on each
+                // AppState transition.
                 m_args.map_path = "maps/simple_map.uldmap";
                 m_args.net_mode = network::Mode::Offline;
                 if (!enter_lobby()) {
@@ -239,24 +279,28 @@ bool App::init(const LaunchArgs& args) {
                     return;
                 }
                 log::info(TAG, "Shell: 'play' -> Lobby");
-                m_shell->hide_current_document();
                 m_state = AppState::Lobby;
             }
         } else if (id == "quit") {
             log::info(TAG, "Shell: 'quit'");
             m_wants_quit = true;
         } else if (id == "options") {
+            // Options is a sub-screen of Menu (no AppState change), so
+            // it loads the document directly. update_shell_for_state
+            // doesn't fire because m_state stays Menu.
             m_shell->load_document("shell/options.rml");
-            // Refresh the sound toggle's label to match current setting,
-            // since the RML ships with "Sound: ON" as its static text.
             bool snd = m_settings.get_bool("audio.master_enabled", true);
             m_shell->set_element_text("sound_toggle", snd ? "Sound: ON" : "Sound: OFF");
         } else if (id == "back") {
-            // Back works from both Options and Results. In Results we also
-            // need to leave that state — session was already torn down when
-            // we entered Results, so just transition to Menu.
-            if (m_state == AppState::Results) m_state = AppState::Menu;
-            m_shell->load_document("shell/main_menu.rml");
+            // Back from Options (still in Menu state) or Results (state
+            // change). For Results we transition to Menu; the next
+            // update_shell_for_state will load main_menu.rml. For
+            // Options we load it explicitly because state didn't change.
+            if (m_state == AppState::Results) {
+                m_state = AppState::Menu;
+            } else {
+                m_shell->load_document("shell/main_menu.rml");
+            }
         } else if (id == "sound_toggle") {
             bool cur = m_settings.get_bool("audio.master_enabled", true);
             bool now = !cur;
@@ -265,6 +309,9 @@ bool App::init(const LaunchArgs& args) {
         }
     });
 
+    // Initial menu shown explicitly — update_shell_for_state's first
+    // call snapshots m_state without firing a transition, so without
+    // this load nothing would render until the first state change.
     m_shell->load_document("shell/main_menu.rml");
 #endif
 
@@ -1092,18 +1139,12 @@ void App::run() {
 
         case AppState::Results:
 #ifdef ULDUM_SHELL_UI
-            // Game build: end the session immediately (tear down sim / audio /
-            // network), then show the Results screen and stay put until the
-            // user clicks "back". Loading the document is a one-shot — the
-            // `m_results_shown` latch keeps us from reloading every frame.
+            // Game build: end the session immediately (tear down sim /
+            // audio / network) on first entry. update_shell_for_state()
+            // (called below) loads results.rml on the state transition;
+            // we just patch in the elapsed-time label after the load.
             if (m_session_active) {
                 end_session();
-                if (m_shell) {
-                    char buf[64];
-                    std::snprintf(buf, sizeof(buf), "Time: %.1f s", m_last_elapsed_seconds);
-                    m_shell->load_document("shell/results.rml");
-                    m_shell->set_element_text("time_label", buf);
-                }
             }
 #else
             // Engine-dev build (no Shell): auto-return to Menu. uldum_dev's
@@ -1114,6 +1155,19 @@ void App::run() {
 #endif
             break;
         }
+
+#ifdef ULDUM_SHELL_UI
+        // Sync Shell document with the AppState. Loads / hides on
+        // transitions only, no-op on steady state. Patch dynamic
+        // results data after the document loads.
+        bool was_results = (m_shell_state == AppState::Results);
+        update_shell_for_state();
+        if (m_shell && m_state == AppState::Results && !was_results) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "Time: %.1f s", m_last_elapsed_seconds);
+            m_shell->set_element_text("time_label", buf);
+        }
+#endif
 
         bool have_world = (m_state == AppState::Playing && m_session_active);
         if (have_world) {

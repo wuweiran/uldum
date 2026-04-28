@@ -139,11 +139,9 @@ scripts\build.ps1                 # produces build\bin\uldum_pack.exe, needed by
 2. Let Gradle sync (first time ~2 min, downloads wrapper + AGP).
 3. **Build Variants** panel (View → Tool Windows → Build Variants) → pick `devDebug`.
 4. Attach device or start an emulator (AVD) — x86_64 for host emulators, arm64-v8a for real devices.
-5. Hit **Run** (Shift+F10). Gradle's `stageDevAssets` task packs every engine map + copies `engine.uldpak` into `src/dev/assets/`. APK installs and launches; auto-loads `maps/test_map.uldmap`.
+5. Hit **Run** (Shift+F10). Gradle's `stageDevAssets` task packs every engine map + copies `engine.uldpak` into `src/dev/assets/`. APK installs and launches into the ImGui dev-console map picker — pick a map, tap Offline, the session starts. Same flow as desktop `uldum_dev`.
 
 Set breakpoints in `src/app/android_main.cpp` or any engine code — Studio's LLDB attaches and stops on them. Logcat: `adb logcat -s Uldum:*`.
-
-**Swap in a different map** (no repackage): currently requires editing the `#ifdef ULDUM_ANDROID_DEV` hardcoded path in `src/app/android_main.cpp`. A future imgui-based dev lobby on Android will expose map selection in the app.
 
 ### Game flavor — shipping APK (PowerShell)
 

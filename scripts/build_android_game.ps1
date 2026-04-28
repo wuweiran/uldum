@@ -134,15 +134,32 @@ if (-not (Test-Path -LiteralPath $engineUldpak)) {
 # own src/dev/assets/ populated by Gradle's stageDevAssets task).
 $assetsDir = Join-Path $Android 'app\src\game\assets'
 $assetsMapsDir = Join-Path $assetsDir 'maps'
+$assetsShellDir = Join-Path $assetsDir 'shell'
 New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
 if (Test-Path -LiteralPath $assetsMapsDir) {
     Remove-Item -LiteralPath $assetsMapsDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $assetsMapsDir -Force | Out-Null
+# shell/ — purge + repopulate so RML/RCSS edits land on every build.
+if (Test-Path -LiteralPath $assetsShellDir) {
+    Remove-Item -LiteralPath $assetsShellDir -Recurse -Force
+}
 
 Write-Host "Staging APK assets into $assetsDir ..."
 Copy-Item -LiteralPath $engineUldpak -Destination (Join-Path $assetsDir 'engine.uldpak') -Force
 Copy-Item -LiteralPath $gameJsonPath -Destination (Join-Path $assetsDir 'game.json') -Force
+
+# Stage shell/ — RmlUi reads RML / RCSS / fonts at runtime via the
+# AssetManager, which on Android resolves through AAssetManager_open
+# against the APK's assets dir. Without staging, Shell::load_document
+# returns nullptr and the menu screen never renders.
+$projectShell = Join-Path $projectAbs 'shell'
+if (Test-Path -LiteralPath $projectShell -PathType Container) {
+    Copy-Item -LiteralPath $projectShell -Destination $assetsShellDir -Recurse -Force
+    Write-Host "  staged shell/ from $projectShell"
+} else {
+    Write-Host "  no shell/ in project (game will boot to a blank screen)"
+}
 
 if (-not $gameJson.maps -or $gameJson.maps.Count -eq 0) {
     throw "game.json 'maps' array is empty"

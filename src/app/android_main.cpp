@@ -50,18 +50,11 @@ extern "C" void android_main(struct android_app* app) {
         return;
     }
 
+    // Default LaunchArgs are correct for both Android flavors: App
+    // boots into Menu, then either the dev console (dev flavor) or
+    // the project's Shell UI (game flavor) drives map selection.
+    // Native side has no opinion.
     uldum::LaunchArgs args;
-#ifdef ULDUM_ANDROID_DEV
-    // Dev APK (libuldum_dev.so, "Uldum Dev"): engine iteration build.
-    // Boots into the ImGui dev console's map picker (Phase 16d-i) so
-    // engine work doesn't require pushing a new APK to switch maps or
-    // inspect state. No auto_start — App::run starts in Menu state and
-    // the dev console drives Menu → Lobby → Loading → Playing on tap.
-#else
-    // Game APK: should read default_map from game.json in APK assets.
-    // TODO (Phase 15d remaining): plumb AAssetManager → game.json → map_path.
-    // Interim: LaunchArgs default matches desktop (maps/test_map.uldmap).
-#endif
 
     uldum::App game;
     if (!game.init(args)) {

@@ -96,8 +96,23 @@ private:
     // HUD re-resolves on steady-state frames.
     void refresh_safe_insets();
 
+#ifdef ULDUM_SHELL_UI
+    // Drive Shell document loading from the AppState machine. Called
+    // each frame; loads the matching screen RML when the state
+    // transitions, hides on entering Playing. Idempotent — re-loads
+    // are gated by `m_shell_state` cache so we don't re-parse RML
+    // every frame in steady state.
+    void update_shell_for_state();
+#endif
+
     LaunchArgs m_args;
     AppState   m_state = AppState::Menu;
+#ifdef ULDUM_SHELL_UI
+    // Last AppState the Shell document was synced to. Lets
+    // update_shell_for_state load on transitions only.
+    AppState   m_shell_state = AppState::Menu;
+    bool       m_shell_state_initialized = false;
+#endif
 
     // Set by Shell UI click handlers (e.g. Quit button) to break out of
     // the main loop. Platform's poll_events() returns false on OS-initiated

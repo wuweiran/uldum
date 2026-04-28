@@ -1,0 +1,12 @@
+<rml>
+<head>
+    <title>Lobby</title>
+    <link type="text/rcss" href="main_menu.rcss"/>
+</head>
+<body class="screen">
+    <div id="root">
+        <div id="title">Lobby</div>
+        <div id="subtitle">Preparing session…</div>
+    </div>
+</body>
+</rml>

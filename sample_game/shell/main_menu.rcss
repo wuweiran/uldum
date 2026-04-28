@@ -1,3 +1,15 @@
+/* ── Screen-wide layout + fade-in ──────────────────────────────────────────
+ *  Every Shell screen sets `class="screen"` on its <body>, which scopes
+ *  the fade-in keyframe animation to documents that opt in. The sample
+ *  game's RML docs all do; the same animation runs on every transition
+ *  (Menu → Lobby → Loading → Results) so screen changes feel smooth
+ *  rather than instantaneous.
+ */
+@keyframes screen_fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
 body {
     background-color: #1a2838;
     width: 100%;
@@ -5,6 +17,10 @@ body {
     font-family: "LatoLatin";
     color: #e8d7b4;
     font-size: 24dp;
+}
+
+body.screen {
+    animation: screen_fadein 0.25s ease-out;
 }
 
 #root {
@@ -19,7 +35,13 @@ body {
 #title {
     font-size: 40dp;
     color: #d4a757;
-    margin-bottom: 48dp;
+    margin-bottom: 16dp;
+}
+
+#subtitle {
+    font-size: 20dp;
+    color: #9aa6b8;
+    margin-bottom: 32dp;
 }
 
 #menu {
@@ -27,15 +49,24 @@ body {
     flex-direction: column;
 }
 
+/* ── Buttons ───────────────────────────────────────────────────────────────
+ *  Sized for comfortable touch on mobile and roomy clicks on desktop.
+ *  64dp height + 16dp font padding clears Material's 48dp tap-target
+ *  recommendation and keeps the layout legible on a 5-inch phone in
+ *  landscape (where vertical real estate is the constraint). All units
+ *  are dp so the same RCSS works everywhere — the platform's px-per-dp
+ *  scales physical sizes uniformly.
+ */
 .btn {
-    width: 300dp;
-    height: 48dp;
-    margin-bottom: 16dp;
+    width: 320dp;
+    height: 64dp;
+    margin-bottom: 12dp;
     background-color: #3a4a5a;
     border-width: 2dp;
     border-color: #5a7588;
     text-align: center;
-    padding-top: 12dp;
+    padding-top: 18dp;
+    transition: background-color 0.12s cubic-out, border-color 0.12s cubic-out;
 }
 
 .btn:hover  { background-color: #4a5a6a; border-color: #7a95a8; }

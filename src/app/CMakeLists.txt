@@ -26,9 +26,10 @@ if(ANDROID)
     # and calls android_main() inside it. The dev and game flavors produce
     # separate APKs with separate applicationIds, so they can't collide on
     # a device — we don't need the `.so` name to encode which flavor it is.
-    # Flavor differences are compile-time flags:
-    #   Dev flavor   → -DULDUM_ANDROID_DEV=1     (auto-start on test_map)
-    #   Game flavor  → -DULDUM_GAME_PROJECT_DIR=...  (read game.json)
+    # Flavor differences are compile-time:
+    #   Dev flavor   → -DULDUM_ANDROID_DEV=1     (compiles in dev console)
+    #   Game flavor  → -DULDUM_GAME_PROJECT_DIR=...  (compiles in Shell UI,
+    #                                                 reads project's game.json)
 
     add_library(uldum SHARED
         android_main.cpp
@@ -43,17 +44,23 @@ if(ANDROID)
         log
         android
     )
-    # Gradle's `arguments += "-DULDUM_ANDROID_DEV=1"` sets a CMake cache
-    # variable, not a preprocessor macro. Propagate it explicitly so the
-    # `#ifdef ULDUM_ANDROID_DEV` branch in android_main.cpp actually fires.
-    # Also bring the ImGui-based dev console into the dev APK so the
-    # engine team gets the desktop-equivalent map picker + session
-    # controls on a real device. Game-flavor APKs skip this — they
-    # ship Shell UI / RmlUi instead.
+    # Dev flavor: bring in the ImGui dev console (map picker + session
+    # controls) so engine work on a real device matches the desktop
+    # uldum_dev experience. Game-flavor APKs skip this — they use the
+    # game project's Shell UI / RmlUi for menus instead.
     if(ULDUM_ANDROID_DEV)
-        target_compile_definitions(uldum PRIVATE ULDUM_ANDROID_DEV ULDUM_DEV_UI)
+        target_compile_definitions(uldum PRIVATE ULDUM_DEV_UI)
         target_sources(uldum PRIVATE dev_console.cpp)
         target_link_libraries(uldum PRIVATE imgui)
+    endif()
+    # Game flavor: bring in the project's Shell UI (RmlUi). Same
+    # uldum_shell library + ULDUM_SHELL_UI macro the desktop game
+    # build uses. Gated on ULDUM_SHELL_UI which is auto-set in the
+    # root CMake when ULDUM_GAME_PROJECT_DIR is supplied (Gradle's
+    # game flavor passes it via -DULDUM_GAME_PROJECT_DIR=...).
+    if(ULDUM_SHELL_UI)
+        target_compile_definitions(uldum PRIVATE ULDUM_SHELL_UI)
+        target_link_libraries(uldum PRIVATE uldum_shell)
     endif()
 
 
