@@ -30,6 +30,15 @@
             { "modifiers": { "armor_flat": 5 } }
         ]
     },
+    "use_potion_healing": {
+        "name": "Use Healing Potion",
+        "icon": "textures/icons/potion_healing.ktx2",
+        "form": "instant",
+        "max_level": 1,
+        "levels": [
+            { "heal": 250, "cooldown": 5.0, "cast_time": 0 }
+        ]
+    },
     "holy_light": {
         "name": "Holy Light",
         "icon": "textures/icons/holy_light.ktx2",

@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 16d (Android dev parity + Shell polish) in progress; 16a / 16b / 16c (HUD system) complete. Next: Phase 17 (Items).
+Phase 17 (Items) complete. Next: Phase 18 (Regions + Dialogs + Camera).
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -220,6 +220,15 @@ Phase 16d (Android dev parity + Shell polish) in progress; 16a / 16b / 16c (HUD 
   - Shell screen transitions (Menu → Lobby → Loading → Playing → Results) with RCSS fade animations
   - GameActivity touch routed through the existing mouse-mirror path to RmlUi
   - Mobile-tuned tap targets (64dp buttons, dp font sizes)
+- Items (Phase 17):
+  - Item entity = collection of abilities; activeness derived from `abilities[0].form` (no separate `kind` field)
+  - `item_types.json` schema (icon, model, model_scale, pickup_radius, abilities, classifications, initial_charges, initial_level)
+  - Per-unit `Inventory` component (default size 0; engine cap 16 slots) — picked up items grant their abilities to the carrier (`from_item` flag hides them from the action bar)
+  - Two engine-stored integer fields per item — `charges` and `level` — rendered as corner badges when > 0; engine never interprets them (consumption / level-up are map-Lua)
+  - Smart right-click on a ground item issues `PickupItem`; carrier walks to within `pickup_radius` and claims the first free slot. Fog-of-war in the picker so clicks on items in unscouted tiles fall through to a Move order
+  - Cast pump tracks `source_item` so `GetTriggerItem()` resolves inside `EVENT_GLOBAL_ABILITY_EFFECT` triggers
+  - HUD `inventory` composite (engine composite alongside `action_bar` / `command_bar` / `minimap`): WC3-style 2×3 vertical slot grid, item icon + charges (bottom-right) + level (top-left) + cooldown radial; click on an active item slot fires `abilities[0]` with the item handle attached
+  - Lua API: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitDropItemFromSlot`, `UnitGetItemFromSlot`, `UnitItemCount`, `UnitInventorySize`, `UnitHasItemOfType`, `GetItemTypeId`, `Get/SetItemCharges`, `Get/SetItemLevel`, `GetItemOwner`, `GetItemPosition`, `GetTriggerItem`, item events (`EVENT_GLOBAL_ITEM_PICKED_UP`, `EVENT_UNIT_ITEM_DROPPED`, etc.)
 - Ninja build system for parallel compilation
 
 ## Prerequisites
@@ -322,6 +331,7 @@ src/
 - [docs/design.md](docs/design.md) — Full technical design and phase roadmap
 - [docs/gameplay-model.md](docs/gameplay-model.md) — Game object hierarchy, components, unit/item/destructable model
 - [docs/ability-system.md](docs/ability-system.md) — Ability system, slots, hotkeys, scripting
+- [docs/items.md](docs/items.md) — Item system: types, inventory, charges/level fields, pickup/use lifecycle
 - [docs/input-system.md](docs/input-system.md) — Input system, commands, ability slots, Lua hooks
 - [docs/scripting.md](docs/scripting.md) — Lua scripting API, triggers, timers, events
 - [docs/map-system.md](docs/map-system.md) — Map format, engine vs map boundary, asset split

@@ -1,9 +1,23 @@
 {
     "potion_healing": {
-        "display_name": "Potion of Healing",
+        "name": "Potion of Healing",
         "icon": "textures/icons/potion_healing.ktx2",
-        "charges": 1,
-        "cooldown": 5.0,
-        "gold_cost": 150
+        "model": "models/potion_healing.glb",
+        "model_scale": 80.0,
+        "pickup_radius": 96.0,
+        "abilities": ["use_potion_healing"],
+        "initial_charges": 3,
+        "initial_level": 0,
+        "classifications": ["consumable"]
+    },
+    "ring_armor": {
+        "name": "Ring of Armor",
+        "icon": "textures/icons/devotion_aura.ktx2",
+        "model": "placeholder",
+        "pickup_radius": 96.0,
+        "abilities": ["item_armor_bonus"],
+        "initial_charges": 0,
+        "initial_level": 0,
+        "classifications": ["equipment"]
     }
 }

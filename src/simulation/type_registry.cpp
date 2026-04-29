@@ -196,12 +196,24 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
 bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std::string_view source) {
     for (auto& [key, val] : doc->data.items()) {
         ItemTypeDef def;
-        def.id = key;
-        def.display_name = val.value("display_name", key);
-        def.icon_path    = val.value("icon", "");
-        def.charges      = val.value("charges", 1);
-        def.cooldown     = val.value("cooldown", 0.0f);
-        def.gold_cost    = val.value("gold_cost", 0);
+        def.id              = key;
+        def.display_name    = val.value("name", val.value("display_name", key));
+        def.icon_path       = val.value("icon", "");
+        def.model_path      = val.value("model", "");
+        def.model_scale     = val.value("model_scale", 1.0f);
+        def.pickup_radius   = val.value("pickup_radius", 48.0f);
+        def.initial_charges = val.value("initial_charges", 0);
+        def.initial_level   = val.value("initial_level",   0);
+        if (auto a = val.find("abilities"); a != val.end() && a->is_array()) {
+            for (auto& aid : *a) {
+                if (aid.is_string()) def.abilities.push_back(aid.get<std::string>());
+            }
+        }
+        if (auto c = val.find("classifications"); c != val.end() && c->is_array()) {
+            for (auto& cid : *c) {
+                if (cid.is_string()) def.classifications.push_back(cid.get<std::string>());
+            }
+        }
 
         m_item_types[key] = std::move(def);
     }

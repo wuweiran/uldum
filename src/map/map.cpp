@@ -428,7 +428,13 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             m_scene.items.push_back(pi);
 
             auto item = simulation::create_item(world, pi.type, pi.x, pi.y);
-            if (item.is_valid()) item_count++;
+            if (item.is_valid()) {
+                if (auto* t = world.transforms.get(item.id)) {
+                    t->position.z      = sample_height(pi.x, pi.y);
+                    t->prev_position.z = t->position.z;
+                }
+                item_count++;
+            }
         }
     }
 

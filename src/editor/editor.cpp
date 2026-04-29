@@ -387,7 +387,9 @@ void Editor::run() {
         draw_ui();
         draw_overlays();
 
-        // Render
+        // Render. Minimized window → cmd is null / extent is zero; we still
+        // need to balance the ImGui::NewFrame() above with EndFrame() so
+        // next loop iteration doesn't assert on a stale frame.
         VkCommandBuffer cmd = m_rhi.begin_frame();
         if (cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
             m_renderer.draw_shadows(cmd, m_simulation.world());
@@ -395,6 +397,8 @@ void Editor::run() {
             m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
             imgui_render(cmd);
             m_rhi.end_frame();
+        } else {
+            ImGui::EndFrame();
         }
 
         frame_count++;
@@ -1496,6 +1500,8 @@ void Editor::draw_ui() {
         auto& td = m_map.terrain();
         u8 flags = td.pathing_at(m_cursor_vx, m_cursor_vy);
         ImGui::Text("Cursor: %d, %d", m_cursor_vx, m_cursor_vy);
+        ImGui::Text("World: %.0f, %.0f, %.0f",
+                     m_cursor_pos.x, m_cursor_pos.y, m_cursor_pos.z);
         ImGui::Text("Height: %.1f  Cliff: %d",
                      td.height_at(m_cursor_vx, m_cursor_vy),
                      td.cliff_at(m_cursor_vx, m_cursor_vy));

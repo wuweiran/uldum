@@ -56,6 +56,39 @@
       ]
     },
 
+    "inventory": {
+      "anchor": "br", "x": -199, "y": -10, "w": 90, "h": 132,
+      "style": "classic_rts",
+      "style_params": {
+        "bg":               "#14162088",
+        "cooldown_overlay": "#000000C0",
+        "hotkey_color":     "#F0F0F0FF",
+        "hotkey_badge_bg":  "#000000B4",
+        "charges_color":    "#FFEBB4FF",
+        "charges_badge_bg": "#000000C8",
+        "level_color":      "#B4DCFFFF",
+        "level_badge_bg":   "#000000C8",
+        "disabled_tint":    "#00000080"
+      },
+      "slot_style": {
+        "bg":           "#303448F0",
+        "hover_bg":     "#484C60FA",
+        "press_bg":     "#666A84FF",
+        "empty_bg":     "#1C1E28B4",
+        "border_color": "#00000080",
+        "border_width": 1
+      },
+
+      "slots": [
+        { "anchor": "tl", "x":  5, "y":   5, "w": 38, "h": 38, "hotkey": "1" },
+        { "anchor": "tl", "x": 47, "y":   5, "w": 38, "h": 38, "hotkey": "2" },
+        { "anchor": "tl", "x":  5, "y":  47, "w": 38, "h": 38, "hotkey": "3" },
+        { "anchor": "tl", "x": 47, "y":  47, "w": 38, "h": 38, "hotkey": "4" },
+        { "anchor": "tl", "x":  5, "y":  89, "w": 38, "h": 38, "hotkey": "5" },
+        { "anchor": "tl", "x": 47, "y":  89, "w": 38, "h": 38, "hotkey": "6" }
+      ]
+    },
+
     "minimap": {
       "anchor": "bl", "x": 10, "y": -10, "w": 150, "h": 150,
       "style": "classic_rts",

@@ -66,8 +66,11 @@ struct World {
 
     // Ability effect callback — fired when a cast reaches its cast_point.
     // The script engine handles the actual effect (damage, heal, etc.).
+    // `source_item` is the item the cast originated from (invalid when
+    // the cast was hotkey / direct).
     using AbilityEffectCallback = std::function<void(Unit caster, std::string_view ability_id,
-                                                      Unit target_unit, glm::vec3 target_pos)>;
+                                                      Unit target_unit, glm::vec3 target_pos,
+                                                      Item source_item)>;
     AbilityEffectCallback on_ability_effect;
 
     // Sound callback — fired when a unit event needs a sound.
@@ -78,6 +81,14 @@ struct World {
     // Called when a pathing blocker is removed (unblock runtime vertices).
     using PathingUnblockCallback = std::function<void(const std::vector<glm::ivec2>& verts)>;
     PathingUnblockCallback on_pathing_unblock;
+
+    // Item events — fired by system_items after a pickup / drop completes.
+    // Map Lua hooks these via the trigger system to drive consumption,
+    // drop-on-death, etc. The engine itself takes no further action.
+    using ItemPickupCallback = std::function<void(Unit unit, Item item, i32 slot)>;
+    using ItemDropCallback   = std::function<void(Unit unit, Item item)>;
+    ItemPickupCallback on_item_picked_up;
+    ItemDropCallback   on_item_dropped;
 
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
@@ -149,5 +160,20 @@ void     kill(World& world, Destructable d);
 
 i32      get_charges(const World& world, Item item);
 void     set_charges(World& world, Item item, i32 charges);
+i32      get_level(const World& world, Item item);
+void     set_level(World& world, Item item, i32 level);
+// Carrying-unit lookup. Returns invalid Unit if the item is on the
+// ground (or not in any inventory).
+Unit     get_item_owner(const World& world, Item item);
+// Pickup → inventory slot transfer. Grants the item's abilities to the
+// carrier, marks the Carriable, hides ground rendering, and returns the
+// slot index. Returns -1 on failure (full inventory, invalid handles,
+// item already carried). On success, fires no event itself — the
+// systems caller drives event emission.
+i32      give_item_to_unit(World& world, Unit unit, Item item);
+// Drop → place item at world position, remove from carrier inventory,
+// revoke its abilities, restore ground rendering. Returns false if the
+// item isn't currently carried by `unit`.
+bool     drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos);
 
 } // namespace uldum::simulation

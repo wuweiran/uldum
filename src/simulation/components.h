@@ -160,6 +160,11 @@ struct AbilityInstance {
     f32         cooldown_remaining = 0;
     bool        auto_cast          = false;
     bool        toggle_active      = false;
+    // Set when this ability was granted to the carrier by an item pickup
+    // (give_item_to_unit). The action_bar filters these out so item
+    // ability icons don't compete with the unit's intrinsic abilities —
+    // items are surfaced through the inventory composite instead.
+    bool        from_item          = false;
     // Applied ability fields (for WC3 "buffs")
     Unit        source;                      // unit that applied this (null if self/innate)
     f32         remaining_duration = -1.0f;  // -1 = permanent (innate), >= 0 = timed
@@ -183,6 +188,10 @@ struct AbilitySet {
     std::string casting_id;       // ability being cast
     Unit        cast_target_unit;
     glm::vec3   cast_target_pos{0};
+    // If the active cast came from an inventory item slot, the item
+    // handle is captured here so on_ability_effect can surface it to
+    // map Lua. Reset to invalid when cast_state returns to None.
+    Item        cast_source_item;
 };
 
 // Map-defined classification flags (e.g., "ground", "air", "hero", "structure").
@@ -232,9 +241,11 @@ struct PathingBlocker {
 
 struct ItemInfo {
     std::string type_id;
-    i32         charges = -1;    // -1 = unlimited
-    f32         cooldown = 0;
-    f32         cooldown_remaining = 0;
+    // Two free integer fields the engine stores + renders but never
+    // interprets. Map Lua handles consumption / level-up logic. Both
+    // default to 0; the initial values come from item type def.
+    i32         charges = 0;
+    i32         level   = 0;
 };
 
 struct Carriable {

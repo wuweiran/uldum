@@ -535,6 +535,30 @@ bool App::start_session() {
         if (m_input_preset) m_input_preset->queue_command(command_id);
     });
 
+    // Inventory slot tap → cast the slot's first ability with the item
+    // handle attached as `source_item`, so triggers reading
+    // GetTriggerItem() inside on_cast_finished resolve to this item.
+    // Build the GameCommand directly (bypassing queue_ability) because
+    // the preset's path doesn't carry source_item — the HUD-already-
+    // gated castable check ran in the press-release handler.
+    m_hud.set_inventory_use_fn([this](u32 item_id, const std::string& ability_id) {
+        const auto& world = m_server.simulation().world();
+        const auto* hi = world.handle_infos.get(item_id);
+        if (!hi) return;
+        simulation::Item item;
+        item.id         = item_id;
+        item.generation = hi->generation;
+
+        input::GameCommand cmd;
+        cmd.player = m_selection.player();
+        cmd.units  = m_selection.selected();
+        simulation::orders::Cast c;
+        c.ability_id  = ability_id;
+        c.source_item = item;
+        cmd.order = std::move(c);
+        m_commands.submit(cmd);
+    });
+
     // Minimap click → jump the camera so its ground-focus point lands
     // at the clicked world coord. Preserves the current pitch/yaw so
     // the player's view angle stays consistent across jumps.
@@ -664,6 +688,15 @@ bool App::start_session() {
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
                   &active_world(),
                   m_platform->width(), m_platform->height());
+    // Fog filter — entities in unscouted tiles drop out of pick_unit /
+    // pick_target / pick_item, so smart-orders treat a click in the
+    // fog as a ground click. Client mirrors fog from the server; host
+    // / offline reads its own simulation fog directly.
+    if (is_client) {
+        m_picker.set_fog(&m_network.client_fog(), simulation::Player{m_args.local_slot});
+    } else {
+        m_picker.set_fog(&m_server.simulation().fog(), simulation::Player{m_args.local_slot});
+    }
 
     // Input preset + bindings — preset is map-defined; bindings are the
     // user-customizable layer on top of preset defaults.

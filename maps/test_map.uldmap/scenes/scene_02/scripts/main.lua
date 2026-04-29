@@ -209,5 +209,40 @@ function main()
     end)
     Log("[Scene02] Creep spawner active (every " .. SPAWN_INTERVAL .. "s)")
 
+    ---------------------------------------------------------------------------
+    -- Items: drop two healing potions and one ring-of-armor near the
+    -- paladin so the player can right-click to pick them up. The cast
+    -- of `use_potion_healing` heals the caster and the trigger below
+    -- decrements the item's `charges` field, removing the item when it
+    -- reaches zero. Ring of Armor is a passive item — its slot icon
+    -- shows but clicking does nothing; the armor bonus applies while
+    -- carried.
+    ---------------------------------------------------------------------------
+    CreateItem("potion_healing", -1275, -930)
+    Log("[Scene02] Spawned potion_healing at (-1275, -930)")
+
+    -- Heal-on-use: fire when the use_potion_healing instant resolves,
+    -- regardless of caster. Heal target = caster (potion form is
+    -- self-only).
+    local heal_use_trig = CreateTrigger()
+    TriggerRegisterEvent(heal_use_trig, EVENT_GLOBAL_ABILITY_EFFECT)
+    TriggerAddCondition(heal_use_trig, function()
+        return GetTriggerAbilityId() == "use_potion_healing"
+    end)
+    TriggerAddAction(heal_use_trig, function()
+        local caster = GetTriggerUnit()
+        local item   = GetTriggerItem()
+        if not caster or not IsUnitAlive(caster) then return end
+        PlayEffectOnUnit("heal_glow", caster, "overhead")
+        HealUnit(caster, caster, 250)
+        if item then
+            local c = GetItemCharges(item) - 1
+            SetItemCharges(item, c)
+            if c <= 0 then RemoveItem(item) end
+        end
+        Log("[Potion] " .. GetUnitTypeId(caster) .. " healed for 250")
+    end)
+    Log("[Scene02] Healing-potion charge consumption registered")
+
     Log("[Scene02] Setup complete — heroes defending center against creep waves")
 end

@@ -30,6 +30,7 @@ struct CommandBarConfig;       // command_bar.h
 struct JoystickConfig;         // joystick.h
 struct CastIndicatorConfig;    // cast_indicator.h
 struct CastIndicatorStyle;     // cast_indicator.h
+struct InventoryConfig;        // inventory.h
 
 // Packed RGBA color, 0xAABBGGRR on little-endian hosts. Use rgba() helper
 // to build one; the HUD pipeline expects u8×4 → normalized vec4 with the
@@ -441,6 +442,24 @@ public:
     // Passed through from the app each frame; the classic_rts render
     // highlights the matching slot so the player sees what's armed.
     void command_bar_set_armed_command(std::string_view command_id);
+
+    // Inventory composite — per-unit item slots driven by the local
+    // selection. Slot contents are automatic each frame (read from the
+    // selected unit's `Inventory.slots`); the composite only owns the
+    // layout, styling, and click-to-use plumbing. Click on an active
+    // item slot fires `abilities[0]` through the use-fn callback with
+    // the item handle attached so triggers can reach `GetTriggerItem`.
+    void set_inventory_config(const InventoryConfig& cfg);
+    void inventory_set_visible(bool visible);
+
+    // Fired when a click on an active item slot resolves. Args:
+    //   item_unit_id   — entity id of the item handle in the slot
+    //   ability_id     — the item's `abilities[0]` (the "use" ability)
+    // App wires this to a Cast-with-source_item submit path. Passive
+    // items don't fire (HUD filters by form before invoking).
+    using InventoryUseFn = std::function<void(u32 item_id,
+                                              const std::string& ability_id)>;
+    void set_inventory_use_fn(InventoryUseFn fn);
 
     // Joystick composite — virtual analog stick for touch-screen camera
     // pan. Per-frame flow is: App calls `joystick_update(input)` which

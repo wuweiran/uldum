@@ -716,6 +716,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         aset.casting_id       = cast_order->ability_id;
                         aset.cast_target_unit = cast_order->target_unit;
                         aset.cast_target_pos  = cast_order->target_pos;
+                        aset.cast_source_item = cast_order->source_item;
 
                         auto& lvl = def->level_data(inst->level);
                         bool needs_range = (def->form == AbilityForm::TargetUnit ||
@@ -808,7 +809,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 auto* info = world.handle_infos.get(id);
                                 caster.generation = info ? info->generation : 0;
                                 world.on_ability_effect(caster, aset.casting_id,
-                                                       aset.cast_target_unit, target_pos);
+                                                       aset.cast_target_unit, target_pos,
+                                                       aset.cast_source_item);
                             }
                             aset.cast_state = CastState::Backswing;
                             aset.cast_timer = lvl.backsw_time;
@@ -867,6 +869,127 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             for (auto& app : deferred) {
                 apply_passive_ability(world, abilities, app.target, app.ability_id, app.source, app.duration);
             }
+        }
+    }
+}
+
+// ── Item system — pickup walk-then-claim, drop ─────────────────────────────
+//
+// Keeps the cast / combat pattern symmetric: the order ("walk to item,
+// then take it") is split between this loop's claim check and the
+// movement system's approach machinery. We set `approach_goal` to the
+// item position with `approach_range = pickup_radius`; movement walks
+// the unit there, this system fires the actual transfer once the unit
+// is in range.
+//
+// Drops happen instantly — no walk — so DropItem is a one-shot per
+// tick.
+
+void system_items(World& world, float /*dt*/) {
+    if (!world.types) return;
+
+    for (u32 i = 0; i < world.order_queues.count(); ++i) {
+        u32 id = world.order_queues.ids()[i];
+        auto& oq = world.order_queues.data()[i];
+        if (!oq.current) continue;
+
+        // ── PickupItem ───────────────────────────────────────────────
+        if (auto* po = std::get_if<orders::PickupItem>(&oq.current->payload)) {
+            // Validate target item still exists.
+            if (!world.validate(po->item)) {
+                oq.current.reset();
+                if (auto* mov = world.movements.get(id)) {
+                    mov->approach_range = 0;
+                    mov->approach_target = Unit{};
+                }
+                continue;
+            }
+            // Already carried (by anyone) → cancel the pickup quietly.
+            if (auto* car = world.carriables.get(po->item.id);
+                car && car->carried_by.is_valid()) {
+                oq.current.reset();
+                if (auto* mov = world.movements.get(id)) {
+                    mov->approach_range = 0;
+                    mov->approach_target = Unit{};
+                }
+                continue;
+            }
+
+            const auto* tf_unit = world.transforms.get(id);
+            const auto* tf_item = world.transforms.get(po->item.id);
+            if (!tf_unit || !tf_item) {
+                oq.current.reset();
+                continue;
+            }
+
+            // Compute pickup radius from the item type def.
+            f32 pickup_r = 48.0f;
+            if (auto* info = world.item_infos.get(po->item.id)) {
+                if (auto* def = world.types->get_item_type(info->type_id)) {
+                    pickup_r = def->pickup_radius;
+                }
+            }
+
+            f32 dx = tf_item->position.x - tf_unit->position.x;
+            f32 dy = tf_item->position.y - tf_unit->position.y;
+            f32 dist2 = dx*dx + dy*dy;
+
+            // In range → claim into first free inventory slot.
+            if (dist2 <= pickup_r * pickup_r) {
+                Unit unit_h{ id, world.handle_infos.get(id) ?
+                                  world.handle_infos.get(id)->generation : 0 };
+                i32 slot = give_item_to_unit(world, unit_h, po->item);
+                // slot < 0 = inventory full; the claim failed but we
+                // still pop the order so the unit doesn't stand on
+                // top of the item forever. Map Lua can re-issue if it
+                // wants different behavior.
+                if (auto* mov = world.movements.get(id)) {
+                    mov->approach_range = 0;
+                    mov->approach_target = Unit{};
+                }
+                if (slot >= 0 && world.on_item_picked_up) {
+                    world.on_item_picked_up(unit_h, po->item, slot);
+                }
+                oq.current.reset();
+                continue;
+            }
+
+            // Out of range → ensure movement is approaching the item.
+            if (auto* mov = world.movements.get(id)) {
+                mov->approach_target = Unit{};
+                mov->approach_goal   = { tf_item->position.x, tf_item->position.y };
+                mov->approach_range  = pickup_r;
+            }
+            // Stay in this order; next tick re-checks distance.
+        }
+
+        // ── DropItem ─────────────────────────────────────────────────
+        else if (auto* d = std::get_if<orders::DropItem>(&oq.current->payload)) {
+            Unit unit_h{ id, world.handle_infos.get(id) ?
+                              world.handle_infos.get(id)->generation : 0 };
+
+            // Find which slot holds this item (DropItem carries the
+            // item handle; the slot is implied by the inventory).
+            i32 slot = -1;
+            if (auto* inv = world.inventories.get(id)) {
+                for (i32 s = 0; s < static_cast<i32>(inv->slots.size()); ++s) {
+                    if (inv->slots[s].id == d->item.id &&
+                        inv->slots[s].generation == d->item.generation) {
+                        slot = s; break;
+                    }
+                }
+            }
+            if (slot >= 0) {
+                glm::vec3 pos = d->pos;
+                if (pos.x == 0.0f && pos.y == 0.0f) {
+                    if (auto* tf = world.transforms.get(id)) pos = tf->position;
+                }
+                drop_item_from_unit(world, unit_h, slot, pos);
+                if (world.on_item_dropped) {
+                    world.on_item_dropped(unit_h, d->item);
+                }
+            }
+            oq.current.reset();
         }
     }
 }

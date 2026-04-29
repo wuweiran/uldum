@@ -123,6 +123,7 @@ public:
     void set_context_spell_target_unit(u32 id) { m_ctx_spell_target_unit = id; }
     void set_context_spell_target_x(f32 x) { m_ctx_spell_target_x = x; }
     void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
+    void set_context_item(simulation::Item it)   { m_ctx_item = it; }
     void set_context_node_id(std::string id) { m_ctx_node_id = std::move(id); }
 
     // Configure Lua package.path so require() resolves from these directories.
@@ -210,6 +211,7 @@ private:
     u32  m_ctx_spell_target_unit = UINT32_MAX;
     f32  m_ctx_spell_target_x    = 0;
     f32  m_ctx_spell_target_y    = 0;
+    simulation::Item m_ctx_item{};  // for item events / item-sourced casts (GetTriggerItem)
     std::string m_ctx_node_id;   // which HUD node fired the event (button_pressed etc.)
 };
 

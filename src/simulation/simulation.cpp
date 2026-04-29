@@ -151,6 +151,7 @@ void Simulation::tick(float dt) {
     system_movement(m_world, dt, m_pathfinder, m_spatial_grid, m_terrain);
     system_combat(m_world, dt, m_spatial_grid);
     system_ability(m_world, dt, m_abilities, m_spatial_grid);
+    system_items(m_world, dt);
     system_projectile(m_world, dt);
     system_collision(m_world, m_spatial_grid, m_pathfinder);
     system_death(m_world);

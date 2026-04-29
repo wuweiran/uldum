@@ -616,15 +616,13 @@ Custom retained-mode UI stack, separate from RmlUi. Available in both dev and ga
 
 ### Phase 17 — Items
 
-The engine's first gameplay primitive beyond combat / abilities. Items are common across nearly every map style — pickups, equipables, consumables, key items, charges-based usables. WC3-flavored: each item is a JSON-defined type with classifications, optional on-use ability, optional on-equip modifiers; units carry an inventory of slots. Lua API mirrors WC3's `CreateItem` / `UnitAddItem` / `RemoveItem` / `UnitUseItem` shape.
+First gameplay primitive beyond combat / abilities. Engine stays policy-light: an item is a typed entity bundling icon + model + a list of abilities granted to the carrier, plus two free integer fields (`charges`, `level`) the engine renders but never interprets. WC3-style consumption / merge / drop-on-death live in map Lua, on top of `EVENT_ITEM_*` events that expose `GetTriggerItem()`. Full design in [docs/items.md](items.md).
 
-- Item type schema (icon, classifications, usable, stackable, charges, on-use ability id, on-equip modifiers).
-- Inventory component on units; slot count from the existing unit_type's `inventory_size`.
-- Orders: PickUp, Drop, Use; same submit/sync path as combat orders.
-- Lua bindings: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitHasItem`, `GetItemCharges`, etc.
-- HUD: inventory atom (slot row, drag/drop on desktop, tap-to-use on mobile).
-- Network: item state riding existing entity sync; no new message kinds.
-- Demo: `action_test` gets a few item types (potion, sword) and the hero picks them up.
+- Item type schema (`item_types.json`); kind derived from `abilities[0].form`.
+- `Inventory` component + `Item` entity; smart right-click `PickUp` order; `Drop` from Lua / HUD.
+- `inventory` HUD composite — slot row, icon, charges (bottom-right) and level (top-left) badges shown only when > 0.
+- Lua bindings: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitDropItemFromSlot`, `GetItem{Charges,Level,TypeId}`, `SetItem{Charges,Level}`, `GetTriggerItem`, item events.
+- Network: rides existing entity-delta sync; no new message kinds.
 
 ### Phase 18 — Regions + Dialogs + Camera scripting
 

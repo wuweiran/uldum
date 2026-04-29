@@ -286,6 +286,22 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
 
     // Right click: smart order
     if (input.mouse_right_pressed && !sel.empty()) {
+        // Item check first — items have smaller selection radii than
+        // units, and a unit standing on top of an item shouldn't steal
+        // the click (the player almost always wants to pick up the
+        // item in that case). pick_item already excludes carried items
+        // so dropped-near-self items still resolve cleanly.
+        auto picked_item = ctx.picker.pick_item(input.mouse_x, input.mouse_y);
+        if (picked_item.is_valid()) {
+            GameCommand cmd;
+            cmd.player = sel.player();
+            cmd.units  = sel.selected();
+            cmd.order  = simulation::orders::PickupItem{picked_item};
+            cmd.queued = input.key_shift;
+            ctx.commands.submit(cmd);
+            return;
+        }
+
         // Check if clicking on a unit
         auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
 

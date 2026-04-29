@@ -8,6 +8,7 @@
 #include "hud/command_bar.h"
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
+#include "hud/inventory.h"
 #include "hud/layout.h"
 #include "asset/asset.h"
 #include "core/log.h"
@@ -548,11 +549,96 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
             log::info(TAG, "cast_indicator: registered");
         }
 
+        if (auto iv = comps->find("inventory"); iv != comps->end() && iv->is_object()) {
+            InventoryConfig cfg{};
+            cfg.enabled = true;
+
+            cfg.placement.anchor = parse_anchor(iv->value("anchor", "br"));
+            cfg.placement.x      = iv->value("x", 0.0f);
+            cfg.placement.y      = iv->value("y", 0.0f);
+            cfg.placement.w      = iv->value("w", 0.0f);
+            cfg.placement.h      = iv->value("h", 0.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            if (auto sid = iv->find("style"); sid != iv->end() && sid->is_string()) {
+                const std::string s = sid->get<std::string>();
+                if (s == "classic_rts") {
+                    cfg.style_id = InventoryStyleId::ClassicRts;
+                } else {
+                    log::warn(TAG, "inventory: unknown style '{}', using classic_rts", s);
+                }
+            }
+
+            if (auto sp = iv->find("style_params"); sp != iv->end() && sp->is_object()) {
+                if (auto v = sp->find("bg");                  v != sp->end()) cfg.style.bg                  = parse_color(*v);
+                if (auto v = sp->find("cooldown_overlay");    v != sp->end()) cfg.style.cooldown_overlay    = parse_color(*v);
+                if (auto v = sp->find("cooldown_text_color"); v != sp->end()) cfg.style.cooldown_text_color = parse_color(*v);
+                if (auto v = sp->find("cooldown_text_size");  v != sp->end() && v->is_number())
+                    cfg.style.cooldown_text_size = v->get<f32>();
+                if (auto v = sp->find("hotkey_color");        v != sp->end()) cfg.style.hotkey_color        = parse_color(*v);
+                if (auto v = sp->find("hotkey_badge_bg");     v != sp->end()) cfg.style.hotkey_badge_bg     = parse_color(*v);
+                if (auto v = sp->find("charges_color");       v != sp->end()) cfg.style.charges_color       = parse_color(*v);
+                if (auto v = sp->find("charges_badge_bg");    v != sp->end()) cfg.style.charges_badge_bg    = parse_color(*v);
+                if (auto v = sp->find("charges_text_size");   v != sp->end() && v->is_number())
+                    cfg.style.charges_text_size = v->get<f32>();
+                if (auto v = sp->find("level_color");         v != sp->end()) cfg.style.level_color         = parse_color(*v);
+                if (auto v = sp->find("level_badge_bg");      v != sp->end()) cfg.style.level_badge_bg      = parse_color(*v);
+                if (auto v = sp->find("level_text_size");     v != sp->end() && v->is_number())
+                    cfg.style.level_text_size = v->get<f32>();
+                if (auto v = sp->find("disabled_tint");       v != sp->end()) cfg.style.disabled_tint       = parse_color(*v);
+            }
+
+            InventorySlotStyle default_slot_style{};
+            if (auto ss = iv->find("slot_style"); ss != iv->end() && ss->is_object()) {
+                if (auto v = ss->find("bg");           v != ss->end()) default_slot_style.bg           = parse_color(*v);
+                if (auto v = ss->find("hover_bg");     v != ss->end()) default_slot_style.hover_bg     = parse_color(*v);
+                if (auto v = ss->find("press_bg");     v != ss->end()) default_slot_style.press_bg     = parse_color(*v);
+                if (auto v = ss->find("empty_bg");     v != ss->end()) default_slot_style.empty_bg     = parse_color(*v);
+                if (auto v = ss->find("border_color"); v != ss->end()) default_slot_style.border_color = parse_color(*v);
+                if (auto v = ss->find("border_width"); v != ss->end() && v->is_number())
+                    default_slot_style.border_width = v->get<f32>();
+            }
+
+            if (auto slots = iv->find("slots"); slots != iv->end() && slots->is_array()) {
+                for (const auto& js : *slots) {
+                    if (!js.is_object()) continue;
+                    InventorySlot slot{};
+                    slot.style = default_slot_style;
+
+                    slot.placement.anchor = parse_anchor(js.value("anchor", "tl"));
+                    slot.placement.x      = js.value("x", 0.0f);
+                    slot.placement.y      = js.value("y", 0.0f);
+                    slot.placement.w      = js.value("w", 48.0f);
+                    slot.placement.h      = js.value("h", 48.0f);
+                    slot.rect = resolve(cfg.rect, slot.placement);
+
+                    if (auto v = js.find("hotkey"); v != js.end() && v->is_string()) {
+                        slot.hotkey = v->get<std::string>();
+                    }
+
+                    if (auto st = js.find("style"); st != js.end() && st->is_object()) {
+                        if (auto v = st->find("bg");           v != st->end()) slot.style.bg           = parse_color(*v);
+                        if (auto v = st->find("hover_bg");     v != st->end()) slot.style.hover_bg     = parse_color(*v);
+                        if (auto v = st->find("press_bg");     v != st->end()) slot.style.press_bg     = parse_color(*v);
+                        if (auto v = st->find("empty_bg");     v != st->end()) slot.style.empty_bg     = parse_color(*v);
+                        if (auto v = st->find("border_color"); v != st->end()) slot.style.border_color = parse_color(*v);
+                        if (auto v = st->find("border_width"); v != st->end() && v->is_number())
+                            slot.style.border_width = v->get<f32>();
+                    }
+
+                    cfg.slots.push_back(std::move(slot));
+                }
+            }
+
+            hud.set_inventory_config(cfg);
+            log::info(TAG, "inventory: {} slots", cfg.slots.size());
+        }
+
         // Skim remaining composite keys so authoring feedback is consistent.
         for (auto it = comps->begin(); it != comps->end(); ++it) {
             const std::string& k = it.key();
             if (k == "action_bar" || k == "minimap" || k == "command_bar" ||
-                k == "joystick"   || k == "cast_indicator") continue;
+                k == "joystick"   || k == "cast_indicator" || k == "inventory") continue;
             log::info(TAG, "composite '{}' declared (not yet implemented)", k);
         }
     }

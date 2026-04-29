@@ -9,6 +9,7 @@
 #include "hud/command_bar.h"
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
+#include "hud/inventory.h"
 #include "hud/layout.h"
 
 #include <nlohmann/json.hpp>
@@ -20,6 +21,7 @@
 #include "simulation/components.h"
 #include "simulation/ability_def.h"
 #include "simulation/simulation.h"
+#include "simulation/type_registry.h"
 #include "simulation/fog_of_war.h"
 #include "map/terrain_data.h"
 #include "input/selection.h"
@@ -258,6 +260,15 @@ struct Hud::Impl {
     // frame against the current InputState.
     JoystickConfig  joystick_cfg{};
     JoystickRuntime joystick_rt{};
+
+    // Inventory composite. Slot contents are looked up live from the
+    // selected unit's `Inventory.slots` each frame; the composite owns
+    // layout + click latching only.
+    InventoryConfig  inventory_cfg{};
+    InventoryRuntime inventory_rt{};
+    i32 inventory_hover_slot   = -1;
+    i32 inventory_pressed_slot = -1;
+    Hud::InventoryUseFn inventory_use_fn;
 
     // Cast indicator style — applied to range ring, arrow, reticle,
     // AoE indicator, target-unit ring, and per-phase tints. Drives
@@ -956,6 +967,15 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
         }
     }
 
+    // Inventory — same structure as action_bar / command_bar.
+    auto& iv = m_impl->inventory_cfg;
+    if (iv.enabled) {
+        iv.rect = resolve(viewport, iv.placement);
+        for (auto& slot : iv.slots) {
+            slot.rect = resolve(iv.rect, slot.placement);
+        }
+    }
+
     // Node-tree (hud.json `nodes`) rects are resolved at CreateNode time
     // against the then-current viewport — they remain pinned to those
     // coordinates. Lua can DestroyNode + CreateNode to re-anchor if a
@@ -1089,6 +1109,8 @@ void Hud::reset_session_state() {
     s.command_bar_pressed_slot   = -1;
     s.command_bar_armed_command.clear();
     s.minimap_dragging           = false;
+    s.inventory_hover_slot       = -1;
+    s.inventory_pressed_slot     = -1;
 
     // Composite configs + runtime. The next map's hud.json reload
     // refills any composite it declares; clearing here ensures a
@@ -1102,6 +1124,8 @@ void Hud::reset_session_state() {
     s.minimap_rt         = {};
     s.joystick_cfg       = {};
     s.joystick_rt        = {};
+    s.inventory_cfg      = {};
+    s.inventory_rt       = {};
     s.cast_indicator_cfg = {};
     s.world_cfg          = {};
     s.marquee_style      = {};
@@ -1131,6 +1155,7 @@ void Hud::reset_session_state() {
     s.action_bar_cast_at_target_fn = {};
     s.minimap_jump_fn = {};
     s.command_bar_fn = {};
+    s.inventory_use_fn = {};
 }
 
 void Hud::set_local_player(u32 player_id) {
@@ -1601,6 +1626,24 @@ void Hud::command_bar_set_visible(bool visible) {
 
 void Hud::set_command_bar_fn(CommandFn fn) {
     if (m_impl) m_impl->command_bar_fn = std::move(fn);
+}
+
+// ── Inventory composite ──────────────────────────────────────────────────
+
+void Hud::set_inventory_config(const InventoryConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->inventory_cfg = cfg;
+    m_impl->inventory_rt  = InventoryRuntime{};
+    m_impl->inventory_hover_slot   = -1;
+    m_impl->inventory_pressed_slot = -1;
+}
+
+void Hud::inventory_set_visible(bool visible) {
+    if (m_impl) m_impl->inventory_rt.visible = visible;
+}
+
+void Hud::set_inventory_use_fn(InventoryUseFn fn) {
+    if (m_impl) m_impl->inventory_use_fn = std::move(fn);
 }
 
 void Hud::command_bar_set_armed_command(std::string_view command_id) {
@@ -2431,6 +2474,7 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
                 u32 unit_id = sel.front().id;
                 for (const auto& inst : aset->abilities) {
                     if (slotted_abilities.count(inst.ability_id)) continue;
+                    if (inst.from_item) continue;  // item abilities fire via inventory slot, not hotkey
 
                     const auto* def = s.world_ctx->abilities->get(inst.ability_id);
                     if (!def || def->hotkey.empty()) continue;
@@ -2527,7 +2571,7 @@ resolve_slot_ability(u32 slot_index,
     u32 nth = 0;
     for (const auto& inst : aset->abilities) {
         const auto* def = ctx.abilities->get(inst.ability_id);
-        if (!def || def->hidden) continue;
+        if (!def || def->hidden || inst.from_item) continue;
         if (nth == slot_index) {
             out_def = def;
             return &inst;
@@ -2922,6 +2966,209 @@ static void draw_action_bar_cancel_zone(Hud& hud, Hud::Impl& s) {
     hud.draw_text(x_left, y_base, glyph, cfg.style.cancel_zone_glyph_color, px_size);
 }
 
+// ── Inventory composite ─────────────────────────────────────────────────
+
+// Mirrors action_bar_hit_test / command_bar_hit_test — same shape.
+static i32 inventory_hit_test(const Hud::Impl& s, f32 x, f32 y) {
+    const auto& cfg = s.inventory_cfg;
+    if (!cfg.enabled || !s.inventory_rt.visible) return -1;
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+        const Rect& r = slot.rect;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+            return static_cast<i32>(i);
+        }
+    }
+    return -1;
+}
+
+// Look up the local selection's lead unit's Inventory. Returns nullptr
+// when nothing is selected, the unit has no Inventory component, or
+// world context is incomplete.
+static const simulation::Inventory*
+inventory_resolve_selected(const Hud::Impl& s, u32* out_carrier_id = nullptr) {
+    if (out_carrier_id) *out_carrier_id = UINT32_MAX;
+    if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) return nullptr;
+    const auto& sel = s.world_ctx->selection->selected();
+    if (sel.empty()) return nullptr;
+    u32 id = sel.front().id;
+    const auto* inv = s.world_ctx->world->inventories.get(id);
+    if (inv && out_carrier_id) *out_carrier_id = id;
+    return inv;
+}
+
+// Look up the slot's item handle and its type def. Returns true when
+// the slot holds a valid item with a registered type.
+static bool inventory_resolve_slot(const Hud::Impl& s,
+                                   const simulation::Inventory* inv,
+                                   u32 slot_index,
+                                   simulation::Item& out_item,
+                                   const simulation::ItemInfo*& out_info,
+                                   const simulation::ItemTypeDef*& out_def) {
+    out_item = {};
+    out_info = nullptr;
+    out_def  = nullptr;
+    if (!inv || slot_index >= inv->slots.size()) return false;
+    simulation::Item item = inv->slots[slot_index];
+    if (!item.is_valid() || !s.world_ctx || !s.world_ctx->world) return false;
+    const auto* info = s.world_ctx->world->item_infos.get(item.id);
+    if (!info) return false;
+    out_item = item;
+    out_info = info;
+    if (s.world_ctx->types) out_def = s.world_ctx->types->get_item_type(info->type_id);
+    return true;
+}
+
+static void draw_inventory(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.inventory_cfg;
+    if (!cfg.enabled || !s.inventory_rt.visible) return;
+
+    if ((cfg.style.bg.rgba >> 24) != 0) hud.draw_rect(cfg.rect, cfg.style.bg);
+
+    u32 carrier_id = UINT32_MAX;
+    const simulation::Inventory* inv = inventory_resolve_selected(s, &carrier_id);
+
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+
+        simulation::Item item;
+        const simulation::ItemInfo*    info = nullptr;
+        const simulation::ItemTypeDef* def  = nullptr;
+        bool has_item = inventory_resolve_slot(s, inv, i, item, info, def);
+
+        // Slot background. Empty slots use a darker `empty_bg`; pressed
+        // / hovered states win over both filled and empty so the slot
+        // animates consistently regardless of contents.
+        Color bg = has_item ? slot.style.bg : slot.style.empty_bg;
+        if (slot.pressed)      bg = slot.style.press_bg;
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        hud.draw_rect(slot.rect, bg);
+
+        f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
+        Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
+                        slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
+        if (def && !def->icon_path.empty()) {
+            hud.draw_image(icon_rect, def->icon_path);
+        }
+
+        // Cooldown / disabled wash come from the item's first ability
+        // (the "use" ability for active items). Look it up live from the
+        // carrier's ability set — it lives there because give_item_to_unit
+        // grants every item ability into the carrier on pickup.
+        if (def && !def->abilities.empty() && carrier_id != UINT32_MAX
+            && s.world_ctx && s.world_ctx->world && s.world_ctx->abilities) {
+            const std::string& fa = def->abilities[0];
+            const auto* aset = s.world_ctx->world->ability_sets.get(carrier_id);
+            const simulation::AbilityInstance* inst = nullptr;
+            if (aset) {
+                for (const auto& a : aset->abilities) {
+                    if (a.ability_id == fa) { inst = &a; break; }
+                }
+            }
+            const auto* abil_def = s.world_ctx->abilities->get(fa);
+            if (inst && abil_def && is_castable_form(abil_def->form)) {
+                bool on_cooldown = inst->cooldown_remaining > 0.05f
+                                && abil_def->level_data(inst->level).cooldown > 0.0f;
+                if (on_cooldown) {
+                    f32 total = abil_def->level_data(inst->level).cooldown;
+                    f32 frac  = inst->cooldown_remaining / total;
+                    draw_cooldown_pie(s, icon_rect, frac, cfg.style.cooldown_overlay);
+
+                    char buf[16];
+                    format_cooldown_secs(inst->cooldown_remaining, buf, sizeof(buf));
+                    if (buf[0] != '\0') {
+                        f32 px = cfg.style.cooldown_text_size;
+                        f32 tw = hud.text_width_px(buf, px);
+                        f32 line_h = hud.text_line_height_px(px);
+                        f32 ascent = hud.text_ascent_px(px);
+                        f32 tx = icon_rect.x + (icon_rect.w - tw) * 0.5f;
+                        f32 ty = icon_rect.y + (icon_rect.h - line_h) * 0.5f + ascent;
+                        hud.draw_text(tx, ty, buf, cfg.style.cooldown_text_color, px);
+                    }
+                } else if (!can_afford(*s.world_ctx->world, carrier_id,
+                                       abil_def->level_data(inst->level))) {
+                    hud.draw_rect(icon_rect, cfg.style.disabled_tint);
+                }
+            }
+        }
+
+        // Border.
+        if (bw > 0.0f && (slot.style.border_color.rgba >> 24) != 0) {
+            Rect r = slot.rect;
+            hud.draw_rect({ r.x, r.y, r.w, bw }, slot.style.border_color);
+            hud.draw_rect({ r.x, r.y + r.h - bw, r.w, bw }, slot.style.border_color);
+            hud.draw_rect({ r.x, r.y, bw, r.h }, slot.style.border_color);
+            hud.draw_rect({ r.x + r.w - bw, r.y, bw, r.h }, slot.style.border_color);
+        }
+
+        // Hotkey badge — top-right. Always shown for visible slots so the
+        // player can see the keybind even on empty slots (positional UX).
+        if (!slot.hotkey.empty()) {
+            f32 px_size = slot.rect.h * 0.28f;
+            if (px_size < 10.0f) px_size = 10.0f;
+            f32 text_w = hud.text_width_px(slot.hotkey, px_size);
+            f32 x_left = slot.rect.x + slot.rect.w - text_w - 4.0f;
+            f32 ascent = hud.text_ascent_px(px_size);
+            f32 y_base = slot.rect.y + ascent + 2.0f;
+            if ((cfg.style.hotkey_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f, pad_y = 1.0f;
+                Rect bg_pill{
+                    x_left - pad_x, y_base - ascent - pad_y,
+                    text_w + pad_x * 2.0f, ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg_pill, cfg.style.hotkey_badge_bg);
+            }
+            hud.draw_text(x_left, y_base, slot.hotkey, cfg.style.hotkey_color, px_size);
+        }
+
+        // Charges badge — bottom-right, drawn only when value > 0.
+        // The hotkey already owns top-right; bottom-right is the clear
+        // corner. Pill-on-glyph keeps it readable on bright icons.
+        if (info && info->charges > 0) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%d", info->charges);
+            f32 px = cfg.style.charges_text_size;
+            f32 tw = hud.text_width_px(buf, px);
+            f32 ascent = hud.text_ascent_px(px);
+            f32 x_left = slot.rect.x + slot.rect.w - tw - 4.0f;
+            f32 y_base = slot.rect.y + slot.rect.h - 4.0f;
+            if ((cfg.style.charges_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f, pad_y = 1.0f;
+                Rect bg_pill{
+                    x_left - pad_x, y_base - ascent - pad_y,
+                    tw + pad_x * 2.0f, ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg_pill, cfg.style.charges_badge_bg);
+            }
+            hud.draw_text(x_left, y_base, buf, cfg.style.charges_color, px);
+        }
+
+        // Level badge — top-left. Same render rule as charges, just a
+        // different corner so a pile-of-charges-and-levels item shows
+        // both without overlap.
+        if (info && info->level > 0) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%d", info->level);
+            f32 px = cfg.style.level_text_size;
+            f32 tw = hud.text_width_px(buf, px);
+            f32 ascent = hud.text_ascent_px(px);
+            f32 x_left = slot.rect.x + 4.0f;
+            f32 y_base = slot.rect.y + ascent + 2.0f;
+            if ((cfg.style.level_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f, pad_y = 1.0f;
+                Rect bg_pill{
+                    x_left - pad_x, y_base - ascent - pad_y,
+                    tw + pad_x * 2.0f, ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg_pill, cfg.style.level_badge_bg);
+            }
+            hud.draw_text(x_left, y_base, buf, cfg.style.level_color, px);
+        }
+    }
+}
+
 static void draw_action_bar(Hud& hud, Hud::Impl& s) {
     const auto& cfg = s.action_bar_cfg;
     if (!cfg.enabled) return;
@@ -2948,6 +3195,7 @@ void Hud::draw_tree() {
     m_impl->root->draw(*this);
     draw_action_bar(*this, *m_impl);
     draw_command_bar(*this, *m_impl);
+    draw_inventory(*this, *m_impl);
     draw_minimap(*this, *m_impl);
     draw_joystick(*this, *m_impl);
 }
@@ -2990,8 +3238,9 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // drag-select from the same finger while dragging the knob.
     i32  bar_slot    = action_bar_hit_test(s, x, y);
     i32  cmd_slot    = (bar_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
-    bool on_minimap  = (bar_slot < 0) && (cmd_slot < 0) && minimap_hit_test(s, x, y);
-    bool on_joystick = (bar_slot < 0) && (cmd_slot < 0) && !on_minimap
+    i32  inv_slot    = (bar_slot < 0 && cmd_slot < 0) ? inventory_hit_test(s, x, y) : -1;
+    bool on_minimap  = (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && minimap_hit_test(s, x, y);
+    bool on_joystick = (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && !on_minimap
                        && (s.joystick_rt.captured_slot == 0
                            || joystick_hit_test_point(s.joystick_cfg, x, y));
 
@@ -3018,9 +3267,19 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
         }
         s.command_bar_hover_slot = cmd_slot;
     }
+    if (inv_slot != s.inventory_hover_slot) {
+        if (s.inventory_hover_slot >= 0 &&
+            static_cast<u32>(s.inventory_hover_slot) < s.inventory_cfg.slots.size()) {
+            s.inventory_cfg.slots[s.inventory_hover_slot].hovered = false;
+        }
+        if (inv_slot >= 0) {
+            s.inventory_cfg.slots[inv_slot].hovered = true;
+        }
+        s.inventory_hover_slot = inv_slot;
+    }
 
     Node* under = nullptr;
-    if (bar_slot < 0 && cmd_slot < 0 && !on_minimap && !on_joystick) {
+    if (bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 && !on_minimap && !on_joystick) {
         under = hit_test_tree(s.root.get(), x, y, s.local_player);
     }
 
@@ -3097,6 +3356,9 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
         } else if (cmd_slot >= 0) {
             s.command_bar_pressed_slot = cmd_slot;
             s.command_bar_cfg.slots[cmd_slot].pressed = true;
+        } else if (inv_slot >= 0) {
+            s.inventory_pressed_slot = inv_slot;
+            s.inventory_cfg.slots[inv_slot].pressed = true;
         } else if (on_minimap) {
             // Minimap press — start a drag that pans the camera. Each
             // pointer move while held re-fires minimap_jump_fn (handled
@@ -3160,6 +3422,49 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 }
             }
             s.command_bar_pressed_slot = -1;
+        } else if (s.inventory_pressed_slot >= 0) {
+            // Click on an inventory slot → fire the slot's first ability
+            // through the use callback, with the item handle attached so
+            // triggers reading GetTriggerItem() resolve to this item.
+            // Passive items (`abilities[0].form == passive`) are filtered
+            // here and don't fire — same behavior as a passive ability
+            // landing in the action_bar.
+            u32 idx = static_cast<u32>(s.inventory_pressed_slot);
+            bool over = (inv_slot == s.inventory_pressed_slot);
+            if (idx < s.inventory_cfg.slots.size()) {
+                auto& slot = s.inventory_cfg.slots[idx];
+                slot.pressed = false;
+                if (over && s.inventory_use_fn && s.world_ctx
+                    && s.world_ctx->world && s.world_ctx->abilities) {
+                    u32 carrier_id = UINT32_MAX;
+                    const simulation::Inventory* inv_data =
+                        inventory_resolve_selected(s, &carrier_id);
+                    simulation::Item item;
+                    const simulation::ItemInfo*    info = nullptr;
+                    const simulation::ItemTypeDef* def  = nullptr;
+                    if (inventory_resolve_slot(s, inv_data, idx, item, info, def)
+                        && def && !def->abilities.empty()) {
+                        const std::string& fa = def->abilities[0];
+                        const auto* abil_def = s.world_ctx->abilities->get(fa);
+                        if (abil_def && is_castable_form(abil_def->form)) {
+                            // Cooldown / affordability gate — same as
+                            // action_bar's slot_castable_now path. The
+                            // carrier owns the granted ability instance.
+                            const auto* aset = s.world_ctx->world->ability_sets.get(carrier_id);
+                            const simulation::AbilityInstance* inst = nullptr;
+                            if (aset) {
+                                for (const auto& a : aset->abilities) {
+                                    if (a.ability_id == fa) { inst = &a; break; }
+                                }
+                            }
+                            if (inst && slot_castable_now(*s.world_ctx, carrier_id, *inst, *abil_def)) {
+                                s.inventory_use_fn(item.id, fa);
+                            }
+                        }
+                    }
+                }
+            }
+            s.inventory_pressed_slot = -1;
         } else if (s.pressed) {
             bool over = (under == s.pressed);
             std::string clicked_id = s.pressed->id;
@@ -3200,6 +3505,8 @@ bool Hud::input_captured() const {
         || m_impl->action_bar_pressed_slot  >= 0
         || m_impl->command_bar_hover_slot   >= 0
         || m_impl->command_bar_pressed_slot >= 0
+        || m_impl->inventory_hover_slot     >= 0
+        || m_impl->inventory_pressed_slot   >= 0
         || minimap_hit_test(*m_impl, m_impl->pointer_x, m_impl->pointer_y)
         || m_impl->minimap_dragging
         || m_impl->joystick_rt.captured_slot == 0;

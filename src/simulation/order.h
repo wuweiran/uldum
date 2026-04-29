@@ -18,7 +18,14 @@ namespace orders {
     struct Stop          {};
     struct HoldPosition  {};
     struct Patrol        { std::vector<glm::vec3> waypoints; u32 current = 0; };
-    struct Cast          { std::string ability_id; Unit target_unit; glm::vec3 target_pos; };
+    struct Cast          { std::string ability_id; Unit target_unit; glm::vec3 target_pos;
+                           // If the cast originated from an item slot,
+                           // this carries the item handle so the
+                           // simulation can surface it via the
+                           // on_ability_effect callback (and Lua's
+                           // GetTriggerItem). Default-constructed
+                           // (invalid) for non-item casts.
+                           Item source_item; };
     struct Train         { std::string unit_type_id; };
     struct Research      { std::string research_id; };
     struct Build         { std::string building_type_id; glm::vec3 pos; };

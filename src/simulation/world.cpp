@@ -202,12 +202,14 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     Handle h = world.handles.allocate();
     u32 id = h.id;
 
-    world.transforms.add(id, Transform{{x, y, 0.0f}, 0, 1.0f, {x, y, 0.0f}, 0});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, 0, def->model_scale, {x, y, 0.0f}, 0});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item, h.generation});
-    world.healths.add(id, Health{1, 1, 0});
-    world.selectables.add(id, Selectable{0.5f, 20.0f, 1});
-    world.item_infos.add(id, ItemInfo{std::string(type_id), def->charges, def->cooldown, 0});
+    world.selectables.add(id, Selectable{32.0f, 24.0f, 1});
+    world.item_infos.add(id, ItemInfo{std::string(type_id), def->initial_charges, def->initial_level});
     world.carriables.add(id, Carriable{});
+    if (!def->model_path.empty()) {
+        world.renderables.add(id, Renderable{def->model_path, true, true});
+    }
 
     Item item;
     item.id = h.id;
@@ -389,6 +391,101 @@ void set_charges(World& world, Item item, i32 charges) {
     if (!world.validate(item)) return;
     auto* info = world.item_infos.get(item.id);
     if (info) info->charges = charges;
+}
+
+i32 get_level(const World& world, Item item) {
+    if (!world.validate(item)) return 0;
+    auto* info = world.item_infos.get(item.id);
+    return info ? info->level : 0;
+}
+
+void set_level(World& world, Item item, i32 level) {
+    if (!world.validate(item)) return;
+    auto* info = world.item_infos.get(item.id);
+    if (info) info->level = level;
+}
+
+Unit get_item_owner(const World& world, Item item) {
+    if (!world.validate(item)) return {};
+    auto* c = world.carriables.get(item.id);
+    return c ? c->carried_by : Unit{};
+}
+
+i32 give_item_to_unit(World& world, Unit unit, Item item) {
+    if (!world.validate(unit) || !world.validate(item)) return -1;
+    auto* inv = world.inventories.get(unit.id);
+    if (!inv) return -1;
+    auto* car = world.carriables.get(item.id);
+    if (!car) return -1;
+    if (car->carried_by.is_valid()) return -1;  // already carried
+
+    // First free slot.
+    i32 slot = -1;
+    for (i32 i = 0; i < static_cast<i32>(inv->slots.size()); ++i) {
+        if (!inv->slots[i].is_valid()) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    inv->slots[slot] = item;
+    car->carried_by  = unit;
+
+    // Grant the item's abilities to the carrier. Each ability is added
+    // at level 1 (level scaling lives on AbilityInstance, not item).
+    // Mark them `from_item` so the action_bar hides their icons —
+    // item abilities surface only through the inventory composite.
+    if (world.abilities && world.types) {
+        if (auto* def = world.types->get_item_type(world.item_infos.get(item.id)->type_id)) {
+            for (const auto& aid : def->abilities) {
+                add_ability(world, *world.abilities, unit, aid, 1);
+                if (auto* aset = world.ability_sets.get(unit.id)) {
+                    for (auto& inst : aset->abilities) {
+                        if (inst.ability_id == aid) { inst.from_item = true; break; }
+                    }
+                }
+            }
+        }
+    }
+
+    // Hide the ground rendering — item still exists as an entity, but
+    // its model no longer draws while in inventory.
+    if (auto* r = world.renderables.get(item.id)) r->visible = false;
+
+    return slot;
+}
+
+bool drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos) {
+    if (!world.validate(unit)) return false;
+    auto* inv = world.inventories.get(unit.id);
+    if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) return false;
+    Item item = inv->slots[slot];
+    if (!world.validate(item)) return false;
+
+    auto* car = world.carriables.get(item.id);
+    if (!car || car->carried_by.id != unit.id) return false;
+
+    // Revoke the item's abilities from the carrier.
+    if (world.types) {
+        auto* info = world.item_infos.get(item.id);
+        if (info) {
+            if (auto* def = world.types->get_item_type(info->type_id)) {
+                for (const auto& aid : def->abilities) {
+                    remove_ability(world, unit, aid);
+                }
+            }
+        }
+    }
+
+    inv->slots[slot] = Item{};
+    car->carried_by  = Unit{};
+
+    // Place on ground at requested position.
+    if (auto* tf = world.transforms.get(item.id)) {
+        tf->position = pos;
+        tf->prev_position = pos;
+    }
+    if (auto* r = world.renderables.get(item.id)) r->visible = true;
+
+    return true;
 }
 
 // ── Ability API ───────────────────────────────────────────────────────────

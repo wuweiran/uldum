@@ -142,6 +142,11 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         "is_valid", &simulation::Player::is_valid,
         sol::meta_function::equal_to, [](const simulation::Player& a, const simulation::Player& b) { return a == b; }
     );
+    lua.new_usertype<simulation::Item>("Item",
+        "id", &simulation::Item::id,
+        "is_valid", &simulation::Item::is_valid,
+        sol::meta_function::equal_to, [](const simulation::Item& a, const simulation::Item& b) { return a == b; }
+    );
 
     bind_api();
     bind_trigger_api();
@@ -171,15 +176,31 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     };
 
     // Hook ability effect callback — fires on_ability_effect when a cast reaches cast_point
-    sim.world().on_ability_effect = [this, &sim](simulation::Unit caster, std::string_view ability_id,
-                                                  simulation::Unit target_unit, glm::vec3 target_pos) {
+    sim.world().on_ability_effect = [this](simulation::Unit caster, std::string_view ability_id,
+                                            simulation::Unit target_unit, glm::vec3 target_pos,
+                                            simulation::Item source_item) {
         set_context_unit(caster.id);
         set_context_ability(std::string(ability_id));
         set_context_spell_target_unit(target_unit.is_valid() ? target_unit.id : UINT32_MAX);
         set_context_spell_target_x(target_pos.x);
         set_context_spell_target_y(target_pos.y);
+        set_context_item(source_item);
         fire_event("global_ability_effect", caster.id, ability_id);
         fire_event("unit_ability_effect", caster.id, ability_id);
+    };
+
+    // Item events fired by system_items.
+    sim.world().on_item_picked_up = [this](simulation::Unit unit, simulation::Item item, i32 /*slot*/) {
+        set_context_unit(unit.id);
+        set_context_item(item);
+        fire_event("global_item_picked_up", unit.id);
+        fire_event("unit_item_picked_up", unit.id);
+    };
+    sim.world().on_item_dropped = [this](simulation::Unit unit, simulation::Item item) {
+        set_context_unit(unit.id);
+        set_context_item(item);
+        fire_event("global_item_dropped", unit.id);
+        fire_event("unit_item_dropped", unit.id);
     };
 
     log::info(TAG, "ScriptEngine initialized — Lua 5.4 + sol2");
@@ -938,6 +959,115 @@ void ScriptEngine::bind_api() {
         fire_event("global_game_end");
         if (m_end_game_fn) m_end_game_fn(winner_id, stats);
     };
+
+    // ── Item API ─────────────────────────────────────────────────────────
+    // Items as a collection of abilities — engine stores type + two free
+    // integer fields (`charges`, `level`) but doesn't interpret them.
+    // Map Lua drives consumption / level-up / merge / drop-on-death.
+
+    auto item_or_nil = [&](simulation::Item it) -> sol::object {
+        return it.is_valid() ? sol::make_object(*m_lua, it)
+                              : sol::make_object(*m_lua, sol::nil);
+    };
+
+    lua["CreateItem"] = [&, item_or_nil](const std::string& type_id, f32 x, f32 y) -> sol::object {
+        auto item = simulation::create_item(sim.world(), type_id, x, y);
+        if (item.is_valid()) {
+            if (auto* t = sim.world().transforms.get(item.id)) {
+                t->position.z      = ::uldum::map::sample_height(terrain_ref, x, y);
+                t->prev_position.z = t->position.z;
+            }
+        }
+        return item_or_nil(item);
+    };
+    lua["RemoveItem"] = [&](simulation::Item item) {
+        // If carried, revoke abilities + clear the carrier's slot
+        // before destroying the entity.
+        if (auto* car = sim.world().carriables.get(item.id);
+            car && car->carried_by.is_valid()) {
+            auto* inv = sim.world().inventories.get(car->carried_by.id);
+            if (inv) {
+                for (auto& s : inv->slots) {
+                    if (s.id == item.id && s.generation == item.generation) {
+                        s = simulation::Item{};
+                        break;
+                    }
+                }
+            }
+            // Revoke abilities granted by this item.
+            if (sim.world().types) {
+                if (auto* info = sim.world().item_infos.get(item.id)) {
+                    if (auto* def = sim.world().types->get_item_type(info->type_id)) {
+                        for (const auto& aid : def->abilities) {
+                            simulation::remove_ability(sim.world(), car->carried_by, aid);
+                        }
+                    }
+                }
+            }
+        }
+        simulation::destroy(sim.world(), item);
+    };
+
+    lua["GiveItem"] = [&](simulation::Unit unit, simulation::Item item) -> i32 {
+        return simulation::give_item_to_unit(sim.world(), unit, item);
+    };
+    lua["UnitDropItemFromSlot"] = [&](simulation::Unit unit, i32 slot, sol::optional<f32> x, sol::optional<f32> y) {
+        glm::vec3 pos{0, 0, 0};
+        if (auto* tf = sim.world().transforms.get(unit.id)) pos = tf->position;
+        if (x) pos.x = *x;
+        if (y) pos.y = *y;
+        // pull existing item slot
+        auto* inv = sim.world().inventories.get(unit.id);
+        if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) return false;
+        auto item = inv->slots[slot];
+        if (!item.is_valid()) return false;
+        return simulation::drop_item_from_unit(sim.world(), unit, slot, pos);
+    };
+    lua["UnitGetItemFromSlot"] = [&, item_or_nil](simulation::Unit unit, i32 slot) -> sol::object {
+        auto* inv = sim.world().inventories.get(unit.id);
+        if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) {
+            return sol::make_object(*m_lua, sol::nil);
+        }
+        return item_or_nil(inv->slots[slot]);
+    };
+    lua["UnitItemCount"] = [&](simulation::Unit unit) -> i32 {
+        auto* inv = sim.world().inventories.get(unit.id);
+        if (!inv) return 0;
+        i32 n = 0;
+        for (auto& it : inv->slots) if (it.is_valid()) ++n;
+        return n;
+    };
+    lua["UnitInventorySize"] = [&](simulation::Unit unit) -> i32 {
+        auto* inv = sim.world().inventories.get(unit.id);
+        return inv ? static_cast<i32>(inv->slots.size()) : 0;
+    };
+    lua["UnitHasItemOfType"] = [&](simulation::Unit unit, const std::string& type_id) -> bool {
+        auto* inv = sim.world().inventories.get(unit.id);
+        if (!inv) return false;
+        for (auto& it : inv->slots) {
+            if (!it.is_valid()) continue;
+            auto* info = sim.world().item_infos.get(it.id);
+            if (info && info->type_id == type_id) return true;
+        }
+        return false;
+    };
+
+    lua["GetItemTypeId"]  = [&](simulation::Item item) -> std::string {
+        auto* info = sim.world().item_infos.get(item.id);
+        return info ? info->type_id : std::string{};
+    };
+    lua["GetItemCharges"] = [&](simulation::Item item) -> i32 { return simulation::get_charges(sim.world(), item); };
+    lua["SetItemCharges"] = [&](simulation::Item item, i32 n) { simulation::set_charges(sim.world(), item, n); };
+    lua["GetItemLevel"]   = [&](simulation::Item item) -> i32 { return simulation::get_level(sim.world(), item); };
+    lua["SetItemLevel"]   = [&](simulation::Item item, i32 n) { simulation::set_level(sim.world(), item, n); };
+    lua["GetItemOwner"]   = [&, unit_or_nil](simulation::Item item) -> sol::object {
+        return unit_or_nil(simulation::get_item_owner(sim.world(), item));
+    };
+    lua["GetItemPosition"] = [&](simulation::Item item) -> std::tuple<f32, f32, f32> {
+        auto* tf = sim.world().transforms.get(item.id);
+        if (!tf) return {0.0f, 0.0f, 0.0f};
+        return {tf->position.x, tf->position.y, tf->position.z};
+    };
 }
 
 // ── Trigger API Bindings ──────────────────────────────────────────────────
@@ -1113,6 +1243,15 @@ void ScriptEngine::bind_trigger_api() {
     // (or other node-event) trigger. Empty string outside a node-event
     // action.
     lua["GetTriggerNode"] = [this]() -> std::string { return m_ctx_node_id; };
+    // GetTriggerItem() — item the current event is about (or nil).
+    // Set during item events (picked_up, dropped) and during ability
+    // casts that originated from an item slot. Authors hook this from
+    // an EVENT_ABILITY_CAST_FINISHED trigger to drive consumption etc.
+    lua["GetTriggerItem"] = [&, item_or_nil = [&](simulation::Item it) -> sol::object {
+        return it.is_valid() ? sol::make_object(*m_lua, it) : sol::make_object(*m_lua, sol::nil);
+    }]() -> sol::object {
+        return item_or_nil(m_ctx_item);
+    };
     lua["GetTriggerAbilityId"] = [&]() -> std::string {
         if (m_ctx_ability.empty()) {
             log::warn(TAG, "GetTriggerAbilityId() called but no ability in context (event: '{}')", m_ctx_event);

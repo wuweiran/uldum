@@ -87,12 +87,23 @@ struct DestructableTypeDef {
 };
 
 struct ItemTypeDef {
-    std::string id;
-    std::string display_name;
-    std::string icon_path;
-    i32         charges = 1;
-    f32         cooldown = 0;
-    i32         gold_cost = 0;
+    std::string              id;
+    std::string              display_name;
+    std::string              icon_path;       // HUD slot icon (KTX2)
+    std::string              model_path;      // ground render model (glTF)
+    f32                      model_scale  = 1.0f;
+    f32                      pickup_radius = 48.0f;
+    // Abilities granted to the carrier while the item is in inventory.
+    // Activeness is implicit — if abilities[0].form is non-passive, the
+    // inventory slot fires that ability on click/hotkey; otherwise the
+    // slot is inert (passive item). Subsequent abilities still apply
+    // their effects (modifiers / auras) but never fire.
+    std::vector<std::string> abilities;
+    // Two free integer fields the engine stores + renders but never
+    // interprets. Map Lua handles consumption / level-up logic.
+    i32                      initial_charges = 0;
+    i32                      initial_level   = 0;
+    std::vector<std::string> classifications;
 };
 
 class TypeRegistry {
