@@ -31,6 +31,11 @@ namespace orders {
     struct Build         { std::string building_type_id; glm::vec3 pos; };
     struct PickupItem    { Item item; };
     struct DropItem      { Item item; glm::vec3 pos; };
+    // Swap two inventory slots on a single carrier. No-op if either
+    // index is out of range. Used by the HUD inventory composite to
+    // commit drag-swap reorders through the order pipeline so MP
+    // clients route the change through the host.
+    struct SwapInventorySlot { i32 slot_a; i32 slot_b; };
     // Action-preset continuous directional move. `dir` is a 2D vector
     // (usually normalized; magnitude <= 1 clamps speed). The unit keeps
     // trying to move along `dir` every tick until the order is replaced
@@ -53,6 +58,7 @@ using OrderPayload = std::variant<
     orders::Build,
     orders::PickupItem,
     orders::DropItem,
+    orders::SwapInventorySlot,
     orders::MoveDirection
 >;
 

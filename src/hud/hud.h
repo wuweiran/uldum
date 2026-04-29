@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 
+#include <glm/vec3.hpp>
 #include <nlohmann/json_fwd.hpp>
 
 #include <functional>
@@ -460,6 +461,37 @@ public:
     using InventoryUseFn = std::function<void(u32 item_id,
                                               const std::string& ability_id)>;
     void set_inventory_use_fn(InventoryUseFn fn);
+
+    // Fired when the held item commits to a drop on the ground. The
+    // held source slot is implicit (the HUD already knows it); the
+    // app uses this to issue a DropItem order with the explicit
+    // world-space drop point. WC3 model — held via right-click on a
+    // slot, dropped via left-click on the terrain.
+    using InventoryDropFn = std::function<void(u32 item_id, i32 slot, glm::vec3 world_pos)>;
+    void set_inventory_drop_fn(InventoryDropFn fn);
+
+    // Fired when the held item commits to another inventory slot —
+    // left-click on a different slot while holding. App routes this
+    // to a SwapInventorySlot GameCommand. Empty target slot is fine:
+    // the simulation accepts swap-with-empty as a relocation.
+    using InventorySwapFn = std::function<void(i32 slot_a, i32 slot_b)>;
+    void set_inventory_swap_fn(InventorySwapFn fn);
+
+    // Single-shot right-click pulse, called from the app when the
+    // platform reports `mouse_right_pressed`. Used to lift items from
+    // an inventory slot (WC3 style) or cancel an existing hold.
+    // Returns true when the click was claimed by the HUD so the
+    // input preset can skip its smart-order branch on this frame.
+    bool handle_right_click(f32 x, f32 y);
+
+    // True while the HUD is in "holding an item" mode. The input
+    // preset uses this to suppress its left-click selection / order
+    // logic — the next left-click is for committing the held item
+    // (either to another slot or to the terrain).
+    bool is_holding_item() const;
+    // ESC handler — cancels an active item hold. Called by the app
+    // alongside other ESC-cancel paths in the input preset.
+    void cancel_held_item();
 
     // Joystick composite — virtual analog stick for touch-screen camera
     // pan. Per-frame flow is: App calls `joystick_update(input)` which

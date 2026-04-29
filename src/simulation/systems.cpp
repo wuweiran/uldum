@@ -964,12 +964,19 @@ void system_items(World& world, float /*dt*/) {
         }
 
         // ── DropItem ─────────────────────────────────────────────────
+        // WC3-style: the carrier must be within DROP_RANGE of the
+        // requested drop point. If the click was further, the order
+        // stays current and the unit walks toward the point — same
+        // pattern as PickupItem above. The order completes once the
+        // carrier is in range, the item lands, and an item_dropped
+        // event fires.
         else if (auto* d = std::get_if<orders::DropItem>(&oq.current->payload)) {
+            constexpr f32 DROP_RANGE = 150.0f;     // engine-wide drop reach (game units)
+
             Unit unit_h{ id, world.handle_infos.get(id) ?
                               world.handle_infos.get(id)->generation : 0 };
 
-            // Find which slot holds this item (DropItem carries the
-            // item handle; the slot is implied by the inventory).
+            // Find which slot holds this item.
             i32 slot = -1;
             if (auto* inv = world.inventories.get(id)) {
                 for (i32 s = 0; s < static_cast<i32>(inv->slots.size()); ++s) {
@@ -979,14 +986,52 @@ void system_items(World& world, float /*dt*/) {
                     }
                 }
             }
-            if (slot >= 0) {
-                glm::vec3 pos = d->pos;
-                if (pos.x == 0.0f && pos.y == 0.0f) {
-                    if (auto* tf = world.transforms.get(id)) pos = tf->position;
+            if (slot < 0) { oq.current.reset(); continue; }
+
+            const auto* tf = world.transforms.get(id);
+            if (!tf) { oq.current.reset(); continue; }
+
+            // Resolve drop point. (0,0,0) → "drop in place" (Lua /
+            // legacy callers): the carrier's current pos is always
+            // in range so the in-range branch below executes.
+            glm::vec3 pos = d->pos;
+            if (pos.x == 0.0f && pos.y == 0.0f) pos = tf->position;
+
+            f32 dx = pos.x - tf->position.x;
+            f32 dy = pos.y - tf->position.y;
+            f32 dist2 = dx*dx + dy*dy;
+            if (dist2 <= DROP_RANGE * DROP_RANGE) {
+                if (auto* mov = world.movements.get(id)) {
+                    mov->approach_range  = 0;
+                    mov->approach_target = Unit{};
                 }
                 drop_item_from_unit(world, unit_h, slot, pos);
                 if (world.on_item_dropped) {
                     world.on_item_dropped(unit_h, d->item);
+                }
+                oq.current.reset();
+            } else {
+                // Out of reach — walk toward the drop point. Stay in
+                // this order so the next tick re-checks distance.
+                if (auto* mov = world.movements.get(id)) {
+                    mov->approach_target = Unit{};
+                    mov->approach_goal   = { pos.x, pos.y };
+                    mov->approach_range  = DROP_RANGE;
+                }
+            }
+        }
+
+        // ── SwapInventorySlot ────────────────────────────────────────
+        // Pure rearrange — no abilities re-grant, no drop / pickup
+        // events. Both slots already belong to this unit so the
+        // ability set is unchanged.
+        else if (auto* sw = std::get_if<orders::SwapInventorySlot>(&oq.current->payload)) {
+            if (auto* inv = world.inventories.get(id)) {
+                i32 n = static_cast<i32>(inv->slots.size());
+                if (sw->slot_a >= 0 && sw->slot_a < n &&
+                    sw->slot_b >= 0 && sw->slot_b < n &&
+                    sw->slot_a != sw->slot_b) {
+                    std::swap(inv->slots[sw->slot_a], inv->slots[sw->slot_b]);
                 }
             }
             oq.current.reset();

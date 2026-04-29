@@ -69,6 +69,24 @@ static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
                               const simulation::AbilityDef& def);
 static bool is_castable_form(simulation::AbilityForm f);
 
+// Forward decl — defined alongside draw_command_bar but referenced
+// from inside its render loop. Tells per-slot rendering whether to
+// draw command-icon content (vs. leaving the slot frame blank).
+static bool command_bar_slots_active(const Hud::Impl& s);
+
+// Forward decls for inventory helpers — defined alongside
+// `draw_inventory` but used by `Hud::handle_right_click` further
+// up in the file.
+static i32 inventory_hit_test(const Hud::Impl& s, f32 x, f32 y);
+static const simulation::Inventory*
+inventory_resolve_selected(const Hud::Impl& s, u32* out_carrier_id = nullptr);
+static bool inventory_resolve_slot(const Hud::Impl& s,
+                                   const simulation::Inventory* inv,
+                                   u32 slot_index,
+                                   simulation::Item& out_item,
+                                   const simulation::ItemInfo*& out_info,
+                                   const simulation::ItemTypeDef*& out_def);
+
 // Each batch = one draw call. Stage A uses a single implicit batch bound
 // to the 1×1 white texture. Later stages add batch splits when the bound
 // texture (icon, MSDF atlas) changes.
@@ -268,7 +286,20 @@ struct Hud::Impl {
     InventoryRuntime inventory_rt{};
     i32 inventory_hover_slot   = -1;
     i32 inventory_pressed_slot = -1;
-    Hud::InventoryUseFn inventory_use_fn;
+    Hud::InventoryUseFn  inventory_use_fn;
+    Hud::InventoryDropFn inventory_drop_fn;
+    Hud::InventorySwapFn inventory_swap_fn;
+
+    // WC3-style item hold (desktop). Right-click on a slot lifts the
+    // item: `held_item_slot` is the source slot, `held_item_id` is
+    // the item being held (snapshotted so we can render its icon at
+    // the cursor even if the underlying inventory shifts), and
+    // `held_item_icon` caches the icon path. The next left-click
+    // commits — on another slot it's a swap; on terrain it's a drop
+    // at the clicked point. Right-click again (or ESC) cancels.
+    i32 held_item_slot = -1;
+    u32 held_item_id   = UINT32_MAX;
+    std::string held_item_icon;
 
     // Cast indicator style — applied to range ring, arrow, reticle,
     // AoE indicator, target-unit ring, and per-phase tints. Drives
@@ -1155,7 +1186,12 @@ void Hud::reset_session_state() {
     s.action_bar_cast_at_target_fn = {};
     s.minimap_jump_fn = {};
     s.command_bar_fn = {};
-    s.inventory_use_fn = {};
+    s.inventory_use_fn  = {};
+    s.inventory_drop_fn = {};
+    s.inventory_swap_fn = {};
+    s.held_item_slot    = -1;
+    s.held_item_id      = UINT32_MAX;
+    s.held_item_icon.clear();
 }
 
 void Hud::set_local_player(u32 player_id) {
@@ -1646,6 +1682,54 @@ void Hud::set_inventory_use_fn(InventoryUseFn fn) {
     if (m_impl) m_impl->inventory_use_fn = std::move(fn);
 }
 
+void Hud::set_inventory_drop_fn(InventoryDropFn fn) {
+    if (m_impl) m_impl->inventory_drop_fn = std::move(fn);
+}
+
+void Hud::set_inventory_swap_fn(InventorySwapFn fn) {
+    if (m_impl) m_impl->inventory_swap_fn = std::move(fn);
+}
+
+bool Hud::handle_right_click(f32 x, f32 y) {
+    if (!m_impl) return false;
+    auto& s = *m_impl;
+    f32 inv_s = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
+    f32 dpx = x * inv_s, dpy = y * inv_s;
+
+    // Already holding → right-click anywhere cancels the hold (WC3 UX).
+    if (s.held_item_slot >= 0) {
+        s.held_item_slot = -1;
+        s.held_item_id   = UINT32_MAX;
+        s.held_item_icon.clear();
+        return true;
+    }
+
+    // Otherwise: right-click on an inventory slot lifts that item.
+    i32 slot = inventory_hit_test(s, dpx, dpy);
+    if (slot < 0) return false;
+    u32 carrier = UINT32_MAX;
+    const simulation::Inventory* invc = inventory_resolve_selected(s, &carrier);
+    simulation::Item item;
+    const simulation::ItemInfo*    info = nullptr;
+    const simulation::ItemTypeDef* tdef = nullptr;
+    if (!inventory_resolve_slot(s, invc, static_cast<u32>(slot), item, info, tdef)) return false;
+    s.held_item_slot = slot;
+    s.held_item_id   = item.id;
+    s.held_item_icon = (tdef ? tdef->icon_path : std::string{});
+    return true;
+}
+
+bool Hud::is_holding_item() const {
+    return m_impl && m_impl->held_item_slot >= 0;
+}
+
+void Hud::cancel_held_item() {
+    if (!m_impl) return;
+    m_impl->held_item_slot = -1;
+    m_impl->held_item_id   = UINT32_MAX;
+    m_impl->held_item_icon.clear();
+}
+
 void Hud::command_bar_set_armed_command(std::string_view command_id) {
     if (m_impl) m_impl->command_bar_armed_command.assign(command_id);
 }
@@ -1670,28 +1754,48 @@ static i32 command_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
 // look the action_bar uses. Armed state (slot whose command matches
 // the preset's current targeting mode) renders with press_bg + the
 // accent border, identical to the action_bar's armed ability slot.
+// Should the command bar's slots render this frame? Engine commands
+// (Move / Stop / Hold / Attack) only make sense for the local player's
+// own units. Future: filter individual slots against a per-unit-type
+// allow-list (a building shouldn't show Move) — the gate here is
+// "any-or-none" until that lands. As with action_bar, the bar frame
+// itself always shows; only the slot icons are conditional.
+static bool command_bar_slots_active(const Hud::Impl& s) {
+    if (!s.world_ctx || !s.world_ctx->selection ||
+        s.world_ctx->selection->selected().empty()) return false;
+    u32 lead = s.world_ctx->selection->selected().front().id;
+    const auto* own = s.world_ctx->world ? s.world_ctx->world->owners.get(lead) : nullptr;
+    return own && own->player.id == s.world_ctx->local_player.id;
+}
+
 static void draw_command_bar(Hud& hud, Hud::Impl& s) {
     const auto& cfg = s.command_bar_cfg;
     if (!cfg.enabled || !s.command_bar_rt.visible) return;
 
     if ((cfg.style.bg.rgba >> 24) != 0) hud.draw_rect(cfg.rect, cfg.style.bg);
 
+    // Bar bg + slot frames always render. Slot CONTENT (icon, hotkey
+    // badge, armed border) is gated — when no own unit is selected,
+    // every slot reads as a blank frame so commands aren't suggested
+    // to a player who can't issue them.
+    bool slots_active = command_bar_slots_active(s);
+
     const std::string& armed = s.command_bar_armed_command;
 
     for (const auto& slot : cfg.slots) {
         if (!slot.visible) continue;
-        bool is_armed = (!armed.empty() && slot.command == armed);
+        bool is_armed = slots_active && (!armed.empty() && slot.command == armed);
 
         Color bg = slot.style.bg;
-        if (slot.pressed)      bg = slot.style.press_bg;
-        else if (is_armed)     bg = slot.style.press_bg;   // "held down" look
-        else if (slot.hovered) bg = slot.style.hover_bg;
+        if (slots_active && slot.pressed)      bg = slot.style.press_bg;
+        else if (is_armed)                     bg = slot.style.press_bg;   // "held down" look
+        else if (slots_active && slot.hovered) bg = slot.style.hover_bg;
         hud.draw_rect(slot.rect, bg);
 
         f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
         Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
                         slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
-        if (!slot.icon.empty()) {
+        if (slots_active && !slot.icon.empty()) {
             hud.draw_image(icon_rect, slot.icon);
         }
 
@@ -1710,7 +1814,7 @@ static void draw_command_bar(Hud& hud, Hud::Impl& s) {
             hud.draw_rect({ r.x + r.w - border_w, r.y, border_w, r.h }, border_color);
         }
 
-        if (!slot.hotkey.empty()) {
+        if (slots_active && !slot.hotkey.empty()) {
             f32 px_size = slot.rect.h * 0.28f;
             if (px_size < 10.0f) px_size = 10.0f;
             f32 text_w = hud.text_width_px(slot.hotkey, px_size);
@@ -2722,12 +2826,16 @@ static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
         bool armed = any_armed && def && inst
                   && inst->ability_id == s.action_bar_targeting_ability;
 
-        // Slot background. Mouse press wins; otherwise armed uses press_bg
-        // (the held-down look), else hover, else idle.
+        // Slot background. Hover / press feedback only fires when there
+        // IS a button to fire — an empty slot reads as a static frame
+        // so hovering it doesn't suggest interactivity that isn't
+        // there. Armed (targeting-mode) state implies an ability was
+        // resolved, so it stays gated by `inst && def`.
+        bool has_button = (inst && def);
         Color bg = slot.style.bg;
-        if (slot.pressed)      bg = slot.style.press_bg;
-        else if (armed)        bg = slot.style.press_bg;
-        else if (slot.hovered) bg = slot.style.hover_bg;
+        if (has_button && slot.pressed)      bg = slot.style.press_bg;
+        else if (armed)                      bg = slot.style.press_bg;
+        else if (has_button && slot.hovered) bg = slot.style.hover_bg;
         hud.draw_rect(slot.rect, bg);
 
         // Icon — inset by the slot's normal border width so the icon
@@ -2987,7 +3095,7 @@ static i32 inventory_hit_test(const Hud::Impl& s, f32 x, f32 y) {
 // when nothing is selected, the unit has no Inventory component, or
 // world context is incomplete.
 static const simulation::Inventory*
-inventory_resolve_selected(const Hud::Impl& s, u32* out_carrier_id = nullptr) {
+inventory_resolve_selected(const Hud::Impl& s, u32* out_carrier_id) {
     if (out_carrier_id) *out_carrier_id = UINT32_MAX;
     if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) return nullptr;
     const auto& sel = s.world_ctx->selection->selected();
@@ -3024,6 +3132,11 @@ static void draw_inventory(Hud& hud, Hud::Impl& s) {
     const auto& cfg = s.inventory_cfg;
     if (!cfg.enabled || !s.inventory_rt.visible) return;
 
+    // Bar frame always renders; slot frames always render too (so the
+    // layout stays stable). Slot CONTENT (icon, charges, level badge)
+    // is conditional — appears only when an item is in that slot —
+    // and the existing `has_item` / `info` null-checks below already
+    // handle empty-slot rendering naturally.
     if ((cfg.style.bg.rgba >> 24) != 0) hud.draw_rect(cfg.rect, cfg.style.bg);
 
     u32 carrier_id = UINT32_MAX;
@@ -3038,17 +3151,29 @@ static void draw_inventory(Hud& hud, Hud::Impl& s) {
         const simulation::ItemTypeDef* def  = nullptr;
         bool has_item = inventory_resolve_slot(s, inv, i, item, info, def);
 
-        // Slot background. Empty slots use a darker `empty_bg`; pressed
-        // / hovered states win over both filled and empty so the slot
-        // animates consistently regardless of contents.
-        Color bg = has_item ? slot.style.bg : slot.style.empty_bg;
-        if (slot.pressed)      bg = slot.style.press_bg;
-        else if (slot.hovered) bg = slot.style.hover_bg;
+        // Slot may be beyond the carrier's `inventory_size` (the unit
+        // simply can't hold an item there). Render those with the
+        // author-defined `unavailable_bg` and skip every interactive
+        // state — no hover, no press, no hotkey, no badges.
+        bool available = inv && i < inv->slots.size();
+
+        // Slot background. Empty slots use a darker `empty_bg`; out-of-
+        // range slots use `unavailable_bg`. Hover / press only fire on
+        // slots that actually hold an item.
+        Color bg;
+        if (!available)        bg = slot.style.unavailable_bg;
+        else if (has_item)     bg = slot.style.bg;
+        else                   bg = slot.style.empty_bg;
+        if (has_item && slot.pressed)      bg = slot.style.press_bg;
+        else if (has_item && slot.hovered) bg = slot.style.hover_bg;
         hud.draw_rect(slot.rect, bg);
 
         f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
         Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
                         slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
+        // Source icon stays visible during hold — WC3 leaves the slot
+        // icon in place and just shows a duplicate at the cursor, so
+        // the player can see "this is the item I lifted" at a glance.
         if (def && !def->icon_path.empty()) {
             hud.draw_image(icon_rect, def->icon_path);
         }
@@ -3103,9 +3228,10 @@ static void draw_inventory(Hud& hud, Hud::Impl& s) {
             hud.draw_rect({ r.x + r.w - bw, r.y, bw, r.h }, slot.style.border_color);
         }
 
-        // Hotkey badge — top-right. Always shown for visible slots so the
-        // player can see the keybind even on empty slots (positional UX).
-        if (!slot.hotkey.empty()) {
+        // Hotkey badge — top-right. Only shown when the slot holds an
+        // item; an empty (or unavailable) slot has nothing to fire, so
+        // the keybind label would just be noise.
+        if (has_item && !slot.hotkey.empty()) {
             f32 px_size = slot.rect.h * 0.28f;
             if (px_size < 10.0f) px_size = 10.0f;
             f32 text_w = hud.text_width_px(slot.hotkey, px_size);
@@ -3174,7 +3300,11 @@ static void draw_action_bar(Hud& hud, Hud::Impl& s) {
     if (!cfg.enabled) return;
     if (!s.action_bar_rt.visible) return;
 
-    // Optional bar-level background fill. Transparent by default.
+    // Bar background — always renders when enabled+visible. Bar is just
+    // a visual container; slot CONTENT (icon, hotkey, cooldown) is the
+    // conditional part. When there's no selection, resolve_slot_ability
+    // returns nullptr and the per-slot render naturally skips icon /
+    // hotkey / cooldown — what's left is the empty slot frame.
     if ((cfg.style.bg.rgba >> 24) != 0) {
         hud.draw_rect(cfg.rect, cfg.style.bg);
     }
@@ -3198,6 +3328,18 @@ void Hud::draw_tree() {
     draw_inventory(*this, *m_impl);
     draw_minimap(*this, *m_impl);
     draw_joystick(*this, *m_impl);
+    // Held-item icon (WC3 lift). Drawn last so it sits above every
+    // other HUD layer; the icon follows the cursor and is
+    // semi-transparent so the player can still read what's underneath.
+    if (m_impl->held_item_slot >= 0 && !m_impl->held_item_icon.empty()) {
+        f32 size = 36.0f;
+        // Center the icon on the cursor with a small Y offset so the
+        // arrow tip stays usable for clicking. Pointer coords are in dp.
+        f32 cx = m_impl->pointer_x;
+        f32 cy = m_impl->pointer_y;
+        Rect r{ cx - size * 0.5f, cy - size * 0.5f, size, size };
+        draw_image(r, m_impl->held_item_icon, rgba(255, 255, 255, 220));
+    }
 }
 
 // Hit-test helper. Walks children back-to-front (reverse iteration) so a
@@ -3295,6 +3437,32 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
 
     // Press edge: down on this frame, was up last frame.
     if (button_down && !s.pointer_down_prev) {
+        // Holding an item (WC3 lift): the next left-click commits.
+        // On another inventory slot → swap. On terrain → drop at the
+        // clicked world point. Anywhere else → cancel.
+        if (s.held_item_slot >= 0) {
+            i32 target = inv_slot;
+            if (target >= 0 && target != s.held_item_slot) {
+                if (s.inventory_swap_fn) {
+                    s.inventory_swap_fn(s.held_item_slot, target);
+                }
+            } else if (target < 0 && s.world_ctx && s.world_ctx->picker
+                       && s.inventory_drop_fn) {
+                glm::vec3 wp;
+                // Picker takes physical pixels; convert dp → physical.
+                f32 sx = x * s.ui_scale;
+                f32 sy = y * s.ui_scale;
+                if (s.world_ctx->picker->screen_to_world(sx, sy, wp)) {
+                    s.inventory_drop_fn(s.held_item_id,
+                                        s.held_item_slot, wp);
+                }
+            }
+            s.held_item_slot = -1;
+            s.held_item_id   = UINT32_MAX;
+            s.held_item_icon.clear();
+            s.pointer_down_prev = button_down;
+            return;
+        }
         if (bar_slot >= 0) {
             // On mobile, a press on a *targetable* and *castable-now*
             // slot starts a drag-cast gesture instead of the normal
@@ -3447,9 +3615,6 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         const std::string& fa = def->abilities[0];
                         const auto* abil_def = s.world_ctx->abilities->get(fa);
                         if (abil_def && is_castable_form(abil_def->form)) {
-                            // Cooldown / affordability gate — same as
-                            // action_bar's slot_castable_now path. The
-                            // carrier owns the granted ability instance.
                             const auto* aset = s.world_ctx->world->ability_sets.get(carrier_id);
                             const simulation::AbilityInstance* inst = nullptr;
                             if (aset) {
@@ -3507,6 +3672,7 @@ bool Hud::input_captured() const {
         || m_impl->command_bar_pressed_slot >= 0
         || m_impl->inventory_hover_slot     >= 0
         || m_impl->inventory_pressed_slot   >= 0
+        || m_impl->held_item_slot           >= 0   // hold mode owns the next click
         || minimap_hit_test(*m_impl, m_impl->pointer_x, m_impl->pointer_y)
         || m_impl->minimap_dragging
         || m_impl->joystick_rt.captured_slot == 0;

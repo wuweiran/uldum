@@ -102,6 +102,22 @@ public:
     // player hero, so the ring is just clutter). Default: true.
     virtual bool show_selection_circles() const { return true; }
 
+    // ── Targeting modes ────────────────────────────────────────────
+    // The preset can be in one of several "waiting for a target"
+    // modes (cast an ability, pick a move-to point, pick an attack-
+    // move point). Together with the HUD's held-item state they
+    // form the engine's full set of "next-click pending" UI states;
+    // every entry path mutually excludes the others.
+    //
+    // `is_targeting()` is the union test the app uses to mirror
+    // mutual exclusion against the HUD: when this turns true (any
+    // preset targeting mode just entered), the app cancels the
+    // HUD's held item; when the HUD lifts an item, the app calls
+    // `cancel_targeting()` so the preset relinquishes any active
+    // mode. Default: never targeting.
+    virtual bool is_targeting() const { return false; }
+    virtual void cancel_targeting() {}
+
     // Frame-selection drag state. `active == true` while the player is
     // dragging a rectangle across the world to box-select units. Coords
     // are screen-space physical pixels (the same space the pointer

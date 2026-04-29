@@ -14,16 +14,24 @@ public:
     void queue_ability(std::string_view ability_id) override;
     void queue_command(std::string_view command_id) override;
     std::string_view targeting_ability_id() const override {
-        return m_targeting_ability ? std::string_view{m_targeting_ability_id}
-                                    : std::string_view{};
+        return m_target_mode == TargetingMode::Ability
+                 ? std::string_view{m_target_ability_id}
+                 : std::string_view{};
     }
     std::string_view active_command_id() const override {
         // "attack" / "move" are the canonical ids the command_bar
         // matches against; attack-move maps to "attack" for the same
         // highlight treatment.
-        if (m_attack_move_mode)    return "attack";
-        if (m_move_targeting_mode) return "move";
-        return {};
+        switch (m_target_mode) {
+            case TargetingMode::AttackMove: return "attack";
+            case TargetingMode::Move:       return "move";
+            default:                        return {};
+        }
+    }
+    bool is_targeting() const override { return m_target_mode != TargetingMode::None; }
+    void cancel_targeting() override {
+        m_target_mode = TargetingMode::None;
+        m_target_ability_id.clear();
     }
 
     BoxSelection box_selection() const override {
@@ -80,17 +88,32 @@ private:
     PressIntent m_press_intent = PressIntent::None;
     static constexpr f32 BOX_DRAG_THRESHOLD = 4.0f; // pixels before drag starts
 
-    // Attack-move mode: press A, then left-click target
-    bool  m_attack_move_mode = false;
+    // ── Targeting mode (single source of truth) ─────────────────────
+    // The three legacy "are we waiting for a target click?" booleans
+    // (attack-move, move, ability) collapsed into one enum so they
+    // can never be on simultaneously and so cancel paths are
+    // centralized. The HUD held-item state lives separately on the
+    // Hud (HUD-side affordance) and is mutually excluded by the app
+    // toggling between this and `Hud::cancel_held_item()`.
+    enum class TargetingMode : u8 {
+        None        = 0,
+        Ability     = 1,   // hotkey / slot click → next world click commits Cast
+        Move        = 2,   // command_bar "move"  → next ground click commits Move
+        AttackMove  = 3,   // 'A' or attack cmd   → next click commits Attack/AttackMove
+    };
+    TargetingMode m_target_mode        = TargetingMode::None;
+    std::string   m_target_ability_id;   // meaningful only when m_target_mode == Ability
 
-    // Move-to-point mode: Command-bar "move" tapped, waiting for the
-    // ground click that commits the order. Mirrors attack-move's shape
-    // except the commit is Move, not Attack/AttackMove.
-    bool  m_move_targeting_mode = false;
-
-    // Ability targeting mode: hotkey pressed, waiting for target click
-    bool        m_targeting_ability = false;
-    std::string m_targeting_ability_id;
+    // Enter a targeting mode, replacing whatever was active before.
+    // Calling with `Ability` requires a non-empty `ability_id`; other
+    // modes ignore it. Reduces the four-line "set this true / clear
+    // these three" pattern to a single function call so future modes
+    // (build placement, etc.) don't have to re-edit every call site.
+    void set_target_mode(TargetingMode m, std::string_view ability_id = {}) {
+        m_target_mode = m;
+        if (m == TargetingMode::Ability) m_target_ability_id.assign(ability_id);
+        else                              m_target_ability_id.clear();
+    }
 
     // Edge pan
     static constexpr f32 EDGE_PAN_MARGIN = 10.0f; // pixels from screen edge

@@ -60,9 +60,7 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     auto is_blocked = [&]() {
         return ctx.hud_captured
             || input.touch_count >= 2
-            || m_attack_move_mode
-            || m_move_targeting_mode
-            || m_targeting_ability;
+            || is_targeting();
     };
 
     // ── Press edge: classify the cycle ──────────────────────────────
@@ -156,12 +154,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     // move click, right-click order). Key-driven cancels (Escape out of
     // any targeting mode) still run so the user can always bail out.
     if (ctx.hud_captured) {
-        if (input.key_escape) {
-            m_targeting_ability = false;
-            m_targeting_ability_id.clear();
-            m_move_targeting_mode = false;
-            m_attack_move_mode    = false;
-        }
+        if (input.key_escape) cancel_targeting();
         return;
     }
 
@@ -172,29 +165,26 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     // by Lua, the unit dying, etc. Without this, the indicator lingers
     // and the next click commits a Cast that the simulation then
     // silently drops at submit-time.
-    if (m_targeting_ability) {
+    if (m_target_mode == TargetingMode::Ability) {
         bool still_castable = false;
         if (!sel.empty()) {
             auto caster = sel.selected().front();
             if (auto* aset = ctx.simulation.world().ability_sets.get(caster.id)) {
                 for (const auto& a : aset->abilities) {
-                    if (a.ability_id == m_targeting_ability_id) {
+                    if (a.ability_id == m_target_ability_id) {
                         still_castable = (a.cooldown_remaining <= 0.0f);
                         break;
                     }
                 }
             }
         }
-        if (!still_castable) {
-            m_targeting_ability = false;
-            m_targeting_ability_id.clear();
-        }
+        if (!still_castable) cancel_targeting();
     }
 
     // Ability targeting: hotkey was pressed, now left-click to pick target
-    if (m_targeting_ability && input.mouse_left_pressed) {
+    if (m_target_mode == TargetingMode::Ability && input.mouse_left_pressed) {
         if (!sel.empty()) {
-            const auto* def = ctx.simulation.abilities().get(m_targeting_ability_id);
+            const auto* def = ctx.simulation.abilities().get(m_target_ability_id);
             if (def) {
                 if (def->form == simulation::AbilityForm::TargetUnit) {
                     auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
@@ -202,7 +192,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                         GameCommand cmd;
                         cmd.player = sel.player();
                         cmd.units  = sel.selected();
-                        cmd.order  = simulation::orders::Cast{m_targeting_ability_id, target, {}};
+                        cmd.order  = simulation::orders::Cast{m_target_ability_id, target, {}};
                         cmd.queued = input.key_shift;
                         ctx.commands.submit(cmd);
                     }
@@ -212,29 +202,27 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                         GameCommand cmd;
                         cmd.player = sel.player();
                         cmd.units  = sel.selected();
-                        cmd.order  = simulation::orders::Cast{m_targeting_ability_id, {}, world_pos};
+                        cmd.order  = simulation::orders::Cast{m_target_ability_id, {}, world_pos};
                         cmd.queued = input.key_shift;
                         ctx.commands.submit(cmd);
                     }
                 }
             }
         }
-        m_targeting_ability = false;
-        m_targeting_ability_id.clear();
+        cancel_targeting();
         return;
     }
 
-    // Escape cancels ability targeting
-    if (m_targeting_ability && input.key_escape) {
-        m_targeting_ability = false;
-        m_targeting_ability_id.clear();
+    // Escape cancels any targeting mode (ability / move / attack-move).
+    if (is_targeting() && input.key_escape) {
+        cancel_targeting();
         return;
     }
 
     // Move-targeting mode (command_bar "move"): next left-click on the
     // ground commits a Move order. If the click misses terrain
     // (shouldn't happen in-bounds, but defensive), exit mode anyway.
-    if (m_move_targeting_mode && input.mouse_left_pressed) {
+    if (m_target_mode == TargetingMode::Move && input.mouse_left_pressed) {
         if (!sel.empty()) {
             glm::vec3 world_pos;
             if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
@@ -246,16 +234,12 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 ctx.commands.submit(cmd);
             }
         }
-        m_move_targeting_mode = false;
-        return;
-    }
-    if (m_move_targeting_mode && input.key_escape) {
-        m_move_targeting_mode = false;
+        cancel_targeting();
         return;
     }
 
     // Attack-move: A pressed → next left-click: unit = Attack, ground = AttackMove
-    if (m_attack_move_mode && input.mouse_left_pressed) {
+    if (m_target_mode == TargetingMode::AttackMove && input.mouse_left_pressed) {
         if (!sel.empty()) {
             auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
             if (target.is_valid()) {
@@ -286,22 +270,16 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 }
             }
         }
-        m_attack_move_mode = false;
+        cancel_targeting();
         return;
     }
 
     // Right-click while in any targeting mode = cancel; no smart order
     // is issued. Matches WC3 / SC2 behavior where a stray right-click
     // bails out of targeting rather than firing a Move at the mouse
-    // point. The recompute on m_targeting_ability above (uncastable
-    // exit) means a right-click here only consumes the click when
-    // we're actually still aiming something.
-    if (input.mouse_right_pressed &&
-        (m_targeting_ability || m_move_targeting_mode || m_attack_move_mode)) {
-        m_targeting_ability   = false;
-        m_targeting_ability_id.clear();
-        m_move_targeting_mode = false;
-        m_attack_move_mode    = false;
+    // point.
+    if (input.mouse_right_pressed && is_targeting()) {
+        cancel_targeting();
         return;
     }
 
@@ -410,15 +388,15 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         ctx.commands.submit(cmd);
     }
 
-    // Attack-move mode
+    // Attack-move mode (A hotkey).
     if (bindings.action_pressed("attack_move", input)) {
-        m_attack_move_mode = true;
+        set_target_mode(TargetingMode::AttackMove);
     }
 
-    // Escape — cancel attack-move mode
-    if (input.key_escape) {
-        m_attack_move_mode = false;
-    }
+    // Escape cancels every targeting mode (the same exit path
+    // handle_orders uses; duplicated here for the case where input
+    // never reached handle_orders this frame, e.g. hud_captured).
+    if (input.key_escape) cancel_targeting();
 
     // Control groups: Ctrl+N assign, N recall (hardcoded)
     for (u32 i = 0; i < 10; ++i) {
@@ -498,10 +476,7 @@ void RtsPreset::dispatch_ability(const InputContext& ctx,
         ctx.commands.submit(cmd);
     } else if (def->form == simulation::AbilityForm::TargetUnit ||
                def->form == simulation::AbilityForm::TargetPoint) {
-        m_targeting_ability = true;
-        m_targeting_ability_id = ability_id;
-        m_attack_move_mode = false;
-        m_move_targeting_mode = false;
+        set_target_mode(TargetingMode::Ability, ability_id);
     }
     // Passive / Aura / Channel: not directly triggerable from here.
 }
@@ -518,34 +493,26 @@ void RtsPreset::dispatch_command(const InputContext& ctx,
 
     // Commands are mutually exclusive — tapping a new one replaces any
     // targeting mode currently armed, so the user can never accidentally
-    // have two primed at once.
-    auto reset_modes = [&]() {
-        m_move_targeting_mode = false;
-        m_attack_move_mode    = false;
-        m_targeting_ability   = false;
-        m_targeting_ability_id.clear();
-    };
-
+    // have two primed at once. `set_target_mode` (and `cancel_targeting`
+    // for instant commands) handles the swap atomically.
     if (command_id == "stop") {
-        reset_modes();
+        cancel_targeting();
         GameCommand cmd;
         cmd.player = sel.player();
         cmd.units  = sel.selected();
         cmd.order  = simulation::orders::Stop{};
         ctx.commands.submit(cmd);
     } else if (command_id == "hold_position") {
-        reset_modes();
+        cancel_targeting();
         GameCommand cmd;
         cmd.player = sel.player();
         cmd.units  = sel.selected();
         cmd.order  = simulation::orders::HoldPosition{};
         ctx.commands.submit(cmd);
     } else if (command_id == "attack" || command_id == "attack_move") {
-        reset_modes();
-        m_attack_move_mode = true;
+        set_target_mode(TargetingMode::AttackMove);
     } else if (command_id == "move") {
-        reset_modes();
-        m_move_targeting_mode = true;
+        set_target_mode(TargetingMode::Move);
     } else {
         log::warn(TAG, "dispatch_command: unknown id '{}'",
                   std::string(command_id));

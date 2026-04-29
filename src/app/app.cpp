@@ -559,6 +559,36 @@ bool App::start_session() {
         m_commands.submit(cmd);
     });
 
+    // Inventory drop — held-then-clicked-on-terrain (WC3 style). The
+    // sim places the item at the explicit world pos passed in.
+    m_hud.set_inventory_drop_fn([this](u32 item_id, i32 /*slot*/, glm::vec3 world_pos) {
+        const auto& world = m_server.simulation().world();
+        const auto* hi = world.handle_infos.get(item_id);
+        if (!hi) return;
+        simulation::Item item;
+        item.id         = item_id;
+        item.generation = hi->generation;
+
+        input::GameCommand cmd;
+        cmd.player = m_selection.player();
+        cmd.units  = m_selection.selected();
+        simulation::orders::DropItem d;
+        d.item = item;
+        d.pos  = world_pos;
+        cmd.order = std::move(d);
+        m_commands.submit(cmd);
+    });
+
+    // Inventory drag-swap — left-press on slot A, drag to B, release.
+    // Same Cast / Drop pipeline, just a different order kind.
+    m_hud.set_inventory_swap_fn([this](i32 slot_a, i32 slot_b) {
+        input::GameCommand cmd;
+        cmd.player = m_selection.player();
+        cmd.units  = m_selection.selected();
+        cmd.order  = simulation::orders::SwapInventorySlot{slot_a, slot_b};
+        m_commands.submit(cmd);
+    });
+
     // Minimap click → jump the camera so its ground-focus point lands
     // at the clicked world coord. Preserves the current pitch/yaw so
     // the player's view angle stays consistent across jumps.
@@ -1116,6 +1146,33 @@ void App::run() {
 
                 const auto& in = m_platform->input();
                 m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
+                // Right-click pulse — drives the WC3-style item lift
+                // (right-click slot to grab; right-click again to
+                // cancel). Fires before the input preset so when the
+                // HUD claims the right-click (lift / cancel), the
+                // preset's smart-order branch is suppressed on the
+                // same frame via `hud_captured`.
+                //
+                // Mutual exclusion with the input preset's targeting
+                // modes (cast / move / attack-move): the HUD's held
+                // item and the preset's targeting state are the
+                // engine's two "next-click pending" signals. They
+                // must never be active simultaneously, so:
+                //   • lifting an item cancels any preset targeting
+                //   • entering a preset targeting mode (this frame
+                //     vs. last) cancels any held item
+                // The first edge runs here; the second edge is
+                // detected after the preset update below.
+                if (in.mouse_right_pressed) {
+                    bool was_holding = m_hud.is_holding_item();
+                    if (m_hud.handle_right_click(in.mouse_x, in.mouse_y)
+                        && !was_holding && m_input_preset) {
+                        m_input_preset->cancel_targeting();
+                    }
+                }
+                // ESC cancels both sides — symmetric with the preset's
+                // ESC handling so the player has one "bail out" key.
+                if (in.key_escape) m_hud.cancel_held_item();
                 m_hud.handle_hotkeys(in);
                 m_hud.joystick_update(in);
                 m_hud.action_bar_drag_update(in);
@@ -1153,7 +1210,14 @@ void App::run() {
                         m_target_ping.lifespan = 0.45f;
                     },
                 };
+                bool was_targeting = m_input_preset && m_input_preset->is_targeting();
                 m_input_preset->update(ictx, frame_dt);
+                // Rising edge of preset targeting → cancel any held
+                // item (mutual exclusion, see comment above the
+                // right-click block).
+                if (m_input_preset && m_input_preset->is_targeting() && !was_targeting) {
+                    m_hud.cancel_held_item();
+                }
             }
 
             {

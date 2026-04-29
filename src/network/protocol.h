@@ -206,6 +206,9 @@ inline std::vector<u8> build_order(const input::GameCommand& cmd) {
             w.write_u32(payload.item.id);
             w.write_u32(payload.item.generation);
             w.write_vec3(payload.pos);
+        } else if constexpr (std::is_same_v<T, simulation::orders::SwapInventorySlot>) {
+            w.write_u32(static_cast<u32>(payload.slot_a));
+            w.write_u32(static_cast<u32>(payload.slot_b));
         } else if constexpr (std::is_same_v<T, simulation::orders::MoveDirection>) {
             w.write_f32(payload.dir.x);
             w.write_f32(payload.dir.y);
@@ -376,6 +379,12 @@ inline input::GameCommand parse_order(std::span<const u8> data, simulation::Play
         break;
     }
     case 12: {
+        i32 a = static_cast<i32>(r.read_u32());
+        i32 b = static_cast<i32>(r.read_u32());
+        cmd.order = simulation::orders::SwapInventorySlot{a, b};
+        break;
+    }
+    case 13: {
         f32 dx = r.read_f32();
         f32 dy = r.read_f32();
         cmd.order = simulation::orders::MoveDirection{{dx, dy}};

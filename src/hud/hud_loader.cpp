@@ -593,7 +593,8 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 if (auto v = ss->find("bg");           v != ss->end()) default_slot_style.bg           = parse_color(*v);
                 if (auto v = ss->find("hover_bg");     v != ss->end()) default_slot_style.hover_bg     = parse_color(*v);
                 if (auto v = ss->find("press_bg");     v != ss->end()) default_slot_style.press_bg     = parse_color(*v);
-                if (auto v = ss->find("empty_bg");     v != ss->end()) default_slot_style.empty_bg     = parse_color(*v);
+                if (auto v = ss->find("empty_bg");       v != ss->end()) default_slot_style.empty_bg       = parse_color(*v);
+                if (auto v = ss->find("unavailable_bg"); v != ss->end()) default_slot_style.unavailable_bg = parse_color(*v);
                 if (auto v = ss->find("border_color"); v != ss->end()) default_slot_style.border_color = parse_color(*v);
                 if (auto v = ss->find("border_width"); v != ss->end() && v->is_number())
                     default_slot_style.border_width = v->get<f32>();
@@ -617,12 +618,13 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                     }
 
                     if (auto st = js.find("style"); st != js.end() && st->is_object()) {
-                        if (auto v = st->find("bg");           v != st->end()) slot.style.bg           = parse_color(*v);
-                        if (auto v = st->find("hover_bg");     v != st->end()) slot.style.hover_bg     = parse_color(*v);
-                        if (auto v = st->find("press_bg");     v != st->end()) slot.style.press_bg     = parse_color(*v);
-                        if (auto v = st->find("empty_bg");     v != st->end()) slot.style.empty_bg     = parse_color(*v);
-                        if (auto v = st->find("border_color"); v != st->end()) slot.style.border_color = parse_color(*v);
-                        if (auto v = st->find("border_width"); v != st->end() && v->is_number())
+                        if (auto v = st->find("bg");             v != st->end()) slot.style.bg             = parse_color(*v);
+                        if (auto v = st->find("hover_bg");       v != st->end()) slot.style.hover_bg       = parse_color(*v);
+                        if (auto v = st->find("press_bg");       v != st->end()) slot.style.press_bg       = parse_color(*v);
+                        if (auto v = st->find("empty_bg");       v != st->end()) slot.style.empty_bg       = parse_color(*v);
+                        if (auto v = st->find("unavailable_bg"); v != st->end()) slot.style.unavailable_bg = parse_color(*v);
+                        if (auto v = st->find("border_color");   v != st->end()) slot.style.border_color   = parse_color(*v);
+                        if (auto v = st->find("border_width");   v != st->end() && v->is_number())
                             slot.style.border_width = v->get<f32>();
                     }
 

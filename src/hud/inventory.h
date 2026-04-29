@@ -29,12 +29,17 @@
 namespace uldum::hud {
 
 struct InventorySlotStyle {
-    Color bg            = rgba(48,  52,  68,  240);
-    Color hover_bg      = rgba(72,  76,  96,  250);
-    Color press_bg      = rgba(102, 106, 132, 255);
-    Color empty_bg      = rgba(28,  30,  40,  180);   // slot with no item
-    Color border_color  = rgba(0,   0,   0,   128);
-    f32   border_width  = 1.0f;
+    Color bg              = rgba(48,  52,  68,  240);
+    Color hover_bg        = rgba(72,  76,  96,  250);
+    Color press_bg        = rgba(102, 106, 132, 255);
+    Color empty_bg        = rgba(28,  30,  40,  180);   // slot with no item
+    // Slot index is beyond the carrier's `inventory_size` — the unit
+    // simply cannot hold an item in this position. Authors can style
+    // it as a faint "X" / hatched / extra-dim frame so the player
+    // sees at a glance how many slots they actually have.
+    Color unavailable_bg  = rgba(20,  22,  28,  120);
+    Color border_color    = rgba(0,   0,   0,   128);
+    f32   border_width    = 1.0f;
 };
 
 struct InventorySlot {
