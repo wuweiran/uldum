@@ -119,10 +119,24 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 }
                 // Empty box drag: don't change selection
             } else {
+                // WC3-style click select: prefer own units when multiple
+                // units overlap the cursor (so your hero wins over a
+                // neutral grunt next to him), but fall through to any
+                // unit if no own unit is under the click. Foreign-unit
+                // selection is a "view" — orders won't fire on it
+                // because the order pipeline validates ownership.
+                // Shift-click only stacks own units (WC3 behavior); a
+                // shift-click on a foreign unit while you have own
+                // units selected does nothing.
                 auto unit = ctx.picker.pick_unit(input.mouse_x, input.mouse_y, sel.player());
+                if (!unit.is_valid()) {
+                    unit = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+                }
                 if (unit.is_valid()) {
-                    if (input.key_shift) sel.toggle(unit);
-                    else                 sel.select(unit);
+                    auto* own = ctx.simulation.world().owners.get(unit.id);
+                    bool is_own = own && own->player.id == sel.player().id;
+                    if (input.key_shift && is_own) sel.toggle(unit);
+                    else                           sel.select(unit);
                 }
                 // No unit found: don't change selection
             }
@@ -252,6 +266,13 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 cmd.order  = simulation::orders::Attack{target};
                 cmd.queued = input.key_shift;
                 ctx.commands.submit(cmd);
+                // A-click on a unit always reads as hostile — flash red.
+                if (ctx.target_ping_fn) {
+                    if (auto* t = ctx.simulation.world().transforms.get(target.id)) {
+                        ctx.target_ping_fn(target, t->position,
+                                           InputContext::TargetPingKind::Hostile);
+                    }
+                }
             } else {
                 // A-click on ground: AttackMove
                 glm::vec3 world_pos;
@@ -299,6 +320,13 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             cmd.order  = simulation::orders::PickupItem{picked_item};
             cmd.queued = input.key_shift;
             ctx.commands.submit(cmd);
+            // Pickup ping — flash yellow at the item.
+            if (ctx.target_ping_fn) {
+                if (auto* t = ctx.simulation.world().transforms.get(picked_item.id)) {
+                    ctx.target_ping_fn(simulation::Unit{picked_item}, t->position,
+                                       InputContext::TargetPingKind::Item);
+                }
+            }
             return;
         }
 
@@ -328,8 +356,20 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 }
             }
             ctx.commands.submit(cmd);
+            // Target ping — red on enemy, green on friendly. Position
+            // sampled from the target's transform so the ring lands
+            // exactly under the model.
+            if (ctx.target_ping_fn) {
+                if (auto* t = ctx.simulation.world().transforms.get(target.id)) {
+                    ctx.target_ping_fn(target, t->position,
+                        is_enemy ? InputContext::TargetPingKind::Hostile
+                                 : InputContext::TargetPingKind::Friendly);
+                }
+            }
         } else {
-            // Clicking on ground — move order
+            // Clicking on ground — move order. No target ping (it
+            // would clutter every right-click; only entity targets
+            // need the visual confirmation).
             glm::vec3 world_pos;
             if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                 GameCommand cmd;

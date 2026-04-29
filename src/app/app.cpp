@@ -1144,6 +1144,14 @@ void App::run() {
                     m_platform->width(), m_platform->height(),
                     m_hud.input_captured(), preset_alpha,
                     jx, jy,
+                    [this](simulation::Unit unit, glm::vec3 pos,
+                           input::InputContext::TargetPingKind kind) {
+                        m_target_ping.unit     = unit;
+                        m_target_ping.pos      = pos;
+                        m_target_ping.kind     = kind;
+                        m_target_ping.age      = 0.0f;
+                        m_target_ping.lifespan = 0.45f;
+                    },
                 };
                 m_input_preset->update(ictx, frame_dt);
             }
@@ -1267,6 +1275,54 @@ void App::run() {
                                                      is_local ? kColorLocal : kColorOther,
                                                      TexId::SelectionRing);
                             ++emitted;
+                        }
+                    }
+
+                    // ── Target ping (WC3-style) ──────────────────────
+                    // Brief flashing ring at the target of a right-click
+                    // attack / pickup. Scales from 1.4× to 0.9× of the
+                    // target's selection radius and fades to zero alpha
+                    // over `lifespan`. Color: red for hostile, green for
+                    // friendly / pickup. Follows the unit if the handle
+                    // is still valid (so a moving target reads cleanly);
+                    // falls back to the captured world position if not.
+                    if (terrain && m_target_ping.age < m_target_ping.lifespan) {
+                        m_target_ping.age += frame_dt;
+                        if (m_target_ping.age < m_target_ping.lifespan) {
+                            f32 t = m_target_ping.age / m_target_ping.lifespan;
+                            f32 a_fade = 1.0f - t;          // 1 → 0
+                            f32 scale  = 1.4f - 0.5f * t;   // 1.4 → 0.9
+
+                            glm::vec3 anchor = m_target_ping.pos;
+                            f32 base_r = 48.0f;
+                            if (world.validate(m_target_ping.unit)) {
+                                if (auto* tf = world.transforms.get(m_target_ping.unit.id)) {
+                                    anchor = tf->interp_position(alpha);
+                                }
+                                if (auto* sl = world.selectables.get(m_target_ping.unit.id)) {
+                                    if (sl->selection_radius > 0.0f) base_r = sl->selection_radius;
+                                }
+                            }
+                            f32 ring_r = base_r * scale;
+                            constexpr f32 kPingStroke = 5.0f;
+                            std::vector<glm::vec3> p_samples;
+                            p_samples.reserve(48 + 1);
+                            for (u32 i = 0; i <= 48; ++i) {
+                                f32 ang = (static_cast<f32>(i % 48) / 48.0f) * 6.28318530718f;
+                                f32 sx = anchor.x + ring_r * std::cos(ang);
+                                f32 sy = anchor.y + ring_r * std::sin(ang);
+                                f32 sz = map::sample_height(*terrain, sx, sy);
+                                p_samples.push_back({sx, sy, sz});
+                            }
+                            using PingKind = input::InputContext::TargetPingKind;
+                            glm::vec4 color{0.30f, 1.00f, 0.36f, a_fade};
+                            switch (m_target_ping.kind) {
+                                case PingKind::Hostile:  color = {1.00f, 0.20f, 0.20f, a_fade}; break;
+                                case PingKind::Friendly: color = {0.30f, 1.00f, 0.36f, a_fade}; break;
+                                case PingKind::Item:     color = {1.00f, 0.85f, 0.20f, a_fade}; break;
+                            }
+                            m_world_overlays.add_path(p_samples, kPingStroke,
+                                                     color, TexId::SelectionRing);
                         }
                     }
 

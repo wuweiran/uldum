@@ -167,6 +167,20 @@ private:
     // host-like local-only for Offline) so that wire traffic and local edits
     // both mutate the same struct.
     bool                     m_lobby_active = false;
+
+    // WC3-style "target acquired" ping. Set when the input preset
+    // commits a right-click on a unit / item / destructable. Lives for
+    // a fraction of a second, scales/fades, then expires. If `unit` is
+    // valid, the ring follows the unit's interpolated position; if not,
+    // it stays at `pos`.
+    struct TargetPing {
+        simulation::Unit unit{};       // invalid → use `pos`
+        glm::vec3        pos{0.0f};
+        input::InputContext::TargetPingKind kind = input::InputContext::TargetPingKind::Friendly;
+        f32              age      = 0.0f;
+        f32              lifespan = 0.45f;
+    };
+    TargetPing m_target_ping;
 };
 
 } // namespace uldum

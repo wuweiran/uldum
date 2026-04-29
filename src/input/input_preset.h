@@ -9,6 +9,9 @@
 #include "simulation/simulation.h"
 #include "core/types.h"
 
+#include <glm/vec3.hpp>
+
+#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -44,6 +47,17 @@ struct InputContext {
     // quadrant.
     f32 joystick_x = 0.0f;
     f32 joystick_y = 0.0f;
+
+    // Callback fired when a right-click resolves to a unit / item /
+    // destructable / ground-attack-move target. The app uses it to
+    // flash a brief WC3-style "target acquired" ring at the target.
+    // Color comes from `kind` — Hostile=red, Friendly=green, Item=yellow.
+    // Purely visual — no gameplay effect. May be empty; presets check
+    // before calling. `unit` is invalid when the click was a ground
+    // target (no entity was hit), in which case the renderer uses
+    // `world_pos` directly.
+    enum class TargetPingKind : u8 { Hostile, Friendly, Item };
+    std::function<void(simulation::Unit unit, glm::vec3 world_pos, TargetPingKind kind)> target_ping_fn;
 };
 
 // Base class for input presets. Each preset translates raw input into
