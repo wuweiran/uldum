@@ -175,6 +175,9 @@ inline std::vector<u8> build_order(const input::GameCommand& cmd) {
         using T = std::decay_t<decltype(payload)>;
         if constexpr (std::is_same_v<T, simulation::orders::Move>) {
             w.write_vec3(payload.target);
+            w.write_u32(payload.target_unit.id);
+            w.write_u32(payload.target_unit.generation);
+            w.write_f32(payload.range);
         } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
             w.write_vec3(payload.target);
         } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
@@ -328,7 +331,15 @@ inline input::GameCommand parse_order(std::span<const u8> data, simulation::Play
 
     u8 order_idx = r.read_u8();
     switch (order_idx) {
-    case 0: cmd.order = simulation::orders::Move{r.read_vec3()}; break;
+    case 0: {
+        glm::vec3 t = r.read_vec3();
+        simulation::Unit tu;
+        tu.id         = r.read_u32();
+        tu.generation = r.read_u32();
+        f32 range = r.read_f32();
+        cmd.order = simulation::orders::Move{t, tu, range};
+        break;
+    }
     case 1: cmd.order = simulation::orders::AttackMove{r.read_vec3()}; break;
     case 2: {
         simulation::Unit t;

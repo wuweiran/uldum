@@ -195,12 +195,51 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         glm::vec2 goal2d{0};
         bool has_goal = false;
         bool is_approach = false;
+        // Effective stop radius for the active goal. 0 (the default)
+        // means "exact arrival within the tile-half tolerance" the
+        // Move-order branch uses below. >0 is set by Move with a
+        // target_unit (Follow) or by Approach (combat/cast/pickup).
+        f32  goal_range = 0.0f;
+        // Did this tick's goal come from a Move order targeting a
+        // unit? Distinguishes Follow ("arrived → stop, keep order")
+        // from point-Move ("arrived → end order"). Stuck-detection
+        // also keys off this — Follow never gives up.
+        bool is_follow = false;
 
         // Priority 1: Move / AttackMove order
         if (oq->current) {
             if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
-                goal2d = {m->target.x, m->target.y};
-                has_goal = true;
+                // Resolve target each tick. With target_unit valid, the
+                // goal moves with the unit — that's Follow, no extra
+                // order kind needed. On invalid target, end the order;
+                // matches WC3's behavior when the followed unit dies
+                // or vanishes from sight (vision check is implicit:
+                // the picker filters foreign units in fog out at
+                // smart-click time, so we already won't have started a
+                // Follow on someone we can't see).
+                if (m->target_unit.is_valid()) {
+                    if (!world.validate(m->target_unit)) {
+                        oq->current.reset();
+                        if (!oq->queued.empty()) {
+                            oq->current = std::move(oq->queued.front());
+                            oq->queued.pop_front();
+                        }
+                        mov.moving = false;
+                        mov.stuck_timer = 0;
+                        continue;
+                    }
+                    auto* tt = world.transforms.get(m->target_unit.id);
+                    if (tt) {
+                        goal2d = {tt->position.x, tt->position.y};
+                        has_goal = true;
+                        is_follow = true;
+                        goal_range = m->range;
+                    }
+                } else {
+                    goal2d = {m->target.x, m->target.y};
+                    has_goal = true;
+                    goal_range = m->range;
+                }
             } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
                 // AttackMove with active combat target: defer to approach
                 auto* combat = world.combats.get(id);
@@ -296,20 +335,61 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             continue;
         }
 
-        // Check arrival at destination (orders only — approach stops via range check above)
+        // Check arrival at destination (orders only — approach stops via range check above).
+        // Follow (Move with target_unit + range>0) doesn't end on
+        // arrival — the order stays active so we resume tracking when
+        // the target moves. Point-Move (range=0) ends as before.
         if (!is_approach) {
             f32 goal_dist = glm::length(goal2d - pos2d);
-            if (goal_dist < pathfinder.tile_size() * 0.5f) {
+            f32 stop_dist = std::max(goal_range, pathfinder.tile_size() * 0.5f);
+            if (goal_dist < stop_dist) {
                 mov.corridor.clear();
                 mov.has_waypoint = false;
                 mov.moving = false;
-                oq->current.reset();
-                if (!oq->queued.empty()) {
-                    oq->current = std::move(oq->queued.front());
-                    oq->queued.pop_front();
+                mov.stuck_timer = 0;
+                if (!is_follow) {
+                    oq->current.reset();
+                    if (!oq->queued.empty()) {
+                        oq->current = std::move(oq->queued.front());
+                        oq->queued.pop_front();
+                    }
                 }
                 continue;
             }
+        }
+
+        // ── Stuck detection (Move order only, point form) ────────────
+        // If we're trying to reach a fixed point but haven't moved for
+        // STUCK_TIMEOUT seconds, end the order. This is what unjams
+        // crowds piling up at one click point: outer units that can't
+        // get closer don't keep replanning forever, they just stop.
+        // Follow orders intentionally don't time out — the player
+        // asked us to track that unit.
+        if (!is_approach && !is_follow) {
+            f32 progress = glm::length(pos2d - mov.stuck_anchor);
+            if (progress >= Movement::STUCK_PROGRESS_EPS) {
+                mov.stuck_anchor = pos2d;
+                mov.stuck_timer  = 0;
+            } else {
+                mov.stuck_timer += dt;
+                if (mov.stuck_timer >= Movement::STUCK_TIMEOUT) {
+                    mov.corridor.clear();
+                    mov.has_waypoint = false;
+                    mov.moving = false;
+                    mov.stuck_timer = 0;
+                    oq->current.reset();
+                    if (!oq->queued.empty()) {
+                        oq->current = std::move(oq->queued.front());
+                        oq->queued.pop_front();
+                    }
+                    continue;
+                }
+            }
+        } else {
+            // Outside of point-Move context, keep the timer fresh so
+            // the next Move starts from a clean slate.
+            mov.stuck_anchor = pos2d;
+            mov.stuck_timer  = 0;
         }
 
         // ── Move toward waypoint ─────────────────────────────────────────
@@ -321,10 +401,14 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             to_wp = mov.waypoint - pos2d;
             wp_dist = glm::length(to_wp);
             if (wp_dist < 1.0f) {
-                if (!is_approach) {
+                // End-of-corridor handling mirrors the arrival branch
+                // above: Approach and Follow stay; only point-Move
+                // ends its order.
+                if (!is_approach && !is_follow) {
                     mov.corridor.clear();
                     mov.has_waypoint = false;
                     mov.moving = false;
+                    mov.stuck_timer = 0;
                     oq->current.reset();
                     if (!oq->queued.empty()) {
                         oq->current = std::move(oq->queued.front());

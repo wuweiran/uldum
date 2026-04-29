@@ -1103,7 +1103,12 @@ void App::run() {
                     m_server.tick(game_dt);
                     auto t1 = std::chrono::steady_clock::now();
                     f32 tick_ms = std::chrono::duration<f32, std::milli>(t1 - t0).count();
-                    if (tick_ms > 5.0f) {
+                    // Warn when a tick consumes half its budget — at
+                    // that point we're at the inflection where the
+                    // loop is one busy frame away from backlogging.
+                    // Scales automatically if TICK_RATE changes.
+                    constexpr f32 SLOW_TICK_MS = TICK_DT * 0.5f * 1000.0f;
+                    if (tick_ms > SLOW_TICK_MS) {
                         log::warn(TAG, "Slow tick: {:.1f}ms (units: {})",
                                   tick_ms, active_world().transforms.count());
                     }

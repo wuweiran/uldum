@@ -12,7 +12,23 @@
 namespace uldum::simulation {
 
 namespace orders {
-    struct Move          { glm::vec3 target; };
+    // Unified movement order. Three flavors fall out of the same struct:
+    //   • Point click (Move):     target_unit invalid, target = point,    range = 0
+    //   • Smart-click ally:       target_unit = ally,  range = follow-cluster radius
+    //   • Hold position-of-X:     target_unit = X,     range = stop radius
+    // Termination policy:
+    //   • Point + range==0  → ends on arrival OR stuck-timeout
+    //   • Unit  + range>0   → never ends on arrival (keep tracking),
+    //                          ends only when target dies / leaves vision
+    //                          or a new order replaces it
+    // Per-tick the simulation re-resolves the goal from `target_unit` when
+    // it's valid, otherwise from `target`. This is what makes "Follow" a
+    // free emergent behavior of the same primitive.
+    struct Move          {
+        glm::vec3 target;            // used when target_unit is invalid
+        Unit      target_unit;       // when valid → follow this unit each tick
+        f32       range = 0.0f;      // 0 = exact arrival; >0 = stop within radius
+    };
     struct AttackMove    { glm::vec3 target; };
     struct Attack        { Unit target; };
     struct Stop          {};

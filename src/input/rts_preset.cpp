@@ -327,11 +327,18 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (is_enemy) {
                 cmd.order = simulation::orders::Attack{simulation::Unit{target}};
             } else {
-                // Friendly unit — move to their position (follow not implemented, use move)
-                auto* t = ctx.simulation.world().transforms.get(target.id);
-                if (t) {
-                    cmd.order = simulation::orders::Move{t->position};
-                }
+                // Friendly unit — Follow. Same Move order, just with
+                // the target_unit slot filled in instead of a fixed
+                // point. The simulation re-resolves the goal each
+                // tick from the unit's current position, so we trail
+                // them naturally; ends only when the target dies /
+                // vanishes or a new order replaces this one. Cluster
+                // radius is a small follow distance so we don't push
+                // into the followed unit's collision circle.
+                simulation::orders::Move m;
+                m.target_unit = simulation::Unit{target};
+                m.range       = 96.0f;   // follow distance — beyond collision_radius * 2
+                cmd.order     = std::move(m);
             }
             ctx.commands.submit(cmd);
             // Target ping — red on enemy, green on friendly. Position

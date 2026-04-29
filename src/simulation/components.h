@@ -111,6 +111,19 @@ struct Movement {
     Unit      approach_target;          // entity to approach (dynamic position)
     glm::vec2 approach_goal{0};         // fixed position to approach (when no entity target)
     f32       approach_range = 0;       // stop when within this distance (0 = disabled)
+
+    // Stuck-timeout state for the unified Move order. Tracks how long
+    // the unit has been failing to make forward progress while a Move
+    // order is active. Reset every time real progress happens (>=
+    // STUCK_PROGRESS_EPS world units between ticks). When the timer
+    // exceeds STUCK_TIMEOUT and the order's `range == 0`, the order
+    // self-terminates — that's what unjams pile-ups around a single
+    // click point. Follow orders (range > 0 + target_unit) never
+    // stuck-terminate; the player explicitly asked us to keep trying.
+    f32       stuck_timer       = 0;
+    glm::vec2 stuck_anchor{0};          // last position from which we measure progress
+    static constexpr f32 STUCK_TIMEOUT     = 1.25f;  // seconds without progress → give up
+    static constexpr f32 STUCK_PROGRESS_EPS = 4.0f;  // world units of motion that count as progress
 };
 
 enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };
