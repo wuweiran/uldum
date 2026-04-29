@@ -1,10 +1,12 @@
 #include "app/dev_console.h"
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "platform/platform.h"
+#include "asset/upk.h"
 #include "core/log.h"
 
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 // Win32 path: ImGui's Win32 backend handles WM_* → ImGui IO (mouse,
@@ -155,8 +157,57 @@ static void feed_imgui_input_manual(const platform::Platform& platform, f32 dt) 
 }
 #endif
 
+// Peek at a .uldmap package's manifest.json without mounting it. Cheap:
+// opens the .upk header + one entry. Returns false on any read failure
+// — the caller falls back to a path-only entry.
+static bool read_map_info(std::string_view pkg_path, DevConsole::MapInfo& out) {
+    asset::UPKReader r;
+    if (!r.open(pkg_path)) return false;
+    auto bytes = r.read("manifest.json");
+    if (bytes.empty()) return false;
+
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(bytes.begin(), bytes.end());
+    } catch (...) {
+        return false;
+    }
+
+    out.name              = j.value("name",              std::string{});
+    out.author            = j.value("author",            std::string{});
+    out.description       = j.value("description",       std::string{});
+    out.game_mode         = j.value("game_mode",         std::string{});
+    out.suggested_players = j.value("suggested_players", std::string{});
+    out.version           = j.value("version",           std::string{});
+    out.fog_of_war        = j.value("fog_of_war",        std::string{});
+    if (j.contains("players") && j["players"].is_array())
+        out.player_count = static_cast<u32>(j["players"].size());
+    if (j.contains("teams") && j["teams"].is_array())
+        out.team_count   = static_cast<u32>(j["teams"].size());
+    return true;
+}
+
+// Inset-adjusted viewport rect. Subtracts the platform safe-area insets
+// (status bar, gesture nav, notch) from the ImGui main viewport so dev
+// panels don't land under system chrome on Android. Desktop returns
+// the unmodified viewport since insets are zero there.
+static void get_safe_viewport(const platform::Platform* platform,
+                              ImVec2& out_pos, ImVec2& out_size) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    out_pos  = vp->Pos;
+    out_size = vp->Size;
+    if (!platform) return;
+    auto ins = platform->safe_insets();
+    out_pos.x  += ins.left;
+    out_pos.y  += ins.top;
+    out_size.x -= (ins.left + ins.right);
+    out_size.y -= (ins.top  + ins.bottom);
+    if (out_size.x < 0) out_size.x = 0;
+    if (out_size.y < 0) out_size.y = 0;
+}
+
 void DevConsole::rescan_map_list() {
-    m_map_paths.clear();
+    m_maps.clear();
     if (!m_platform) return;
 
     // Cross-platform map enumeration — Platform::list_files dispatches
@@ -167,11 +218,20 @@ void DevConsole::rescan_map_list() {
     for (auto& name : files) {
         if (name.size() < 7 || name.compare(name.size() - 7, 7, ".uldmap") != 0)
             continue;
-        m_map_paths.push_back("maps/" + name);
+        MapInfo info;
+        info.path = "maps/" + name;
+        if (!read_map_info(info.path, info)) {
+            log::warn(TAG, "Could not read manifest.json from '{}'", info.path);
+            // Fallback to filename-derived display name so the row still
+            // renders even if the manifest peek failed.
+            info.name = name.substr(0, name.size() - 7);  // strip ".uldmap"
+        }
+        m_maps.push_back(std::move(info));
     }
-    std::sort(m_map_paths.begin(), m_map_paths.end());
-    m_map_selected = std::min(m_map_selected, static_cast<i32>(m_map_paths.size()) - 1);
-    if (m_map_selected < 0 && !m_map_paths.empty()) m_map_selected = 0;
+    std::sort(m_maps.begin(), m_maps.end(),
+              [](const MapInfo& a, const MapInfo& b) { return a.path < b.path; });
+    m_map_selected = std::min(m_map_selected, static_cast<i32>(m_maps.size()) - 1);
+    if (m_map_selected < 0 && !m_maps.empty()) m_map_selected = 0;
 }
 
 void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::NetworkManager& net) {
@@ -221,216 +281,342 @@ void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::Networ
 }
 
 void DevConsole::draw_menu_screen() {
-    // Centered-ish "Uldum Dev" menu — fullscreen-sized so it reads as the
-    // primary UI when there's no scene behind it.
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 panel_size{ 520.0f, 420.0f };
-    ImVec2 panel_pos{ vp->Pos.x + (vp->Size.x - panel_size.x) * 0.5f,
-                      vp->Pos.y + (vp->Size.y - panel_size.y) * 0.5f };
-    ImGui::SetNextWindowPos (panel_pos,  ImGuiCond_Always);
-    ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
+    // Fullscreen dev menu. All hard-coded sizes go through `s` so 100%
+    // and 300% DPI both lay out cleanly — rows fit the (scaled) text and
+    // buttons don't clip their labels. ScaleAllSizes() scales padding /
+    // spacing for us; we scale only the local hard-coded numbers.
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+    ImGui::SetNextWindowPos (vp_pos,  ImGuiCond_Always);
+    ImGui::SetNextWindowSize(vp_size, ImGuiCond_Always);
 
-    ImGui::Begin("Uldum Dev", nullptr,
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
 
-    ImGui::TextUnformatted("Select map");
-    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.08f, 0.10f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20 * s, 16 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(8  * s,  8 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
 
-    if (m_map_paths.empty()) {
-        ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1),
-            "No maps found in maps/. Run scripts\\build.ps1 first.");
-    } else {
-        // Map list as a selectable list box.
-        if (ImGui::BeginListBox("##maps", ImVec2(-FLT_MIN, 160))) {
-            for (i32 i = 0; i < static_cast<i32>(m_map_paths.size()); ++i) {
+    ImGui::Begin("##uldum_dev_menu", nullptr,
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    const MapInfo* selected = (m_map_selected >= 0 && m_map_selected < static_cast<i32>(m_maps.size()))
+        ? &m_maps[m_map_selected] : nullptr;
+    const char* selected_path = selected ? selected->path.c_str() : nullptr;
+
+    // Layout: list on the left, two stacked panes on the right (info on
+    // top, session on bottom), Quit at the bottom of the screen.
+    const float row_h        = ImGui::GetFrameHeightWithSpacing();
+    const float footer_h     = row_h + 8.0f * s;
+    const float right_pane_w = 320.0f * s;
+    const float gap          = 12.0f * s;
+    const ImVec2 btn         = ImVec2(120.0f * s, 0);   // shared across every action button
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    avail.y -= footer_h;
+    float left_pane_w = avail.x - right_pane_w - gap;
+    if (left_pane_w < 200.0f * s) left_pane_w = 200.0f * s;
+
+    // Info pane gets ~55% of the right column's height; session takes
+    // the rest. Floor it so neither collapses on tiny windows.
+    float info_h    = avail.y * 0.55f;
+    float session_h = avail.y - info_h - gap;
+    if (info_h    < 160.0f * s) info_h    = 160.0f * s;
+    if (session_h < 160.0f * s) session_h = 160.0f * s;
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.12f, 0.15f, 1.0f));
+
+    // ── Maps pane (left, full height) ─────────────────────────────────
+    ImGui::BeginChild("##maps", ImVec2(left_pane_w, avail.y), ImGuiChildFlags_Borders);
+    {
+        ImGui::Text("Maps (%d)", static_cast<int>(m_maps.size()));
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - btn.x);
+        if (ImGui::Button("Rescan", btn)) rescan_map_list();
+        ImGui::Separator();
+
+        if (m_maps.empty()) {
+            ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "No maps in maps/");
+        } else {
+            for (i32 i = 0; i < static_cast<i32>(m_maps.size()); ++i) {
                 bool sel = (i == m_map_selected);
-                if (ImGui::Selectable(m_map_paths[i].c_str(), sel)) m_map_selected = i;
+                ImGui::PushID(i);
+                const char* label = m_maps[i].name.empty()
+                                  ? m_maps[i].path.c_str()
+                                  : m_maps[i].name.c_str();
+                if (ImGui::Selectable(label, sel,
+                        ImGuiSelectableFlags_AllowDoubleClick)) {
+                    m_map_selected = i;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        m_pending.type     = ActionType::EnterLobbyOffline;
+                        m_pending.map_path = m_maps[i].path;
+                    }
+                }
                 if (sel) ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
             }
-            ImGui::EndListBox();
         }
-        if (ImGui::Button("Rescan", ImVec2(100, 0))) rescan_map_list();
     }
+    ImGui::EndChild();
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextUnformatted("Session");
-    const char* selected = (m_map_selected >= 0 && m_map_selected < static_cast<i32>(m_map_paths.size()))
-        ? m_map_paths[m_map_selected].c_str() : nullptr;
-
-    ImGui::BeginDisabled(selected == nullptr);
-    if (ImGui::Button("Offline", ImVec2(160, 0))) {
-        m_pending.type     = ActionType::EnterLobbyOffline;
-        m_pending.map_path = selected;
-    }
     ImGui::SameLine();
-    if (ImGui::Button("Host", ImVec2(80, 0))) {
-        m_pending.type     = ActionType::EnterLobbyHost;
-        m_pending.map_path = selected;
-        m_pending.port     = static_cast<u16>(m_port);
-    }
-    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(gap - ImGui::GetStyle().ItemSpacing.x, 0));
+    ImGui::SameLine();
 
-    ImGui::Spacing();
-    ImGui::InputInt("Port", &m_port, 0, 0);
-    char addr_buf[64];
-    std::snprintf(addr_buf, sizeof(addr_buf), "%s", m_connect_address.c_str());
-    if (ImGui::InputText("Host address", addr_buf, sizeof(addr_buf))) {
-        m_connect_address = addr_buf;
-    }
-    ImGui::BeginDisabled(selected == nullptr);
-    if (ImGui::Button("Connect", ImVec2(160, 0))) {
-        m_pending.type            = ActionType::EnterLobbyClient;
-        m_pending.map_path        = selected;   // in 16b-iii the server tells the client; until then dev picks locally
-        m_pending.connect_address = m_connect_address;
-        m_pending.port            = static_cast<u16>(m_port);
-    }
-    ImGui::EndDisabled();
+    // Right column — vertical split (info on top, session on bottom).
+    // Wrap in a child so the two stacked panes share the same column
+    // without ImGui flowing the second one to a new row.
+    ImGui::BeginGroup();
 
-    ImGui::Spacing();
+    // ── Info pane (top-right) ─────────────────────────────────────────
+    ImGui::BeginChild("##info", ImVec2(right_pane_w, info_h), ImGuiChildFlags_Borders);
+    {
+        ImGui::TextUnformatted("Map info");
+        ImGui::Separator();
+
+        if (!selected) {
+            ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.70f, 1), "No map selected");
+        } else {
+            auto kv = [](const char* key, const std::string& val) {
+                if (val.empty()) return;
+                ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.70f, 1), "%s", key);
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", val.c_str());
+            };
+            ImGui::TextWrapped("%s", selected->name.empty()
+                ? selected->path.c_str() : selected->name.c_str());
+            ImGui::TextColored(ImVec4(0.45f, 0.50f, 0.60f, 1), "%s", selected->path.c_str());
+            ImGui::Dummy(ImVec2(0, 4 * s));
+            kv("Author:",  selected->author);
+            kv("Mode:",    selected->game_mode);
+            kv("Players:", selected->suggested_players);
+            kv("Slots:",   std::to_string(selected->player_count));
+            kv("Teams:",   std::to_string(selected->team_count));
+            kv("Fog:",     selected->fog_of_war);
+            kv("Version:", selected->version);
+            if (!selected->description.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * s));
+                ImGui::Separator();
+                ImGui::TextWrapped("%s", selected->description.c_str());
+            }
+        }
+    }
+    ImGui::EndChild();
+
+    // ── Session pane (bottom-right) ───────────────────────────────────
+    ImGui::BeginChild("##session", ImVec2(right_pane_w, session_h), ImGuiChildFlags_Borders);
+    {
+        ImGui::TextUnformatted("Session");
+        ImGui::Separator();
+
+        ImGui::BeginDisabled(selected_path == nullptr);
+        if (ImGui::Button("Offline", btn)) {
+            m_pending.type     = ActionType::EnterLobbyOffline;
+            m_pending.map_path = selected_path ? selected_path : "";
+        }
+        if (ImGui::Button("Host", btn)) {
+            m_pending.type     = ActionType::EnterLobbyHost;
+            m_pending.map_path = selected_path ? selected_path : "";
+            m_pending.port     = static_cast<u16>(m_port);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Dummy(ImVec2(0, 4 * s));
+        ImGui::Separator();
+
+        char addr_buf[64];
+        std::snprintf(addr_buf, sizeof(addr_buf), "%s", m_connect_address.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText("##addr", addr_buf, sizeof(addr_buf))) {
+            m_connect_address = addr_buf;
+        }
+        ImGui::SetNextItemWidth(120 * s);
+        ImGui::InputInt("Port", &m_port, 0, 0);
+
+        ImGui::BeginDisabled(selected_path == nullptr);
+        if (ImGui::Button("Connect", btn)) {
+            m_pending.type            = ActionType::EnterLobbyClient;
+            m_pending.map_path        = selected_path ? selected_path : "";
+            m_pending.connect_address = m_connect_address;
+            m_pending.port            = static_cast<u16>(m_port);
+        }
+        ImGui::EndDisabled();
+    }
+    ImGui::EndChild();
+
+    ImGui::EndGroup();
+    ImGui::PopStyleColor();
+
+    // ── Footer ─────────────────────────────────────────────────────────
     ImGui::Separator();
-    if (ImGui::Button("Quit", ImVec2(160, 0))) {
+    if (ImGui::Button("Quit", btn)) {
         m_pending.type = ActionType::Quit;
     }
 
     ImGui::End();
+
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
 }
 
 void DevConsole::draw_lobby_screen(network::NetworkManager& net) {
     network::LobbyState& lobby = net.lobby_state();
     const bool is_host_authority = (net.mode() != network::Mode::Client);
     const u32  seatless_peer_count = net.seatless_peer_count();
-    // What peer_id means "me" in the lobby snapshot: LOCAL_PEER sentinel for
-    // host/offline (that's what claim_first_open_as_me / host-local claims
-    // write), or the server-assigned client_peer_id() for Client.
     const u32  my_peer_id = (net.mode() == network::Mode::Client)
         ? net.client_peer_id() : network::LOCAL_PEER;
-    // WC3-style "Game Lobby": table of slots with per-row occupant/team/color
-    // plus Start / Back controls. The lobby state object is mutated in-place
-    // as the dev clicks occupancy dropdowns or claims slots.
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 panel_size{ 620.0f, 460.0f };
-    ImVec2 panel_pos{ vp->Pos.x + (vp->Size.x - panel_size.x) * 0.5f,
-                      vp->Pos.y + (vp->Size.y - panel_size.y) * 0.5f };
-    ImGui::SetNextWindowPos (panel_pos,  ImGuiCond_Always);
-    ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
 
-    ImGui::Begin("Game Lobby", nullptr,
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+    ImGui::SetNextWindowPos (vp_pos,  ImGuiCond_Always);
+    ImGui::SetNextWindowSize(vp_size, ImGuiCond_Always);
+
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
+    const ImVec2 btn = ImVec2(120.0f * s, 0);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.08f, 0.10f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20 * s, 16 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(8  * s,  8 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+
+    ImGui::Begin("##uldum_dev_lobby", nullptr,
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove     | ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
 
     ImGui::Text("Map: %s", lobby.map_name.c_str());
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1), "%s", lobby.map_path.c_str());
+    ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.70f, 1), "%s", lobby.map_path.c_str());
     ImGui::Separator();
 
-    // Client-pre-sync: host hasn't sent S_LOBBY_STATE yet, so we have no
-    // slots to render. Show a status line instead of an empty table.
+    // Client-pre-sync: no slots yet, just status + Back.
     if (lobby.slots.empty()) {
-        ImGui::TextColored(ImVec4(1, 0.9f, 0.4f, 1), "Connecting to host — waiting for lobby state...");
-        ImGui::Spacing();
-        if (ImGui::Button("Back", ImVec2(120, 0))) {
+        ImGui::TextColored(ImVec4(1, 0.9f, 0.4f, 1),
+            "Connecting to host - waiting for lobby state...");
+        ImGui::Dummy(ImVec2(0, 8 * s));
+        if (ImGui::Button("Back", btn)) {
             m_pending.type = ActionType::LeaveLobby;
         }
         ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor();
         return;
     }
 
-    // Group slots by team. Each row shows color, occupancy (Open / Computer
-    // / name of seated player), and a Claim or Release button. Locked slots
-    // (reserved for future use, e.g. named NPCs) render with no button.
-    std::vector<u32> teams;
-    for (const auto& a : lobby.slots) {
-        if (std::find(teams.begin(), teams.end(), a.team) == teams.end())
-            teams.push_back(a.team);
-    }
-    std::sort(teams.begin(), teams.end());
+    // Reserve footer row (single line: status + Start/Back) so the
+    // slot-table child fills the rest of the viewport.
+    const float footer_h = ImGui::GetFrameHeightWithSpacing() + 8.0f * s;
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    avail.y -= footer_h;
+    if (avail.y < 200.0f * s) avail.y = 200.0f * s;
 
-    const char* occ_labels[] = { "Open", "Computer", "Human" };
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.12f, 0.15f, 1.0f));
+    ImGui::BeginChild("##slots", ImVec2(-FLT_MIN, avail.y), ImGuiChildFlags_Borders);
+    {
+        std::vector<u32> teams;
+        for (const auto& a : lobby.slots) {
+            if (std::find(teams.begin(), teams.end(), a.team) == teams.end())
+                teams.push_back(a.team);
+        }
+        std::sort(teams.begin(), teams.end());
 
-    for (u32 team : teams) {
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.4f, 1), "Team %u", team);
-        if (ImGui::BeginTable((std::string("team_") + std::to_string(team)).c_str(), 4,
-                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-            ImGui::TableSetupColumn("Color",    ImGuiTableColumnFlags_WidthFixed, 90);
-            ImGui::TableSetupColumn("Occupant");
-            ImGui::TableSetupColumn("Name");
-            ImGui::TableSetupColumn("",         ImGuiTableColumnFlags_WidthFixed, 90);
-            ImGui::TableHeadersRow();
+        const char* occ_labels[] = { "Open", "Computer", "Human" };
 
-            for (u32 i = 0; i < lobby.slots.size(); ++i) {
-                auto& a = lobby.slots[i];
-                if (a.team != team) continue;
-                ImGui::PushID(static_cast<int>(i));
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(a.color.c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(occ_labels[static_cast<int>(a.occupant)]);
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(a.display_name.c_str());
+        for (u32 team : teams) {
+            ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.4f, 1), "Team %u", team);
+            if (ImGui::BeginTable((std::string("team_") + std::to_string(team)).c_str(), 4,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("Color",    ImGuiTableColumnFlags_WidthFixed, 90 * s);
+                ImGui::TableSetupColumn("Occupant", ImGuiTableColumnFlags_WidthFixed, 110 * s);
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("",         ImGuiTableColumnFlags_WidthFixed, btn.x);
+                ImGui::TableHeadersRow();
 
-                ImGui::TableNextColumn();
-                bool is_mine = (a.occupant == network::SlotOccupant::Human && a.peer_id == my_peer_id);
-                bool can_claim = !a.locked && !is_mine;
-                bool can_release = is_mine;
-                if (can_release) {
-                    if (ImGui::Button("Release", ImVec2(-FLT_MIN, 0))) {
-                        m_pending.type = ActionType::ReleaseSlot;
-                        m_pending.slot = i;
+                for (u32 i = 0; i < lobby.slots.size(); ++i) {
+                    auto& a = lobby.slots[i];
+                    if (a.team != team) continue;
+                    ImGui::PushID(static_cast<int>(i));
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(a.color.c_str());
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(occ_labels[static_cast<int>(a.occupant)]);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(a.display_name.c_str());
+
+                    ImGui::TableNextColumn();
+                    bool is_mine = (a.occupant == network::SlotOccupant::Human && a.peer_id == my_peer_id);
+                    bool can_claim = !a.locked && !is_mine;
+                    bool can_release = is_mine;
+                    if (can_release) {
+                        if (ImGui::Button("Release", btn)) {
+                            m_pending.type = ActionType::ReleaseSlot;
+                            m_pending.slot = i;
+                        }
+                    } else {
+                        ImGui::BeginDisabled(!can_claim);
+                        if (ImGui::Button("Claim", btn)) {
+                            m_pending.type = ActionType::ClaimSlot;
+                            m_pending.slot = i;
+                        }
+                        ImGui::EndDisabled();
                     }
-                } else {
-                    ImGui::BeginDisabled(!can_claim);
-                    if (ImGui::Button("Claim", ImVec2(-FLT_MIN, 0))) {
-                        m_pending.type = ActionType::ClaimSlot;
-                        m_pending.slot = i;
-                    }
-                    ImGui::EndDisabled();
+
+                    ImGui::PopID();
                 }
-
-                ImGui::PopID();
+                ImGui::EndTable();
             }
-            ImGui::EndTable();
+            ImGui::Dummy(ImVec2(0, 4 * s));
         }
     }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
 
-    ImGui::Spacing();
     ImGui::Separator();
 
-    // Open slots are fine — they mean "no player in that seat" at game time.
-    // Connected-but-seatless peers are NOT fine — they'd become zombie
-    // clients (no S_WELCOME, empty world). Block Start until they claim.
+    // Footer — single row: status text on the left, action buttons
+    // right-aligned. host gets Start + Back; client gets Back only.
+    bool can_start = is_host_authority && (seatless_peer_count == 0);
+    char status[128] = "";
     if (is_host_authority) {
-        bool can_start = (seatless_peer_count == 0);
         if (!can_start) {
-            ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1),
-                "Waiting for %u connected peer(s) to claim a slot...", seatless_peer_count);
+            std::snprintf(status, sizeof(status),
+                "Waiting for %u peer(s) to claim a slot...", seatless_peer_count);
         }
-        ImGui::BeginDisabled(!can_start);
-        if (ImGui::Button("Start Game", ImVec2(160, 0))) {
-            m_pending.type = ActionType::StartGame;
-        }
-        ImGui::EndDisabled();
     } else {
-        // Client: prompt to claim if not yet seated, otherwise wait on host.
         u32 my_slot = network::lobby_slot_for_peer(lobby, net.client_peer_id());
-        if (my_slot == UINT32_MAX) {
-            ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1),
-                "Click Claim on a slot to join the game.");
-        } else {
-            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1),
-                "Waiting for host to start the game...");
-        }
+        if (my_slot == UINT32_MAX) std::snprintf(status, sizeof(status), "Claim a slot to join.");
+        else                       std::snprintf(status, sizeof(status), "Waiting for host to start...");
     }
+    if (status[0]) ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "%s", status);
+    else           ImGui::Dummy(ImVec2(0, 0));
+
+    // Right-align Start (host only) + Back on the same row as status.
+    float trailing_w = btn.x;
+    if (is_host_authority) trailing_w += btn.x + ImGui::GetStyle().ItemSpacing.x;
     ImGui::SameLine();
-    if (ImGui::Button("Back", ImVec2(120, 0))) {
-        m_pending.type = ActionType::LeaveLobby;
+    ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - trailing_w);
+    if (is_host_authority) {
+        ImGui::BeginDisabled(!can_start);
+        if (ImGui::Button("Start", btn)) m_pending.type = ActionType::StartGame;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
     }
+    if (ImGui::Button("Back", btn)) m_pending.type = ActionType::LeaveLobby;
 
     ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
 }
 
 void DevConsole::draw_loading_screen(const network::LobbyState& lobby) {
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 panel_size{ 420.0f, 140.0f };
-    ImVec2 panel_pos{ vp->Pos.x + (vp->Size.x - panel_size.x) * 0.5f,
-                      vp->Pos.y + (vp->Size.y - panel_size.y) * 0.5f };
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+    ImVec2 panel_size{ 420.0f * s, 140.0f * s };
+    ImVec2 panel_pos{ vp_pos.x + (vp_size.x - panel_size.x) * 0.5f,
+                      vp_pos.y + (vp_size.y - panel_size.y) * 0.5f };
     ImGui::SetNextWindowPos (panel_pos,  ImGuiCond_Always);
     ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
 
@@ -447,35 +633,50 @@ void DevConsole::draw_loading_screen(const network::LobbyState& lobby) {
 }
 
 void DevConsole::draw_session_overlay(network::NetworkManager& /*net*/) {
-    // Small HUD-style panel in the top-right — lets the dev end the session
-    // without quitting the exe. Deliberately minimal; gameplay input
-    // continues to reach the 3D scene.
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 panel_pos{ vp->Pos.x + vp->Size.x - 260.0f, vp->Pos.y + 12.0f };
-    ImGui::SetNextWindowPos(panel_pos, ImGuiCond_Always);
+    // Tiny HUD-style panel in the top-right — FPS + an End button so the
+    // dev can return to the picker without quitting the exe. Auto-sizes
+    // to its content so the panel stays as small as the widgets allow.
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+
+    // Right-anchor by guessing a tight content width — auto-resize will
+    // shrink the actual window. 6 dp padding from the safe-area edge.
+    ImGui::SetNextWindowPos(ImVec2(vp_pos.x + vp_size.x - 6.0f * s,
+                                   vp_pos.y + 6.0f * s),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
     ImGui::SetNextWindowBgAlpha(0.35f);
 
-    ImGui::Begin("Session", nullptr,
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6 * s, 4 * s));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(4 * s, 4 * s));
 
-    ImGui::Text("FPS: %.0f", static_cast<double>(ImGui::GetIO().Framerate));
-    ImGui::Separator();
-    if (ImGui::Button("End Session", ImVec2(220, 0))) {
+    ImGui::Begin("##session_overlay", nullptr,
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoTitleBar);
+
+    ImGui::Text("FPS %.0f", static_cast<double>(ImGui::GetIO().Framerate));
+    ImGui::SameLine();
+    if (ImGui::Button("End")) {
         m_pending.type = ActionType::EndSession;
     }
 
     ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 void DevConsole::draw_pause_overlay(network::NetworkManager& net) {
     // Centered modal-style dialog on top of the frozen scene. Lists every
     // disconnected player with a live countdown. End Session returns to
     // Menu if the user doesn't want to wait.
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 panel_size{ 460.0f, 220.0f };
-    ImVec2 panel_pos{ vp->Pos.x + (vp->Size.x - panel_size.x) * 0.5f,
-                      vp->Pos.y + (vp->Size.y - panel_size.y) * 0.5f };
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+    ImVec2 panel_size{ 460.0f * s, 220.0f * s };
+    ImVec2 panel_pos{ vp_pos.x + (vp_size.x - panel_size.x) * 0.5f,
+                      vp_pos.y + (vp_size.y - panel_size.y) * 0.5f };
     ImGui::SetNextWindowPos (panel_pos,  ImGuiCond_Always);
     ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
 
@@ -491,7 +692,7 @@ void DevConsole::draw_pause_overlay(network::NetworkManager& net) {
             d.player_id, d.seconds_remaining);
     }
     ImGui::Separator();
-    if (ImGui::Button("End Session", ImVec2(220, 0))) {
+    if (ImGui::Button("End Session", ImVec2(180.0f * s, 0))) {
         m_pending.type = ActionType::EndSession;
     }
 
@@ -499,10 +700,13 @@ void DevConsole::draw_pause_overlay(network::NetworkManager& net) {
 }
 
 void DevConsole::draw_disconnected_overlay() {
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImVec2 panel_size{ 420.0f, 160.0f };
-    ImVec2 panel_pos{ vp->Pos.x + (vp->Size.x - panel_size.x) * 0.5f,
-                      vp->Pos.y + (vp->Size.y - panel_size.y) * 0.5f };
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+    ImVec2 panel_size{ 420.0f * s, 160.0f * s };
+    ImVec2 panel_pos{ vp_pos.x + (vp_size.x - panel_size.x) * 0.5f,
+                      vp_pos.y + (vp_size.y - panel_size.y) * 0.5f };
     ImGui::SetNextWindowPos (panel_pos,  ImGuiCond_Always);
     ImGui::SetNextWindowSize(panel_size, ImGuiCond_Always);
 
@@ -512,7 +716,7 @@ void DevConsole::draw_disconnected_overlay() {
     ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Lost connection to host.");
     ImGui::TextUnformatted("The game is no longer in sync.");
     ImGui::Separator();
-    if (ImGui::Button("Return to Menu", ImVec2(220, 0))) {
+    if (ImGui::Button("Return to Menu", ImVec2(180.0f * s, 0))) {
         m_pending.type = ActionType::EndSession;
     }
 

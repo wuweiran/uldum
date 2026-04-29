@@ -74,6 +74,23 @@ public:
     // nothing pending.
     Action poll_action();
 
+    // Cached display info for every discoverable map. Populated by
+    // `rescan_map_list()` peeking at each .uldmap's manifest.json
+    // (cheap — header + one file extract per package). Public because
+    // the rescan helper that fills it is a free function in the .cpp.
+    struct MapInfo {
+        std::string path;               // "maps/test_map.uldmap"
+        std::string name;
+        std::string author;
+        std::string description;
+        std::string game_mode;
+        std::string suggested_players;
+        std::string version;
+        std::string fog_of_war;
+        u32         player_count = 0;
+        u32         team_count   = 0;
+    };
+
 private:
     void rescan_map_list();
     void draw_menu_screen();
@@ -88,9 +105,8 @@ private:
     void*               m_imgui_pool = nullptr;  // VkDescriptorPool, opaque here
     bool                m_initialized = false;
 
-    // Cached list of discoverable maps, populated at init and on demand.
-    std::vector<std::string> m_map_paths;   // e.g. "maps/test_map.uldmap"
-    i32                      m_map_selected = 0;
+    std::vector<MapInfo> m_maps;
+    i32                  m_map_selected = 0;
 
     // Multiplayer input fields.
     std::string m_connect_address = "127.0.0.1";
