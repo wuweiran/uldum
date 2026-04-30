@@ -3265,14 +3265,29 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         }
     }
 
-    // Update animations for all skinned entities
+    // Update animations for all skinned entities. Two visibility
+    // filters keep this from melting CPU on big armies:
+    //  • Fog-hidden  — the player can't see them, no point animating.
+    //  • Off-screen  — same reason; the camera doesn't see them.
+    // Both are cheap tests (tile lookup + bounding-sphere vs. frustum)
+    // compared to a skeleton evaluation. When a hidden unit becomes
+    // visible again, the next frame's eval brings its bones forward —
+    // a single-frame "freeze" the player won't notice.
     if (has_skinned_pipeline) {
+        auto cull_frustum = m_camera.frustum();
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
             const auto& renderable = renderables.data()[i];
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
+
+            const auto* transform = transforms.get(id);
+            if (!transform) continue;
+            if (is_fog_hidden(world, id, *transform)) continue;
+            f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
+            if (!cull_frustum.is_sphere_visible(transform->interp_position(alpha),
+                                                cull_radius)) continue;
 
             auto& anim = get_or_create_anim(id, *lm);
 
@@ -3297,6 +3312,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         vkCmdSetViewport(cmd, 0, 1, &viewport);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+        auto draw_frustum = m_camera.frustum();
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
             const auto& renderable = renderables.data()[i];
@@ -3310,6 +3326,13 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
 
             // Skip enemies hidden by fog of war
             if (is_fog_hidden(world, id, *transform)) continue;
+
+            // Frustum cull: same bounding-sphere test the static draw
+            // batches do. The skinned path was missing this and was
+            // re-binding + re-uploading bones for off-screen units.
+            f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
+            if (!draw_frustum.is_sphere_visible(transform->interp_position(alpha),
+                                                cull_radius)) continue;
 
             auto it = m_anim_instances.find(id);
             if (it == m_anim_instances.end()) continue;
