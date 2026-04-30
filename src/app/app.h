@@ -176,7 +176,7 @@ private:
     struct TargetPing {
         simulation::Unit unit{};       // invalid → use `pos`
         glm::vec3        pos{0.0f};
-        input::InputContext::TargetPingKind kind = input::InputContext::TargetPingKind::Friendly;
+        input::InputContext::TargetPingKind kind = input::InputContext::TargetPingKind::Ally;
         f32              age      = 0.0f;
         f32              lifespan = 0.45f;
     };

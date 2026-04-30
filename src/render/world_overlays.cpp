@@ -606,6 +606,47 @@ void WorldOverlays::add_cone(glm::vec3 origin, glm::vec3 dir, f32 half_angle,
                             m_impl->decals[(usize)tex].set, glm::vec4(1.0f)});
 }
 
+void WorldOverlays::add_pillar(glm::vec3 base, f32 height, f32 width,
+                               glm::vec3 camera_pos, glm::vec4 color,
+                               TextureId tex) {
+    if (!m_impl || !m_impl->pipeline || height <= 0.0f || width <= 0.0f) return;
+    if (m_impl->decals[(usize)tex].set == VK_NULL_HANDLE) return;  // unbound slot
+    u32 slot = m_impl->rhi->frame_index();
+    u32 vert_count = 6;
+    u32 first = append(*m_impl, vert_count);
+    if (first == UINT32_MAX) return;
+    if (m_impl->cmds.size() >= kMaxDraws) return;
+
+    u32 rgba = pack_premul_rgba(color.r, color.g, color.b, color.a);
+    // Right vector lives in the XY plane, perpendicular to (camera - base)
+    // so the broad face stays facing the camera as it orbits. Falls back
+    // to world +X when the camera is directly overhead (degenerate).
+    glm::vec3 to_cam{ camera_pos.x - base.x, camera_pos.y - base.y, 0.0f };
+    f32 len2 = to_cam.x * to_cam.x + to_cam.y * to_cam.y;
+    glm::vec3 right{ 1.0f, 0.0f, 0.0f };
+    if (len2 >= 1e-6f) {
+        f32 inv = 1.0f / std::sqrt(len2);
+        right = glm::vec3{ -to_cam.y * inv, to_cam.x * inv, 0.0f };
+    }
+    glm::vec3 r = right * (width * 0.5f);
+    glm::vec3 up{ 0.0f, 0.0f, height };
+    // CCW from camera POV. UV V=0 at top, V=1 at base — gradient or
+    // any other look lives in the texture.
+    glm::vec3 bl = base - r;
+    glm::vec3 br = base + r;
+    glm::vec3 tr = base + r + up;
+    glm::vec3 tl = base - r + up;
+    u32 cursor = first;
+    write_v(*m_impl, slot, cursor++, bl, 0.0f, 1.0f, rgba);
+    write_v(*m_impl, slot, cursor++, br, 1.0f, 1.0f, rgba);
+    write_v(*m_impl, slot, cursor++, tr, 1.0f, 0.0f, rgba);
+    write_v(*m_impl, slot, cursor++, bl, 0.0f, 1.0f, rgba);
+    write_v(*m_impl, slot, cursor++, tr, 1.0f, 0.0f, rgba);
+    write_v(*m_impl, slot, cursor++, tl, 0.0f, 0.0f, rgba);
+    m_impl->cmds.push_back({first, vert_count,
+                            m_impl->decals[(usize)tex].set, glm::vec4(1.0f)});
+}
+
 // ── Per-frame draw ────────────────────────────────────────────────────────
 
 void WorldOverlays::draw(VkCommandBuffer cmd, const glm::mat4& view_projection) {

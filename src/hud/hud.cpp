@@ -37,6 +37,7 @@
 #include <glm/vec3.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -244,6 +245,26 @@ struct Hud::Impl {
         // Snapped target unit (target_unit form only). Invalid when
         // not snapped.
         simulation::Unit snapped_target{};
+        // Command-bar drag (Phase 5a). When non-empty, the drag was
+        // started from a command_bar slot — release fires the command
+        // commit callback (Move / Attack / AttackMove) instead of the
+        // ability cast callback. ability_id stays empty in this case.
+        std::string command_id;
+        // Inventory drag (Phase 5b mobile). When inventory_slot >= 0,
+        // the drag came from an inventory slot. Mutually exclusive
+        // with command_id and the regular ability slot path. On
+        // release: quick tap (Pressed + still over slot) fires the
+        // no-target use callback; drag (Aiming) fires the
+        // use-at-target callback. A long press in Pressed phase
+        // (no slide-off) lifts the item into held mode and clears
+        // this state. inventory_targetable is the press-time snapshot
+        // of whether the item's first ability supports drag-cast
+        // (form is TargetUnit/TargetPoint AND castable now).
+        i32          inventory_slot = -1;
+        u32          inventory_item_id = UINT32_MAX;
+        std::string  inventory_item_icon;
+        bool         inventory_targetable = false;
+        std::chrono::steady_clock::time_point press_time{};
     };
     DragCastState drag_cast;
 
@@ -271,6 +292,7 @@ struct Hud::Impl {
     i32 command_bar_hover_slot   = -1;
     i32 command_bar_pressed_slot = -1;
     Hud::CommandFn command_bar_fn;
+    Hud::CommandBarDragCommitFn command_bar_drag_commit_fn;
     std::string command_bar_armed_command;
 
     // Joystick composite. Captured touch slot + last knob offset live
@@ -286,9 +308,10 @@ struct Hud::Impl {
     InventoryRuntime inventory_rt{};
     i32 inventory_hover_slot   = -1;
     i32 inventory_pressed_slot = -1;
-    Hud::InventoryUseFn  inventory_use_fn;
-    Hud::InventoryDropFn inventory_drop_fn;
-    Hud::InventorySwapFn inventory_swap_fn;
+    Hud::InventoryUseFn          inventory_use_fn;
+    Hud::InventoryUseAtTargetFn  inventory_use_at_target_fn;
+    Hud::InventoryDropFn         inventory_drop_fn;
+    Hud::InventorySwapFn         inventory_swap_fn;
 
     // WC3-style item hold (desktop). Right-click on a slot lifts the
     // item: `held_item_slot` is the source slot, `held_item_id` is
@@ -1186,9 +1209,10 @@ void Hud::reset_session_state() {
     s.action_bar_cast_at_target_fn = {};
     s.minimap_jump_fn = {};
     s.command_bar_fn = {};
-    s.inventory_use_fn  = {};
-    s.inventory_drop_fn = {};
-    s.inventory_swap_fn = {};
+    s.inventory_use_fn           = {};
+    s.inventory_use_at_target_fn = {};
+    s.inventory_drop_fn          = {};
+    s.inventory_swap_fn          = {};
     s.held_item_slot    = -1;
     s.held_item_id      = UINT32_MAX;
     s.held_item_icon.clear();
@@ -1664,6 +1688,10 @@ void Hud::set_command_bar_fn(CommandFn fn) {
     if (m_impl) m_impl->command_bar_fn = std::move(fn);
 }
 
+void Hud::set_command_bar_drag_commit_fn(CommandBarDragCommitFn fn) {
+    if (m_impl) m_impl->command_bar_drag_commit_fn = std::move(fn);
+}
+
 // ── Inventory composite ──────────────────────────────────────────────────
 
 void Hud::set_inventory_config(const InventoryConfig& cfg) {
@@ -1680,6 +1708,10 @@ void Hud::inventory_set_visible(bool visible) {
 
 void Hud::set_inventory_use_fn(InventoryUseFn fn) {
     if (m_impl) m_impl->inventory_use_fn = std::move(fn);
+}
+
+void Hud::set_inventory_use_at_target_fn(InventoryUseAtTargetFn fn) {
+    if (m_impl) m_impl->inventory_use_at_target_fn = std::move(fn);
 }
 
 void Hud::set_inventory_drop_fn(InventoryDropFn fn) {
@@ -1901,6 +1933,30 @@ void Hud::set_cast_indicator_config(const CastIndicatorConfig& cfg) {
     m_impl->cast_indicator_cfg = cfg;
 }
 
+Hud::TargetingIntent Hud::cursor_intent() const {
+    if (!m_impl || !m_impl->world_ctx) return TargetingIntent::Neutral;
+    const auto& ctx = *m_impl->world_ctx;
+    if (!ctx.picker || !ctx.world) return TargetingIntent::Neutral;
+    // Picker takes physical-pixel coords; HUD pointer is dp.
+    f32 sx = m_impl->pointer_x * m_impl->ui_scale;
+    f32 sy = m_impl->pointer_y * m_impl->ui_scale;
+    // Item beats unit when both share the cursor — items are smaller so
+    // the player almost always wants the item-pickup intent in that case.
+    if (auto item = ctx.picker->pick_item(sx, sy); item.is_valid()) {
+        return TargetingIntent::Item;
+    }
+    if (auto unit = ctx.picker->pick_target(sx, sy); unit.is_valid()) {
+        const auto* owner = ctx.world->owners.get(unit.id);
+        if (!owner) return TargetingIntent::Neutral;
+        if (owner->player.id == ctx.local_player.id) return TargetingIntent::Ally;
+        if (ctx.simulation && ctx.simulation->is_allied(ctx.local_player, owner->player)) {
+            return TargetingIntent::Ally;
+        }
+        return TargetingIntent::Enemy;
+    }
+    return TargetingIntent::Neutral;
+}
+
 const CastIndicatorStyle& Hud::cast_indicator_style() const {
     static const CastIndicatorStyle kDefaultFallback{};
     return m_impl ? m_impl->cast_indicator_cfg.style : kDefaultFallback;
@@ -2085,9 +2141,18 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // the gesture) if the caster handle no longer validates (died,
     // recycled, etc.).
     if (!s.world_ctx->world->validate(s.drag_cast.caster)) {
-        if (s.drag_cast.slot_index >= 0 &&
-            static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size()) {
-            s.action_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+        if (s.drag_cast.inventory_slot >= 0) {
+            if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
+                s.inventory_cfg.slots[s.drag_cast.inventory_slot].pressed = false;
+        } else if (s.drag_cast.slot_index >= 0) {
+            bool is_command = !s.drag_cast.command_id.empty();
+            if (is_command) {
+                if (static_cast<u32>(s.drag_cast.slot_index) < s.command_bar_cfg.slots.size())
+                    s.command_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+            } else {
+                if (static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size())
+                    s.action_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+            }
         }
         s.drag_cast = Impl::DragCastState{};
         return;
@@ -2126,18 +2191,32 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     s.drag_cast.drag_world_y = drag.y;
     s.drag_cast.drag_world_z = drag.z;
 
-    // Snap (target_unit only). Pick the nearest valid candidate within
-    // a snap radius of the drag point; static target_filter eval, no
-    // network round-trip. Snap radius scales with cast range so close-
-    // range and long-range abilities both feel similar.
+    // Snap (TargetUnit form only). Pick the nearest valid candidate
+    // within a snap radius of the drag point; static filter eval, no
+    // network round-trip. Two filter regimes share this loop:
+    //   • abilities — gated by AbilityDef::target_filter (ally/enemy/
+    //     self / classifications). Without a def we can't evaluate;
+    //     the loop bails.
+    //   • commands  — Move and Attack accept any unit (Move-on-unit
+    //     becomes Follow; Attack-on-unit attacks regardless of
+    //     alliance — friendly fire allowed). Self never snaps for
+    //     commands; "follow yourself" / "attack yourself" are nonsense.
+    // Snap radius scales with cast range so close- and long-range
+    // abilities feel similar; commands have range 0 so they get the
+    // 64-unit floor.
     s.drag_cast.snapped_target = simulation::Unit{};
     if (s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
         s.world_ctx->simulation) {
-        const auto& world = *s.world_ctx->world;
-        const auto* def = s.world_ctx->abilities
-                            ? s.world_ctx->abilities->get(s.drag_cast.ability_id)
-                            : nullptr;
-        if (def) {
+        bool is_command = !s.drag_cast.command_id.empty();
+        const simulation::AbilityDef* def = nullptr;
+        if (!is_command) {
+            def = s.world_ctx->abilities
+                    ? s.world_ctx->abilities->get(s.drag_cast.ability_id)
+                    : nullptr;
+        }
+        bool eligible = is_command || def != nullptr;
+        if (eligible) {
+            const auto& world = *s.world_ctx->world;
             simulation::Unit caster_unit{};
             if (s.world_ctx->selection &&
                 !s.world_ctx->selection->selected().empty()) {
@@ -2153,11 +2232,13 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                 simulation::Unit cand{};
                 cand.id = id;
                 cand.generation = hinfo->generation;
-                if (cand.id == caster_unit.id && def->target_filter.self_ == false) {
-                    // self-cast only allowed if filter says so
-                    continue;
+                if (cand.id == caster_unit.id) {
+                    // Commands never self-snap. Abilities use the
+                    // filter's `self_` flag.
+                    if (is_command || !def->target_filter.self_) continue;
                 }
-                if (!s.world_ctx->simulation->target_filter_passes(
+                if (!is_command &&
+                    !s.world_ctx->simulation->target_filter_passes(
                         def->target_filter, caster_unit, cand)) {
                     continue;
                 }
@@ -2183,10 +2264,22 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     //     screen rect that the player explicitly drags into.
     constexpr f32 CANCEL_MARGIN     = 16.0f;
     constexpr f32 SLOT_LEAVE_MARGIN = 8.0f;
-    const auto& slot_rect = (s.drag_cast.slot_index >= 0 &&
-                             static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size())
-                              ? s.action_bar_cfg.slots[s.drag_cast.slot_index].rect
-                              : Rect{};
+    // Slot rect comes from whichever composite started the drag —
+    // action_bar for ability slots, command_bar for command slots,
+    // inventory for item slots.
+    Rect slot_rect{};
+    if (s.drag_cast.inventory_slot >= 0) {
+        if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
+            slot_rect = s.inventory_cfg.slots[s.drag_cast.inventory_slot].rect;
+    } else if (s.drag_cast.slot_index >= 0) {
+        if (!s.drag_cast.command_id.empty()) {
+            if (static_cast<u32>(s.drag_cast.slot_index) < s.command_bar_cfg.slots.size())
+                slot_rect = s.command_bar_cfg.slots[s.drag_cast.slot_index].rect;
+        } else {
+            if (static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size())
+                slot_rect = s.action_bar_cfg.slots[s.drag_cast.slot_index].rect;
+        }
+    }
     bool over_slot   = (slot_rect.w > 0.0f && slot_rect.h > 0.0f) &&
                        (px >= slot_rect.x - SLOT_LEAVE_MARGIN &&
                         px <  slot_rect.x + slot_rect.w + SLOT_LEAVE_MARGIN &&
@@ -2195,12 +2288,40 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     bool over_cancel = action_bar_cancel_zone_contains(s, px, py, CANCEL_MARGIN);
     bool button_down = input.mouse_left;
 
+    bool is_inventory = (s.drag_cast.inventory_slot >= 0);
+    bool is_command   = !s.drag_cast.command_id.empty();
+
     if (button_down) {
         if (s.drag_cast.phase == Phase::Pressed) {
-            // Leaving the slot rect commits to Aiming. Once Aiming, we
-            // never go back to Pressed; instead Cancelling is the only
-            // way to "abort" the gesture without firing.
-            if (!over_slot) s.drag_cast.phase = Phase::Aiming;
+            // Inventory long-press: stationary press for 500 ms while
+            // still over the slot lifts the item into held mode (the
+            // mobile equivalent of right-click on desktop). Lifting
+            // wins over drag-cast — once lifted, drag_cast is cleared
+            // and the next tap drops/swaps via the existing held-item
+            // release path. Slid-off presses don't lift; they either
+            // become drag-cast (if targetable) or cancel on release.
+            if (is_inventory && over_slot) {
+                auto held_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - s.drag_cast.press_time).count();
+                if (held_ms >= 500) {
+                    s.held_item_slot = s.drag_cast.inventory_slot;
+                    s.held_item_id   = s.drag_cast.inventory_item_id;
+                    s.held_item_icon = s.drag_cast.inventory_item_icon;
+                    if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
+                        s.inventory_cfg.slots[s.drag_cast.inventory_slot].pressed = false;
+                    s.drag_cast = Impl::DragCastState{};
+                    return;
+                }
+            }
+            // Leaving the slot rect commits to Aiming — but only when
+            // a drag-cast actually makes sense. For non-targetable
+            // inventory items (passive, self-only, or on cooldown)
+            // we stay in Pressed; release after slide-off is handled
+            // as a cancel by the inventory release branch below.
+            if (!over_slot) {
+                bool can_aim = !is_inventory || s.drag_cast.inventory_targetable;
+                if (can_aim) s.drag_cast.phase = Phase::Aiming;
+            }
         } else if (s.drag_cast.phase == Phase::Aiming) {
             if (over_cancel) s.drag_cast.phase = Phase::Cancelling;
         } else if (s.drag_cast.phase == Phase::Cancelling) {
@@ -2209,28 +2330,86 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         return;
     }
 
-    // Release: decide commit vs. cancel based on phase.
+    // Release. Three commit paths — inventory, command, ability —
+    // each with their own cancel rules.
+    if (is_inventory) {
+        // Inventory release branches:
+        //   Pressed + over_slot  → quick tap, fire no-target use.
+        //   Pressed + slide-off  → cancel.
+        //   Aiming  + TargetUnit → cancel unless a unit was snapped.
+        //   Aiming  + TargetPoint → fire use-at-target with the drag
+        //                          point (no snap needed).
+        //   Cancelling           → cancel.
+        bool fire_no_target = false;
+        bool fire_at_target = false;
+        if (s.drag_cast.phase == Phase::Pressed && over_slot) {
+            fire_no_target = true;
+        } else if (s.drag_cast.phase == Phase::Aiming) {
+            if (s.drag_cast.form == simulation::AbilityForm::TargetUnit) {
+                if (s.drag_cast.snapped_target.is_valid()) fire_at_target = true;
+            } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
+                fire_at_target = true;
+            }
+        }
+        if (fire_no_target && s.inventory_use_fn && !s.drag_cast.ability_id.empty()) {
+            s.inventory_use_fn(s.drag_cast.inventory_item_id, s.drag_cast.ability_id);
+        } else if (fire_at_target && s.inventory_use_at_target_fn) {
+            u32 target_uid = s.drag_cast.snapped_target.is_valid()
+                               ? s.drag_cast.snapped_target.id
+                               : UINT32_MAX;
+            glm::vec3 wp{s.drag_cast.drag_world_x,
+                         s.drag_cast.drag_world_y,
+                         s.drag_cast.drag_world_z};
+            s.inventory_use_at_target_fn(s.drag_cast.inventory_item_id,
+                                         s.drag_cast.ability_id,
+                                         target_uid, wp);
+        }
+        if (s.drag_cast.inventory_slot >= 0 &&
+            static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
+            s.inventory_cfg.slots[s.drag_cast.inventory_slot].pressed = false;
+        s.drag_cast = Impl::DragCastState{};
+        return;
+    }
+
     bool commit = (s.drag_cast.phase == Phase::Aiming);
-    if (commit && s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+    // Ability-side: unit-targeted casts cancel if released without
+    // snap (no valid target = nothing to cast on). Command-side:
+    // both Move and Attack always commit — with a snap they go to
+    // Follow / Attack-unit; without one they fall back to the
+    // ground point (Move-to-point / AttackMove).
+    if (commit && !is_command &&
+        s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
         !s.drag_cast.snapped_target.is_valid()) {
-        // Unit-targeted but the player released without snapping to
-        // anything — treat as cancel (Cast order has no target).
         commit = false;
     }
-    if (commit && s.action_bar_cast_at_target_fn) {
+    if (commit) {
         u32 target_uid = s.drag_cast.snapped_target.is_valid()
                            ? s.drag_cast.snapped_target.id
                            : UINT32_MAX;
-        s.action_bar_cast_at_target_fn(s.drag_cast.ability_id, target_uid,
-                                       s.drag_cast.drag_world_x,
-                                       s.drag_cast.drag_world_y,
-                                       s.drag_cast.drag_world_z);
+        if (is_command) {
+            if (s.command_bar_drag_commit_fn) {
+                s.command_bar_drag_commit_fn(s.drag_cast.command_id, target_uid,
+                                             s.drag_cast.drag_world_x,
+                                             s.drag_cast.drag_world_y,
+                                             s.drag_cast.drag_world_z);
+            }
+        } else if (s.action_bar_cast_at_target_fn) {
+            s.action_bar_cast_at_target_fn(s.drag_cast.ability_id, target_uid,
+                                           s.drag_cast.drag_world_x,
+                                           s.drag_cast.drag_world_y,
+                                           s.drag_cast.drag_world_z);
+        }
     }
 
     // Reset visual + state regardless of commit/cancel.
-    if (s.drag_cast.slot_index >= 0 &&
-        static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size()) {
-        s.action_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+    if (s.drag_cast.slot_index >= 0) {
+        if (is_command) {
+            if (static_cast<u32>(s.drag_cast.slot_index) < s.command_bar_cfg.slots.size())
+                s.command_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+        } else {
+            if (static_cast<u32>(s.drag_cast.slot_index) < s.action_bar_cfg.slots.size())
+                s.action_bar_cfg.slots[s.drag_cast.slot_index].pressed = false;
+        }
     }
     s.drag_cast = Impl::DragCastState{};
 }
@@ -2243,6 +2422,11 @@ Hud::AbilityAimState Hud::aim_state() const {
     // Mobile drag-cast path — feeds aim state directly from the gesture.
     if (dc.phase != Impl::DragCastPhase::Idle) {
         out.active        = true;
+        out.source        = (dc.inventory_slot >= 0)
+                              ? TargetingSource::Item
+                              : (dc.command_id.empty()
+                                  ? TargetingSource::Ability
+                                  : TargetingSource::Command);
         out.is_drag_cast  = true;
         out.caster_x   = dc.caster_x;
         out.caster_y   = dc.caster_y;
@@ -2306,10 +2490,38 @@ Hud::AbilityAimState Hud::aim_state() const {
         return out;
     }
 
-    // Desktop targeting-mode path — preset has armed an ability and is
-    // waiting on a world click. Indicator follows the mouse-ground-pick
-    // and snaps to a unit (for target_unit forms) using the same
-    // target_filter the mobile drag-cast snap consults.
+    // Desktop command-targeting path — preset is waiting for a ground
+    // click after the player tapped Move / AttackMove (or pressed A).
+    // Range / area are zero (these are simple ground clicks), so the
+    // visual layer falls through to the cursor swap + post-commit
+    // ping. This path makes commands first-class members of the
+    // unified targeting state alongside abilities.
+    if (!m_impl->action_bar_targeting_ability.empty()) {
+        // Ability path takes precedence — fall through below.
+    } else if (!m_impl->command_bar_armed_command.empty()) {
+        out.active = true;
+        out.source = TargetingSource::Command;
+        // Commands target a ground point (Move / AttackMove). Set
+        // is_unit_target false so the visual layer renders the
+        // point-targeting cue, not a snap ring.
+        out.is_unit_target = false;
+        if (m_impl->world_ctx && m_impl->world_ctx->selection) {
+            const auto& sel = m_impl->world_ctx->selection->selected();
+            if (!sel.empty() && m_impl->world_ctx->world) {
+                if (auto* tf = m_impl->world_ctx->world->transforms.get(sel.front().id)) {
+                    out.caster_x = tf->position.x;
+                    out.caster_y = tf->position.y;
+                    out.caster_z = tf->position.z;
+                }
+            }
+        }
+        return out;
+    }
+
+    // Desktop ability targeting-mode path — preset has armed an ability
+    // and is waiting on a world click. Indicator follows the mouse-
+    // ground-pick and snaps to a unit (for target_unit forms) using
+    // the same target_filter the mobile drag-cast snap consults.
     if (m_impl->action_bar_targeting_ability.empty()) return out;
     if (!m_impl->world_ctx) return out;
     const auto& ctx = *m_impl->world_ctx;
@@ -2327,6 +2539,7 @@ Hud::AbilityAimState Hud::aim_state() const {
     if (!caster_tf) return out;
 
     out.active   = true;
+    out.source   = TargetingSource::Ability;
     out.caster_x = caster_tf->position.x;
     out.caster_y = caster_tf->position.y;
     out.caster_z = caster_tf->position.z;
@@ -3328,16 +3541,48 @@ void Hud::draw_tree() {
     draw_inventory(*this, *m_impl);
     draw_minimap(*this, *m_impl);
     draw_joystick(*this, *m_impl);
-    // Held-item icon (WC3 lift). Drawn last so it sits above every
-    // other HUD layer; the icon follows the cursor and is
-    // semi-transparent so the player can still read what's underneath.
+    // HUD cursor — desktop only. Mobile has no pointer to swap, so
+    // cursor textures are skipped entirely; the snap-target indicator
+    // (3D ground decal) is what tells the player where the cast will
+    // land. Drawn only when the map authored a texture for the
+    // current state. Tint comes from the hover-intent palette so a
+    // unit under the pointer signals ally / enemy / item directly on
+    // the cursor.
+    if (!m_impl->is_mobile) {
+        const auto& s = m_impl->cast_indicator_cfg.style;
+        bool targeting = aim_state().active;
+        const std::string& path = targeting ? s.cursor_target_path
+                                            : s.cursor_default_path;
+        if (!path.empty()) {
+            f32 size = (s.cursor_size > 0.0f) ? s.cursor_size : 20.0f;
+            // Target cursor is centered (reticle); default cursors are
+            // expected to be authored top-left-anchored (arrow tip at
+            // the texture's (0,0)).
+            f32 ax = targeting ? size * 0.5f : 0.0f;
+            f32 ay = targeting ? size * 0.5f : 0.0f;
+            f32 cx = m_impl->pointer_x;
+            f32 cy = m_impl->pointer_y;
+            Rect r{ cx - ax, cy - ay, size, size };
+            Color tint = s.intents.neutral;
+            switch (cursor_intent()) {
+                case TargetingIntent::Enemy: tint = s.intents.enemy; break;
+                case TargetingIntent::Ally:  tint = s.intents.ally;  break;
+                case TargetingIntent::Item:  tint = s.intents.item;  break;
+                default:                     tint = s.intents.neutral; break;
+            }
+            draw_image(r, path, tint);
+        }
+    }
+
+    // Held-item icon (WC3 lift). Layered on top of the always-on
+    // cursor so the player can see both the system-style pointer
+    // and the lifted item.
     if (m_impl->held_item_slot >= 0 && !m_impl->held_item_icon.empty()) {
-        f32 size = 36.0f;
-        // Center the icon on the cursor with a small Y offset so the
-        // arrow tip stays usable for clicking. Pointer coords are in dp.
+        constexpr f32 kHeldIconSize = 28.0f;
         f32 cx = m_impl->pointer_x;
         f32 cy = m_impl->pointer_y;
-        Rect r{ cx - size * 0.5f, cy - size * 0.5f, size, size };
+        Rect r{ cx - kHeldIconSize * 0.5f, cy - kHeldIconSize * 0.5f,
+                kHeldIconSize, kHeldIconSize };
         draw_image(r, m_impl->held_item_icon, rgba(255, 255, 255, 220));
     }
 }
@@ -3522,11 +3767,166 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 s.action_bar_cfg.slots[bar_slot].pressed = true;
             }
         } else if (cmd_slot >= 0) {
-            s.command_bar_pressed_slot = cmd_slot;
-            s.command_bar_cfg.slots[cmd_slot].pressed = true;
+            // Mobile: command_bar slots use the same drag-cast machine
+            // as ability slots when the command targets a world point
+            // (Move / Attack / AttackMove). Press to grab, drag-aim,
+            // release to commit. Stop / HoldPosition stay click-to-fire
+            // — they don't take a target. Desktop falls through to the
+            // press/release click path below.
+            bool drag_cast_started = false;
+            if (s.is_mobile && s.world_ctx && s.command_bar_drag_commit_fn) {
+                const auto& slot = s.command_bar_cfg.slots[cmd_slot];
+                bool targetable = (slot.command == "move"
+                                || slot.command == "attack"
+                                || slot.command == "attack_move");
+                u32 caster_id = s.world_ctx->selection &&
+                                !s.world_ctx->selection->selected().empty()
+                                  ? s.world_ctx->selection->selected().front().id
+                                  : UINT32_MAX;
+                if (targetable && caster_id != UINT32_MAX) {
+                    auto* tf = s.world_ctx->world->transforms.get(caster_id);
+                    auto* hi = s.world_ctx->world->handle_infos.get(caster_id);
+                    if (tf && hi) {
+                        s.drag_cast.phase       = Hud::Impl::DragCastPhase::Pressed;
+                        s.drag_cast.slot_index  = cmd_slot;
+                        s.drag_cast.press_x     = x;
+                        s.drag_cast.press_y     = y;
+                        s.drag_cast.current_x   = x;
+                        s.drag_cast.current_y   = y;
+                        s.drag_cast.caster.id         = caster_id;
+                        s.drag_cast.caster.generation = hi->generation;
+                        s.drag_cast.caster_x    = tf->position.x;
+                        s.drag_cast.caster_y    = tf->position.y;
+                        s.drag_cast.caster_z    = tf->position.z;
+                        s.drag_cast.drag_world_x = tf->position.x;
+                        s.drag_cast.drag_world_y = tf->position.y;
+                        s.drag_cast.drag_world_z = tf->position.z;
+                        s.drag_cast.ability_id.clear();
+                        s.drag_cast.command_id  = slot.command;
+                        s.drag_cast.range       = 0;
+                        // Both Move and Attack snap to units on mobile.
+                        // Move-on-unit → Follow; Attack-on-unit → Attack
+                        // (friendly fire allowed); release on ground
+                        // falls back to the point-target order. Form is
+                        // TargetUnit either way so the snap loop runs.
+                        s.drag_cast.form        = simulation::AbilityForm::TargetUnit;
+                        s.drag_cast.shape       = simulation::IndicatorShape::Point;
+                        s.drag_cast.area_radius = 0;
+                        s.drag_cast.area_width  = 0;
+                        s.drag_cast.area_angle  = 0;
+                        s.drag_cast.snapped_target = simulation::Unit{};
+                        s.command_bar_cfg.slots[cmd_slot].pressed = true;
+                        drag_cast_started = true;
+                    }
+                }
+            }
+            if (!drag_cast_started) {
+                s.command_bar_pressed_slot = cmd_slot;
+                s.command_bar_cfg.slots[cmd_slot].pressed = true;
+            }
         } else if (inv_slot >= 0) {
-            s.inventory_pressed_slot = inv_slot;
-            s.inventory_cfg.slots[inv_slot].pressed = true;
+            // Mobile: capture into drag_cast so we can run the
+            // long-press → lift gesture (matches desktop right-click)
+            // and the drag-out → cast-at-target gesture (matches the
+            // ability bar). The two are decided by what happens during
+            // the press: stationary 500ms wins long-press; drag past
+            // the slot rect wins drag-cast. A quick tap (release while
+            // still over the slot, before either threshold) falls
+            // through to the no-target use callback. Desktop keeps
+            // the existing pressed-slot tap-to-use path because it
+            // already has right-click for lift and no drag UX.
+            bool drag_cast_started = false;
+            if (s.is_mobile && s.world_ctx && s.world_ctx->world &&
+                s.world_ctx->abilities) {
+                u32 carrier_id = UINT32_MAX;
+                const simulation::Inventory* inv_data =
+                    inventory_resolve_selected(s, &carrier_id);
+                simulation::Item item;
+                const simulation::ItemInfo*    info = nullptr;
+                const simulation::ItemTypeDef* tdef = nullptr;
+                if (carrier_id != UINT32_MAX &&
+                    inventory_resolve_slot(s, inv_data,
+                                           static_cast<u32>(inv_slot),
+                                           item, info, tdef)) {
+                    // Snapshot the item's first ability so a drag-out
+                    // commits with the same range/form/area the press
+                    // saw — handle_pointer is the only place we look
+                    // these up; action_bar_drag_update reads from the
+                    // drag_cast snapshot from here on out.
+                    std::string first_ability;
+                    f32  range = 0.0f;
+                    auto form  = simulation::AbilityForm::Passive;
+                    auto shape = simulation::IndicatorShape::Point;
+                    f32  area_radius = 0, area_width = 0, area_angle = 0;
+                    bool castable_now = false;
+                    if (tdef && !tdef->abilities.empty()) {
+                        first_ability = tdef->abilities[0];
+                        const auto* abil_def =
+                            s.world_ctx->abilities->get(first_ability);
+                        const auto* aset =
+                            s.world_ctx->world->ability_sets.get(carrier_id);
+                        const simulation::AbilityInstance* inst = nullptr;
+                        if (aset) {
+                            for (const auto& a : aset->abilities) {
+                                if (a.ability_id == first_ability) { inst = &a; break; }
+                            }
+                        }
+                        if (abil_def && inst) {
+                            const auto& lvl = abil_def->level_data(inst->level);
+                            range       = lvl.range;
+                            form        = abil_def->form;
+                            shape       = abil_def->shape;
+                            area_radius = lvl.area.radius;
+                            area_width  = lvl.area.width;
+                            area_angle  = lvl.area.angle;
+                            castable_now = is_castable_form(abil_def->form) &&
+                                slot_castable_now(*s.world_ctx, carrier_id,
+                                                  *inst, *abil_def);
+                        }
+                    }
+                    bool targetable = castable_now &&
+                        (form == simulation::AbilityForm::TargetUnit ||
+                         form == simulation::AbilityForm::TargetPoint);
+                    auto* tf = s.world_ctx->world->transforms.get(carrier_id);
+                    auto* hi = s.world_ctx->world->handle_infos.get(carrier_id);
+                    if (tf && hi) {
+                        s.drag_cast.phase       = Hud::Impl::DragCastPhase::Pressed;
+                        s.drag_cast.slot_index  = -1;
+                        s.drag_cast.press_x     = x;
+                        s.drag_cast.press_y     = y;
+                        s.drag_cast.current_x   = x;
+                        s.drag_cast.current_y   = y;
+                        s.drag_cast.caster.id         = carrier_id;
+                        s.drag_cast.caster.generation = hi->generation;
+                        s.drag_cast.caster_x    = tf->position.x;
+                        s.drag_cast.caster_y    = tf->position.y;
+                        s.drag_cast.caster_z    = tf->position.z;
+                        s.drag_cast.drag_world_x = tf->position.x;
+                        s.drag_cast.drag_world_y = tf->position.y;
+                        s.drag_cast.drag_world_z = tf->position.z;
+                        s.drag_cast.ability_id  = first_ability;
+                        s.drag_cast.range       = range;
+                        s.drag_cast.form        = form;
+                        s.drag_cast.shape       = shape;
+                        s.drag_cast.area_radius = area_radius;
+                        s.drag_cast.area_width  = area_width;
+                        s.drag_cast.area_angle  = area_angle;
+                        s.drag_cast.snapped_target  = simulation::Unit{};
+                        s.drag_cast.command_id.clear();
+                        s.drag_cast.inventory_slot      = inv_slot;
+                        s.drag_cast.inventory_item_id   = item.id;
+                        s.drag_cast.inventory_item_icon = (tdef ? tdef->icon_path : std::string{});
+                        s.drag_cast.inventory_targetable = targetable;
+                        s.drag_cast.press_time  = std::chrono::steady_clock::now();
+                        s.inventory_cfg.slots[inv_slot].pressed = true;
+                        drag_cast_started = true;
+                    }
+                }
+            }
+            if (!drag_cast_started) {
+                s.inventory_pressed_slot = inv_slot;
+                s.inventory_cfg.slots[inv_slot].pressed = true;
+            }
         } else if (on_minimap) {
             // Minimap press — start a drag that pans the camera. Each
             // pointer move while held re-fires minimap_jump_fn (handled

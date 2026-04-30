@@ -474,6 +474,7 @@ bool App::start_session() {
         apply(TexId::SelectionRing, s.selection_texture);
         apply(TexId::RangeRing,     s.range_texture);
         apply(TexId::TargetUnit,    s.target_unit_texture);
+        apply(TexId::SnapTarget,    s.snap_target_texture);
         apply(TexId::CastCurve,     s.arrow_texture);
         apply(TexId::Reticle,       s.reticle_texture);
         apply(TexId::AoeCircle,     s.area_texture);
@@ -535,6 +536,59 @@ bool App::start_session() {
         if (m_input_preset) m_input_preset->queue_command(command_id);
     });
 
+    // Mobile command-bar drag-commit (Phase 5a). The HUD has already
+    // resolved the gesture into a snapped unit (Attack target) or a
+    // ground point (Move / AttackMove fallback). We bypass the
+    // preset's targeting-mode entry path and submit the matching
+    // order directly — same shape as the ability cast-at-target fn
+    // above.
+    m_hud.set_command_bar_drag_commit_fn(
+        [this](const std::string& command_id, u32 target_unit_id,
+               f32 target_x, f32 target_y, f32 target_z) {
+            input::GameCommand cmd;
+            cmd.player = m_selection.player();
+            cmd.units  = m_selection.selected();
+            const glm::vec3 wp{target_x, target_y, target_z};
+            if (command_id == "move") {
+                simulation::orders::Move m;
+                if (target_unit_id != UINT32_MAX) {
+                    // Snapped to a unit → Follow that unit (Move with
+                    // target_unit; range > 0 so the unit stops at a
+                    // comfortable trailing distance instead of clipping
+                    // into the leader's collider).
+                    const auto& world = m_server.simulation().world();
+                    if (auto* hi = world.handle_infos.get(target_unit_id)) {
+                        simulation::Unit u;
+                        u.id         = target_unit_id;
+                        u.generation = hi->generation;
+                        m.target_unit = u;
+                        m.range       = 96.0f;
+                    } else {
+                        m.target = wp;   // handle invalid mid-frame — fall back to ground
+                    }
+                } else {
+                    m.target = wp;
+                }
+                cmd.order = std::move(m);
+            } else if (command_id == "attack" || command_id == "attack_move") {
+                if (target_unit_id != UINT32_MAX) {
+                    // Snapped to a unit → Attack on that unit.
+                    const auto& world = m_server.simulation().world();
+                    simulation::Unit u;
+                    u.id = target_unit_id;
+                    if (auto* hi = world.handle_infos.get(target_unit_id))
+                        u.generation = hi->generation;
+                    cmd.order = simulation::orders::Attack{u};
+                } else {
+                    // No snap → AttackMove on the ground point.
+                    cmd.order = simulation::orders::AttackMove{wp};
+                }
+            } else {
+                return;   // unknown command — drop silently
+            }
+            m_commands.submit(cmd);
+        });
+
     // Inventory slot tap → cast the slot's first ability with the item
     // handle attached as `source_item`, so triggers reading
     // GetTriggerItem() inside on_cast_finished resolve to this item.
@@ -558,6 +612,40 @@ bool App::start_session() {
         cmd.order = std::move(c);
         m_commands.submit(cmd);
     });
+
+    // Mobile inventory drag-cast — drag from a slot onto the world,
+    // release to commit. Same Cast order as the no-target use path,
+    // but with target_pos / target_unit pre-filled from the gesture
+    // so the simulation skips the targeting prompt and resolves the
+    // ability immediately.
+    m_hud.set_inventory_use_at_target_fn(
+        [this](u32 item_id, const std::string& ability_id,
+               u32 target_unit_id, glm::vec3 world_pos) {
+            const auto& world = m_server.simulation().world();
+            const auto* hi = world.handle_infos.get(item_id);
+            if (!hi) return;
+            simulation::Item item;
+            item.id         = item_id;
+            item.generation = hi->generation;
+
+            input::GameCommand cmd;
+            cmd.player = m_selection.player();
+            cmd.units  = m_selection.selected();
+            simulation::orders::Cast c;
+            c.ability_id  = ability_id;
+            c.source_item = item;
+            c.target_pos  = world_pos;
+            if (target_unit_id != UINT32_MAX) {
+                if (const auto* th = world.handle_infos.get(target_unit_id)) {
+                    simulation::Unit tu;
+                    tu.id         = target_unit_id;
+                    tu.generation = th->generation;
+                    c.target_unit = tu;
+                }
+            }
+            cmd.order = std::move(c);
+            m_commands.submit(cmd);
+        });
 
     // Inventory drop — held-then-clicked-on-terrain (WC3 style). The
     // sim places the item at the explicit world pos passed in.
@@ -781,6 +869,11 @@ bool App::start_session() {
 void App::end_session() {
     if (!m_session_active) return;
     log::info(TAG, "=== Ending session ===");
+
+    // Restore the OS cursor — gameplay sessions hide it (Phase 4b)
+    // and draw a HUD cursor instead. After end_session the menu /
+    // shell / dev-console want the system pointer back.
+    if (m_platform) m_platform->set_cursor_visible(true);
 
     // Input — drop the preset (RTS / Action) and reset its dependents.
     m_input_preset.reset();
@@ -1191,6 +1284,19 @@ void App::run() {
                     m_input_preset ? m_input_preset->active_command_id()
                                    : std::string_view{});
 
+                // OS cursor visibility — hide only when the HUD is
+                // actually drawing its own. Both cursor textures
+                // default to empty (no engine-shipped assets), so
+                // the OS cursor stays in every state unless the map
+                // opts in via `targeting.cursors.{default,target}`
+                // in hud.json. Non-cursor platforms (Android) no-op.
+                const auto& cs = m_hud.cast_indicator_style();
+                bool targeting = m_hud.aim_state().active;
+                bool hud_cursor_active =
+                    (targeting && !cs.cursor_target_path.empty()) ||
+                    (!targeting && !cs.cursor_default_path.empty());
+                m_platform->set_cursor_visible(!hud_cursor_active);
+
                 // Same sub-tick interpolation factor the renderer uses.
                 // Clients don't run the tick loop locally, so they pin
                 // it at 1.0 (mirror snapshots are already at-the-tick).
@@ -1359,8 +1465,19 @@ void App::run() {
                         m_target_ping.age += frame_dt;
                         if (m_target_ping.age < m_target_ping.lifespan) {
                             f32 t = m_target_ping.age / m_target_ping.lifespan;
-                            f32 a_fade = 1.0f - t;          // 1 → 0
-                            f32 scale  = 1.4f - 0.5f * t;   // 1.4 → 0.9
+                            // Keep the ring's geometry identical to the
+                            // selection circle (same radius, same per-
+                            // sample terrain Z) so on a ramp the ribbon
+                            // hugs the slope the same way. Bigger rings
+                            // span more terrain inclination and the
+                            // XY-aligned strip starts visibly clipping
+                            // the slope — ditching the scale animation
+                            // fixes that. The "ping" feel now comes
+                            // from a stroke-width pulse + alpha fade,
+                            // both of which leave the centerline
+                            // exactly where the selection circle is.
+                            f32 a_fade   = 1.0f - t;          // 1.0 → 0.0
+                            f32 stroke_w = 8.0f - 4.0f * t;   // 8.0 → 4.0 (matches selection at end)
 
                             glm::vec3 anchor = m_target_ping.pos;
                             f32 base_r = 48.0f;
@@ -1372,8 +1489,11 @@ void App::run() {
                                     if (sl->selection_radius > 0.0f) base_r = sl->selection_radius;
                                 }
                             }
-                            f32 ring_r = base_r * scale;
-                            constexpr f32 kPingStroke = 5.0f;
+                            // Inset the centerline by half the stroke
+                            // (same trick the selection circle uses) so
+                            // the outer edge lands at base_r.
+                            f32 ring_r = base_r - stroke_w * 0.5f;
+                            if (ring_r < stroke_w * 0.5f) ring_r = stroke_w * 0.5f;
                             std::vector<glm::vec3> p_samples;
                             p_samples.reserve(48 + 1);
                             for (u32 i = 0; i <= 48; ++i) {
@@ -1383,14 +1503,29 @@ void App::run() {
                                 f32 sz = map::sample_height(*terrain, sx, sy);
                                 p_samples.push_back({sx, sy, sz});
                             }
+                            // Tint from the intent palette (Phase 4a).
+                            // Per-call kind selects which entry; alpha
+                            // comes from the lifespan fade. Authors
+                            // restyle by editing `targeting.intents`
+                            // in hud.json — every intent-tinted visual
+                            // updates uniformly.
                             using PingKind = input::InputContext::TargetPingKind;
-                            glm::vec4 color{0.30f, 1.00f, 0.36f, a_fade};
+                            const auto& intents = m_hud.cast_indicator_style().intents;
+                            hud::Color base = intents.ally;
                             switch (m_target_ping.kind) {
-                                case PingKind::Hostile:  color = {1.00f, 0.20f, 0.20f, a_fade}; break;
-                                case PingKind::Friendly: color = {0.30f, 1.00f, 0.36f, a_fade}; break;
-                                case PingKind::Item:     color = {1.00f, 0.85f, 0.20f, a_fade}; break;
+                                case PingKind::Enemy: base = intents.enemy; break;
+                                case PingKind::Ally:  base = intents.ally;  break;
+                                case PingKind::Item:  base = intents.item;  break;
                             }
-                            m_world_overlays.add_path(p_samples, kPingStroke,
+                            auto unpack = [](hud::Color c) -> glm::vec4 {
+                                return { ((c.rgba >>  0) & 0xFFu) / 255.0f,
+                                         ((c.rgba >>  8) & 0xFFu) / 255.0f,
+                                         ((c.rgba >> 16) & 0xFFu) / 255.0f,
+                                         ((c.rgba >> 24) & 0xFFu) / 255.0f };
+                            };
+                            glm::vec4 color = unpack(base);
+                            color.a *= a_fade;
+                            m_world_overlays.add_path(p_samples, stroke_w,
                                                      color, TexId::SelectionRing);
                         }
                     }
@@ -1518,24 +1653,48 @@ void App::run() {
                                                      TexId::CastCurve);
                         }
 
-                        // 4) Reticle — shown for ground-target without
-                        //    AoE, or for unit-target while not snapped.
-                        bool show_reticle = !aim.is_unit_target ||
-                                            (aim.snapped_id == UINT32_MAX);
-                        if (aim.has_area && !aim.is_unit_target) show_reticle = false;
-                        if (show_reticle) {
-                            m_world_overlays.add_quad(drag, s.reticle_radius,
-                                                      phase_color(s.reticle_color),
-                                                      TexId::Reticle);
-                        }
+                        // 4) Ground reticle removed — replaced by the
+                        //    HUD-drawn cursor (engine/textures/cursors/
+                        //    target.ktx2). The cursor follows the mouse
+                        //    and reads as a 2D affordance, which doesn't
+                        //    fight terrain inclination on ramps. Only
+                        //    AoE preview (handled above) and the snap
+                        //    indicator (below) are still 3D ground decals.
 
-                        // 5) Snapped-unit ring.
-                        if (aim.is_unit_target && aim.snapped_id != UINT32_MAX) {
-                            glm::vec3 sp{aim.snapped_x, aim.snapped_y, aim.snapped_z};
-                            m_world_overlays.add_ring(sp, aim.snapped_radius,
-                                                      s.target_unit_thickness,
-                                                      phase_color(s.target_unit_color),
-                                                      TexId::TargetUnit);
+                        // 5) Snap-target indicator (mobile only). On
+                        //    desktop the cursor's hover position is
+                        //    enough — no extra visual. On mobile
+                        //    drag-cast we drop a vertical light
+                        //    column over the snapped target so the
+                        //    player can see the lock at a glance even
+                        //    when their finger covers the unit. The
+                        //    column is tinted from the intent palette
+                        //    (ally / enemy / neutral) — ability filters
+                        //    already gate which units the snap can land
+                        //    on, but the color reads at a glance which
+                        //    relationship the snap holds.
+                        if (aim.is_unit_target
+                            && aim.snapped_id != UINT32_MAX
+                            && aim.is_drag_cast) {
+                            simulation::Player local{m_args.local_slot};
+                            hud::Color tint = s.intents.neutral;
+                            if (const auto* owner = world.owners.get(aim.snapped_id)) {
+                                if (owner->player.id == local.id ||
+                                    m_server.simulation().is_allied(local, owner->player)) {
+                                    tint = s.intents.ally;
+                                } else {
+                                    tint = s.intents.enemy;
+                                }
+                            }
+                            glm::vec3 base{ aim.snapped_x, aim.snapped_y,
+                                            aim.snapped_z + s.snap_target_base_offset };
+                            glm::vec3 cam_pos = m_renderer.camera().position();
+                            m_world_overlays.add_pillar(base,
+                                                       s.snap_target_height,
+                                                       s.snap_target_width,
+                                                       cam_pos,
+                                                       phase_color(tint),
+                                                       TexId::SnapTarget);
                         }
                     }
                     m_world_overlays.draw(cmd, m_renderer.camera().view_projection());

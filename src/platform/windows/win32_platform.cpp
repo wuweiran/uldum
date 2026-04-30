@@ -135,6 +135,16 @@ std::vector<std::string> Win32Platform::list_files(std::string_view prefix) cons
     return out;
 }
 
+void Win32Platform::set_cursor_visible(bool visible) {
+    if (visible == m_cursor_visible) return;   // idempotent
+    // ShowCursor maintains an internal counter; each FALSE decrements,
+    // TRUE increments. We only ever transition once per state change
+    // so the counter stays balanced. The actual hide/show only takes
+    // effect when the counter crosses 0 / -1.
+    ShowCursor(visible ? TRUE : FALSE);
+    m_cursor_visible = visible;
+}
+
 f32 Win32Platform::ui_scale() const {
     if (!m_hwnd) return 1.0f;
     UINT dpi = GetDpiForWindow(m_hwnd);

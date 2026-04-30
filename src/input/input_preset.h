@@ -56,7 +56,7 @@ struct InputContext {
     // before calling. `unit` is invalid when the click was a ground
     // target (no entity was hit), in which case the renderer uses
     // `world_pos` directly.
-    enum class TargetPingKind : u8 { Hostile, Friendly, Item };
+    enum class TargetPingKind : u8 { Enemy, Ally, Item };
     std::function<void(simulation::Unit unit, glm::vec3 world_pos, TargetPingKind kind)> target_ping_fn;
 };
 

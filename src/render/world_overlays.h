@@ -7,12 +7,13 @@
 // placement ghost, debug gizmos) goes through here.
 //
 // Design follows the WC3 model: shape lives in the texture, geometry
-// is a thin substrate. Three primitive generators cover all current
+// is a thin substrate. Five primitive generators cover all current
 // indicators:
 //   • add_ring   — closed annular ribbon (selection, range, target-unit)
 //   • add_path   — open ribbon along a sample curve (cast curve, AoE line)
 //   • add_quad   — flat ground decal (reticle, AoE circle)
 //   • add_cone   — variable-angle wedge fan (AoE cone)
+//   • add_pillar — vertical camera-yaw-aligned column (snap-target light)
 //
 // Each primitive picks a TextureId — one of a small set of runtime-
 // generated default decals (ring stroke, soft circle, donut, gradient
@@ -52,9 +53,10 @@ public:
     enum class TextureId : u32 {
         SelectionRing  = 0,  // ribbon — under selected units
         RangeRing,           // ribbon — caster's cast range
-        TargetUnit,          // ribbon — snapped target unit
+        TargetUnit,          // ribbon — snapped target unit (legacy ring; desktop targeting no longer uses snap)
+        SnapTarget,          // pillar — vertical light column over snapped target (mobile drag-cast)
         CastCurve,           // ribbon — cast arrow (V-axis alpha gradient)
-        Reticle,             // quad   — ground-target marker (donut)
+        Reticle,             // quad   — ground-target marker (donut, deprecated; replaced by HUD cursor)
         AoeCircle,           // quad   — AoE preview circle
         AoeLine,             // ribbon — AoE preview line
         AoeCone,             // fan    — AoE preview cone
@@ -123,6 +125,19 @@ public:
     void add_cone(glm::vec3 origin, glm::vec3 dir, f32 half_angle,
                   f32 radius, glm::vec4 color, TextureId tex,
                   u32 segments = 24);
+
+    // Vertical camera-yaw-aligned billboard column. `base` is the
+    // bottom-center anchor in world space; the quad extends straight
+    // up along world Z by `height`, with `width` horizontal extent.
+    // The right axis lies in the XY plane perpendicular to the
+    // base→camera vector, so the quad's broad face always points at
+    // the camera as it orbits (no tilt — vertical stays vertical).
+    // UV: V=0 at the top, V=1 at the base; U=0 left, U=1 right —
+    // any gradient or shape lives in the texture, not the geometry.
+    // Falls back to +X right vector when the camera sits directly
+    // above the anchor (degenerate to-camera direction).
+    void add_pillar(glm::vec3 base, f32 height, f32 width,
+                    glm::vec3 camera_pos, glm::vec4 color, TextureId tex);
 
     // Issue draws into `cmd` against `view_projection`. Call inside
     // the active render pass, after the 3D scene draws and before the

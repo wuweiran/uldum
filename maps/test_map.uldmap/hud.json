@@ -100,17 +100,17 @@
         "enemy_dot_color": "#DC4646FF",
         "dot_size":        3
       }
-    },
+    }
+  },
 
-    "cast_indicator": {
-      "style_params": {
-        "selection_texture":   "textures/overlays/ring_stroke.ktx2",
-        "range_texture":       "textures/overlays/ring_stroke.ktx2",
-        "target_unit_texture": "textures/overlays/ring_stroke.ktx2",
-        "arrow_texture":       "textures/overlays/curve_stroke.ktx2",
-        "reticle_texture":     "textures/overlays/reticle.ktx2",
-        "area_texture":        "textures/overlays/aoe_circle.ktx2"
-      }
+  "targeting": {
+    "selection_texture": "textures/overlays/ring_stroke.ktx2",
+    "cursors":      { "target":  "textures/cursors/target.ktx2", "size": 20 },
+    "range_ring":   { "texture": "textures/overlays/ring_stroke.ktx2" },
+    "cast_curve":   { "texture": "textures/overlays/curve_stroke.ktx2" },
+    "snap_target":  { "texture": "textures/overlays/snap_target.ktx2" },
+    "aoe": {
+      "circle_texture": "textures/overlays/aoe_circle.ktx2"
     }
   },
 

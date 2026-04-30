@@ -238,7 +238,9 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         return;
     }
 
-    // Attack-move: A pressed → next left-click: unit = Attack, ground = AttackMove
+    // Attack-move: A pressed → next left-click: unit = Attack (force-
+    // attack, ally or enemy), ground = AttackMove. Self-attack is
+    // rejected at the simulation layer.
     if (m_target_mode == TargetingMode::AttackMove && input.mouse_left_pressed) {
         if (!sel.empty()) {
             auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
@@ -254,7 +256,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 if (ctx.target_ping_fn) {
                     if (auto* t = ctx.simulation.world().transforms.get(target.id)) {
                         ctx.target_ping_fn(target, t->position,
-                                           InputContext::TargetPingKind::Hostile);
+                                           InputContext::TargetPingKind::Enemy);
                     }
                 }
             } else {
@@ -347,8 +349,8 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (ctx.target_ping_fn) {
                 if (auto* t = ctx.simulation.world().transforms.get(target.id)) {
                     ctx.target_ping_fn(target, t->position,
-                        is_enemy ? InputContext::TargetPingKind::Hostile
-                                 : InputContext::TargetPingKind::Friendly);
+                        is_enemy ? InputContext::TargetPingKind::Enemy
+                                 : InputContext::TargetPingKind::Ally);
                 }
             }
         } else {

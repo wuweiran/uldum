@@ -137,6 +137,13 @@ public:
     using MessageHook = std::function<bool(void*, u32, uintptr_t, intptr_t)>;
     void set_message_hook(MessageHook hook) { m_message_hook = std::move(hook); }
 
+    // Show / hide the OS pointer cursor. Used when the engine wants to
+    // draw its own cursor texture (targeting mode reticle, etc.). The
+    // call is idempotent — repeated identical calls are a no-op so
+    // gameplay code doesn't need to track state. Default no-op for
+    // platforms without a system cursor (Android).
+    virtual void set_cursor_visible(bool /*visible*/) {}
+
     static std::unique_ptr<Platform> create();
 
 protected:

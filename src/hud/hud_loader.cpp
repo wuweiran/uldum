@@ -508,47 +508,6 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
             } // end mobile-only branch
         }
 
-        if (auto ci = comps->find("cast_indicator"); ci != comps->end() && ci->is_object()) {
-            CastIndicatorConfig cfg{};
-            cfg.enabled = ci->value("enabled", true);
-            if (auto sp = ci->find("style_params"); sp != ci->end() && sp->is_object()) {
-                if (auto v = sp->find("range_color");          v != sp->end()) cfg.style.range_color          = parse_color(*v);
-                if (auto v = sp->find("range_thickness");      v != sp->end() && v->is_number())
-                    cfg.style.range_thickness = v->get<f32>();
-                if (auto v = sp->find("arrow_color");          v != sp->end()) cfg.style.arrow_color          = parse_color(*v);
-                if (auto v = sp->find("arrow_thickness");      v != sp->end() && v->is_number())
-                    cfg.style.arrow_thickness = v->get<f32>();
-                if (auto v = sp->find("head_height");          v != sp->end() && v->is_number())
-                    cfg.style.head_height = v->get<f32>();
-                if (auto v = sp->find("arc_height");           v != sp->end() && v->is_number())
-                    cfg.style.arc_height = v->get<f32>();
-                if (auto v = sp->find("reticle_color");        v != sp->end()) cfg.style.reticle_color        = parse_color(*v);
-                if (auto v = sp->find("reticle_radius");       v != sp->end() && v->is_number())
-                    cfg.style.reticle_radius = v->get<f32>();
-                if (auto v = sp->find("area_color");           v != sp->end()) cfg.style.area_color           = parse_color(*v);
-                if (auto v = sp->find("target_unit_color");    v != sp->end()) cfg.style.target_unit_color    = parse_color(*v);
-                if (auto v = sp->find("target_unit_thickness"); v != sp->end() && v->is_number())
-                    cfg.style.target_unit_thickness = v->get<f32>();
-                if (auto v = sp->find("out_of_range_tint");    v != sp->end()) cfg.style.out_of_range_tint    = parse_color(*v);
-                if (auto v = sp->find("cancel_tint");          v != sp->end()) cfg.style.cancel_tint          = parse_color(*v);
-                // Optional texture overrides — paths resolve via the
-                // active map's asset bundle. Empty string keeps the
-                // procedural engine default.
-                auto str = [&](const char* k, std::string& dst) {
-                    if (auto v = sp->find(k); v != sp->end() && v->is_string())
-                        dst = v->get<std::string>();
-                };
-                str("range_texture",       cfg.style.range_texture);
-                str("arrow_texture",       cfg.style.arrow_texture);
-                str("reticle_texture",     cfg.style.reticle_texture);
-                str("area_texture",        cfg.style.area_texture);
-                str("target_unit_texture", cfg.style.target_unit_texture);
-                str("selection_texture",   cfg.style.selection_texture);
-            }
-            hud.set_cast_indicator_config(cfg);
-            log::info(TAG, "cast_indicator: registered");
-        }
-
         if (auto iv = comps->find("inventory"); iv != comps->end() && iv->is_object()) {
             InventoryConfig cfg{};
             cfg.enabled = true;
@@ -640,7 +599,13 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         for (auto it = comps->begin(); it != comps->end(); ++it) {
             const std::string& k = it.key();
             if (k == "action_bar" || k == "minimap" || k == "command_bar" ||
-                k == "joystick"   || k == "cast_indicator" || k == "inventory") continue;
+                k == "joystick"   || k == "inventory") continue;
+            // `cast_indicator` was renamed to top-level `targeting` (Phase 4a).
+            if (k == "cast_indicator") {
+                log::warn(TAG, "composite 'cast_indicator' is deprecated; "
+                              "move it to the top-level `targeting` block");
+                continue;
+            }
             log::info(TAG, "composite '{}' declared (not yet implemented)", k);
         }
     }
@@ -716,6 +681,125 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         if (auto v = sm->find("fill");   v != sm->end()) ms.fill   = parse_color(*v);
         if (auto v = sm->find("border"); v != sm->end()) ms.border = parse_color(*v);
         hud.set_marquee_style(ms);
+    }
+
+    // targeting block — every visual customization for the "next-click
+    // pending" UX (range ring, cast curve, AoE preview, mobile
+    // snap-target indicator, cursor swap, entity ping). Single source
+    // of truth for intent-keyed colors via `intent_colors`.
+    if (auto tg = doc.find("targeting"); tg != doc.end() && tg->is_object()) {
+        CastIndicatorConfig cfg{};
+        cfg.enabled = tg->value("enabled", true);
+
+        // Intent palette — parse first so subsequent `color` fields
+        // can reference its names.
+        if (auto ip = tg->find("intent_colors"); ip != tg->end() && ip->is_object()) {
+            if (auto v = ip->find("neutral"); v != ip->end()) cfg.style.intents.neutral = parse_color(*v);
+            if (auto v = ip->find("enemy");   v != ip->end()) cfg.style.intents.enemy   = parse_color(*v);
+            if (auto v = ip->find("ally");    v != ip->end()) cfg.style.intents.ally    = parse_color(*v);
+            if (auto v = ip->find("item");    v != ip->end()) cfg.style.intents.item    = parse_color(*v);
+        }
+        // `color` resolver: hex literal "#RRGGBB[AA]" stays as-is;
+        // "neutral" / "enemy" / "ally" / "item" looks up the palette.
+        // Anything else falls back to opaque white with a warning.
+        auto resolve_color = [&](const nlohmann::json& v) -> Color {
+            if (!v.is_string()) return rgba(255,255,255,255);
+            std::string s = v.get<std::string>();
+            if (!s.empty() && s[0] == '#') return parse_color(v);
+            if (s == "neutral") return cfg.style.intents.neutral;
+            if (s == "enemy")   return cfg.style.intents.enemy;
+            if (s == "ally")    return cfg.style.intents.ally;
+            if (s == "item")    return cfg.style.intents.item;
+            log::warn(TAG, "targeting: unknown color '{}', using neutral", s);
+            return cfg.style.intents.neutral;
+        };
+
+        // Cursors (Phase 4b consumes these).
+        if (auto c = tg->find("cursors"); c != tg->end() && c->is_object()) {
+            if (auto v = c->find("default"); v != c->end() && v->is_string())
+                cfg.style.cursor_default_path = v->get<std::string>();
+            if (auto v = c->find("target");  v != c->end() && v->is_string())
+                cfg.style.cursor_target_path  = v->get<std::string>();
+            if (auto v = c->find("size");    v != c->end() && v->is_number())
+                cfg.style.cursor_size = v->get<f32>();
+        }
+
+        // Range ring (3D ground decal at the caster).
+        if (auto rr = tg->find("range_ring"); rr != tg->end() && rr->is_object()) {
+            if (auto v = rr->find("texture"); v != rr->end() && v->is_string())
+                cfg.style.range_texture = v->get<std::string>();
+            if (auto v = rr->find("thickness"); v != rr->end() && v->is_number())
+                cfg.style.range_thickness = v->get<f32>();
+            if (auto v = rr->find("color"); v != rr->end()) cfg.style.range_color = resolve_color(*v);
+        }
+
+        // Cast curve (mobile aim arrow, caster → drag point).
+        if (auto cc = tg->find("cast_curve"); cc != tg->end() && cc->is_object()) {
+            if (auto v = cc->find("texture"); v != cc->end() && v->is_string())
+                cfg.style.arrow_texture = v->get<std::string>();
+            if (auto v = cc->find("thickness");   v != cc->end() && v->is_number()) cfg.style.arrow_thickness = v->get<f32>();
+            if (auto v = cc->find("arc_height");  v != cc->end() && v->is_number()) cfg.style.arc_height      = v->get<f32>();
+            if (auto v = cc->find("head_height"); v != cc->end() && v->is_number()) cfg.style.head_height     = v->get<f32>();
+            if (auto v = cc->find("color"); v != cc->end()) cfg.style.arrow_color = resolve_color(*v);
+        }
+
+        // Snap-target indicator (mobile drag-cast). Vertical light
+        // column over the snapped target — visual-agnostic, the
+        // texture drives the entire look (gradient, shape, etc.).
+        // height / width / base_offset are world units. Color is
+        // not configured here — it comes from the intent palette
+        // (ally / enemy / neutral) so the column reads as a friendly
+        // or hostile target at a glance.
+        if (auto st = tg->find("snap_target"); st != tg->end() && st->is_object()) {
+            if (auto v = st->find("texture");     v != st->end() && v->is_string())
+                cfg.style.snap_target_texture = v->get<std::string>();
+            if (auto v = st->find("height");      v != st->end() && v->is_number())
+                cfg.style.snap_target_height = v->get<f32>();
+            if (auto v = st->find("width");       v != st->end() && v->is_number())
+                cfg.style.snap_target_width = v->get<f32>();
+            if (auto v = st->find("base_offset"); v != st->end() && v->is_number())
+                cfg.style.snap_target_base_offset = v->get<f32>();
+        }
+
+        // AoE preview (target_point shape decals).
+        if (auto a = tg->find("aoe"); a != tg->end() && a->is_object()) {
+            if (auto v = a->find("circle_texture"); v != a->end() && v->is_string())
+                cfg.style.area_texture = v->get<std::string>();
+            // line/cone overrides are accepted in the JSON for forward-compat
+            // but currently funnel into the same area_texture slot since the
+            // engine renders all three shapes from one customizable texture.
+            if (auto v = a->find("color"); v != a->end()) cfg.style.area_color = resolve_color(*v);
+        }
+
+        // Entity ping (post-commit ring on the targeted unit / item).
+        // Color is always the runtime intent — no JSON knob.
+        if (auto ep = tg->find("entity_ping"); ep != tg->end() && ep->is_object()) {
+            if (auto v = ep->find("texture"); v != ep->end() && v->is_string())
+                cfg.style.entity_ping_texture = v->get<std::string>();
+            if (auto v = ep->find("thickness_anim"); v != ep->end() && v->is_array() && v->size() == 2) {
+                cfg.style.entity_ping_thickness_start = (*v)[0].get<f32>();
+                cfg.style.entity_ping_thickness_end   = (*v)[1].get<f32>();
+            }
+            if (auto v = ep->find("lifespan"); v != ep->end() && v->is_number())
+                cfg.style.entity_ping_lifespan = v->get<f32>();
+        }
+
+        // Out-of-range / cancel tints (existing behavior, just relocated).
+        if (auto pt = tg->find("phase_tints"); pt != tg->end() && pt->is_object()) {
+            if (auto v = pt->find("out_of_range"); v != pt->end()) cfg.style.out_of_range_tint = parse_color(*v);
+            if (auto v = pt->find("cancelling");   v != pt->end()) cfg.style.cancel_tint       = parse_color(*v);
+        }
+
+        // Selection ring slot — not strictly targeting (drawn under
+        // selected units, not while aiming) but the texture override
+        // lived next door under cast_indicator. Keep it here for now;
+        // we'll move to a dedicated `selection` block if it grows.
+        if (auto sel = tg->find("selection_texture"); sel != tg->end() && sel->is_string()) {
+            cfg.style.selection_texture = sel->get<std::string>();
+        }
+
+        hud.set_cast_indicator_config(cfg);
+        log::info(TAG, "targeting: registered (intent palette + visuals)");
     }
 
     // nodes block — each entry is registered as a TEMPLATE keyed by its

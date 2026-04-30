@@ -1,12 +1,14 @@
 #pragma once
 
-// Cast / drag-cast indicator style. Authored once per map under
-// `composites.cast_indicator` in hud.json; consumed by the app each
-// frame when populating AbilityIndicators from Hud::aim_state().
+// Targeting style — every visual customization that drives the
+// "next-click pending" UX (range ring, cast curve, AoE preview, mobile
+// snap-target indicator, cursor swap, entity ping). Authored under
+// the top-level `targeting` block in hud.json; consumed by the app +
+// HUD each frame.
 //
-// One config covers both platforms — desktop targeting mode and mobile
-// drag-cast feed the same indicator state, and the user-facing visual
-// shouldn't differ between them.
+// The struct keeps its legacy name (CastIndicatorStyle) for now to
+// avoid churn — its scope has grown beyond cast indicators, but every
+// site that reads it still does so via the same getter.
 
 #include "core/types.h"
 #include "hud/hud.h"   // Color
@@ -14,6 +16,18 @@
 #include <string>
 
 namespace uldum::hud {
+
+// Relationship-keyed color palette. Single source of truth for "what
+// color signifies this kind of relationship to the player": cursor
+// tints, entity-ping ring, mobile snap-target indicator, etc. Field
+// names match the simulation's terminology (`is_enemy`, alliance
+// "ally" flag).
+struct IntentPalette {
+    Color neutral = rgba(255, 255, 255, 255);
+    Color enemy   = rgba(255,  48,  48, 255);
+    Color ally    = rgba( 64, 220,  96, 255);
+    Color item    = rgba(255, 210,  64, 255);
+};
 
 struct CastIndicatorStyle {
     // Range ring at the caster — radius = ability.range. Color is
@@ -70,7 +84,46 @@ struct CastIndicatorStyle {
     std::string reticle_texture;
     std::string area_texture;
     std::string target_unit_texture;
+    // Mobile snap-target indicator — vertical light column over the
+    // snapped target during drag-cast. Visual is a camera-yaw-aligned
+    // billboard pillar; the texture supplies the entire look (alpha
+    // gradient, color glow, etc.) and the engine just stretches it
+    // over the height/width given here. Color is *not* configured —
+    // the intent palette tints the column ally / enemy / neutral so
+    // it reads at a glance which relationship the snap holds. Sizes
+    // are world units; base_offset lifts the column above the unit's
+    // feet so the solid end sits well above head height.
+    std::string snap_target_texture;
+    f32 snap_target_height       = 200.0f;
+    f32 snap_target_width        =  32.0f;
+    f32 snap_target_base_offset  =  96.0f;
     std::string selection_texture;
+
+    // ── Phase 4a additions ─────────────────────────────────────────
+    // Intent palette — referenced by name elsewhere in the JSON
+    // (e.g. an entity ping's ring color = intents.enemy when right-
+    // clicking a hostile unit). Authors rarely override the default;
+    // when they do, every intent-tinted visual updates uniformly.
+    IntentPalette intents;
+
+    // Cursor textures. Both default to empty — no engine-shipped
+    // cursor assets. The OS cursor is the fallback in every state;
+    // a HUD-drawn cursor only appears when the map authors one
+    // through `targeting.cursors.{default,target}` in hud.json.
+    // `cursor_size` is in dp (HUD logical units), scaling 1:1 with
+    // OS DPI.
+    std::string cursor_default_path;   // "" → keep OS cursor in idle
+    std::string cursor_target_path;    // "" → keep OS cursor in targeting
+    f32         cursor_size         = 20.0f;
+
+    // Entity ping (post-commit ring on the targeted unit / item).
+    // The ring's color is *always* the runtime intent (enemy / ally /
+    // item) for the click that fired it — no JSON `color` knob.
+    // Authors customize the texture and the animation envelope only.
+    std::string entity_ping_texture;             // empty → SelectionRing fallback
+    f32         entity_ping_thickness_start = 8.0f;
+    f32         entity_ping_thickness_end   = 4.0f;
+    f32         entity_ping_lifespan        = 0.45f;
 };
 
 struct CastIndicatorConfig {

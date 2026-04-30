@@ -534,8 +534,14 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             target = combat.target;
         }
 
-        // Validate target is alive
+        // Validate target. Rejected for:
+        //   • invalid handle / dead
+        //   • the unit itself (no self-attack, regardless of how the
+        //     order got here — A-click on self, Lua misuse, etc.)
+        // Friendly fire is intentionally allowed: A-click on an ally
+        // is a force-attack and the engine honors it.
         bool target_valid = target.is_valid() && world.validate(target);
+        if (target_valid && target.id == id) target_valid = false;
         if (target_valid) {
             auto* target_hp = world.healths.get(target.id);
             if (!target_hp || target_hp->current <= 0) target_valid = false;

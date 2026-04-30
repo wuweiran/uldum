@@ -328,6 +328,22 @@ public:
     )>;
     void set_action_bar_cast_at_target_fn(ActionBarCastAtTargetFn fn);
 
+    // Mobile command drag-commit (Phase 5a). Same gesture as the
+    // ability drag-cast — press a command_bar slot, drag-aim, release
+    // — but on release the HUD calls this with the command id and the
+    // resolved target. App routes:
+    //   • "move"        → Move{world_pos}
+    //   • "attack" /
+    //     "attack_move" → Attack{snapped_unit} when snapped, else
+    //                     AttackMove{world_pos}
+    // `target_unit_id == UINT32_MAX` means no snap; use `world_pos`.
+    using CommandBarDragCommitFn = std::function<void(
+        const std::string& command_id,
+        u32                target_unit_id,
+        f32 target_x, f32 target_y, f32 target_z
+    )>;
+    void set_command_bar_drag_commit_fn(CommandBarDragCommitFn fn);
+
     // Per-frame mobile drag-cast update. Reads the platform input state
     // (touch positions, primary pointer) and advances the drag-cast
     // state machine: press → aim → release. No-op on desktop (gated on
@@ -361,8 +377,37 @@ public:
         Cone   = 3,   // wedge from caster toward drag — uses area_angle (degrees) + range as radius
     };
 
+    // Where the active targeting session originated. Drives both the
+    // visual layer (which cursor / cue to show) and the future intent-
+    // tint logic. Phase 1 just classifies; later phases branch on it
+    // for cursor swap, ping kind, etc.
+    enum class TargetingSource : u8 {
+        None    = 0,
+        Ability = 1,   // ability hotkey / slot click / Lua dispatch
+        Command = 2,   // command_bar Move / AttackMove
+        Item    = 3,   // inventory right-click hold (drop / swap)
+    };
+
+    // Hover-target intent for cursor tinting and ping coloring. The
+    // visual layer reads this every frame and looks up the matching
+    // entry in the per-map intent palette. Computed lazily — a future
+    // phase that adds the live picker probe will populate it; today
+    // every populated state is `Neutral`.
+    enum class TargetingIntent : u8 {
+        Neutral = 0,   // ground / nothing under cursor / non-pickable
+        Enemy   = 1,   // enemy unit
+        Ally    = 2,   // own / ally unit
+        Item    = 3,   // ground item (entity)
+    };
+
     struct AbilityAimState {
         bool active = false;
+        // What initiated this targeting session. `None` only when
+        // `active == false`; populated for every other return.
+        TargetingSource source = TargetingSource::None;
+        // Computed each frame from what's under the cursor. Default
+        // Neutral; the cursor / ping renderers tint based on this.
+        TargetingIntent intent = TargetingIntent::Neutral;
         AimPhase phase = AimPhase::Normal;
         // Caster + drag point in world space (z is terrain-sampled).
         f32  caster_x = 0, caster_y = 0, caster_z = 0;
@@ -399,6 +444,13 @@ public:
         bool is_drag_cast = false;
     };
     AbilityAimState aim_state() const;
+
+    // What's under the pointer right now (per-frame picker probe). Drives
+    // cursor tinting and any other "hover-aware" feedback. Cheap — one
+    // ray test per frame against the spatial grid; runs idle and during
+    // targeting alike. Falls back to Neutral when world context isn't
+    // installed (menus / pre-session).
+    TargetingIntent cursor_intent() const;
 
     // Per-map style for the cast/drag indicators (range ring, arrow,
     // reticle, AoE, target-unit ring, per-phase tints). Defaults are
@@ -461,6 +513,18 @@ public:
     using InventoryUseFn = std::function<void(u32 item_id,
                                               const std::string& ability_id)>;
     void set_inventory_use_fn(InventoryUseFn fn);
+
+    // Mobile drag-cast for inventory items — fires on release of a
+    // gesture that started on an inventory slot and exited it (drag).
+    // The use callback above is the no-target form; this one carries
+    // the drag's ground point + optional snapped unit so the app can
+    // submit a fully-resolved Cast immediately, bypassing targeting
+    // mode. target_unit_id == UINT32_MAX when no unit was snapped.
+    using InventoryUseAtTargetFn = std::function<void(u32 item_id,
+                                                      const std::string& ability_id,
+                                                      u32 target_unit_id,
+                                                      glm::vec3 world_pos)>;
+    void set_inventory_use_at_target_fn(InventoryUseAtTargetFn fn);
 
     // Fired when the held item commits to a drop on the ground. The
     // held source slot is implicit (the HUD already knows it); the
