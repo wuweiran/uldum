@@ -231,6 +231,14 @@ public:
     };
     bool instantiate_template(std::string_view id, const Placement& placement);
 
+    // Record a viewport-relative placement for an instantiated tree's
+    // root node so the resize path can re-anchor it. Mirrors how
+    // composites store a Placement next to their resolved Rect. Called
+    // from the loader after a successful CreateNode; deregistered
+    // automatically on remove_node_by_id.
+    void register_instantiated_tree(std::string id, std::string_view anchor,
+                                    f32 x, f32 y, f32 w, f32 h);
+
     // Walk the tree, hit-test + draw the visible subtree, and record quads
     // for this frame. Called between begin_frame() and render(). No-op if
     // the root is empty.

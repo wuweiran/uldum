@@ -182,12 +182,19 @@ function main()
     local TOTAL_WAVES    = 20
     local SPAWN_INTERVAL = 6.0
 
-    CreateTimer(SPAWN_INTERVAL, true, function()
+    local spawn_timer
+    spawn_timer = CreateTimer(SPAWN_INTERVAL, true, function()
         wave = wave + 1
         -- Update the wave panel each wave — label shows "Wave N / 20"
         -- and the bar fills proportionally.
         SetLabelText("wave_label", string.format("Wave %d / %d", wave, TOTAL_WAVES))
         SetBarFill("wave_progress", wave / TOTAL_WAVES)
+
+        -- Stop after the final wave; the panel says "/20", the spawner
+        -- has to honor that contract.
+        if wave >= TOTAL_WAVES then
+            DestroyTimer(spawn_timer)
+        end
 
         local count = math.min(2 + wave, 8)
 
@@ -233,7 +240,7 @@ function main()
         local caster = GetTriggerUnit()
         local item   = GetTriggerItem()
         if not caster or not IsUnitAlive(caster) then return end
-        PlayEffectOnUnit("heal_glow", caster, "overhead")
+        PlayEffectOnUnit("heal_potion", caster, "overhead")
         HealUnit(caster, caster, 250)
         if item then
             local c = GetItemCharges(item) - 1

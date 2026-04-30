@@ -81,7 +81,7 @@ Bar::Direction parse_direction(std::string_view s) {
 }
 
 // Forward decl for recursion.
-void parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect);
+Node* parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect);
 
 // Dispatch on `type`, construct the matching atom as a child of `parent`,
 // fill in its fields from `jn`. Returns a pointer to the newly-attached
@@ -146,8 +146,8 @@ Node* build_atom(const nlohmann::json& jn, Node& parent, const Rect& rect) {
     return nullptr;
 }
 
-void parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect) {
-    if (!jn.is_object()) { log::warn(TAG, "node entry is not an object"); return; }
+Node* parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect) {
+    if (!jn.is_object()) { log::warn(TAG, "node entry is not an object"); return nullptr; }
 
     auto anchor = parse_anchor(jn.value("anchor", "tl"));
     f32 x = jn.value("x", 0.0f);
@@ -157,7 +157,7 @@ void parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect)
     Rect rect = resolve_rect(parent_rect, anchor, x, y, w, h);
 
     Node* node = build_atom(jn, parent, rect);
-    if (!node) return;
+    if (!node) return nullptr;
 
     if (auto idv = jn.find("id"); idv != jn.end() && idv->is_string()) {
         node->id = idv->get<std::string>();
@@ -174,6 +174,7 @@ void parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect)
             parse_node(child_jn, *node, node->rect);
         }
     }
+    return node;
 }
 
 } // namespace
@@ -857,7 +858,17 @@ bool instantiate_template(Hud& hud, std::string_view template_id,
     Rect viewport{ 0.0f, 0.0f,
                    static_cast<f32>(viewport_w) / s,
                    static_cast<f32>(viewport_h) / s };
-    parse_node(patched, hud.root(), viewport);
+    Node* root_node = parse_node(patched, hud.root(), viewport);
+    if (root_node) {
+        // Register the tree with the HUD so on_viewport_resized can
+        // re-anchor it later without rebuilding (rebuilding would
+        // lose mid-session Lua mutations like SetLabelText / SetBarFill).
+        // Mirrors how composites cache a Placement next to their rect.
+        hud.register_instantiated_tree(root_node->id,
+                                       placement.anchor,
+                                       placement.x, placement.y,
+                                       placement.w, placement.h);
+    }
     return true;
 }
 

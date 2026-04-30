@@ -17,6 +17,12 @@
         "start_color": { "r": 1, "g": 0.85, "b": 0.2, "a": 1 },
         "end_color": { "r": 1, "g": 0.7, "b": 0.1, "a": 0 }
     },
+    "heal_potion": {
+        "count": 12, "speed": 80, "life": 0.7, "size": 7, "gravity": -120, "spread": 0.08,
+        "texture": "blood",
+        "start_color": { "r": 0.85, "g": 0.15, "b": 0.15, "a": 1 },
+        "end_color":   { "r": 0.35, "g": 0.0,  "b": 0.0,  "a": 0 }
+    },
     "spell_cast": {
         "count": 15, "speed": 100, "life": 0.4, "size": 7, "gravity": -50,
         "texture": "spark",

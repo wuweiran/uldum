@@ -16,16 +16,16 @@ val projectRoot = rootProject.projectDir.parentFile.parentFile
 val engineMapsDir = projectRoot.resolve("maps")
 val engineBuildBin = projectRoot.resolve("build/bin")
 
-val gameProjectDir = providers.gradleProperty("ulGameProjectDir")
+val gameProjectDir = providers.gradleProperty("uldGameProjectDir")
     .orElse(projectRoot.resolve("sample_game").absolutePath)
     .get()
-val ulApplicationId = providers.gradleProperty("ulApplicationId")
+val uldApplicationId = providers.gradleProperty("uldApplicationId")
     .orElse("com.m1knight.uldum_sample")
     .get()
-val ulAppName = providers.gradleProperty("ulAppName")
+val uldAppName = providers.gradleProperty("uldAppName")
     .orElse("Uldum Sample")
     .get()
-val ulVersionName = providers.gradleProperty("ulVersionName")
+val uldVersionName = providers.gradleProperty("uldVersionName")
     .orElse("0.1.0")
     .get()
 
@@ -84,9 +84,9 @@ android {
         }
         create("game") {
             dimension = "variant"
-            applicationId = ulApplicationId
-            versionName = ulVersionName
-            manifestPlaceholders["appLabel"] = ulAppName
+            applicationId = uldApplicationId
+            versionName = uldVersionName
+            manifestPlaceholders["appLabel"] = uldAppName
             externalNativeBuild {
                 cmake {
                     arguments += "-DULDUM_GAME_PROJECT_DIR=$gameProjectDir"

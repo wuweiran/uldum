@@ -36,6 +36,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/vec3.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -198,6 +199,19 @@ struct Hud::Impl {
     // Keyed by the top-level template id. Lua's CreateNode(id) copies the
     // matching JSON spec into a fresh node subtree under the root.
     std::unordered_map<std::string, nlohmann::json> node_templates;
+
+    // Lua-instantiated tree registry. One entry per active CreateNode
+    // call; mirrors how composites cache (Placement, Rect) in their
+    // config struct. On viewport resize we walk this list, look up
+    // each tree's root by id, re-resolve its rect against the new
+    // viewport, and translate the subtree by the delta — same shape
+    // as composite reflow, just data-driven instead of struct-driven
+    // because tree contents are arbitrary. Removed on DestroyNode.
+    struct InstantiatedTree {
+        std::string                  id;
+        ::uldum::hud::Placement      placement;   // layout::Placement (AnchorFrac-based)
+    };
+    std::vector<InstantiatedTree> instantiated_trees;
 
     // Action-bar composite — slot layout + style from hud.json, slot
     // contents driven by the local selection each frame. Inert when
@@ -1030,11 +1044,33 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
         }
     }
 
-    // Node-tree (hud.json `nodes`) rects are resolved at CreateNode time
-    // against the then-current viewport — they remain pinned to those
-    // coordinates. Lua can DestroyNode + CreateNode to re-anchor if a
-    // map cares; most tree content is positional rather than viewport-
-    // anchored so this rarely matters in practice.
+    // Lua-instantiated trees: same shape as composite reflow above,
+    // just driven by the registry instead of a typed config struct.
+    // For each entry, look up the root by id, re-resolve its rect
+    // against the new viewport, and translate the whole subtree by
+    // the delta. Children inside the subtree have absolute rects
+    // that were resolved against the parent at instantiate time, so
+    // a uniform translation keeps every label / bar / image in its
+    // correct relative slot. SetLabelText / SetBarFill / etc.
+    // mutations on those children survive — we don't rebuild.
+    for (const auto& tree : m_impl->instantiated_trees) {
+        Node* root = find_node_by_id(tree.id);
+        if (!root) continue;
+        Rect new_rect = resolve(viewport, tree.placement);
+        f32 dx = new_rect.x - root->rect.x;
+        f32 dy = new_rect.y - root->rect.y;
+        if (dx == 0.0f && dy == 0.0f) continue;
+        std::vector<Node*> stack{ root };
+        while (!stack.empty()) {
+            Node* n = stack.back();
+            stack.pop_back();
+            n->rect.x += dx;
+            n->rect.y += dy;
+            for (const auto& c : n->children()) {
+                if (c) stack.push_back(c.get());
+            }
+        }
+    }
 }
 
 void Hud::begin_frame(u32 screen_w, u32 screen_h) {
@@ -1186,6 +1222,9 @@ void Hud::reset_session_state() {
 
     // Node templates from previous map's `nodes` block.
     s.node_templates.clear();
+    // Instantiated-tree registry — entries are tied to the just-cleared
+    // node tree, so they'd dangle into the next session otherwise.
+    s.instantiated_trees.clear();
 
     // Edge-tracking for hidden-ability hotkeys (rising-edge map keyed
     // by ability id). Stale entries from session A would mis-fire
@@ -1294,8 +1333,23 @@ bool Hud::remove_node_by_id(std::string_view id) {
     if (m_impl->hover && m_impl->hover->id == id)   m_impl->hover = nullptr;
     if (m_impl->pressed && m_impl->pressed->id == id) m_impl->pressed = nullptr;
     bool ok = remove_node_recursive(m_impl->root.get(), id);
-    if (ok) emit_sync(*m_impl, uldum::network::build_hud_destroy_node(id), owner);
+    if (ok) {
+        // Drop the matching registry entry so the resize path stops
+        // looking for a node that's been freed.
+        auto& reg = m_impl->instantiated_trees;
+        reg.erase(std::remove_if(reg.begin(), reg.end(),
+                                 [&](const auto& t) { return t.id == id; }),
+                  reg.end());
+        emit_sync(*m_impl, uldum::network::build_hud_destroy_node(id), owner);
+    }
     return ok;
+}
+
+void Hud::register_instantiated_tree(std::string id, std::string_view anchor,
+                                     f32 x, f32 y, f32 w, f32 h) {
+    if (!m_impl || id.empty()) return;
+    ::uldum::hud::Placement p{ parse_anchor(anchor), x, y, w, h };
+    m_impl->instantiated_trees.push_back({ std::move(id), p });
 }
 
 // ── Template registry ────────────────────────────────────────────────────

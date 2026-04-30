@@ -200,10 +200,10 @@ Write-Host ''
 Push-Location $Android
 try {
     & $gradlew $gradleTask `
-        "-PulGameProjectDir=$projectAbs" `
-        "-PulApplicationId=$packageId" `
-        "-PulAppName=$appName" `
-        "-PulVersionName=$versionName"
+        "-PuldGameProjectDir=$projectAbs" `
+        "-PuldApplicationId=$packageId" `
+        "-PuldAppName=$appName" `
+        "-PuldVersionName=$versionName"
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle build failed (exit $LASTEXITCODE). Check output above."
     }

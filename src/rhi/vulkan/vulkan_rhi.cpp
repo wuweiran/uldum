@@ -514,10 +514,33 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
         return false;
     }
 
-    // Destroy old swapchain after creating new one
+    // Destroy old swapchain + size-coupled attachments after creating
+    // the new swapchain. The MSAA color and depth images are sized
+    // against the swapchain extent, so a resize re-creates them
+    // below — without freeing the old pair here, every resize leaks
+    // a dedicated VMA allocation and shutdown trips
+    // "Unfreed dedicated allocations found!".
     if (old_swapchain != VK_NULL_HANDLE) {
         for (auto view : m_swapchain_views) vkDestroyImageView(m_device, view, nullptr);
         vkDestroySwapchainKHR(m_device, old_swapchain, nullptr);
+        if (m_msaa_color_view) {
+            vkDestroyImageView(m_device, m_msaa_color_view, nullptr);
+            m_msaa_color_view = VK_NULL_HANDLE;
+        }
+        if (m_msaa_color_image) {
+            vmaDestroyImage(m_allocator, m_msaa_color_image, m_msaa_color_alloc);
+            m_msaa_color_image = VK_NULL_HANDLE;
+            m_msaa_color_alloc = VK_NULL_HANDLE;
+        }
+        if (m_depth_view) {
+            vkDestroyImageView(m_device, m_depth_view, nullptr);
+            m_depth_view = VK_NULL_HANDLE;
+        }
+        if (m_depth_image) {
+            vmaDestroyImage(m_allocator, m_depth_image, m_depth_alloc);
+            m_depth_image = VK_NULL_HANDLE;
+            m_depth_alloc = VK_NULL_HANDLE;
+        }
     }
 
     m_swapchain_format = chosen_format.format;

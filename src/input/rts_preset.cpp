@@ -52,20 +52,34 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel = ctx.selection;
 
-    // A press is "blocked" from being a selection press when its
-    // outcome belongs to someone else: the HUD, an active targeting
-    // mode (cast / move / attack-move), or a multi-touch gesture.
-    // Evaluated at the press edge to decide intent, and again
-    // mid-cycle to demote a Selection press if a blocker arrives.
-    auto is_blocked = [&]() {
+    // A press is "blocked" from becoming a selection press when its
+    // outcome belongs to someone else. Two flavors:
+    //   • press-time:  the HUD owns the press, OR a multi-touch
+    //                  gesture is active, OR a targeting mode is
+    //                  armed. Any of these on the press edge means
+    //                  this cycle isn't a selection cycle at all.
+    //   • ongoing:     once a Selection cycle is alive, only blockers
+    //                  that didn't exist at press time should kill
+    //                  it — and even then, only ones that genuinely
+    //                  hijack the gesture (a second finger landing,
+    //                  a targeting mode firing). Sliding the cursor
+    //                  over a HUD widget mid-drag is just transient
+    //                  hover; it must not abort the marquee, or
+    //                  drag-select feels broken whenever the box
+    //                  crosses an action bar / minimap / etc.
+    auto is_press_blocked = [&]() {
         return ctx.hud_captured
             || input.touch_count >= 2
+            || is_targeting();
+    };
+    auto is_ongoing_blocker = [&]() {
+        return input.touch_count >= 2
             || is_targeting();
     };
 
     // ── Press edge: classify the cycle ──────────────────────────────
     if (input.mouse_left_pressed) {
-        if (is_blocked()) {
+        if (is_press_blocked()) {
             m_press_intent = PressIntent::Ignored;
         } else {
             m_press_intent = PressIntent::Selection;
@@ -75,11 +89,10 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
         }
     }
 
-    // ── Mid-cycle demotion: blocker appeared while button is held ──
-    // (e.g. second finger lands, pointer enters the HUD). Selection →
-    // Ignored is the only allowed transition; once Ignored, the cycle
-    // stays Ignored even if the blocker clears later.
-    if (m_press_intent == PressIntent::Selection && is_blocked()) {
+    // ── Mid-cycle demotion: ongoing blocker arrived while button is
+    // held. Selection → Ignored is the only allowed transition; once
+    // Ignored, the cycle stays Ignored even if the blocker clears.
+    if (m_press_intent == PressIntent::Selection && is_ongoing_blocker()) {
         m_press_intent = PressIntent::Ignored;
         m_box_dragging = false;
     }
@@ -188,14 +201,27 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (def) {
                 if (def->form == simulation::AbilityForm::TargetUnit) {
                     auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+                    // Reject targets that fail the ability's target_filter
+                    // (e.g. clicking an enemy with an ally-only heal). The
+                    // targeting mode stays armed so the player can retry —
+                    // matches the WC3 "click goes ping" behavior on
+                    // invalid targets.
+                    bool target_ok = false;
                     if (target.is_valid()) {
+                        auto caster = sel.selected().front();
+                        target_ok = ctx.simulation.target_filter_passes(
+                            def->target_filter, caster, target);
+                    }
+                    if (target_ok) {
                         GameCommand cmd;
                         cmd.player = sel.player();
                         cmd.units  = sel.selected();
                         cmd.order  = simulation::orders::Cast{m_target_ability_id, target, {}};
                         cmd.queued = input.key_shift;
                         ctx.commands.submit(cmd);
+                        cancel_targeting();
                     }
+                    return;
                 } else if (def->form == simulation::AbilityForm::TargetPoint) {
                     glm::vec3 world_pos;
                     if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
