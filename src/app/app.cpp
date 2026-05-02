@@ -1706,8 +1706,15 @@ void App::run() {
                 {
                     m_hud.update_text_tags(frame_dt);
                     m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
-                    m_hud.draw_tree();
+                    // World-anchored HUD layer first — entity HP bars,
+                    // name labels, floating damage numbers. They live
+                    // in screen space but conceptually belong to the
+                    // 3D world, so they render BENEATH the UI tree
+                    // and composites: a unit's HP bar drifting near
+                    // the action bar gets occluded by the bar, not
+                    // overlaid on top of it.
                     m_hud.draw_world_overlays(alpha);
+                    m_hud.draw_tree();
                     // Box-select marquee (RTS preset's drag-rectangle).
                     // The preset records mouse coords in physical
                     // pixels (same space the Picker takes for world

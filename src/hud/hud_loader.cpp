@@ -317,23 +317,25 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 }
             }
 
-            // Drag-cast cancel zone — optional. If hud.json doesn't
-            // specify one, default to a 100×100 dp area at right-center
-            // of the viewport (AoV's "drag-here-to-cancel" placement).
+            // Drag-cast cancel zone — optional. Default: a 64×64 dp
+            // square flush against the right edge, vertically centered.
+            // Sized for a thumb tap-zone but small enough that the
+            // player isn't constantly dragging into it; placed against
+            // the edge so the gesture has a hard wall to aim for.
             if (auto cz = ab->find("cancel_zone"); cz != ab->end() && cz->is_object()) {
                 cfg.cancel_zone_authored      = true;
                 cfg.cancel_zone_placement.anchor = parse_anchor(cz->value("anchor", "mr"));
-                cfg.cancel_zone_placement.x      = cz->value("x", -30.0f);
+                cfg.cancel_zone_placement.x      = cz->value("x",   0.0f);
                 cfg.cancel_zone_placement.y      = cz->value("y",   0.0f);
-                cfg.cancel_zone_placement.w      = cz->value("w", 100.0f);
-                cfg.cancel_zone_placement.h      = cz->value("h", 100.0f);
+                cfg.cancel_zone_placement.w      = cz->value("w",  64.0f);
+                cfg.cancel_zone_placement.h      = cz->value("h",  64.0f);
             } else {
                 cfg.cancel_zone_authored      = false;
                 cfg.cancel_zone_placement.anchor = parse_anchor("mr");
-                cfg.cancel_zone_placement.x      = -30.0f;
+                cfg.cancel_zone_placement.x      = 0.0f;
                 cfg.cancel_zone_placement.y      = 0.0f;
-                cfg.cancel_zone_placement.w      = 100.0f;
-                cfg.cancel_zone_placement.h      = 100.0f;
+                cfg.cancel_zone_placement.w      = 64.0f;
+                cfg.cancel_zone_placement.h      = 64.0f;
             }
             cfg.cancel_zone_rect = resolve(viewport_rect, cfg.cancel_zone_placement);
 

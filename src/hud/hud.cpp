@@ -2258,8 +2258,21 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // Snap radius scales with cast range so close- and long-range
     // abilities feel similar; commands have range 0 so they get the
     // 64-unit floor.
-    s.drag_cast.snapped_target = simulation::Unit{};
-    if (s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+    //
+    // Recompute only while the finger is held; on the release frame
+    // (mouse_left=false) we keep the last good snap. The OS can
+    // drift the UP-event position a few px away from the prior
+    // MOVE due to event coalescing and the natural lift-off motion
+    // of a finger — re-running snap on release would let that
+    // jitter erase the snap the player just saw and turn
+    // "release on indicator" into a silent cancel. Holding the
+    // last value matches the player's mental model: if the
+    // indicator was up when they let go, the cast fires.
+    if (input.mouse_left) {
+        s.drag_cast.snapped_target = simulation::Unit{};
+    }
+    if (input.mouse_left &&
+        s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
         s.world_ctx->simulation) {
         bool is_command = !s.drag_cast.command_id.empty();
         const simulation::AbilityDef* def = nullptr;

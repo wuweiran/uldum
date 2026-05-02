@@ -1,6 +1,7 @@
 #include "app/dev_console.h"
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "platform/platform.h"
+#include "asset/asset.h"
 #include "asset/upk.h"
 #include "core/log.h"
 
@@ -160,9 +161,24 @@ static void feed_imgui_input_manual(const platform::Platform& platform, f32 dt) 
 // Peek at a .uldmap package's manifest.json without mounting it. Cheap:
 // opens the .upk header + one entry. Returns false on any read failure
 // — the caller falls back to a path-only entry.
+//
+// Routes through AssetManager so APK-mounted maps on Android resolve
+// the same way as filesystem maps on desktop. UPKReader::open() takes
+// a filesystem path via std::ifstream, which silently returns "not
+// found" for APK assets — that's why Slots/Teams (and every other
+// manifest field) read as zero/empty on Android only.
 static bool read_map_info(std::string_view pkg_path, DevConsole::MapInfo& out) {
     asset::UPKReader r;
-    if (!r.open(pkg_path)) return false;
+    if (auto* mgr = asset::AssetManager::instance()) {
+        auto pkg_bytes = mgr->read_file_bytes(pkg_path);
+        if (!pkg_bytes.empty()) {
+            if (!r.open_from_memory(std::move(pkg_bytes), {}, pkg_path)) return false;
+        } else if (!r.open(pkg_path)) {
+            return false;
+        }
+    } else if (!r.open(pkg_path)) {
+        return false;
+    }
     auto bytes = r.read("manifest.json");
     if (bytes.empty()) return false;
 

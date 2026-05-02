@@ -84,19 +84,21 @@ struct CastIndicatorStyle {
     std::string reticle_texture;
     std::string area_texture;
     std::string target_unit_texture;
-    // Mobile snap-target indicator — vertical light column over the
-    // snapped target during drag-cast. Visual is a camera-yaw-aligned
-    // billboard pillar; the texture supplies the entire look (alpha
-    // gradient, color glow, etc.) and the engine just stretches it
-    // over the height/width given here. Color is *not* configured —
-    // the intent palette tints the column ally / enemy / neutral so
-    // it reads at a glance which relationship the snap holds. Sizes
-    // are world units; base_offset lifts the column above the unit's
-    // feet so the solid end sits well above head height.
+    // Mobile snap-target indicator — vertical light column rooted at
+    // the snapped target's feet during drag-cast. Visual is a
+    // camera-yaw-aligned billboard pillar; the texture supplies the
+    // entire look (alpha gradient, color glow, etc.) and the engine
+    // just stretches it over the height/width given here. Color is
+    // *not* configured — the intent palette tints the column
+    // ally / enemy / neutral so it reads at a glance which
+    // relationship the snap holds. Sizes are world units;
+    // base_offset shifts the column's bottom along Z (default 0 =
+    // ground), positive values lift it for taller units, negative
+    // sinks it slightly into the terrain for a more grounded look.
     std::string snap_target_texture;
     f32 snap_target_height       = 200.0f;
     f32 snap_target_width        =  32.0f;
-    f32 snap_target_base_offset  =  96.0f;
+    f32 snap_target_base_offset  =   0.0f;
     std::string selection_texture;
 
     // ── Phase 4a additions ─────────────────────────────────────────

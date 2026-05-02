@@ -99,7 +99,7 @@ android {
     //   - game: launcher icons from the game project's branding/android/
     //   - dev:  no res overlay; icon attribute is game-flavor-only (see
     //           src/game/AndroidManifest.xml), so dev needs no icons
-    sourceSets["game"].res.srcDirs("$gameProjectDir/branding/android")
+    sourceSets["game"].res.srcDir("$gameProjectDir/branding/android")
 
     externalNativeBuild {
         cmake {

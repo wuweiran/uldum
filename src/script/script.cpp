@@ -419,6 +419,19 @@ void ScriptEngine::update(float dt) {
     for (u32 id : expired) {
         m_timers.erase(id);
     }
+
+    // Clean up dead triggers — same soft-delete pattern. Triggers
+    // are marked dead by DestroyTrigger (which can be called from
+    // inside a trigger action, including the trigger's own action);
+    // the actual erase happens here so the action's std::function
+    // isn't destroyed while it's still on the call stack.
+    std::vector<u32> dead_trigs;
+    for (auto& [id, trig] : m_triggers) {
+        if (!trig.alive) dead_trigs.push_back(id);
+    }
+    for (u32 id : dead_trigs) {
+        m_triggers.erase(id);
+    }
 }
 
 // ── Event firing ──────────────────────────────────────────────────────────
@@ -1099,11 +1112,15 @@ void ScriptEngine::bind_trigger_api() {
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
         if (it != m_triggers.end()) {
-            // Destroy owned timers
+            // Soft-delete owned timers — same reason as DestroyTimer:
+            // a trigger action may DestroyTrigger(self), erasing here
+            // would free std::functions still on the call stack.
+            // update()'s cleanup pass does the real erase next tick.
             for (u32 timer_id : it->second.owned_timers) {
-                m_timers.erase(timer_id);
+                auto t_it = m_timers.find(timer_id);
+                if (t_it != m_timers.end()) t_it->second.alive = false;
             }
-            m_triggers.erase(it);
+            it->second.alive = false;
         }
     };
 
@@ -1345,7 +1362,14 @@ void ScriptEngine::bind_timer_api() {
     };
 
     lua["DestroyTimer"] = [&](u32 id) {
-        m_timers.erase(id);
+        // Soft-delete only — the cleanup pass at the bottom of
+        // update() does the real erase. A Lua callback is allowed
+        // to DestroyTimer(self), and erasing here would free the
+        // very std::function that's mid-execution; sol2 then walks
+        // freed memory on the way out of the Lua call and crashes
+        // inside lua_gettop.
+        auto it = m_timers.find(id);
+        if (it != m_timers.end()) it->second.alive = false;
     };
 }
 
