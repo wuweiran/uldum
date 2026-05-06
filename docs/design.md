@@ -643,13 +643,67 @@ Authoring efficiency becomes the bottleneck once 17 + 18 land — the existing t
 
 By this point items + regions + dialogs + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports.
 
+### Phase 20 — Rendering Pipeline Reckoning
+
+A scheduled audit of the rendering pipeline against what "modern" actually means for a unit-centric engine. Phase 14 added the visible feature work — GPU-driven rendering, MSAA, terrain blending, lighting. What's left isn't more features so much as ensuring foundations are sound before the engine is asked to carry assets it can't render correctly today. Several shortcuts in the current pipeline produce correct-looking results only because no asset has stressed them yet (terrain noise normal maps tolerate any tangent direction; ad-hoc shading tolerates any color space). Each sub-phase below has a concrete *trigger* — the kind of asset whose arrival will make the gap visible.
+
+**Phase 20a — Tangent Space (MikkTSpace)**
+
+The terrain fragment shader builds a tangent on the fly via `cross((0,1,0), N)` — fine for tileable detail textures with no meaningful orientation, wrong for any painted / baked normal map (sword bevel, character wrinkles, brick mortar lines) where the detail's authored direction has to agree with the runtime tangent.
+
+- Add `tangent: vec4` to model vertex format (xyz = tangent, w = bitangent handedness sign).
+- glTF importer: read `TANGENT` attribute when present; otherwise generate via MikkTSpace (~500 LOC drop-in, de-facto standard, matches what Blender / Substance / glTF exporters produce).
+- Update model shaders to read the tangent attribute.
+- Terrain shader keeps its current implicit-tangent path — the textures are rotation-invariant by authoring convention.
+
+Trigger: first imported model with a hand-authored normal map.
+
+**Phase 20b — Color-Space Correctness**
+
+Audit every texture binding (sRGB vs linear) and the framebuffer chain. Mistakes here are subtle — slightly wrong gamma everywhere — but they compound and break PBR materials.
+
+- Diffuse / albedo: sRGB sampled, linear to shader.
+- Normal maps / packed masks (roughness, AO, metallic): always linear.
+- Render in linear; convert to sRGB exactly once on swapchain present.
+
+**Phase 20c — PBR Material Model**
+
+Move from the current per-shader Lambert + ad-hoc specular to one shared metallic/roughness BRDF (Cook-Torrance). Required for glTF `pbrMetallicRoughness` materials to render as the artist authored them.
+
+Trigger: first imported asset with a metallic-roughness texture.
+
+**Phase 20d — HDR + Tonemap**
+
+Render to a floating-point color target. Tonemap (ACES, or Khronos PBR Neutral) once on present. Without this, emissive surfaces clip, bright sun + dark shadow can't both be exposed correctly, and any future bloom / sky-atmospherics has nothing to operate on.
+
+**Phase 20e — Shadow Cascades** *(promoted from Deferred)*
+
+Replace the fixed world-space shadow box (`scene_center` / `scene_radius` in `renderer.cpp`) with view-frustum-derived cascaded shadow maps, so shadow resolution is uniform regardless of map size.
+
+**Phase 20f — Triplanar Terrain Sampling**
+
+Today every terrain fragment samples the layer texture by `(world.x, world.y)`, regardless of surface orientation — fine for flat ground, but vertical cliff walls have constant Y across their height, so the same texel column gets stretched the entire vertical extent and looks ugly. Triplanar mapping fixes this without authoring a separate cliff texture (which would create a visible boundary against the surrounding layer): in the fragment shader, sample the layer three times — `(world.xy)`, `(world.yz)`, `(world.xz)` — and blend by `abs(normal)` weights.
+
+- Flat ground (N≈+Z) reads only the XY projection — identical to today.
+- N/S walls (N≈±Y) read the XZ projection — texture follows the wall's run and rise, no stretch.
+- E/W walls (N≈±X) read the YZ projection — same.
+- Chamfer / slanted faces blend all three weighted by the normal direction.
+- Cliff↔ground seam blends smoothly because both projections sample the same layer texture (a grass cliff continues into a grass ground via the texture's tileability).
+
+Performance: skip the extra two samples when `abs(normal.z) > 0.95` so only cliff/slope areas pay the 3× lookup cost.
+
+Trigger: this is the right fix for the current "stretched terrain texture on vertical cliff walls" complaint, scheduled here because it sits in the same shader as the rest of the rendering reckoning.
+
+**Phase 20g — Audit Pass**
+
+While the above are in flight, sweep the rendering code for other shortcuts that should be promoted out of "works because nothing's stressed it." Candidates seen so far: hardcoded ambient as a single uniform; no post-process pipeline (bloom / vignette / color grading); no SSAO; no anisotropic filtering setup; HUD and world rendering in the same gamma. Record findings as new sub-phases or items in Deferred.
+
 ## 16. Deferred / Future Work
 
 Topics scoped out of current phases — revisit when the time comes.
 
 - **Multi-lobby server** — today's `uldum_server` hosts one game per process. Multi-tenant support (lobby directory, browse / create / join) is deferred. Workaround: multiple server processes on different ports.
 - **LAN game discovery** — WC3-style auto-populated list of local hosts via UDP broadcast, so clients don't have to type an IP.
-- **Single-cascade view-frustum shadows** — current shadow pass uses a fixed world-space box (`scene_center`/`scene_radius` in `renderer.cpp`), which couples shadow quality to map size. Switch to camera-view-frustum-derived bounds so shadow quality is uniform regardless of map size.
 - **OpenGL ES RHI** — alternative backend for Android devices / emulators where Vulkan is unavailable, buggy, or poorly supported (e.g. Mesa-emulated paths).
 - Controller / gamepad input.
 - CJK / RTL text shaping (HarfBuzz).
