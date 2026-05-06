@@ -99,7 +99,10 @@ android {
     //   - game: launcher icons from the game project's branding/android/
     //   - dev:  no res overlay; icon attribute is game-flavor-only (see
     //           src/game/AndroidManifest.xml), so dev needs no icons
-    sourceSets["game"].res.srcDir("$gameProjectDir/branding/android")
+    // AGP deprecated srcDir/srcDirs on AndroidSourceDirectorySet in favor
+    // of the mutable `directories` set. Using `.add(file(...))` keeps us
+    // current with the recommended API.
+    sourceSets["game"].res.directories.add(file("$gameProjectDir/branding/android"))
 
     externalNativeBuild {
         cmake {
@@ -158,62 +161,157 @@ dependencies {
 }
 
 // ── Asset staging ────────────────────────────────────────────────────────
-// dev flavor: Gradle invokes uldum_pack.exe directly to stage every engine
-// test map into src/dev/assets/maps/ plus engine.uldpak. No PowerShell
-// pre-step — Studio's Run button is self-sufficient.
+// dev flavor: Gradle does the full pipeline — compiles shaders with glslc,
+// stages engine assets, packs engine.uldpak, packs every test map. Only
+// hard prereqs: uldum_pack.exe (built once by scripts\build.ps1) and
+// VULKAN_SDK / glslc on PATH (for shader compilation). After that
+// engine/ source edits round-trip through Studio's Run button without
+// needing a desktop rebuild.
 //
 // game flavor: scripts\build_android_game.ps1 pre-stages assets into
 // src/game/assets/ (parses game.json, packs listed maps). Gradle just
 // validates they're present.
 
 val uldumPackExe = engineBuildBin.resolve("uldum_pack.exe")
-val engineUldpak = engineBuildBin.resolve("engine.uldpak")
+val engineSrcDir = projectRoot.resolve("engine")
+
+// glslc.exe lookup: try VULKAN_SDK first, then assume it's on PATH. Used
+// at task-execution time so a missing tool fails the build with a clear
+// message rather than a silent no-op.
+fun resolveGlslc(): File {
+    val sdk = System.getenv("VULKAN_SDK")
+    if (sdk != null) {
+        val cand = File(sdk).resolve("Bin/glslc.exe")
+        if (cand.exists()) return cand
+    }
+    return File("glslc.exe")  // delegate to PATH lookup; ProcessBuilder will surface the error
+}
+
+// Roboto regular: prefer CMake's staged copy if present (no extra path
+// resolution), fall back to the FetchContent download dir. Either path
+// only exists after `scripts\build.ps1` has run cmake configure at least
+// once — that's a one-time prereq, not a per-build one.
+fun resolveDefaultFont(): File? {
+    val staged = projectRoot.resolve("build/staging/engine/fonts/Roboto-Regular.ttf")
+    if (staged.exists()) return staged
+    val fetched = projectRoot.resolve("build/_deps/roboto_font-src/Roboto-Regular.ttf")
+    if (fetched.exists()) return fetched
+    return null
+}
+
+val compileEngineShaders by tasks.registering {
+    description = "Compile engine GLSL shaders (.vert/.frag/.comp) to SPIR-V via glslc"
+    val shaderSrcDir = engineSrcDir.resolve("shaders")
+    val shaderOutDir = layout.buildDirectory.dir("dev_engine_shaders").get().asFile
+
+    doFirst {
+        if (!shaderSrcDir.isDirectory) {
+            throw GradleException("Engine shaders dir missing: $shaderSrcDir")
+        }
+        val glslc = resolveGlslc()
+        shaderOutDir.deleteRecursively()
+        shaderOutDir.mkdirs()
+
+        val shaderFiles = shaderSrcDir.listFiles { f ->
+            f.isFile && (f.name.endsWith(".vert") || f.name.endsWith(".frag") || f.name.endsWith(".comp"))
+        } ?: emptyArray()
+        if (shaderFiles.isEmpty()) {
+            throw GradleException("No shader sources (*.vert, *.frag, *.comp) in $shaderSrcDir")
+        }
+
+        shaderFiles.forEach { shader ->
+            val spvOut = shaderOutDir.resolve("${shader.name}.spv")
+            val proc = ProcessBuilder(
+                glslc.absolutePath, "--target-env=vulkan1.2",
+                shader.absolutePath, "-o", spvOut.absolutePath
+            ).redirectErrorStream(true).start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            if (exitCode != 0) {
+                throw GradleException(
+                    "glslc failed on ${shader.name} (exit $exitCode)\n$output\n" +
+                    "Check VULKAN_SDK is set or glslc.exe is on PATH."
+                )
+            }
+        }
+    }
+}
 
 val stageDevAssets by tasks.registering {
-    description = "Pack every engine test map into src/dev/assets/ for the dev APK"
-    val devAssetsDir = layout.projectDirectory.dir("src/dev/assets").asFile
-    val devMapsDir = devAssetsDir.resolve("maps")
+    description = "Re-pack engine.uldpak + every test map into src/dev/assets/ for the dev APK"
+    dependsOn(compileEngineShaders)
+
+    val devAssetsDir         = layout.projectDirectory.dir("src/dev/assets").asFile
+    val devMapsDir           = devAssetsDir.resolve("maps")
+    val gradleEngineStaging  = layout.buildDirectory.dir("dev_engine_staging").get().asFile
+    val gradleCompiledShaders = layout.buildDirectory.dir("dev_engine_shaders").get().asFile
 
     doFirst {
         if (!uldumPackExe.exists()) {
             throw GradleException(
-                "$uldumPackExe not found — run scripts\\build.ps1 first to produce uldum_pack.exe."
+                "$uldumPackExe not found — run scripts\\build.ps1 once to produce uldum_pack.exe."
             )
         }
-        if (!engineUldpak.exists()) {
-            throw GradleException(
-                "$engineUldpak not found — run scripts\\build.ps1 first."
-            )
+        if (!engineSrcDir.isDirectory) {
+            throw GradleException("Engine source directory missing: $engineSrcDir")
         }
         if (!engineMapsDir.isDirectory) {
             throw GradleException("Engine maps directory missing: $engineMapsDir")
         }
+        val fontFile = resolveDefaultFont()
+            ?: throw GradleException(
+                "Roboto-Regular.ttf not found under build/_deps/ or build/staging/engine/fonts/. " +
+                "Run scripts\\build.ps1 once so cmake configure resolves the FetchContent dependency."
+            )
 
         devAssetsDir.mkdirs()
         devMapsDir.deleteRecursively()
         devMapsDir.mkdirs()
 
-        engineUldpak.copyTo(devAssetsDir.resolve("engine.uldpak"), overwrite = true)
+        // Re-stage engine assets:
+        //   1. engine/ source verbatim (scripts, types, textures, lua, etc.).
+        //   2. shaders/ overlaid with our own compiled .spv set (the .glsl
+        //      sources copied in step 1 are replaced with .spv so the
+        //      runtime loader finds compiled binaries).
+        //   3. fonts/Roboto-Regular.ttf from FetchContent / CMake staging.
+        gradleEngineStaging.deleteRecursively()
+        gradleEngineStaging.mkdirs()
+        engineSrcDir.copyRecursively(gradleEngineStaging, overwrite = true)
+        val stagingShaders = gradleEngineStaging.resolve("shaders")
+        stagingShaders.deleteRecursively()
+        stagingShaders.mkdirs()
+        gradleCompiledShaders.copyRecursively(stagingShaders, overwrite = true)
+        gradleEngineStaging.resolve("fonts").mkdirs()
+        fontFile.copyTo(
+            gradleEngineStaging.resolve("fonts/Roboto-Regular.ttf"),
+            overwrite = true
+        )
+
+        // Run uldum_pack. ProcessBuilder instead of Gradle's exec{} — the
+        // script-scope exec block was removed from current Gradle Kotlin
+        // DSL in favor of injected ExecOperations (which doesn't work
+        // cleanly from doFirst). ProcessBuilder is plain JDK and always
+        // available.
+        fun runPack(srcDir: File, dst: File, label: String) {
+            val proc = ProcessBuilder(
+                uldumPackExe.absolutePath, "pack",
+                srcDir.absolutePath, dst.absolutePath
+            ).redirectErrorStream(true).start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            if (exitCode != 0) {
+                throw GradleException("uldum_pack failed on $label (exit $exitCode)\n$output")
+            }
+        }
+
+        runPack(gradleEngineStaging, devAssetsDir.resolve("engine.uldpak"), "engine")
 
         val mapDirs = engineMapsDir.listFiles { f -> f.isDirectory && f.name.endsWith(".uldmap") }
         if (mapDirs.isNullOrEmpty()) {
             throw GradleException("No *.uldmap folders found in $engineMapsDir")
         }
         mapDirs.forEach { mapSrc ->
-            val mapDst = devMapsDir.resolve(mapSrc.name)
-            // ProcessBuilder instead of Gradle's exec{} — the script-scope
-            // exec block was removed from current Gradle Kotlin DSL in favor
-            // of injected ExecOperations (which doesn't work cleanly from
-            // doFirst). ProcessBuilder is plain JDK and always available.
-            val proc = ProcessBuilder(
-                uldumPackExe.absolutePath, "pack",
-                mapSrc.absolutePath, mapDst.absolutePath
-            ).redirectErrorStream(true).start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val exitCode = proc.waitFor()
-            if (exitCode != 0) {
-                throw GradleException("uldum_pack failed on ${mapSrc.name} (exit $exitCode)\n$output")
-            }
+            runPack(mapSrc, devMapsDir.resolve(mapSrc.name), mapSrc.name)
         }
     }
 }

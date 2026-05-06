@@ -167,7 +167,17 @@ void ActionPreset::handle_camera_gestures(const InputContext& ctx) {
 
     m_camera_user_panning = false;
 
-    if (input.touch_count >= 2) {
+    // Two-finger pan/pinch only when neither finger is occupying a HUD
+    // widget. Without this gate, "joystick + ability button" lands two
+    // touches on the screen and the centroid jitter from the player
+    // tapping the ability gets read as a pan delta — the camera lurches
+    // on every cast. hud_joystick_active covers the joystick (any
+    // finger); hud_captured covers the rest of the HUD. If either is
+    // set, fall through to the m_had_two_finger reset below so the
+    // gesture doesn't re-engage with stale centroid state when the
+    // player lifts the HUD finger.
+    bool hud_in_use = ctx.hud_joystick_active || ctx.hud_captured;
+    if (input.touch_count >= 2 && !hud_in_use) {
         f32 cx = 0.5f * (input.touch_x[0] + input.touch_x[1]);
         f32 cy = 0.5f * (input.touch_y[0] + input.touch_y[1]);
         f32 dx = input.touch_x[0] - input.touch_x[1];

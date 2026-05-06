@@ -1314,6 +1314,7 @@ void App::run() {
                     m_platform->width(), m_platform->height(),
                     m_hud.input_captured(),
                     m_hud.is_minimap_dragging(),
+                    m_hud.joystick_active(),
                     preset_alpha,
                     jx, jy,
                     [this](simulation::Unit unit, glm::vec3 pos,

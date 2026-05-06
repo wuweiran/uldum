@@ -39,6 +39,14 @@ struct InputContext {
     // this is set, so the player can pan the camera by dragging on the
     // minimap without the follow snapping it back every frame.
     bool hud_minimap_dragging = false;
+    // True when *any* finger is captured by the virtual joystick. Used
+    // by ActionPreset's two-finger pan handler to suppress pan/pinch
+    // when one finger is driving the stick — otherwise "joystick +
+    // ability button" reads as a two-finger pan and lurches the camera.
+    // hud_captured already covers joystick-on-primary-slot, but a
+    // secondary finger on the stick (joystick_rt.captured_slot != 0)
+    // wouldn't trip hud_captured.
+    bool hud_joystick_active = false;
     // Sub-tick interpolation factor (0..1) for the current frame — same
     // value the renderer uses. Presets that follow entity positions
     // (e.g. the Action preset's hero-tracking camera) read this so
