@@ -66,10 +66,17 @@ struct InputState {
     // reacts. Gestures (two-finger pan / pinch zoom) read `touch_count`
     // and the `touch_x/y` arrays directly. Unused slots are zero.
     // Desktop platforms leave `touch_count` at 0.
+    //
+    // `touch_id[i]` is the platform-stable pointer ID for the finger
+    // at slot i — it persists from press to lift even when the array
+    // compacts (a non-primary pointer lifting in the middle shifts
+    // following pointers down). Use IDs, not slot indices, when
+    // tracking a specific finger across frames. -1 = no pointer.
     static constexpr u32 MAX_TOUCHES = 4;
     u32  touch_count = 0;
-    f32  touch_x[MAX_TOUCHES] = {};
-    f32  touch_y[MAX_TOUCHES] = {};
+    f32  touch_x[MAX_TOUCHES]  = {};
+    f32  touch_y[MAX_TOUCHES]  = {};
+    i32  touch_id[MAX_TOUCHES] = { -1, -1, -1, -1 };
 };
 
 class Platform {

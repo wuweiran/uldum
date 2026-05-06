@@ -2100,7 +2100,11 @@ void Hud::joystick_vector(f32& dx, f32& dy) const {
 }
 
 bool Hud::joystick_active() const {
-    return m_impl && m_impl->joystick_rt.captured_slot >= 0;
+    return m_impl && m_impl->joystick_rt.captured_id != -1;
+}
+
+i32 Hud::joystick_captured_slot() const {
+    return m_impl ? m_impl->joystick_rt.captured_slot : -1;
 }
 
 // Does (x, y) fall inside the joystick's activation region? That's the
@@ -2128,6 +2132,7 @@ void Hud::joystick_update(const platform::InputState& input) {
     f32 home_cy = cfg.rect.y + cfg.rect.h * 0.5f;
 
     if (!cfg.enabled || !rt.visible) {
+        rt.captured_id = -1;
         rt.captured_slot = -1;
         rt.knob_dx = rt.knob_dy = 0.0f;
         rt.base_cx = home_cx;
@@ -2148,39 +2153,72 @@ void Hud::joystick_update(const platform::InputState& input) {
     auto map_x = [scale](f32 px) { return px / scale; };
     auto map_y = [scale](f32 px) { return px / scale; };
 
-    // Find the driver of the stick. Priority: if we already captured a
-    // slot, keep following that slot until it releases. Otherwise, on a
-    // fresh press look for any touch (or mouse, if no touches) inside
-    // the activation region and capture it.
-    auto finger_pos = [&](i32 slot, f32& fx, f32& fy) -> bool {
-        if (slot < 0) return false;
-        if (slot == 0 && input.touch_count == 0) {
-            // Mouse path — primary pointer.
-            fx = map_x(input.mouse_x);
-            fy = map_y(input.mouse_y);
-            return input.mouse_left;
+    // Resolve the captured pointer's CURRENT slot from its stable ID.
+    // Touches compact when a non-primary lifts (Android), so the slot
+    // index of "the same finger" can change frame to frame — we look
+    // it up rather than trusting a cached slot. Returns -1 if the ID
+    // is no longer present (finger lifted).
+    auto find_slot_for_id = [&](i32 id) -> i32 {
+        if (id < 0) return -1;
+        for (u32 i = 0; i < input.touch_count; ++i) {
+            if (input.touch_id[i] == id) return static_cast<i32>(i);
         }
-        if (static_cast<u32>(slot) < input.touch_count) {
-            fx = map_x(input.touch_x[slot]);
-            fy = map_y(input.touch_y[slot]);
-            return true;
-        }
-        return false;
+        return -1;
     };
 
-    if (rt.captured_slot >= 0) {
-        f32 fx, fy;
-        if (!finger_pos(rt.captured_slot, fx, fy)) {
-            // Finger released (or touch slot re-used by a different
-            // gesture — safer to drop than risk a jump). Return the
-            // base to its home position so the next idle render shows
-            // the configured anchor, not the last press point.
+    // Captured driver of the stick. captured_id == -2 is the desktop
+    // mouse path (no real pointer ID); >=0 is a touch ID.
+    constexpr i32 MOUSE_ID = -2;
+    if (rt.captured_id == MOUSE_ID) {
+        if (!input.mouse_left) {
+            rt.captured_id = -1;
             rt.captured_slot = -1;
             rt.knob_dx = rt.knob_dy = 0.0f;
             rt.base_cx = home_cx;
             rt.base_cy = home_cy;
             return;
         }
+        f32 fx = map_x(input.mouse_x);
+        f32 fy = map_y(input.mouse_y);
+        rt.captured_slot = 0;  // mouse aliases primary pointer
+        f32 ex = fx - rt.base_cx;
+        f32 ey = fy - rt.base_cy;
+        f32 mag2 = ex * ex + ey * ey;
+        if (mag2 > travel * travel) {
+            f32 mag = std::sqrt(mag2);
+            ex = ex / mag * travel;
+            ey = ey / mag * travel;
+        }
+        rt.knob_dx = ex; rt.knob_dy = ey;
+        f32 nx = ex / travel, ny = ey / travel;
+        f32 mag = std::sqrt(nx * nx + ny * ny);
+        if (mag < cfg.style.deadzone_frac) {
+            rt.out_x = rt.out_y = 0.0f;
+        } else {
+            f32 scale_out = (mag - cfg.style.deadzone_frac)
+                          / (1.0f - cfg.style.deadzone_frac) / mag;
+            rt.out_x = nx * scale_out;
+            rt.out_y = ny * scale_out;
+        }
+        return;
+    }
+
+    if (rt.captured_id >= 0) {
+        i32 slot = find_slot_for_id(rt.captured_id);
+        if (slot < 0) {
+            // Finger released. Return the base to its home position so
+            // the next idle render shows the configured anchor, not
+            // the last press point.
+            rt.captured_id = -1;
+            rt.captured_slot = -1;
+            rt.knob_dx = rt.knob_dy = 0.0f;
+            rt.base_cx = home_cx;
+            rt.base_cy = home_cy;
+            return;
+        }
+        rt.captured_slot = slot;
+        f32 fx = map_x(input.touch_x[slot]);
+        f32 fy = map_y(input.touch_y[slot]);
         // Knob offset is relative to the re-anchored base center, not
         // the home center. That way the resting-finger position is the
         // knob's neutral.
@@ -2220,9 +2258,19 @@ void Hud::joystick_update(const platform::InputState& input) {
     rt.base_cx = home_cx;
     rt.base_cy = home_cy;
 
-    auto try_capture = [&](i32 slot, f32 fx, f32 fy) -> bool {
+    auto try_capture_touch = [&](u32 t, f32 fx, f32 fy) -> bool {
         if (!joystick_hit_test_point(cfg, fx, fy)) return false;
-        rt.captured_slot = slot;
+        rt.captured_id   = input.touch_id[t];
+        rt.captured_slot = static_cast<i32>(t);
+        rt.base_cx = fx;
+        rt.base_cy = fy;
+        rt.knob_dx = rt.knob_dy = 0.0f;
+        return true;
+    };
+    auto try_capture_mouse = [&](f32 fx, f32 fy) -> bool {
+        if (!joystick_hit_test_point(cfg, fx, fy)) return false;
+        rt.captured_id   = MOUSE_ID;
+        rt.captured_slot = -1;
         rt.base_cx = fx;
         rt.base_cy = fy;
         rt.knob_dx = rt.knob_dy = 0.0f;
@@ -2231,14 +2279,14 @@ void Hud::joystick_update(const platform::InputState& input) {
 
     if (input.touch_count > 0) {
         for (u32 t = 0; t < input.touch_count; ++t) {
-            if (try_capture(static_cast<i32>(t),
-                            map_x(input.touch_x[t]),
-                            map_y(input.touch_y[t]))) {
+            if (try_capture_touch(t,
+                                  map_x(input.touch_x[t]),
+                                  map_y(input.touch_y[t]))) {
                 break;
             }
         }
     } else if (input.mouse_left_pressed) {
-        try_capture(0, map_x(input.mouse_x), map_y(input.mouse_y));
+        try_capture_mouse(map_x(input.mouse_x), map_y(input.mouse_y));
     }
 }
 
@@ -2290,10 +2338,39 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         s.drag_cast.caster_z = tf->position.z;
     }
 
-    // Pointer in dp (same space as handle_pointer's coords).
+    // Find the touch slot owning the drag-cast finger. With one-finger
+    // play it's slot 0 and the mouse_x/y mirror works fine. With
+    // joystick + drag-cast (two fingers), input.mouse_x/y reflect the
+    // joystick slot (always slot 0 in the platform layer), and
+    // input.mouse_left stays true while the joystick is held even
+    // after the drag-cast finger lifts — so polling those would put
+    // the drag in the wrong place AND mask the release. We skip the
+    // joystick's slot and take the first remaining touch as the drag
+    // finger; release is detected by that slot disappearing from the
+    // live touch list.
     f32 inv = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
-    f32 px = input.mouse_x * inv;
-    f32 py = input.mouse_y * inv;
+    i32 stick_slot = s.joystick_rt.captured_slot;
+    i32 drag_slot  = -1;
+    for (u32 i = 0; i < input.touch_count; ++i) {
+        if (static_cast<i32>(i) == stick_slot) continue;
+        drag_slot = static_cast<i32>(i);
+        break;
+    }
+    bool drag_down;
+    f32 px, py;
+    if (drag_slot >= 0) {
+        px = input.touch_x[drag_slot] * inv;
+        py = input.touch_y[drag_slot] * inv;
+        drag_down = true;
+    } else {
+        // No live touch other than the joystick (or no joystick + no
+        // touches). Use last-known dp position so the release-frame
+        // computations downstream see consistent coords; drag_down
+        // false drives the release branch.
+        px = s.drag_cast.current_x;
+        py = s.drag_cast.current_y;
+        drag_down = false;
+    }
     s.drag_cast.current_x = px;
     s.drag_cast.current_y = py;
 
@@ -2341,10 +2418,10 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // "release on indicator" into a silent cancel. Holding the
     // last value matches the player's mental model: if the
     // indicator was up when they let go, the cast fires.
-    if (input.mouse_left) {
+    if (drag_down) {
         s.drag_cast.snapped_target = simulation::Unit{};
     }
-    if (input.mouse_left &&
+    if (drag_down &&
         s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
         s.world_ctx->simulation) {
         bool is_command = !s.drag_cast.command_id.empty();
@@ -2430,7 +2507,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                         py >= slot_rect.y - SLOT_LEAVE_MARGIN &&
                         py <  slot_rect.y + slot_rect.h + SLOT_LEAVE_MARGIN);
     bool over_cancel = action_bar_cancel_zone_contains(s, px, py, CANCEL_MARGIN);
-    bool button_down = input.mouse_left;
+    bool button_down = drag_down;
 
     bool is_inventory = (s.drag_cast.inventory_slot >= 0);
     bool is_command   = !s.drag_cast.command_id.empty();
@@ -2516,19 +2593,21 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     }
 
     bool commit = (s.drag_cast.phase == Phase::Aiming);
-    // Pressed-with-valid-snap promotion: TargetUnit abilities snap to
-    // a nearby valid target as soon as the press lands (drag origin =
-    // caster), so the indicator can be visible before the finger ever
-    // leaves the slot. The player's mental model is "indicator up →
-    // release → cast"; treating that as cancel just because they
-    // didn't drag the 8px to enter Aiming silently swallows the cast.
+    // Pressed release for abilities — finger never left the slot rect.
+    // Player's mental model is "tap ability → it casts"; only the
+    // explicit cancel zone should cancel. TargetUnit needs a snapped
+    // target (filtered out below); TargetPoint commits at the drag
+    // world, which equals the caster's feet for a stationary press
+    // (sensible default for self-AoEs like Consecration).
     // Commands aren't promoted — a tap on Move with no direction is
     // genuinely ambiguous and should cancel.
-    if (!commit && !is_command &&
-        s.drag_cast.phase == Phase::Pressed &&
-        s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
-        s.drag_cast.snapped_target.is_valid()) {
-        commit = true;
+    if (!commit && !is_command && s.drag_cast.phase == Phase::Pressed) {
+        if (s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+            s.drag_cast.snapped_target.is_valid()) {
+            commit = true;
+        } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
+            commit = true;
+        }
     }
     // Ability-side: unit-targeted casts cancel if released without
     // snap (no valid target = nothing to cast on). Command-side:
@@ -4065,8 +4144,30 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 }
             }
             if (!drag_cast_started) {
-                s.action_bar_pressed_slot = bar_slot;
+                // Press-to-fire for Instant/Toggle abilities (and the
+                // desktop fall-through). Drag-cast already owned the
+                // press for TargetUnit/TargetPoint above; everything
+                // else fires the ability immediately on press. No
+                // release-edge "did the lift land back on the slot"
+                // check — that was a constant source of drift bugs.
                 s.action_bar_cfg.slots[bar_slot].pressed = true;
+                s.action_bar_pressed_slot = bar_slot;  // visual until release
+                if (s.world_ctx && s.action_bar_cast_fn) {
+                    const simulation::AbilityDef* def = nullptr;
+                    const simulation::AbilityInstance* inst =
+                        resolve_slot_ability(static_cast<u32>(bar_slot),
+                                             s.action_bar_cfg, *s.world_ctx, def);
+                    if (inst && def) {
+                        u32 unit_id = s.world_ctx->selection &&
+                                      !s.world_ctx->selection->selected().empty()
+                                        ? s.world_ctx->selection->selected().front().id
+                                        : UINT32_MAX;
+                        if (unit_id != UINT32_MAX &&
+                            slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) {
+                            s.action_bar_cast_fn(inst->ability_id);
+                        }
+                    }
+                }
             }
         } else if (cmd_slot >= 0) {
             // Mobile: command_bar slots use the same drag-cast machine
@@ -4249,31 +4350,11 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // Release edge: up on this frame, was down last frame.
     if (!button_down && s.pointer_down_prev) {
         if (s.action_bar_pressed_slot >= 0) {
-            // "Clicked" = released while still over the slot that was
-            // pressed. Resolve the current selection → ability and fire
-            // the cast callback; app routes it to the input preset so
-            // the click behaves identically to pressing the slot's
-            // hotkey letter.
+            // The cast already fired on the press edge above. All we
+            // have to do here is drop the "slot pressed" visual.
             u32 idx = static_cast<u32>(s.action_bar_pressed_slot);
-            bool over = (bar_slot == s.action_bar_pressed_slot);
             if (idx < s.action_bar_cfg.slots.size()) {
-                auto& slot = s.action_bar_cfg.slots[idx];
-                slot.pressed = false;
-                if (over && s.world_ctx && s.action_bar_cast_fn) {
-                    const simulation::AbilityDef* def = nullptr;
-                    const simulation::AbilityInstance* inst =
-                        resolve_slot_ability(idx, s.action_bar_cfg,
-                                             *s.world_ctx, def);
-                    if (inst && def) {
-                        u32 unit_id = s.world_ctx->selection
-                                        ? s.world_ctx->selection->selected().front().id
-                                        : UINT32_MAX;
-                        if (unit_id != UINT32_MAX &&
-                            slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) {
-                            s.action_bar_cast_fn(inst->ability_id);
-                        }
-                    }
-                }
+                s.action_bar_cfg.slots[idx].pressed = false;
             }
             s.action_bar_pressed_slot = -1;
         } else if (s.command_bar_pressed_slot >= 0) {

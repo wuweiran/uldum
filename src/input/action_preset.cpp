@@ -80,10 +80,30 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     //                         emission resumes if the player is still
     //                         holding the stick.
     auto lead = sel.selected().front();
-    if (auto* aset = ctx.simulation.world().ability_sets.get(lead.id)) {
-        using CS = simulation::CastState;
-        if (aset->cast_state != CS::None && aset->cast_state != CS::MovingToTarget) {
+    auto& world = ctx.simulation.world();
+    auto* aset = world.ability_sets.get(lead.id);
+    if (aset) {
+        if (aset->cast_state != simulation::CastState::None &&
+            aset->cast_state != simulation::CastState::MovingToTarget) {
             return;
+        }
+    }
+
+    // Cast just queued this same render frame? The HUD's drag-cast (or
+    // an instant tap that landed on an earlier handler) writes
+    // oq->current synchronously via issue_order. The sim hasn't ticked
+    // yet, so cast_state is still None — emitting MoveDirection now
+    // would overwrite the Cast in oq before the cast pump ever sees
+    // it. Only relevant while cast_state == None; once the sim has
+    // begun processing and entered MovingToTarget, the player driving
+    // the stick is meant to override the approach (and the cast_state
+    // gate above already lets MovingToTarget through).
+    if (aset && aset->cast_state == simulation::CastState::None) {
+        if (auto* oq = world.order_queues.get(lead.id)) {
+            if (oq->current.has_value() &&
+                std::get_if<simulation::orders::Cast>(&oq->current->payload)) {
+                return;
+            }
         }
     }
 

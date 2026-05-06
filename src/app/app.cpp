@@ -518,8 +518,6 @@ bool App::start_session() {
             simulation::orders::Cast c;
             c.ability_id = ability_id;
             if (target_unit_id != UINT32_MAX) {
-                // Look up generation so the order references a stable
-                // handle that survives ID reuse.
                 const auto& world = m_server.simulation().world();
                 if (auto* hi = world.handle_infos.get(target_unit_id)) {
                     c.target_unit.id = target_unit_id;
@@ -1245,7 +1243,35 @@ void App::run() {
                 }
 
                 const auto& in = m_platform->input();
-                m_hud.handle_pointer(in.mouse_x, in.mouse_y, in.mouse_left);
+                // Route the HUD's primary pointer around the joystick.
+                // The platform layer only fires mouse_left_pressed for
+                // the very first DOWN (slot 0); secondary fingers come
+                // in as POINTER_DOWN and don't trip mouse_left_pressed.
+                // So when one finger has the joystick captured, we hand
+                // handle_pointer the FIRST other live touch — that
+                // makes "joystick + ability button" work simultaneously
+                // (otherwise the ability tap is silently dropped). When
+                // no second finger is down, the pointer reads as
+                // released so the HUD's release-edge detection fires
+                // cleanly.
+                f32  hud_px    = in.mouse_x;
+                f32  hud_py    = in.mouse_y;
+                bool hud_pdown = in.mouse_left;
+                i32 stick_slot = m_hud.joystick_captured_slot();
+                if (stick_slot >= 0) {
+                    bool found_other = false;
+                    for (u32 i = 0; i < in.touch_count
+                                  && i < platform::InputState::MAX_TOUCHES; ++i) {
+                        if (static_cast<i32>(i) == stick_slot) continue;
+                        hud_px = in.touch_x[i];
+                        hud_py = in.touch_y[i];
+                        hud_pdown = true;
+                        found_other = true;
+                        break;
+                    }
+                    if (!found_other) hud_pdown = false;
+                }
+                m_hud.handle_pointer(hud_px, hud_py, hud_pdown);
                 // Right-click pulse — drives the WC3-style item lift
                 // (right-click slot to grab; right-click again to
                 // cancel). Fires before the input preset so when the

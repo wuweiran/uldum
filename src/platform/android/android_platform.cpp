@@ -173,8 +173,12 @@ void AndroidPlatform::drain_input_buffer() {
         const u32 live = std::min<u32>(ev.pointerCount, InputState::MAX_TOUCHES);
         m_input.touch_count = live;
         for (u32 p = 0; p < live; ++p) {
-            m_input.touch_x[p] = GameActivityPointerAxes_getX(&ev.pointers[p]);
-            m_input.touch_y[p] = GameActivityPointerAxes_getY(&ev.pointers[p]);
+            m_input.touch_x[p]  = GameActivityPointerAxes_getX(&ev.pointers[p]);
+            m_input.touch_y[p]  = GameActivityPointerAxes_getY(&ev.pointers[p]);
+            m_input.touch_id[p] = ev.pointers[p].id;
+        }
+        for (u32 p = live; p < InputState::MAX_TOUCHES; ++p) {
+            m_input.touch_id[p] = -1;
         }
 
         // Primary-finger state mirrors into the mouse API so HUD and
@@ -200,9 +204,28 @@ void AndroidPlatform::drain_input_buffer() {
             m_input.mouse_left          = false;
             m_input.mouse_left_released = true;
             m_input.touch_count         = 0;
+            for (u32 p = 0; p < InputState::MAX_TOUCHES; ++p) m_input.touch_id[p] = -1;
             break;
         case AMOTION_EVENT_ACTION_POINTER_UP:
-            // Secondary finger lifted; live count already updated above.
+            // The lifting pointer is still in `pointers[0..pointerCount)`
+            // on POINTER_UP — that's GameActivity / MotionEvent convention.
+            // Remove it now so the remaining slots compact immediately.
+            // Without this, if no further MOVE event arrives, touch_count
+            // stays inflated and a HUD watching for "the other finger
+            // lifted" never sees release.
+            if (p_index >= 0 && static_cast<u32>(p_index) < live) {
+                for (u32 p = static_cast<u32>(p_index); p + 1 < live; ++p) {
+                    m_input.touch_x[p]  = m_input.touch_x[p + 1];
+                    m_input.touch_y[p]  = m_input.touch_y[p + 1];
+                    m_input.touch_id[p] = m_input.touch_id[p + 1];
+                }
+                m_input.touch_count = live - 1;
+                m_input.touch_id[m_input.touch_count] = -1;
+                if (m_input.touch_count > 0) {
+                    m_input.mouse_x = m_input.touch_x[0];
+                    m_input.mouse_y = m_input.touch_y[0];
+                }
+            }
             break;
         case AMOTION_EVENT_ACTION_CANCEL:
             // System yanked the gesture (e.g. notification shade). Treat
@@ -210,6 +233,7 @@ void AndroidPlatform::drain_input_buffer() {
             m_input.mouse_left          = false;
             m_input.mouse_left_released = true;
             m_input.touch_count         = 0;
+            for (u32 p = 0; p < InputState::MAX_TOUCHES; ++p) m_input.touch_id[p] = -1;
             break;
         default:
             break;

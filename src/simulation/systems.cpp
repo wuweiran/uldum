@@ -877,7 +877,15 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         break;
                     }
                     case CastState::TurningToFace: {
-                        if (dist > 0.1f) {
+                        // Instant/Toggle leave target_pos at (0,0,0); a
+                        // TargetUnit cast on self has nowhere to face.
+                        // The dist guard catches a TargetPoint at the
+                        // caster's own feet (avoids atan2(0,0)).
+                        bool is_immediate = (def->form == AbilityForm::Instant ||
+                                             def->form == AbilityForm::Toggle);
+                        bool is_self = (def->form == AbilityForm::TargetUnit &&
+                                        aset.cast_target_unit.id == id);
+                        if (!is_immediate && !is_self && dist > 0.001f) {
                             f32 desired = std::atan2(to_target.y, to_target.x);
                             f32 diff = angle_diff(transform->facing, desired);
                             auto* mov = world.movements.get(id);

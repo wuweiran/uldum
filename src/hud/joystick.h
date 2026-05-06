@@ -60,8 +60,16 @@ struct JoystickConfig {
 
 struct JoystickRuntime {
     bool visible = true;
-    // -1 when idle, or the touch slot index currently controlling the
-    // knob. On desktop / mouse, slot 0 aliases the primary pointer.
+    // Stable platform pointer ID that captured the stick. -1 = idle.
+    // -2 = mouse (desktop / single-touch fallback). Tracking by ID
+    // (not slot index) keeps the joystick locked to its actual finger
+    // when other pointers lift and the touch array compacts.
+    i32  captured_id   = -1;
+    // Touch slot the captured pointer currently occupies, refreshed at
+    // the start of each `joystick_update`. -1 when idle / mouse path.
+    // Mirrored to the public API so external code (e.g. drag-cast
+    // finger detection) can skip "the joystick's slot" without doing
+    // its own ID lookup.
     i32  captured_slot = -1;
     // Knob offset from base center, in screen pixels. Clamped to the
     // base's travel radius. Reset to (0, 0) on release.

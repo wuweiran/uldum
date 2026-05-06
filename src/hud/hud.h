@@ -593,6 +593,14 @@ public:
     // True if the joystick currently owns a finger / mouse button. Used
     // by the preset so drag-selection / tap-to-order don't double-fire.
     bool joystick_active() const;
+    // Touch slot index that captured the joystick, or -1 if not active.
+    // The app uses this to route the HUD's "primary" pointer around the
+    // joystick: when one finger is on the stick, fingers on action-bar /
+    // command-bar / minimap need to be seen by handle_pointer too, even
+    // though the platform layer only edge-triggers mouse_left_pressed
+    // for slot 0's DOWN (POINTER_DOWN of secondary fingers wouldn't
+    // otherwise reach the HUD).
+    i32 joystick_captured_slot() const;
 
     // ── Network sync (host-side) ─────────────────────────────────────────
     // Host installs a callback that turns local HUD mutations into

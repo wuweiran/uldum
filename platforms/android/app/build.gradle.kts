@@ -102,7 +102,7 @@ android {
     // AGP deprecated srcDir/srcDirs on AndroidSourceDirectorySet in favor
     // of the mutable `directories` set. Using `.add(file(...))` keeps us
     // current with the recommended API.
-    sourceSets["game"].res.directories.add(file("$gameProjectDir/branding/android"))
+    sourceSets["game"].res.directories.add("$gameProjectDir/branding/android")
 
     externalNativeBuild {
         cmake {
