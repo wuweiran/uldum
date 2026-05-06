@@ -34,6 +34,11 @@ struct InputContext {
     // box drag, right-click orders — that would otherwise fight the UI.
     // Keyboard-only actions (hotkeys, camera pan) are unaffected.
     bool hud_captured = false;
+    // True for the duration of a minimap drag (press to release). Presets
+    // that auto-follow a unit (ActionPreset) suspend the follow while
+    // this is set, so the player can pan the camera by dragging on the
+    // minimap without the follow snapping it back every frame.
+    bool hud_minimap_dragging = false;
     // Sub-tick interpolation factor (0..1) for the current frame — same
     // value the renderer uses. Presets that follow entity positions
     // (e.g. the Action preset's hero-tracking camera) read this so

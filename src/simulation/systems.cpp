@@ -133,9 +133,13 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
         // ── MoveDirection short-circuit ──────────────────────────────────
         // Action-preset continuous move. No pathfinding: desired velocity
-        // is `dir * speed`; slide axis-aligned on collision; order stays
-        // latched (never consumed here — replaced by the preset when the
-        // player releases movement keys, which sends Stop).
+        // is `dir * speed`; slide axis-aligned on collision. The order is
+        // *consumed each tick* — the action preset re-emits a fresh
+        // MoveDirection per render frame while the player is holding
+        // movement keys. If the player releases, no fresh order arrives,
+        // oq->current stays empty, and the unit naturally idles. Removes
+        // the need for an explicit Stop and the latch-tracking that
+        // previously caused Stop to fire spuriously and override Casts.
         if (oq->current) {
             if (auto* md = std::get_if<orders::MoveDirection>(&oq->current->payload)) {
                 glm::vec2 dir = md->dir;
@@ -186,6 +190,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
                 }
                 mov.cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
+                // Consume the order. The preset re-emits a fresh
+                // MoveDirection next frame if the player is still
+                // holding keys; otherwise the unit naturally idles.
+                oq->current.reset();
                 continue;
             }
         }

@@ -10,14 +10,14 @@ namespace uldum::input {
 static constexpr const char* TAG = "ActionInput";
 
 void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
-    // Ordering mirrors RtsPreset: run targeting-mode resolution first
-    // (so a click commits the armed ability before anything else sees
-    // that same click), then attack clicks, then movement, then the
-    // queued-ability flush last. Camera follow runs at the end so it
-    // sees any position change the tick will produce.
-    handle_targeting(ctx);
-    handle_attack_click(ctx);
-    handle_movement(ctx);
+    // Targeting first so a click commits the armed ability before any
+    // other handler sees it. Movement runs only when the click wasn't
+    // consumed — otherwise the click frame's "no WASD" reading would
+    // emit a Stop and override the Cast we just submitted. Queued
+    // ability flushes last; camera follow runs after so it sees any
+    // position change the tick will produce.
+    bool click_consumed = handle_targeting(ctx);
+    if (!click_consumed) handle_movement(ctx);
 
     if (!m_pending_ability.empty()) {
         std::string id = std::move(m_pending_ability);
@@ -25,6 +25,7 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
         dispatch_ability(ctx, id, false);
     }
 
+    handle_camera_gestures(ctx);
     handle_camera_follow(ctx);
 }
 
@@ -59,62 +60,43 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     dir.y += -ctx.joystick_y;
 
     f32 mag = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-    if (mag > 1.0f)        dir /= mag;     // cap at unit length
-    else if (mag < 0.001f) dir = {0.0f, 0.0f};
+    if (mag < 0.001f) return;     // no input — emit nothing
+    if (mag > 1.0f)   dir /= mag;  // cap at unit length
 
-    // Re-issue only on change. MoveDirection is latched — the sim keeps
-    // applying the direction tick after tick without further commands.
-    const f32 eps = 1e-4f;
-    bool same = m_last_move_valid
-             && std::fabs(dir.x - m_last_move_dir.x) < eps
-             && std::fabs(dir.y - m_last_move_dir.y) < eps;
-    if (same) return;
+    // Don't translate input into MoveDirection while the lead unit is
+    // committed to a cast. Phases:
+    //   - None              → not casting, emit normally.
+    //   - MovingToTarget    → unit walking to the cast point; the
+    //                         player redirecting with the stick is
+    //                         meant to override the approach, so we
+    //                         emit MoveDirection (which cancels the
+    //                         cast in issue_order, same as any new
+    //                         order would).
+    //   - TurningToFace /
+    //     CastPoint /
+    //     Backswing         → cast is committed; suppress emission
+    //                         until it finishes. When cast_state
+    //                         returns to None next tick, normal
+    //                         emission resumes if the player is still
+    //                         holding the stick.
+    auto lead = sel.selected().front();
+    if (auto* aset = ctx.simulation.world().ability_sets.get(lead.id)) {
+        using CS = simulation::CastState;
+        if (aset->cast_state != CS::None && aset->cast_state != CS::MovingToTarget) {
+            return;
+        }
+    }
 
+    // Emit a fresh MoveDirection each render frame the player is
+    // holding movement input. The sim consumes the order in one tick
+    // (system_movement clears oq->current after applying), so when the
+    // player releases keys this function stops emitting and the unit
+    // naturally idles next tick. No latch tracking, no Stop emission.
     GameCommand cmd;
     cmd.player = sel.player();
     cmd.units  = sel.selected();
-    if (dir.x == 0.0f && dir.y == 0.0f) {
-        // Release → Stop clears the latched MoveDirection so the hero
-        // halts. (Stop also cancels any other order, which is what we
-        // want here — the preset doesn't stack orders.)
-        cmd.order = simulation::orders::Stop{};
-    } else {
-        cmd.order = simulation::orders::MoveDirection{dir};
-    }
+    cmd.order  = simulation::orders::MoveDirection{dir};
     ctx.commands.submit(cmd);
-    m_last_move_dir   = dir;
-    m_last_move_valid = true;
-}
-
-// ── Primary attack ───────────────────────────────────────────────────────
-// Left-click on a unit → Attack that unit. On ground → AttackMove to the
-// ground point, so the hero will engage anything it runs into on the way.
-// Skipped when the HUD captures the pointer (slot click) or targeting
-// mode owns the click (handled separately in handle_targeting).
-
-void ActionPreset::handle_attack_click(const InputContext& ctx) {
-    if (ctx.hud_captured) return;
-    if (m_targeting_ability) return;
-    auto& input = ctx.input;
-    auto& sel   = ctx.selection;
-    if (!input.mouse_left_pressed || sel.empty()) return;
-
-    auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-    GameCommand cmd;
-    cmd.player = sel.player();
-    cmd.units  = sel.selected();
-    if (target.is_valid()) {
-        cmd.order = simulation::orders::Attack{simulation::Unit{target}};
-    } else {
-        glm::vec3 world_pos;
-        if (!ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) return;
-        cmd.order = simulation::orders::AttackMove{world_pos};
-    }
-    cmd.queued = input.key_shift;
-    ctx.commands.submit(cmd);
-    // Attack command overrides any latched movement — force a re-issue
-    // next time WASD changes so we don't skip the edge.
-    m_last_move_valid = false;
 }
 
 // ── Ability targeting ────────────────────────────────────────────────────
@@ -123,17 +105,17 @@ void ActionPreset::handle_attack_click(const InputContext& ctx) {
 // Gated by hud_captured so clicking a different slot while armed doesn't
 // double-fire.
 
-void ActionPreset::handle_targeting(const InputContext& ctx) {
+bool ActionPreset::handle_targeting(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel   = ctx.selection;
-    if (!m_targeting_ability) return;
+    if (!m_targeting_ability) return false;
 
     if (ctx.hud_captured) {
         if (input.key_escape) {
             m_targeting_ability = false;
             m_targeting_ability_id.clear();
         }
-        return;
+        return false;
     }
 
     if (input.mouse_left_pressed && !sel.empty()) {
@@ -163,13 +145,54 @@ void ActionPreset::handle_targeting(const InputContext& ctx) {
         }
         m_targeting_ability = false;
         m_targeting_ability_id.clear();
-        m_last_move_valid = false;   // resume WASD next change
-        return;
+        return true;
     }
 
     if (input.key_escape) {
         m_targeting_ability = false;
         m_targeting_ability_id.clear();
+    }
+    return false;
+}
+
+// ── Camera gestures ──────────────────────────────────────────────────────
+// Mobile two-finger pan + pinch zoom (mirroring RtsPreset). The minimap
+// drag path is owned by the HUD and moves the camera through the
+// minimap_jump_fn callback; here we only need to know it's happening so
+// handle_camera_follow can skip its snap-to-hero step.
+
+void ActionPreset::handle_camera_gestures(const InputContext& ctx) {
+    auto& input = ctx.input;
+    auto& camera = ctx.camera;
+
+    m_camera_user_panning = false;
+
+    if (input.touch_count >= 2) {
+        f32 cx = 0.5f * (input.touch_x[0] + input.touch_x[1]);
+        f32 cy = 0.5f * (input.touch_y[0] + input.touch_y[1]);
+        f32 dx = input.touch_x[0] - input.touch_x[1];
+        f32 dy = input.touch_y[0] - input.touch_y[1];
+        f32 dist = std::sqrt(dx * dx + dy * dy);
+        if (m_had_two_finger) {
+            f32 pdx = cx - m_prev_centroid_x;
+            f32 pdy = cy - m_prev_centroid_y;
+            camera.pan(pdx, pdy);
+
+            constexpr f32 PINCH_SCALE = 0.02f;
+            f32 zoom_delta = (dist - m_prev_pinch_dist) * PINCH_SCALE;
+            if (zoom_delta != 0.0f) camera.zoom(zoom_delta);
+        }
+        m_prev_centroid_x = cx;
+        m_prev_centroid_y = cy;
+        m_prev_pinch_dist = dist;
+        m_had_two_finger  = true;
+        m_camera_user_panning = true;
+        return;
+    }
+    m_had_two_finger = false;
+
+    if (ctx.hud_minimap_dragging) {
+        m_camera_user_panning = true;
     }
 }
 
@@ -182,6 +205,11 @@ void ActionPreset::handle_targeting(const InputContext& ctx) {
 // minimap-jump works.
 
 void ActionPreset::handle_camera_follow(const InputContext& ctx) {
+    // Suspend follow while the player is actively gesturing the camera
+    // (two-finger pan/pinch, or minimap drag). Snap-to-hero resumes the
+    // frame after they release.
+    if (m_camera_user_panning) return;
+
     auto& sel = ctx.selection;
     if (sel.empty()) return;
 

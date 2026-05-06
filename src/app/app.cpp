@@ -478,6 +478,8 @@ bool App::start_session() {
         apply(TexId::CastCurve,     s.arrow_texture);
         apply(TexId::Reticle,       s.reticle_texture);
         apply(TexId::AoeCircle,     s.area_texture);
+        apply(TexId::AoeCone,       s.area_cone_texture);
+        apply(TexId::AoeLine,       s.area_line_texture);
     }
     m_hud.set_local_player(m_args.local_slot);
     m_network.set_hud(&m_hud);
@@ -1310,7 +1312,9 @@ void App::run() {
                     m_platform->input(), m_selection, m_commands, m_picker,
                     m_renderer.camera(), m_bindings, m_server.simulation(),
                     m_platform->width(), m_platform->height(),
-                    m_hud.input_captured(), preset_alpha,
+                    m_hud.input_captured(),
+                    m_hud.is_minimap_dragging(),
+                    preset_alpha,
                     jx, jy,
                     [this](simulation::Unit unit, glm::vec3 pos,
                            input::InputContext::TargetPingKind kind) {

@@ -236,6 +236,108 @@ std::vector<uint8_t> gen_line_stroke(int w, int h) {
     return px;
 }
 
+// ── Action-variant decals ────────────────────────────────────────────────
+// A second set of overlays demonstrating per-map customization. The
+// engine ships the originals (above); maps that want a different look
+// drop these alternates into their own `<map>/textures/overlays/`
+// directory and point the JSON at them. Visually distinct from the
+// originals so it's obvious which set is rendering.
+
+// Action AoE circle — clean targeting reticle. Single rim ring, soft
+// radial fill (denser near center), and a thin crosshair instead of the
+// magic-circle's spokes. Reads as MOBA-style "this is the target spot".
+std::vector<uint8_t> gen_aoe_circle_action(int size) {
+    std::vector<uint8_t> px(static_cast<size_t>(size) * size * 4, 0);
+    float half = size * 0.5f;
+    float r_max = half - 1.0f;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            float dx = (x + 0.5f) - half;
+            float dy = (y + 0.5f) - half;
+            float r  = std::sqrt(dx*dx + dy*dy) / r_max;
+
+            // Outer rim — thicker and smoother than the magic-circle's
+            // hairline so it reads as a single confident boundary.
+            float ring = 1.0f - std::min(std::fabs(r - 0.93f) / 0.035f, 1.0f);
+            ring = ring * ring;
+
+            // Soft radial fill — peak at center, gone by the rim.
+            float fill = (1.0f - smoothstep(0.0f, 0.92f, r)) * 0.20f;
+
+            // Crosshair at center (horizontal + vertical thin segments).
+            float center_dist = std::sqrt(dx*dx + dy*dy);
+            float cross_h = (std::fabs(dy) < 1.0f && center_dist < 10.0f) ? 0.75f : 0.0f;
+            float cross_v = (std::fabs(dx) < 1.0f && center_dist < 10.0f) ? 0.75f : 0.0f;
+            float cross   = std::max(cross_h, cross_v);
+            float center_dot = 1.0f - smoothstep(2.5f, 4.5f, center_dist);
+            center_dot *= 0.8f;
+
+            float cutoff = 1.0f - smoothstep(0.93f, 0.98f, r);
+            float a = std::max({ring, fill, cross, center_dot}) * cutoff;
+            put(px, size, x, y, a);
+        }
+    }
+    return px;
+}
+
+// Action ring stroke — narrower plateau, harder edges. Reads as a
+// crisp techy band rather than the original gaussian glow.
+std::vector<uint8_t> gen_ring_stroke_action(int w, int h) {
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4, 0);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            float u = (x + 0.5f) / static_cast<float>(w);
+            float u_dist = std::fabs(u - 0.5f) * 2.0f;
+            // Plateau out to ~0.45, soft falloff to 0.85.
+            float a = 1.0f - smoothstep(0.45f, 0.85f, u_dist);
+            put(px, w, x, y, a);
+        }
+    }
+    return px;
+}
+
+// Action curve stroke — linear V-fade (vs the original t²) so the
+// arrow body holds steadier alpha along its length, with a sharper U
+// profile for a "laser beam" feel.
+std::vector<uint8_t> gen_curve_stroke_action(int w, int h) {
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4, 0);
+    for (int y = 0; y < h; ++y) {
+        float v = (y + 0.5f) / static_cast<float>(h);
+        float v_alpha = v;                              // linear, not v²
+        for (int x = 0; x < w; ++x) {
+            float u = (x + 0.5f) / static_cast<float>(w);
+            float u_dist = std::fabs(u - 0.5f) * 2.0f;
+            float u_alpha = std::pow(1.0f - u_dist, 2.5f);  // sharper, vs 1.5
+            if (u_alpha < 0.0f) u_alpha = 0.0f;
+            put(px, w, x, y, u_alpha * v_alpha);
+        }
+    }
+    return px;
+}
+
+// Action snap-target — 32×256 vertical column with TWO bright bands
+// (top + bottom) instead of a single bottom-rooted glow. Reads as a
+// pinned marker rather than a beam. Horizontal cross-section is the
+// same cylindrical sqrt(1-u²) so the column has perceived volume.
+std::vector<uint8_t> gen_snap_target_action(int w, int h) {
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4, 0);
+    for (int y = 0; y < h; ++y) {
+        float v = (y + 0.5f) / static_cast<float>(h);   // 0..1
+        // Two peaks: bottom (v→0) and top (v→1), dim middle.
+        float bot = 1.0f - smoothstep(0.00f, 0.28f, v);
+        float top = smoothstep(0.72f, 1.00f, v);
+        float v_alpha = std::max(bot, top) * 0.55f;
+        for (int x = 0; x < w; ++x) {
+            float u = (x + 0.5f) / static_cast<float>(w);
+            float u_centered = (u - 0.5f) * 2.0f;
+            float u_sq = u_centered * u_centered;
+            float u_alpha = std::sqrt(std::max(0.0f, 1.0f - u_sq));
+            put(px, w, x, y, u_alpha * v_alpha);
+        }
+    }
+    return px;
+}
+
 // Curve stroke — same U profile as ring stroke, V-modulated alpha
 // (t² so caster-end fades to ~0). Used by the cast arrow.
 std::vector<uint8_t> gen_curve_stroke(int w, int h) {
@@ -285,6 +387,24 @@ int main(int argc, char** argv) {
     {
         auto px = gen_curve_stroke(64, 256);
         ok &= write_png(out_dir / "curve_stroke.png", px, 64, 256);
+    }
+
+    // Action-variant set — distinct visual look for maps that opt in.
+    {
+        auto px = gen_aoe_circle_action(256);
+        ok &= write_png(out_dir / "action_aoe_circle.png", px, 256, 256);
+    }
+    {
+        auto px = gen_ring_stroke_action(64, 4);
+        ok &= write_png(out_dir / "action_ring_stroke.png", px, 64, 4);
+    }
+    {
+        auto px = gen_curve_stroke_action(64, 256);
+        ok &= write_png(out_dir / "action_curve_stroke.png", px, 64, 256);
+    }
+    {
+        auto px = gen_snap_target_action(32, 256);
+        ok &= write_png(out_dir / "action_snap_target.png", px, 32, 256);
     }
     return ok ? 0 : 1;
 }

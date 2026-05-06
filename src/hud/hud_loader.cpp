@@ -239,6 +239,8 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 const std::string s = sid->get<std::string>();
                 if (s == "classic_rts") {
                     cfg.style_id = ActionBarStyleId::ClassicRts;
+                } else if (s == "moba") {
+                    cfg.style_id = ActionBarStyleId::Moba;
                 } else {
                     log::warn(TAG, "action_bar: unknown style '{}', using classic_rts", s);
                 }
@@ -270,6 +272,11 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 if (auto v = sp->find("armed_border_color");  v != sp->end()) cfg.style.armed_border_color  = parse_color(*v);
                 if (auto v = sp->find("armed_border_width");  v != sp->end() && v->is_number())
                     cfg.style.armed_border_width = v->get<f32>();
+                if (auto v = sp->find("cooldown_ring_color"); v != sp->end()) cfg.style.cooldown_ring_color = parse_color(*v);
+                if (auto v = sp->find("cooldown_ring_width"); v != sp->end() && v->is_number())
+                    cfg.style.cooldown_ring_width = v->get<f32>();
+                if (auto v = sp->find("cooldown_ring_gap");   v != sp->end() && v->is_number())
+                    cfg.style.cooldown_ring_gap = v->get<f32>();
             }
 
             // Shared default style applied to every slot; per-slot
@@ -764,13 +771,16 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 cfg.style.snap_target_base_offset = v->get<f32>();
         }
 
-        // AoE preview (target_point shape decals).
+        // AoE preview (target_point shape decals). Each shape has its
+        // own texture slot in the renderer; empty strings here fall back
+        // to the engine's procedural default for that shape.
         if (auto a = tg->find("aoe"); a != tg->end() && a->is_object()) {
             if (auto v = a->find("circle_texture"); v != a->end() && v->is_string())
                 cfg.style.area_texture = v->get<std::string>();
-            // line/cone overrides are accepted in the JSON for forward-compat
-            // but currently funnel into the same area_texture slot since the
-            // engine renders all three shapes from one customizable texture.
+            if (auto v = a->find("cone_texture"); v != a->end() && v->is_string())
+                cfg.style.area_cone_texture = v->get<std::string>();
+            if (auto v = a->find("line_texture"); v != a->end() && v->is_string())
+                cfg.style.area_line_texture = v->get<std::string>();
             if (auto v = a->find("color"); v != a->end()) cfg.style.area_color = resolve_color(*v);
         }
 

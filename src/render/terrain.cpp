@@ -272,7 +272,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                         {vh, v_adj_b, wb_l},  // edge_b face (full edge)
                         {vh, wa_l, wb_l},     // chamfer
                     };
-                    for (auto [v0, v1, v2] : walls) {
+                    for (auto wall : walls) {
+                        u32 v0 = wall[0], v1 = wall[1], v2 = wall[2];
                         glm::vec3 n = glm::normalize(glm::cross(
                             vertices[v1].position - vertices[v0].position,
                             vertices[v2].position - vertices[v0].position));

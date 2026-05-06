@@ -80,10 +80,14 @@ void VulkanRhi::shutdown() {
     }
     m_render_finished.clear();
 
+    // Idempotent: zero each handle after destroying so a second shutdown
+    // (App::shutdown() runs explicitly, then ~App → ~VulkanRhi calls
+    // shutdown() again) doesn't re-feed stale handles into vkDestroy*
+    // with a NULL device.
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        if (m_in_flight[i])       vkDestroyFence(m_device, m_in_flight[i], nullptr);
-        if (m_image_available[i]) vkDestroySemaphore(m_device, m_image_available[i], nullptr);
-        if (m_command_pools[i])   vkDestroyCommandPool(m_device, m_command_pools[i], nullptr);
+        if (m_in_flight[i])       { vkDestroyFence(m_device, m_in_flight[i], nullptr);            m_in_flight[i] = VK_NULL_HANDLE; }
+        if (m_image_available[i]) { vkDestroySemaphore(m_device, m_image_available[i], nullptr);  m_image_available[i] = VK_NULL_HANDLE; }
+        if (m_command_pools[i])   { vkDestroyCommandPool(m_device, m_command_pools[i], nullptr);  m_command_pools[i] = VK_NULL_HANDLE; }
     }
 
     destroy_swapchain();

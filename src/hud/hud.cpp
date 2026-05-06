@@ -1144,6 +1144,22 @@ static void append_triangle(Hud::Impl& s,
     s.inds.push_back(base + 2);
 }
 
+// Per-vertex UV variant for textured fans (e.g. circle-clipped icons).
+static void append_triangle_uv(Hud::Impl& s,
+                               f32 x0, f32 y0, f32 u0, f32 v0,
+                               f32 x1, f32 y1, f32 u1, f32 v1,
+                               f32 x2, f32 y2, f32 u2, f32 v2,
+                               u32 premul) {
+    if (s.verts.size() + 3 > MAX_VERTS) return;
+    u16 base = static_cast<u16>(s.verts.size());
+    s.verts.push_back({ { x0, y0 }, premul, { u0, v0 } });
+    s.verts.push_back({ { x1, y1 }, premul, { u1, v1 } });
+    s.verts.push_back({ { x2, y2 }, premul, { u2, v2 } });
+    s.inds.push_back(base + 0);
+    s.inds.push_back(base + 1);
+    s.inds.push_back(base + 2);
+}
+
 // Append a textured quad into the current batch. Caller has already
 // recorded an ensure_batch() with the desired pipeline + descriptor.
 static void append_quad(Hud::Impl& s, const Rect& r,
@@ -1701,6 +1717,10 @@ void Hud::set_minimap_jump_fn(MinimapJumpFn fn) {
     if (m_impl) m_impl->minimap_jump_fn = std::move(fn);
 }
 
+bool Hud::is_minimap_dragging() const {
+    return m_impl && m_impl->minimap_dragging;
+}
+
 // True if (x, y) is inside the minimap panel AND the panel is enabled +
 // visible. Unlike the action bar, the minimap is a single rect so the
 // hit-test returns bool rather than an index.
@@ -1946,6 +1966,59 @@ static void draw_filled_circle(Hud::Impl& s, f32 cx, f32 cy, f32 r, Color color)
 
 // Border as a ring of quads between radius r_outer and r_inner. Simpler
 // than a stroked circle and uses the same PIPE_SOLID batch.
+// Solid filled disc — triangle fan from the center.
+static void draw_disc(Hud::Impl& s, f32 cx, f32 cy, f32 radius, Color color) {
+    if (radius <= 0.0f) return;
+    if ((color.rgba >> 24) == 0) return;
+    ensure_batch(s, PIPE_SOLID, s.white_set);
+    u32 premul = premul_rgba(color);
+
+    constexpr u32 kSegments = 32;
+    constexpr f32 TWO_PI = 6.2831853f;
+    f32 step = TWO_PI / static_cast<f32>(kSegments);
+    for (u32 i = 0; i < kSegments; ++i) {
+        f32 a0 = step * static_cast<f32>(i);
+        f32 a1 = step * static_cast<f32>(i + 1);
+        f32 x0 = cx + std::cos(a0) * radius;
+        f32 y0 = cy + std::sin(a0) * radius;
+        f32 x1 = cx + std::cos(a1) * radius;
+        f32 y1 = cy + std::sin(a1) * radius;
+        append_triangle(s, cx, cy, x0, y0, x1, y1, 0.0f, 0.0f, premul);
+    }
+}
+
+// Partial ring (annular sector). Sweeps `sweep_angle` radians from
+// `start_angle`, with thickness (r_outer − r_inner). Used for the MOBA
+// cooldown ring.
+static void draw_ring_arc(Hud::Impl& s, f32 cx, f32 cy, f32 r_outer, f32 r_inner,
+                          f32 start_angle, f32 sweep_angle, Color color) {
+    if (r_outer <= r_inner || r_outer <= 0.0f) return;
+    if (sweep_angle <= 0.0f) return;
+    if ((color.rgba >> 24) == 0) return;
+    ensure_batch(s, PIPE_SOLID, s.white_set);
+    u32 premul = premul_rgba(color);
+
+    constexpr u32 kSegmentsFull = 48;
+    constexpr f32 TWO_PI = 6.2831853f;
+    f32 frac = sweep_angle / TWO_PI;
+    if (frac > 1.0f) frac = 1.0f;
+    u32 n = static_cast<u32>(std::ceil(static_cast<f32>(kSegmentsFull) * frac));
+    if (n < 1) n = 1;
+    f32 step = sweep_angle / static_cast<f32>(n);
+    for (u32 i = 0; i < n; ++i) {
+        f32 a0 = start_angle + step * static_cast<f32>(i);
+        f32 a1 = start_angle + step * static_cast<f32>(i + 1);
+        f32 c0 = std::cos(a0), s0 = std::sin(a0);
+        f32 c1 = std::cos(a1), s1 = std::sin(a1);
+        f32 ox0 = cx + c0 * r_outer, oy0 = cy + s0 * r_outer;
+        f32 ox1 = cx + c1 * r_outer, oy1 = cy + s1 * r_outer;
+        f32 ix0 = cx + c0 * r_inner, iy0 = cy + s0 * r_inner;
+        f32 ix1 = cx + c1 * r_inner, iy1 = cy + s1 * r_inner;
+        append_triangle(s, ox0, oy0, ox1, oy1, ix1, iy1, 0.0f, 0.0f, premul);
+        append_triangle(s, ox0, oy0, ix1, iy1, ix0, iy0, 0.0f, 0.0f, premul);
+    }
+}
+
 static void draw_ring(Hud::Impl& s, f32 cx, f32 cy, f32 r_outer, f32 r_inner, Color color) {
     if (r_outer <= r_inner || r_outer <= 0.0f) return;
     if ((color.rgba >> 24) == 0) return;
@@ -2304,6 +2377,10 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                     // filter's `self_` flag.
                     if (is_command || !def->target_filter.self_) continue;
                 }
+                // Commands always reject dead units — Move-on-corpse can't
+                // follow, Attack-on-corpse can't attack. Abilities run the
+                // full filter (alive/dead flags handled inside).
+                if (is_command && world.dead_states.has(id)) continue;
                 if (!is_command &&
                     !s.world_ctx->simulation->target_filter_passes(
                         def->target_filter, caster_unit, cand)) {
@@ -2439,6 +2516,20 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     }
 
     bool commit = (s.drag_cast.phase == Phase::Aiming);
+    // Pressed-with-valid-snap promotion: TargetUnit abilities snap to
+    // a nearby valid target as soon as the press lands (drag origin =
+    // caster), so the indicator can be visible before the finger ever
+    // leaves the slot. The player's mental model is "indicator up →
+    // release → cast"; treating that as cancel just because they
+    // didn't drag the 8px to enter Aiming silently swallows the cast.
+    // Commands aren't promoted — a tap on Move with no direction is
+    // genuinely ambiguous and should cancel.
+    if (!commit && !is_command &&
+        s.drag_cast.phase == Phase::Pressed &&
+        s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+        s.drag_cast.snapped_target.is_valid()) {
+        commit = true;
+    }
     // Ability-side: unit-targeted casts cancel if released without
     // snap (no valid target = nothing to cast on). Command-side:
     // both Move and Attack always commit — with a snap they go to
@@ -3231,6 +3322,147 @@ static void draw_action_bar_classic_rts(Hud& hud, Hud::Impl& s) {
     }
 }
 
+// Mobile-MOBA-style action bar render path. Each slot is a round button:
+// solid disc background + centered icon + a bright cooldown ring sweeping
+// just outside the button perimeter. Hit-testing is still rect-based via
+// slot.rect (clicks near the disc's bounding-box corners still fire),
+// which feels lenient on touch — fine for a thumb target.
+static void draw_action_bar_moba(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.action_bar_cfg;
+    const auto& rt  = s.action_bar_rt;
+
+    bool any_armed = !s.action_bar_targeting_ability.empty();
+
+    for (u32 i = 0; i < cfg.slots.size(); ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+
+        const simulation::AbilityDef* def = nullptr;
+        const simulation::AbilityInstance* inst = nullptr;
+        if (s.world_ctx) inst = resolve_slot_ability(i, cfg, *s.world_ctx, def);
+
+        bool armed = any_armed && def && inst
+                  && inst->ability_id == s.action_bar_targeting_ability;
+        bool has_button = (inst && def);
+
+        f32 cx = slot.rect.x + slot.rect.w * 0.5f;
+        f32 cy = slot.rect.y + slot.rect.h * 0.5f;
+        // Reserve room outside the button for the cooldown ring + gap.
+        f32 ring_w = cfg.style.cooldown_ring_width;
+        f32 ring_g = cfg.style.cooldown_ring_gap;
+        f32 button_r = std::min(slot.rect.w, slot.rect.h) * 0.5f - ring_w - ring_g;
+        if (button_r <= 0.0f) button_r = std::min(slot.rect.w, slot.rect.h) * 0.4f;
+
+        // Background disc — hover / press / armed state.
+        Color bg = slot.style.bg;
+        if (has_button && slot.pressed)      bg = slot.style.press_bg;
+        else if (armed)                      bg = slot.style.press_bg;
+        else if (has_button && slot.hovered) bg = slot.style.hover_bg;
+        draw_disc(s, cx, cy, button_r, bg);
+
+        // Icon as a circle-clipped disc — fills the button entirely,
+        // with the texture's square corners cropped at the rim.
+        if (def && !def->icon.empty()) {
+            hud.draw_image_disc(cx, cy, button_r, def->icon);
+        }
+
+        if (armed) {
+            // Armed slot: skip cooldown / affordability overlays.
+        } else if (any_armed) {
+            // Wash other slots while one is armed.
+            draw_disc(s, cx, cy, button_r, cfg.style.disabled_tint);
+        } else {
+            bool on_cooldown = def && inst && inst->cooldown_remaining > 0.05f
+                            && def->level_data(inst->level).cooldown > 0.0f;
+            if (on_cooldown) {
+                f32 total = def->level_data(inst->level).cooldown;
+                f32 frac  = inst->cooldown_remaining / total;
+
+                // Dark tint over the icon while on cooldown.
+                draw_disc(s, cx, cy, button_r, cfg.style.cooldown_overlay);
+
+                // Bright ring around the perimeter — remaining fraction
+                // sweeping clockwise from 12 o'clock. Ring shrinks as
+                // the cooldown elapses.
+                constexpr f32 TWO_PI = 6.2831853f;
+                constexpr f32 TWELVE_OCLOCK = -1.5707963f;  // -PI/2
+                f32 r_outer = button_r + ring_g + ring_w;
+                f32 r_inner = button_r + ring_g;
+                f32 sweep   = frac * TWO_PI;
+                draw_ring_arc(s, cx, cy, r_outer, r_inner,
+                              TWELVE_OCLOCK, sweep, cfg.style.cooldown_ring_color);
+
+                // Remaining seconds, centered.
+                char buf[16];
+                format_cooldown_secs(inst->cooldown_remaining, buf, sizeof(buf));
+                if (buf[0] != '\0') {
+                    f32 px = cfg.style.cooldown_text_size;
+                    f32 tw = hud.text_width_px(buf, px);
+                    f32 line_h = hud.text_line_height_px(px);
+                    f32 ascent = hud.text_ascent_px(px);
+                    f32 tx = cx - tw * 0.5f;
+                    f32 ty = cy - line_h * 0.5f + ascent;
+                    hud.draw_text(tx, ty, buf, cfg.style.cooldown_text_color, px);
+                }
+            } else if (def && inst && s.world_ctx && is_castable_form(def->form)) {
+                u32 unit_id = s.world_ctx->selection
+                                ? s.world_ctx->selection->selected().front().id
+                                : UINT32_MAX;
+                if (unit_id != UINT32_MAX && s.world_ctx->world) {
+                    if (!can_afford(*s.world_ctx->world, unit_id,
+                                    def->level_data(inst->level))) {
+                        draw_disc(s, cx, cy, button_r, cfg.style.disabled_tint);
+                    }
+                }
+            }
+        }
+
+        // Border ring — concentric with the button. Armed override
+        // matches ClassicRts (accent color, thicker stroke).
+        Color border_color = slot.style.border_color;
+        f32   border_w     = slot.style.border_width;
+        if (armed) {
+            border_color = cfg.style.armed_border_color;
+            border_w     = cfg.style.armed_border_width;
+        }
+        if (border_w > 0.0f && (border_color.rgba >> 24) != 0) {
+            draw_ring(s, cx, cy, button_r, button_r - border_w, border_color);
+        }
+
+        // Hotkey badge — bottom-right corner of the slot rect (sits
+        // slightly outside the disc). Only drawn for castable forms,
+        // same as ClassicRts.
+        bool show_hotkey = def && is_castable_form(def->form);
+        std::string_view badge_key;
+        if (show_hotkey) {
+            badge_key = (rt.hotkey_mode == ActionBarHotkeyMode::Ability)
+                            ? std::string_view{def->hotkey}
+                            : std::string_view{slot.hotkey};
+        }
+        if (!badge_key.empty()) {
+            f32 px_size = button_r * 0.55f;
+            if (px_size < 10.0f) px_size = 10.0f;
+            f32 text_w = hud.text_width_px(badge_key, px_size);
+            f32 ascent = hud.text_ascent_px(px_size);
+            f32 x_left = slot.rect.x + slot.rect.w - text_w - 4.0f;
+            f32 y_base = slot.rect.y + slot.rect.h - 4.0f;
+
+            if ((cfg.style.hotkey_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f;
+                f32 pad_y = 1.0f;
+                Rect bg_pill{
+                    x_left - pad_x,
+                    y_base - ascent - pad_y,
+                    text_w + pad_x * 2.0f,
+                    ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg_pill, cfg.style.hotkey_badge_bg);
+            }
+            hud.draw_text(x_left, y_base, badge_key, cfg.style.hotkey_color, px_size);
+        }
+    }
+}
+
 // Classification of a unit for minimap-dot coloring relative to the
 // local player. Order matters: own > ally > enemy > neutral.
 static Color minimap_dot_color(const WorldContext& ctx, u32 unit_id,
@@ -3592,6 +3824,9 @@ static void draw_action_bar(Hud& hud, Hud::Impl& s) {
     switch (cfg.style_id) {
         case ActionBarStyleId::ClassicRts:
             draw_action_bar_classic_rts(hud, s);
+            break;
+        case ActionBarStyleId::Moba:
+            draw_action_bar_moba(hud, s);
             break;
     }
 
@@ -4259,6 +4494,39 @@ void Hud::draw_image(const Rect& r, std::string_view asset_path, Color tint) {
     if (!img) return;
     ensure_batch(*m_impl, PIPE_SOLID, img->set);
     append_quad(*m_impl, r, 0.0f, 0.0f, 1.0f, 1.0f, premul_rgba(tint));
+}
+
+void Hud::draw_image_disc(f32 cx, f32 cy, f32 radius,
+                          std::string_view asset_path, Color tint) {
+    if (!m_impl || !m_impl->frame_open) return;
+    if (radius <= 0.0f) return;
+    HudImage* img = get_or_load_image(*m_impl, asset_path);
+    if (!img) return;
+    ensure_batch(*m_impl, PIPE_SOLID, img->set);
+    u32 premul = premul_rgba(tint);
+
+    // Triangle fan from disc center to perimeter. UVs map disc center
+    // to the texture's center (0.5, 0.5) and the disc's perimeter to
+    // the texture's inscribed circle. Effect: the disc renders the
+    // icon scaled so its inscribed circle covers the disc, with the
+    // texture's corners (outside the inscribed circle) clipped — so a
+    // square icon fills a round button cleanly, no square edges past
+    // the rim.
+    constexpr u32 kSegments = 32;
+    constexpr f32 TWO_PI = 6.2831853f;
+    f32 step = TWO_PI / static_cast<f32>(kSegments);
+    for (u32 i = 0; i < kSegments; ++i) {
+        f32 a0 = step * static_cast<f32>(i);
+        f32 a1 = step * static_cast<f32>(i + 1);
+        f32 c0 = std::cos(a0), s0 = std::sin(a0);
+        f32 c1 = std::cos(a1), s1 = std::sin(a1);
+        append_triangle_uv(
+            *m_impl,
+            cx,                   cy,                   0.5f,            0.5f,
+            cx + c0 * radius,     cy + s0 * radius,     0.5f + c0 * 0.5f, 0.5f + s0 * 0.5f,
+            cx + c1 * radius,     cy + s1 * radius,     0.5f + c1 * 0.5f, 0.5f + s1 * 0.5f,
+            premul);
+    }
 }
 
 // Minimal UTF-8 decoder. Advances `p` past one codepoint; returns 0 at

@@ -150,6 +150,15 @@ public:
     void draw_image(const Rect& r, std::string_view asset_path,
                     Color tint = rgba(255, 255, 255, 255));
 
+    // Draw an image clipped to a circular disc — square texture is
+    // sampled radially so its inscribed circle covers the disc; the
+    // texture's corners (outside that inscribed circle) are clipped.
+    // Use this for round MOBA-style ability buttons where a square
+    // icon needs to fit a circular button without visible square edges.
+    void draw_image_disc(f32 cx, f32 cy, f32 radius,
+                         std::string_view asset_path,
+                         Color tint = rgba(255, 255, 255, 255));
+
     // Low-level primitive — draw a single line of UTF-8 text using the
     // default HUD font. Position is the left end of the text baseline (in
     // screen pixels). px_size selects on-screen glyph size; the MSDF
@@ -487,6 +496,12 @@ public:
     // pose change so the view snaps to that location.
     using MinimapJumpFn = std::function<void(f32 world_x, f32 world_y)>;
     void set_minimap_jump_fn(MinimapJumpFn fn);
+
+    // True for every frame between minimap press and release. Presets
+    // that auto-follow the controlled unit (e.g. ActionPreset) read this
+    // to suspend the follow while the player is panning the camera by
+    // dragging on the minimap; the follow resumes on release.
+    bool is_minimap_dragging() const;
 
     // Command-bar composite — grid of engine-built-in commands (Attack,
     // Move, Stop, Hold, Patrol). Maps opt in via `composites.command_bar`

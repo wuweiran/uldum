@@ -82,7 +82,16 @@ struct CastIndicatorStyle {
     std::string range_texture;
     std::string arrow_texture;
     std::string reticle_texture;
+    // AoE preview decals — one per shape. The renderer keeps three
+    // distinct slots (AoeCircle / AoeLine / AoeCone) so authors can
+    // give each shape its own art (e.g. radial fade for circle,
+    // direction-aware gradient for cone, ribbon for line). Empty
+    // string falls back to the engine's procedural default for that
+    // slot. `area_texture` is the legacy circle override; cone /
+    // line are independent.
     std::string area_texture;
+    std::string area_cone_texture;
+    std::string area_line_texture;
     std::string target_unit_texture;
     // Mobile snap-target indicator — vertical light column rooted at
     // the snapped target's feet during drag-cast. Visual is a

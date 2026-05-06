@@ -79,7 +79,9 @@ struct ActionBarSlot {
 // variant exposes its own parameter block — adding a variant is a
 // localized render path + parser extension, not a generic layer engine.
 enum class ActionBarStyleId : u8 {
-    ClassicRts = 0,   // WC3-alike: square icon, radial cooldown, hotkey badge.
+    ClassicRts = 0,   // WC3-alike: square icon, radial cooldown pie, hotkey badge.
+    Moba       = 1,   // Mobile-MOBA-alike: round button, perimeter cooldown ring,
+                      // dim disc + remaining-seconds in center on cooldown.
 };
 
 // How the bar routes keyboard input → ability. A player-level setting
@@ -149,6 +151,15 @@ struct ActionBarStyle {
     // than the normal border by default; tunable per map.
     Color armed_border_color  = rgba(255, 214, 0,   255);   // gold
     f32   armed_border_width  = 3.0f;
+
+    // MOBA-style only: bright cooldown ring drawn outside the round
+    // button. Displays the *remaining* fraction (full ring just after
+    // cast, empty when the ability comes off cooldown). `gap` is the
+    // empty space between the button's outer edge and the ring's inner
+    // edge; `width` is the ring's thickness. Ignored by ClassicRts.
+    Color cooldown_ring_color = rgba(110, 220, 255, 235);   // soft cyan
+    f32   cooldown_ring_width = 4.0f;
+    f32   cooldown_ring_gap   = 2.0f;
 
     // Drag-cast cancel zone (drawn only while a drag-cast is active).
     // `idle_*` is the dim-red appearance when the gesture is in
