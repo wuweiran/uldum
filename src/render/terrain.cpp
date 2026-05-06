@@ -238,31 +238,75 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                     default: adj_a = 2; adj_b = 1; break; // BR: bottom→BL, right→TR
                 }
 
-                // Wall endpoints per-edge (midpoint or corner if ramp)
-                u32 wa_h, wa_l, wb_h, wb_l;
-                if (ramp_a) {
-                    wa_h = corner_v(hi, high_z);
-                    wa_l = corner_v(adj_a, low_z);
-                } else {
-                    wa_h = mid_v(edge_a, high_z);
-                    wa_l = mid_v(edge_a, low_z);
-                }
-                if (ramp_b) {
-                    wb_h = corner_v(hi, high_z);
-                    wb_l = corner_v(adj_b, low_z);
-                } else {
-                    wb_h = mid_v(edge_b, high_z);
-                    wb_l = mid_v(edge_b, low_z);
-                }
+                // Both-ramp case takes a different decomposition than the standard
+                // 1-high cliff. The standard form has a small high plateau (the
+                // high triangle at z=H) extending into the tile, which leaves
+                // triangular gaps along the shared edges with ramp neighbors —
+                // their surfaces interpolate linearly from high to low while our
+                // plateau-then-vertical-drop profile sits above the ramp on one
+                // half of each edge. The spire form has no plateau: the high
+                // corner is a single apex with three cliff faces (one along each
+                // adjacent tile edge, one chamfer between the midpoints) fanning
+                // down to a low pentagon. The full-edge walls share the
+                // hi-to-adj diagonal with the ramp neighbor, so the geometry
+                // closes cleanly.
+                bool both_ramps = ramp_a && ramp_b;
 
-                // High triangle (may be degenerate if ramp replaces endpoint with hi corner)
                 u32 vh = corner_v(hi, high_z);
-                if (!ramp_a || !ramp_b) {
-                    add_tri(vh, wa_h, wb_h);
-                }
+                u32 wa_l, wb_l;  // wall low endpoints, also used by the low pentagon fan
 
-                // Wall quad (duplicated vertices so wall normals don't blend with surface)
-                if (!ramp_a || !ramp_b) {
+                if (both_ramps) {
+                    wa_l = mid_v(edge_a, low_z);
+                    wb_l = mid_v(edge_b, low_z);
+                    u32 v_adj_a = corner_v(adj_a, low_z);
+                    u32 v_adj_b = corner_v(adj_b, low_z);
+
+                    // Three cliff faces fanning from the high apex down to the
+                    // low pentagon: one along each adjacent tile edge, plus
+                    // the diagonal chamfer between the two midpoints. Each
+                    // gets its geometric normal flipped (if needed) to face
+                    // the tile interior — that's where the player views from.
+                    const glm::vec3 interior{xm, ym, low_z};
+                    const u32 walls[3][3] = {
+                        {vh, v_adj_a, wa_l},  // edge_a face (full edge)
+                        {vh, v_adj_b, wb_l},  // edge_b face (full edge)
+                        {vh, wa_l, wb_l},     // chamfer
+                    };
+                    for (auto [v0, v1, v2] : walls) {
+                        glm::vec3 n = glm::normalize(glm::cross(
+                            vertices[v1].position - vertices[v0].position,
+                            vertices[v2].position - vertices[v0].position));
+                        glm::vec3 centroid = (vertices[v0].position
+                                            + vertices[v1].position
+                                            + vertices[v2].position) / 3.0f;
+                        if (glm::dot(n, interior - centroid) < 0) { std::swap(v1, v2); n = -n; }
+                        u32 d0 = dup_v(v0), d1 = dup_v(v1), d2 = dup_v(v2);
+                        vertices[d0].normal = vertices[d1].normal = vertices[d2].normal = n;
+                        indices.push_back(d0); indices.push_back(d1); indices.push_back(d2);
+                    }
+                } else {
+                    // Standard 1-high cliff. Corner-collapse trick when one neighbor
+                    // is a ramp (yields a slope segment matching the ramp).
+                    u32 wa_h, wb_h;
+                    if (ramp_a) {
+                        wa_h = vh;
+                        wa_l = corner_v(adj_a, low_z);
+                    } else {
+                        wa_h = mid_v(edge_a, high_z);
+                        wa_l = mid_v(edge_a, low_z);
+                    }
+                    if (ramp_b) {
+                        wb_h = vh;
+                        wb_l = corner_v(adj_b, low_z);
+                    } else {
+                        wb_h = mid_v(edge_b, high_z);
+                        wb_l = mid_v(edge_b, low_z);
+                    }
+
+                    // High triangle (degenerate when one neighbor is a ramp; harmless).
+                    add_tri(vh, wa_h, wb_h);
+
+                    // Chamfer wall (quad), duplicated for separate normals.
                     glm::vec3 wall_n = glm::normalize(glm::vec3{
                         xm - vertices[vh].position.x,
                         ym - vertices[vh].position.y, 0.0f});

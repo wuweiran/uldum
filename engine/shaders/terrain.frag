@@ -146,10 +146,19 @@ void main() {
         }
     }
 
-    // Apply normal map: transform tangent-space normal to world space
+    // Apply normal map: transform tangent-space normal to world space.
+    // Build the TBN basis with Duff et al. 2017's revised Frisvad
+    // formula ("Building an Orthonormal Basis, Revisited", JCGT). It
+    // produces a stable orthonormal frame (T, B, N) for *any* unit
+    // normal — including ±Y-axis-aligned walls where the previous
+    // cross((0,1,0), N) reference collapsed to zero. Branchless apart
+    // from the sign select; no sqrt; ~10 fp ops.
     {
-        vec3 T = normalize(normal.z * vec3(1, 0, 0) - normal.x * vec3(0, 0, 1));
-        vec3 B = cross(normal, T);
+        float s = normal.z >= 0.0 ? 1.0 : -1.0;
+        float a = -1.0 / (s + normal.z);
+        float b = normal.x * normal.y * a;
+        vec3 T = vec3(1.0 + s * normal.x * normal.x * a, s * b, -s * normal.x);
+        vec3 B = vec3(b, s + normal.y * normal.y * a, -normal.y);
         normal = normalize(T * result.ts_normal.x + B * result.ts_normal.y + normal * result.ts_normal.z);
     }
 
