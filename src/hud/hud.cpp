@@ -2550,22 +2550,71 @@ void Hud::joystick_update(const platform::InputState& input) {
     rt.base_cx = home_cx;
     rt.base_cy = home_cy;
 
+    // Floating-joystick anchor. The hud.json rect is the *activation*
+    // area; the base center is clamped to that rect shrunk inward by
+    // the knob's travel distance. A press at the activation edge
+    // clamps the base to the corresponding inner edge, putting the
+    // knob at full deflection so a move-order emits immediately —
+    // modern MOBA behavior. A press inside the inner (shrunk) region
+    // anchors the base AT the touch with knob centered (no immediate
+    // move). Shrinking by `travel` (rather than the full visible
+    // base_r) keeps the float region usable: shrinking by base_r
+    // would collapse it for typical configs where rect.w ≈ 2·base_r.
+    // The visible disc may extend slightly past the rect when at the
+    // edge of the float region — same as MLBB / AoV / Wild Rift.
+    auto compute_anchor = [&](f32 fx, f32 fy, f32& cx, f32& cy) {
+        f32 cx_min = cfg.rect.x + travel;
+        f32 cx_max = cfg.rect.x + cfg.rect.w - travel;
+        f32 cy_min = cfg.rect.y + travel;
+        f32 cy_max = cfg.rect.y + cfg.rect.h - travel;
+        if (cx_max < cx_min) { cx_min = cx_max = cfg.rect.x + cfg.rect.w * 0.5f; }
+        if (cy_max < cy_min) { cy_min = cy_max = cfg.rect.y + cfg.rect.h * 0.5f; }
+        cx = std::clamp(fx, cx_min, cx_max);
+        cy = std::clamp(fy, cy_min, cy_max);
+    };
+
+    // Compute knob + output for a freshly anchored base. Pulled out so
+    // both touch and mouse capture lambdas can fire a move-order on
+    // the same frame the press lands — without this, the captured
+    // branch above runs only next tick, so a touch in the outer
+    // activation ring takes one frame to start moving the unit.
+    auto apply_press_output = [&](f32 fx, f32 fy) {
+        f32 ex = fx - rt.base_cx;
+        f32 ey = fy - rt.base_cy;
+        f32 mag2 = ex * ex + ey * ey;
+        if (mag2 > travel * travel) {
+            f32 m = std::sqrt(mag2);
+            ex = ex / m * travel;
+            ey = ey / m * travel;
+        }
+        rt.knob_dx = ex;
+        rt.knob_dy = ey;
+        f32 nx = ex / travel, ny = ey / travel;
+        f32 mag = std::sqrt(nx * nx + ny * ny);
+        if (mag < cfg.style.deadzone_frac) {
+            rt.out_x = rt.out_y = 0.0f;
+        } else {
+            f32 scale_out = (mag - cfg.style.deadzone_frac)
+                          / (1.0f - cfg.style.deadzone_frac) / mag;
+            rt.out_x = nx * scale_out;
+            rt.out_y = ny * scale_out;
+        }
+    };
+
     auto try_capture_touch = [&](u32 t, f32 fx, f32 fy) -> bool {
         if (!joystick_hit_test_point(cfg, fx, fy)) return false;
         rt.captured_id   = input.touch_id[t];
         rt.captured_slot = static_cast<i32>(t);
-        rt.base_cx = fx;
-        rt.base_cy = fy;
-        rt.knob_dx = rt.knob_dy = 0.0f;
+        compute_anchor(fx, fy, rt.base_cx, rt.base_cy);
+        apply_press_output(fx, fy);
         return true;
     };
     auto try_capture_mouse = [&](f32 fx, f32 fy) -> bool {
         if (!joystick_hit_test_point(cfg, fx, fy)) return false;
         rt.captured_id   = MOUSE_ID;
         rt.captured_slot = -1;
-        rt.base_cx = fx;
-        rt.base_cy = fy;
-        rt.knob_dx = rt.knob_dy = 0.0f;
+        compute_anchor(fx, fy, rt.base_cx, rt.base_cy);
+        apply_press_output(fx, fy);
         return true;
     };
 

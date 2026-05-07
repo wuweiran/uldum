@@ -84,6 +84,17 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     auto& sel   = ctx.selection;
     if (sel.empty()) return;
 
+    // Throttle MoveDirection submission. Cap above the sim tick rate
+    // (~32 Hz) so each tick reliably has a fresh order — throttling
+    // at or below the tick rate lets render-vs-tick phase drift skip
+    // some ticks, which reads as movement jitter. 40 Hz (25 ms)
+    // leaves margin while still cutting most of the redundant 60+ Hz
+    // render-rate emissions, and the `issue_order` combat-state
+    // thrash that comes with them.
+    constexpr auto MOVE_EMIT_INTERVAL = std::chrono::microseconds(25'000);  // 40 Hz
+    auto now = std::chrono::steady_clock::now();
+    if (now - m_last_move_emit < MOVE_EMIT_INTERVAL) return;
+
     glm::vec2 dir{0.0f, 0.0f};
     if (input.key_letter['W' - 'A']) dir.y += 1.0f;
     if (input.key_letter['S' - 'A']) dir.y -= 1.0f;
@@ -91,17 +102,19 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     if (input.key_letter['A' - 'A']) dir.x -= 1.0f;
 
     // Virtual stick — screen Y grows downward, world +Y is forward, so
-    // flip Y when folding the stick into movement. X maps 1:1. Stick
-    // magnitude already encodes speed (after deadzone rescale in
-    // joystick_update), so we add the raw components to the key input
-    // and only normalize when the sum exceeds unit length — keys +
-    // stick can't drive faster than full speed.
+    // flip Y when folding the stick into movement. X maps 1:1.
     dir.x += ctx.joystick_x;
     dir.y += -ctx.joystick_y;
 
     f32 mag = std::sqrt(dir.x * dir.x + dir.y * dir.y);
     if (mag < 0.001f) return;     // no input — emit nothing
-    if (mag > 1.0f)   dir /= mag;  // cap at unit length
+    // Always normalize: the sim treats `MoveDirection::dir`'s magnitude
+    // as a speed multiplier, but the Action preset's contract is "if
+    // moving, always at full speed." Partial joystick deflection (still
+    // above the deadzone) reads as full-speed direction; deflection
+    // below the deadzone produces zero output upstream and we've
+    // already returned above.
+    dir /= mag;
 
     // Don't translate input into MoveDirection while the lead unit is
     // committed to a cast. Phases:
@@ -129,26 +142,26 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
         }
     }
 
-    // Active intent in the unit's order queue takes precedence over
-    // the joystick. The HUD's drag-cast / attack-button taps write
-    // oq->current synchronously via issue_order this same render
-    // frame, before handle_movement runs. Without this gate, the
-    // joystick's MoveDirection would clobber the just-issued Cast /
-    // Attack / AttackMove on the next sim tick.
-    //
-    // Only checks while cast_state == None; once the sim begins
-    // processing a cast and enters MovingToTarget, the player driving
+    // Cast just queued this same render frame? The HUD's drag-cast (or
+    // an instant tap that landed on an earlier handler) writes
+    // oq->current synchronously via issue_order. The sim hasn't ticked
+    // yet, so cast_state is still None — emitting MoveDirection now
+    // would overwrite the Cast in oq before the cast pump ever sees
+    // it. Only relevant while cast_state == None; once the sim has
+    // begun processing and entered MovingToTarget, the player driving
     // the stick is meant to override the approach (and the cast_state
     // gate above already lets MovingToTarget through).
+    //
+    // Attack / AttackMove are intentionally NOT gated: in the Action
+    // preset, joystick movement is sovereign. A player walking past
+    // an enemy who taps attack mid-stride keeps walking; if they want
+    // the attack, they release the joystick. This matches the "tap
+    // doesn't lock you in place" feel of MOBA / action games.
     if (aset && aset->cast_state == simulation::CastState::None) {
         if (auto* oq = world.order_queues.get(lead.id)) {
-            if (oq->current.has_value()) {
-                const auto& payload = oq->current->payload;
-                if (std::get_if<simulation::orders::Cast>(&payload)       ||
-                    std::get_if<simulation::orders::Attack>(&payload)     ||
-                    std::get_if<simulation::orders::AttackMove>(&payload)) {
-                    return;
-                }
+            if (oq->current.has_value() &&
+                std::get_if<simulation::orders::Cast>(&oq->current->payload)) {
+                return;
             }
         }
     }
@@ -163,6 +176,7 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     cmd.units  = sel.selected();
     cmd.order  = simulation::orders::MoveDirection{dir};
     ctx.commands.submit(cmd);
+    m_last_move_emit = now;
 }
 
 // ── Ability targeting ────────────────────────────────────────────────────

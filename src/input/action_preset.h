@@ -2,6 +2,7 @@
 
 #include "input/input_preset.h"
 
+#include <chrono>
 #include <string>
 
 namespace uldum::input {
@@ -59,6 +60,15 @@ private:
     // Queued from HUD; flushed at end of update().
     std::string m_pending_ability;
     std::string m_pending_command;
+
+    // Last wall-clock time we submitted a MoveDirection. We skip
+    // emission until at least one sim tick (~31 ms) has passed since
+    // the last submit, so a 60+ Hz render loop doesn't re-issue the
+    // same order multiple times per tick. Avoids redundant work and,
+    // since `issue_order` resets combat state on every emit, also
+    // gives attacks tapped between ticks a chance to be visible
+    // before the next MoveDirection clobbers them.
+    std::chrono::steady_clock::time_point m_last_move_emit{};
 
     // Two-finger pan/pinch state, mirrors RtsPreset. Edge-triggered:
     // first frame with two fingers latches the reference centroid /
