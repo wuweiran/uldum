@@ -366,6 +366,10 @@ struct Hud::Impl {
     // Local player slot (UINT32_MAX = dedicated server, never used to render).
     u32 local_player = UINT32_MAX;
 
+    // hud.json's `"preset"` value — drives preset-specific HUD behavior
+    // (e.g. focus_target auto-acquire only runs for `"action"`).
+    std::string preset;
+
     // Focus target — Action-preset "who am I aiming abilities at" state.
     // Auto-acquired by `Hud::update_focus` from the local player's hero
     // each frame, or locked by `Hud::set_focus_target`.
@@ -872,6 +876,23 @@ static bool create_hud_image(Hud::Impl& s, const u8* rgba, u32 w, u32 h, HudImag
     return true;
 }
 
+// Destroy every cached HUD image and clear the map. Used on session
+// reset so a new map's same-named texture (e.g. two maps both shipping
+// `textures/icons/attack.ktx2`) doesn't read the previous map's GPU
+// texture out of the cache. Caller must hold the device-idle guarantee
+// (we don't vkDeviceWaitIdle here — sites that call this already do).
+static void destroy_hud_images(Hud::Impl& s) {
+    if (!s.rhi) { s.images.clear(); return; }
+    VkDevice device = s.rhi->device();
+    for (auto& [path, img] : s.images) {
+        if (!img) continue;
+        if (img->set)   vkFreeDescriptorSets(device, s.desc_pool, 1, &img->set);
+        if (img->view)  vkDestroyImageView(device, img->view, nullptr);
+        if (img->image) vmaDestroyImage(s.rhi->allocator(), img->image, img->alloc);
+    }
+    s.images.clear();
+}
+
 // Look up (or load + cache) a HudImage for `path`. On failure, caches a
 // null entry so subsequent calls don't re-try. Returns nullptr if the
 // asset is missing / fails to decode.
@@ -1234,6 +1255,16 @@ void Hud::reset_session_state() {
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
 
+    // Drop the cross-map icon / texture cache so a same-named texture
+    // in the next map (e.g. two maps both shipping
+    // `textures/icons/attack.ktx2`) doesn't pick up the previous map's
+    // GPU image out of the cache. We also need to free the underlying
+    // Vulkan resources, so wait for the device to be idle first.
+    if (s.rhi) {
+        vkDeviceWaitIdle(s.rhi->device());
+        destroy_hud_images(s);
+    }
+
     // Composite configs + runtime. The next map's hud.json reload
     // refills any composite it declares; clearing here ensures a
     // map that omits a composite doesn't inherit the previous map's
@@ -1291,6 +1322,9 @@ void Hud::reset_session_state() {
 
 void Hud::set_local_player(u32 player_id) {
     if (m_impl) m_impl->local_player = player_id;
+}
+void Hud::set_preset_name(std::string_view name) {
+    if (m_impl) m_impl->preset.assign(name);
 }
 u32 Hud::local_player() const {
     return m_impl ? m_impl->local_player : UINT32_MAX;
@@ -1561,6 +1595,13 @@ bool focus_visible(const WorldContext& ctx, glm::vec3 pos) {
 void Hud::update_focus(f32 /*dt*/) {
     if (!m_impl) return;
     auto& s = *m_impl;
+    // Focus_target is an Action-preset concept; RTS-style maps select
+    // and command via clicks and don't want a reticle following enemies.
+    if (s.preset != "action") {
+        s.focus_target_unit = simulation::Unit{};
+        s.focus_manual = false;
+        return;
+    }
     if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) return;
 
     const auto& world = *s.world_ctx->world;

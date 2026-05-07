@@ -80,6 +80,12 @@ public:
     void set_local_player(u32 player_id);
     u32  local_player() const;
 
+    // Preset name from hud.json's `"preset"` field (e.g. `"action"`,
+    // `"rts"`). Stored so HUD-side per-frame logic that's preset-specific
+    // (currently: focus_target auto-acquire) can gate itself instead of
+    // running for every map.
+    void set_preset_name(std::string_view name);
+
     // Real-world-sized HUD authoring. The canonical unit is Android's
     // `dp` (1 dp = 1/160 inch). Every `"w": 50` in hud.json renders at
     // 50/160 inch on any device, regardless of resolution or density.

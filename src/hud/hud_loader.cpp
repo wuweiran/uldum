@@ -200,7 +200,9 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
     (void)root;
 
     if (auto preset = doc.find("preset"); preset != doc.end() && preset->is_string()) {
-        log::info(TAG, "hud preset: '{}'", preset->get<std::string>());
+        const auto pname = preset->get<std::string>();
+        log::info(TAG, "hud preset: '{}'", pname);
+        hud.set_preset_name(pname);
     }
 
     // composites block — engine-authored node groups: `action_bar`,
