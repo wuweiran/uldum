@@ -361,6 +361,25 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                         oq->current = std::move(oq->queued.front());
                         oq->queued.pop_front();
                     }
+                } else {
+                    // Follow in range: keep turning to face the followed
+                    // target. The next tick's re-path immediately flips
+                    // has_waypoint back on, which short-circuits the
+                    // existing "face toward goal when no waypoint" block
+                    // — so we update facing here, before the `continue`.
+                    glm::vec2 to_goal = goal2d - pos2d;
+                    f32 d = glm::length(to_goal);
+                    if (d > 1.0f) {
+                        f32 desired = std::atan2(to_goal.y, to_goal.x);
+                        f32 diff = angle_diff(transform->facing, desired);
+                        f32 max_turn = mov.turn_rate * dt;
+                        if (std::abs(diff) > max_turn) {
+                            transform->facing += (diff > 0 ? max_turn : -max_turn);
+                        } else {
+                            transform->facing = desired;
+                        }
+                        transform->facing = normalize_angle(transform->facing);
+                    }
                 }
                 continue;
             }
