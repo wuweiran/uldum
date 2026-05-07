@@ -23,6 +23,7 @@ public:
     void update(const InputContext& ctx, f32 dt) override;
 
     void queue_ability(std::string_view ability_id) override;
+    void queue_command(std::string_view command_id) override;
     std::string_view targeting_ability_id() const override {
         return m_targeting_ability ? std::string_view{m_targeting_ability_id}
                                     : std::string_view{};
@@ -36,6 +37,10 @@ private:
     // consumed click — otherwise the no-WASD frame would emit a Stop
     // and override the Cast we just issued.
     bool handle_targeting(const InputContext& ctx);
+    // Left-click in the world (no ability armed, not over UI) sets the
+    // HUD's focus_target manually. Hitting an enemy locks focus on it;
+    // hitting empty terrain releases the lock so auto-acquire resumes.
+    void handle_focus_click(const InputContext& ctx);
     void handle_camera_gestures(const InputContext& ctx);
     void handle_camera_follow(const InputContext& ctx);
 
@@ -53,6 +58,7 @@ private:
 
     // Queued from HUD; flushed at end of update().
     std::string m_pending_ability;
+    std::string m_pending_command;
 
     // Two-finger pan/pinch state, mirrors RtsPreset. Edge-triggered:
     // first frame with two fingers latches the reference centroid /

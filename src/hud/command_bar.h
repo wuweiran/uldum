@@ -17,6 +17,7 @@
 #include "hud/hud.h"
 #include "hud/layout.h"
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,12 @@ struct CommandBarSlot {
     bool hovered = false;
     bool pressed = false;
     bool hotkey_prev_down = false;
+
+    // A quick desktop click can flip `pressed` to true and back to
+    // false in a single frame, leaving the press visual invisible.
+    // Set this to (now + ~80 ms) on press so the bar render keeps the
+    // pressed look long enough for the player to see "click landed".
+    std::chrono::steady_clock::time_point press_pulse_until{};
 };
 
 struct CommandBarStyle {
@@ -64,10 +71,19 @@ struct CommandBarStyle {
     f32   armed_border_width = 3.0f;
 };
 
+// Style families. Classic = the WC3-ish rectangular grid. Round = circular
+// buttons (one big primary + smaller satellites work well for an Action /
+// MOBA layout, mobile or otherwise).
+enum class CommandBarStyleId : u8 {
+    ClassicRts = 0,
+    Round      = 1,
+};
+
 struct CommandBarConfig {
     bool enabled = false;
     Rect      rect{};
     Placement placement{};
+    CommandBarStyleId style_id = CommandBarStyleId::ClassicRts;
     CommandBarStyle style;
     std::vector<CommandBarSlot> slots;
 };

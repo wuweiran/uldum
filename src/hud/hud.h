@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "simulation/handle_types.h"  // simulation::Unit
 
 #include <glm/vec3.hpp>
 #include <nlohmann/json_fwd.hpp>
@@ -270,6 +271,24 @@ public:
     // Called once per frame before draw_world_overlays; expired tags
     // (`age >= lifespan` with `lifespan > 0`) are released.
     void update_text_tags(f32 dt);
+
+    // ── Focus target (Action preset) ─────────────────────────────────────
+    // Local-only "who is the player aiming abilities at" state. Lives in
+    // HUD because (a) it drives a reticle, (b) it's read by tap-fire
+    // ability resolution, and (c) it's per-client view, never sim state.
+    // Two modes:
+    //   • Auto    — re-acquired each frame from the local player's hero:
+    //               nearest visible enemy in the hero's facing cone within
+    //               an auto-target range; sticks until current focus dies,
+    //               leaves sight, or exceeds the lost-auto-target range.
+    //   • Manual  — locked by `set_focus_target`; skips all auto rules
+    //               (cone, range), only drops on death / out-of-sight.
+    // Call once per frame from the app loop; cheap (no sim impact).
+    void           update_focus(f32 dt);
+    simulation::Unit focus_target() const;
+    bool           focus_is_manual() const;
+    void           set_focus_target(simulation::Unit unit);
+    void           clear_focus_target();
 
     // ── Text tags ────────────────────────────────────────────────────────
     // WC3-style floating / persistent text. Engine-side API — Lua

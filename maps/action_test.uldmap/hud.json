@@ -38,8 +38,31 @@
       "cancel_zone": { "anchor": "br", "x": -16, "y": -236, "w": 60, "h": 60 }
     },
 
+    "command_bar": {
+      "anchor": "br", "x": -16, "y": -16, "w": 120, "h": 120,
+      "style": "round",
+      "style_params": {
+        "hotkey_color":      "#F0F0F0FF",
+        "hotkey_badge_bg":   "#000000B4",
+        "armed_border_color":"#FFD600FF",
+        "armed_border_width":3
+      },
+      "slot_style": {
+        "bg":           "#2C3242B0",
+        "hover_bg":     "#444A5EC8",
+        "press_bg":     "#6E7894E0",
+        "border_color": "#000000A0",
+        "border_width": 2
+      },
+
+      "slots": [
+        { "anchor": "br", "x": 0, "y": 0, "w": 100, "h": 100,
+          "command": "attack", "icon": "textures/icons/attack.ktx2", "hotkey": "A" }
+      ]
+    },
+
     "minimap": {
-      "anchor": "tl", "x": 10, "y": 10, "w": 160, "h": 160,
+      "anchor": "tl", "x": 10, "y": 10, "w": 144, "h": 144,
       "style": "classic_rts",
       "style_params": {
         "bg":              "#0C0E14E6",

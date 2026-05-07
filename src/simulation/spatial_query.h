@@ -19,6 +19,7 @@ class Simulation;
 struct UnitFilter {
     Player      owner;                          // only units owned by this player (invalid = any)
     Player      enemy_of;                       // only units NOT allied with this player (invalid = any)
+    Player      visible_to;                     // only units this player can currently see (invalid = any)
     std::vector<std::string> classifications;   // unit must have ALL of these flags
     bool        alive_only = true;              // only living units
     bool        exclude_buildings = false;       // skip units with "structure" classification

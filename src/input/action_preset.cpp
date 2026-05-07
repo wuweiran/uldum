@@ -1,6 +1,8 @@
 #include "input/action_preset.h"
+#include "hud/hud.h"
 #include "simulation/order.h"
 #include "simulation/ability_def.h"
+#include "simulation/world.h"
 #include "core/log.h"
 
 #include <cmath>
@@ -17,6 +19,7 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
     // ability flushes last; camera follow runs after so it sees any
     // position change the tick will produce.
     bool click_consumed = handle_targeting(ctx);
+    if (!click_consumed) handle_focus_click(ctx);
     if (!click_consumed) handle_movement(ctx);
 
     if (!m_pending_ability.empty()) {
@@ -25,12 +28,49 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
         dispatch_ability(ctx, id, false);
     }
 
+    if (!m_pending_command.empty()) {
+        std::string id = std::move(m_pending_command);
+        m_pending_command.clear();
+        // Action preset's command bar fires through here. Targets resolve
+        // via the HUD's focus_target so a tap on "Attack" switches the
+        // unit to whatever the reticle is on. Without focus we drop the
+        // command — desktop attack-targeting via "click slot, then click
+        // world" isn't part of the Action preset's mental model.
+        if (id == "stop") {
+            GameCommand cmd;
+            cmd.player = ctx.selection.player();
+            cmd.units  = ctx.selection.selected();
+            cmd.order  = simulation::orders::Stop{};
+            ctx.commands.submit(cmd);
+        } else if (id == "hold_position") {
+            GameCommand cmd;
+            cmd.player = ctx.selection.player();
+            cmd.units  = ctx.selection.selected();
+            cmd.order  = simulation::orders::HoldPosition{};
+            ctx.commands.submit(cmd);
+        } else if ((id == "attack" || id == "attack_move") && ctx.hud) {
+            auto focus = ctx.hud->focus_target();
+            if (focus.is_valid() && ctx.simulation.world().validate(focus) &&
+                !ctx.selection.empty()) {
+                GameCommand cmd;
+                cmd.player = ctx.selection.player();
+                cmd.units  = ctx.selection.selected();
+                cmd.order  = simulation::orders::Attack{focus};
+                ctx.commands.submit(cmd);
+            }
+        }
+    }
+
     handle_camera_gestures(ctx);
     handle_camera_follow(ctx);
 }
 
 void ActionPreset::queue_ability(std::string_view ability_id) {
     m_pending_ability.assign(ability_id);
+}
+
+void ActionPreset::queue_command(std::string_view command_id) {
+    m_pending_command.assign(command_id);
 }
 
 // ── Movement ─────────────────────────────────────────────────────────────
@@ -173,6 +213,35 @@ bool ActionPreset::handle_targeting(const InputContext& ctx) {
         m_targeting_ability_id.clear();
     }
     return false;
+}
+
+// ── Focus-target world-click ─────────────────────────────────────────────
+// When no ability is armed, a left-click in the world either locks focus
+// on the clicked unit (manual override) or releases the lock by clicking
+// empty terrain. The reticle + tap-fire ability resolution both read
+// HUD-side focus_target.
+
+void ActionPreset::handle_focus_click(const InputContext& ctx) {
+    if (m_targeting_ability) return;            // armed cast owns the click
+    if (ctx.hud_captured) return;               // pointer is over a HUD widget
+    if (!ctx.hud) return;                       // no HUD = no focus state to set
+    auto& input = ctx.input;
+    if (!input.mouse_left_pressed) return;
+
+    // Pick a unit at the click point. The picker returns an invalid
+    // handle if no unit was hit (terrain or void).
+    auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+    if (target.is_valid()) {
+        // Don't lock focus on the hero itself — useless and would make
+        // the reticle sit on the player.
+        auto& sel = ctx.selection;
+        if (!sel.empty() && target.id == sel.selected().front().id) return;
+        ctx.hud->set_focus_target(target);
+    } else {
+        // Click on empty terrain — release any manual lock so auto
+        // resumes choosing.
+        ctx.hud->clear_focus_target();
+    }
 }
 
 // ── Camera gestures ──────────────────────────────────────────────────────

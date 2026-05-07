@@ -1343,6 +1343,7 @@ void App::run() {
                     m_hud.joystick_active(),
                     preset_alpha,
                     jx, jy,
+                    &m_hud,
                     [this](simulation::Unit unit, glm::vec3 pos,
                            input::InputContext::TargetPingKind kind) {
                         m_target_ping.unit     = unit;
@@ -1481,6 +1482,43 @@ void App::run() {
                                                      is_local ? kColorLocal : kColorOther,
                                                      TexId::SelectionRing);
                             ++emitted;
+                        }
+                    }
+
+                    // ── Focus target reticle ─────────────────────────
+                    // Draws under the hero's current focus target (Action
+                    // preset auto/manual lock — see Hud::update_focus).
+                    // Sits OUTSIDE the unit's selection radius so it
+                    // doesn't fight the selection ring visually.
+                    if (terrain) {
+                        auto focus = m_hud.focus_target();
+                        if (focus.is_valid() && world.validate(focus)) {
+                            const auto* tf  = world.transforms.get(focus.id);
+                            const auto* sel = world.selectables.get(focus.id);
+                            if (tf) {
+                                glm::vec3 ip = tf->interp_position(alpha);
+                                f32 base_r = (sel && sel->selection_radius > 0.0f)
+                                                ? sel->selection_radius : 48.0f;
+                                f32 ring_r = base_r * 1.20f;
+                                constexpr u32 kSamples = 48;
+                                constexpr f32 kStroke  = 5.0f;
+                                // Manual lock = solid orange; auto = lighter
+                                // amber so the player sees which mode is on.
+                                glm::vec4 color = m_hud.focus_is_manual()
+                                    ? glm::vec4{1.00f, 0.55f, 0.10f, 0.95f}
+                                    : glm::vec4{1.00f, 0.78f, 0.30f, 0.70f};
+                                std::vector<glm::vec3> samples;
+                                samples.reserve(kSamples + 1);
+                                for (u32 i = 0; i <= kSamples; ++i) {
+                                    f32 a  = (static_cast<f32>(i % kSamples) / kSamples) * 6.28318530718f;
+                                    f32 sx = ip.x + ring_r * std::cos(a);
+                                    f32 sy = ip.y + ring_r * std::sin(a);
+                                    f32 sz = map::sample_height(*terrain, sx, sy);
+                                    samples.push_back({sx, sy, sz});
+                                }
+                                m_world_overlays.add_path(samples, kStroke, color,
+                                                         TexId::SelectionRing);
+                            }
                         }
                     }
 
@@ -1736,6 +1774,7 @@ void App::run() {
                 // build + render the draw list.
                 {
                     m_hud.update_text_tags(frame_dt);
+                    m_hud.update_focus(frame_dt);
                     m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
                     // World-anchored HUD layer first — entity HP bars,
                     // name labels, floating damage numbers. They live

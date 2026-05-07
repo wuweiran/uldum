@@ -1,6 +1,8 @@
 #include "simulation/spatial_query.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
+#include "simulation/fog_of_war.h"
+#include "map/terrain_data.h"
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
@@ -105,6 +107,27 @@ bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter&
     if (filter.exclude_buildings) {
         auto* cls = world.classifications.get(unit.id);
         if (cls && has_classification(cls->flags, "structure")) return false;
+    }
+
+    // Visibility check: skip units the named player can't see right now
+    // (in fog of war or unexplored). Skipped when fog is disabled, when
+    // we have no Simulation handle, or when terrain isn't ready.
+    if (filter.visible_to.is_valid() && m_sim) {
+        const auto& fog = m_sim->fog();
+        const auto* terrain = m_sim->terrain();
+        if (fog.enabled() && terrain && terrain->is_valid() && terrain->tile_size > 0.0f) {
+            auto* tf = world.transforms.get(unit.id);
+            if (!tf) return false;
+            f32 ts = terrain->tile_size;
+            i32 tx = static_cast<i32>((tf->position.x - terrain->origin_x()) / ts);
+            i32 ty = static_cast<i32>((tf->position.y - terrain->origin_y()) / ts);
+            if (tx < 0 || ty < 0 ||
+                static_cast<u32>(tx) >= terrain->tiles_x ||
+                static_cast<u32>(ty) >= terrain->tiles_y) return false;
+            if (!fog.is_visible(filter.visible_to,
+                                static_cast<u32>(tx),
+                                static_cast<u32>(ty))) return false;
+        }
     }
 
     // Custom predicate

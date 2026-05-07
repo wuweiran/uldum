@@ -593,7 +593,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;
-                    filter.enemy_of = owner->player;
+                    filter.enemy_of   = owner->player;
+                    filter.visible_to = owner->player;  // skip fogged / unexplored
                     filter.alive_only = true;
                     auto enemies = grid.units_in_range(world, transform->position, acquire_r, filter);
                     Unit best;

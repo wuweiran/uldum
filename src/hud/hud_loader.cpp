@@ -410,6 +410,17 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
             cfg.placement.h      = cb->value("h", 0.0f);
             cfg.rect = resolve(viewport_rect, cfg.placement);
 
+            if (auto sid = cb->find("style"); sid != cb->end() && sid->is_string()) {
+                const std::string s = sid->get<std::string>();
+                if (s == "classic_rts") {
+                    cfg.style_id = CommandBarStyleId::ClassicRts;
+                } else if (s == "round") {
+                    cfg.style_id = CommandBarStyleId::Round;
+                } else {
+                    log::warn(TAG, "command_bar: unknown style '{}', using classic_rts", s);
+                }
+            }
+
             if (auto sp = cb->find("style_params"); sp != cb->end() && sp->is_object()) {
                 if (auto v = sp->find("bg");               v != sp->end()) cfg.style.bg              = parse_color(*v);
                 if (auto v = sp->find("hotkey_color");     v != sp->end()) cfg.style.hotkey_color    = parse_color(*v);

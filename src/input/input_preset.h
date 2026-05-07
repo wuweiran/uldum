@@ -15,6 +15,8 @@
 #include <memory>
 #include <string_view>
 
+namespace uldum::hud { class Hud; }
+
 namespace uldum::input {
 
 // Everything an input preset needs to do its job.
@@ -60,6 +62,12 @@ struct InputContext {
     // quadrant.
     f32 joystick_x = 0.0f;
     f32 joystick_y = 0.0f;
+
+    // Optional HUD handle for presets that maintain HUD-side state
+    // (Action preset's focus_target lives in HUD, not the sim, since
+    // it's purely a local view concept). May be null on dedicated
+    // server / non-rendering paths.
+    hud::Hud* hud = nullptr;
 
     // Callback fired when a right-click resolves to a unit / item /
     // destructable / ground-attack-move target. The app uses it to

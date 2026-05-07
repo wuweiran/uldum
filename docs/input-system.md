@@ -244,9 +244,26 @@ target_point forms) or instant-casts (for no-target / toggle forms).
 
 ### Action Preset
 
-Single-hero, direct-control. Preset `"action_rpg"` in `manifest.json`. Targeting
-is **explicit and persistent** for v1 — soft-target (Diablo) and lock-on
-(Souls-like) are out of scope.
+Single-hero, direct-control. Preset `"action_rpg"` in `manifest.json`.
+
+**Auto-target (planned).** The hero carries a `focus_target` field, separate
+from `combat.target` (which still owns attack swings). It's the unit the hero
+is "aiming abilities at." Two modes:
+
+- **Auto.** While the player hasn't manually picked one, the sim re-acquires
+  every time the hero moves: nearest visible enemy in the hero's facing cone,
+  within an *auto-target range*. Drops the current focus when it dies, leaves
+  the hero's sight, or exceeds a separate (larger) *lost-auto-target range* —
+  then re-acquires next eligible.
+- **Manual lock.** Player clicks an enemy in the world (Action preset only,
+  no ability armed) → focus locks to that unit. Locked focus skips all auto
+  rules (cone, range, sight) and stays put until the unit dies or the player
+  clicks empty terrain to release.
+
+Tap-fire on a targetable ability resolves through `focus_target`; if the
+ability's `target_filter` doesn't match (e.g. heal on an enemy focus),
+re-snap once at cast time. Drag-cast still overrides per-tap. A `reticle`
+HUD composite (configured in `hud.json`) draws on `focus_target`'s position.
 
 | Aspect | Behavior |
 |---|---|

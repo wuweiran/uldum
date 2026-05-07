@@ -76,6 +76,14 @@ static bool is_castable_form(simulation::AbilityForm f);
 // draw command-icon content (vs. leaving the slot frame blank).
 static bool command_bar_slots_active(const Hud::Impl& s);
 
+// Disc / ring-arc primitives — defined further down with the other
+// circle-drawing helpers, but the round command-bar style needs them
+// before that point.
+static void draw_disc(Hud::Impl& s, f32 cx, f32 cy, f32 radius, Color color);
+static void draw_ring_arc(Hud::Impl& s, f32 cx, f32 cy,
+                          f32 r_outer, f32 r_inner,
+                          f32 start_angle, f32 sweep, Color color);
+
 // Forward decls for inventory helpers — defined alongside
 // `draw_inventory` but used by `Hud::handle_right_click` further
 // up in the file.
@@ -357,6 +365,12 @@ struct Hud::Impl {
 
     // Local player slot (UINT32_MAX = dedicated server, never used to render).
     u32 local_player = UINT32_MAX;
+
+    // Focus target — Action-preset "who am I aiming abilities at" state.
+    // Auto-acquired by `Hud::update_focus` from the local player's hero
+    // each frame, or locked by `Hud::set_focus_target`.
+    simulation::Unit focus_target_unit{};
+    bool             focus_manual = false;
 
     // Text tag pool. Slot-based with per-slot generation counter for
     // handle validation. Destroyed tags leave alive=false and bump
@@ -1217,6 +1231,8 @@ void Hud::reset_session_state() {
     s.minimap_dragging           = false;
     s.inventory_hover_slot       = -1;
     s.inventory_pressed_slot     = -1;
+    s.focus_target_unit          = simulation::Unit{};
+    s.focus_manual               = false;
 
     // Composite configs + runtime. The next map's hud.json reload
     // refills any composite it declares; clearing here ensures a
@@ -1511,6 +1527,170 @@ void Hud::draw_world_overlays(f32 alpha) {
                               *m_impl->world_ctx,
                               alpha);
     draw_text_tags(*this, *m_impl, *m_impl->world_ctx, alpha);
+}
+
+// ── Focus target ──────────────────────────────────────────────────────────
+// Auto-acquired each frame from the local player's hero (or locked by an
+// explicit set_focus_target). v1 constants are hard-coded; can be moved
+// to hud.json later if maps want per-style tuning.
+
+namespace {
+constexpr f32 FOCUS_CONE_HALF_ANGLE   = 1.0472f;   // 60° → 120° cone in front
+constexpr f32 FOCUS_AUTO_RANGE        = 800.0f;    // pick within this distance
+constexpr f32 FOCUS_LOST_RANGE        = 1200.0f;   // drop if existing focus farther
+
+// Tile-coord visibility check shared with the rest of the HUD's world
+// queries. Returns true when fog is disabled / terrain isn't ready, so
+// pre-fog or test maps don't accidentally hide everything.
+bool focus_visible(const WorldContext& ctx, glm::vec3 pos) {
+    if (!ctx.fog || !ctx.terrain || !ctx.terrain->is_valid()) return true;
+    f32 ts = ctx.terrain->tile_size;
+    if (ts <= 0.0f) return true;
+    if (!ctx.fog->enabled()) return true;
+    i32 tx = static_cast<i32>((pos.x - ctx.terrain->origin_x()) / ts);
+    i32 ty = static_cast<i32>((pos.y - ctx.terrain->origin_y()) / ts);
+    if (tx < 0 || ty < 0 ||
+        static_cast<u32>(tx) >= ctx.terrain->tiles_x ||
+        static_cast<u32>(ty) >= ctx.terrain->tiles_y) return false;
+    return ctx.fog->is_visible(ctx.local_player,
+                               static_cast<u32>(tx),
+                               static_cast<u32>(ty));
+}
+} // namespace
+
+void Hud::update_focus(f32 /*dt*/) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+    if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) return;
+
+    const auto& world = *s.world_ctx->world;
+    const auto& sel   = *s.world_ctx->selection;
+
+    // Hero = the local player's lead selected unit. Action preset locks
+    // selection to the hero; for RTS-style multi-select this still picks
+    // the first slot, which matches the existing convention.
+    if (sel.empty()) {
+        s.focus_target_unit = simulation::Unit{};
+        s.focus_manual = false;
+        return;
+    }
+    auto hero = sel.selected().front();
+    if (!world.validate(hero)) {
+        s.focus_target_unit = simulation::Unit{};
+        s.focus_manual = false;
+        return;
+    }
+    auto* hero_tf = world.transforms.get(hero.id);
+    auto* hero_owner = world.owners.get(hero.id);
+    if (!hero_tf || !hero_owner) return;
+    glm::vec3 hp = hero_tf->position;
+
+    // Validate the current focus first. Both auto and manual share the
+    // alive + visible checks; they differ only on the range condition.
+    auto focus_alive_and_visible = [&](simulation::Unit u, glm::vec3& out_pos) -> bool {
+        if (!u.is_valid() || !world.validate(u)) return false;
+        auto* hp = world.healths.get(u.id);
+        if (hp && hp->current <= 0) return false;
+        auto* tf = world.transforms.get(u.id);
+        if (!tf) return false;
+        if (!focus_visible(*s.world_ctx, tf->position)) return false;
+        out_pos = tf->position;
+        return true;
+    };
+
+    if (s.focus_manual) {
+        glm::vec3 fp;
+        if (!focus_alive_and_visible(s.focus_target_unit, fp)) {
+            // Manual lock broken — clear and fall through to auto re-acquire.
+            s.focus_target_unit = simulation::Unit{};
+            s.focus_manual = false;
+        } else {
+            return;  // manual still good, no auto eval
+        }
+    }
+
+    // Cone vectors used by both the retain and re-acquire checks below.
+    f32 cosf_half = std::cos(FOCUS_CONE_HALF_ANGLE);
+    f32 hero_dx   = std::cos(hero_tf->facing);
+    f32 hero_dy   = std::sin(hero_tf->facing);
+
+    // Auto: keep existing focus if alive, visible, within lost range, AND
+    // still inside the hero's facing cone. The cone gate is what makes
+    // turning the hero re-acquire — without it, focus would stay locked
+    // on a target that's now behind you.
+    glm::vec3 cur_pos;
+    if (focus_alive_and_visible(s.focus_target_unit, cur_pos)) {
+        glm::vec3 d = cur_pos - hp;
+        f32 d2 = d.x * d.x + d.y * d.y;
+        if (d2 <= FOCUS_LOST_RANGE * FOCUS_LOST_RANGE) {
+            f32 dlen = std::sqrt(d2);
+            if (dlen < 0.001f) return;  // standing on focus — keep
+            f32 dot = (d.x * hero_dx + d.y * hero_dy) / dlen;
+            if (dot >= cosf_half) {
+                return;  // sticky — current auto focus still valid
+            }
+        }
+    }
+
+    // Re-acquire: nearest visible enemy in the hero's facing cone within
+    // FOCUS_AUTO_RANGE. Cheap O(N) over alive enemies — N is small for
+    // the test maps; if it grows, switch to the spatial grid.
+    simulation::Unit best;
+    f32 best_d2 = FOCUS_AUTO_RANGE * FOCUS_AUTO_RANGE;
+
+    for (u32 i = 0; i < world.transforms.count(); ++i) {
+        u32 id = world.transforms.ids()[i];
+        if (id == hero.id) continue;
+        auto* h = world.healths.get(id);
+        if (!h || h->current <= 0) continue;
+        auto* o = world.owners.get(id);
+        if (!o) continue;
+        // Enemy filter — same alliance check the spatial grid uses.
+        if (s.world_ctx->simulation
+            ? s.world_ctx->simulation->is_allied(hero_owner->player, o->player)
+            : (o->player == hero_owner->player)) {
+            continue;
+        }
+        const auto& etf = world.transforms.data()[i];
+        glm::vec3 dv = etf.position - hp;
+        f32 d2 = dv.x * dv.x + dv.y * dv.y;
+        if (d2 > best_d2) continue;
+        f32 dlen = std::sqrt(d2);
+        if (dlen < 0.001f) continue;
+        // Cone test: dot(forward, normalize(to_target)) >= cos(half_angle)
+        f32 dot = (dv.x * hero_dx + dv.y * hero_dy) / dlen;
+        if (dot < cosf_half) continue;
+        if (!focus_visible(*s.world_ctx, etf.position)) continue;
+        simulation::Unit cand{ id, o->player.id };  // owner.id != generation; fix below
+        // Resolve generation for a stable handle.
+        if (auto* hi = world.handle_infos.get(id)) {
+            cand.generation = hi->generation;
+        }
+        best = cand;
+        best_d2 = d2;
+    }
+
+    s.focus_target_unit = best;  // invalid handle = "no focus"
+}
+
+simulation::Unit Hud::focus_target() const {
+    return m_impl ? m_impl->focus_target_unit : simulation::Unit{};
+}
+
+bool Hud::focus_is_manual() const {
+    return m_impl && m_impl->focus_manual;
+}
+
+void Hud::set_focus_target(simulation::Unit unit) {
+    if (!m_impl) return;
+    m_impl->focus_target_unit = unit;
+    m_impl->focus_manual = unit.is_valid();
+}
+
+void Hud::clear_focus_target() {
+    if (!m_impl) return;
+    m_impl->focus_target_unit = simulation::Unit{};
+    m_impl->focus_manual = false;
 }
 
 // ── Text tags ─────────────────────────────────────────────────────────────
@@ -1874,11 +2054,82 @@ static bool command_bar_slots_active(const Hud::Impl& s) {
     return own && own->player.id == s.world_ctx->local_player.id;
 }
 
+// Round-button command bar. Each slot is a disc; otherwise mirrors the
+// classic style's hover/press/armed/icon/hotkey treatment. Pairs nicely
+// with an Action-preset layout where you want a big primary action
+// (attack) plus a few smaller satellites.
+static void draw_command_bar_round(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.command_bar_cfg;
+
+    bool slots_active = command_bar_slots_active(s);
+    const std::string& armed = s.command_bar_armed_command;
+    auto now = std::chrono::steady_clock::now();
+
+    for (const auto& slot : cfg.slots) {
+        if (!slot.visible) continue;
+        bool is_armed = slots_active && (!armed.empty() && slot.command == armed);
+        // The pulse keeps the press visual on for ~80 ms after a click
+        // so a one-frame mouse_down → mouse_up still reads as "I clicked".
+        bool press_visual = slot.pressed || now < slot.press_pulse_until;
+
+        f32 cx = slot.rect.x + slot.rect.w * 0.5f;
+        f32 cy = slot.rect.y + slot.rect.h * 0.5f;
+        f32 button_r = std::min(slot.rect.w, slot.rect.h) * 0.5f - slot.style.border_width;
+        if (button_r <= 0.0f) button_r = std::min(slot.rect.w, slot.rect.h) * 0.5f;
+
+        Color bg = slot.style.bg;
+        if (slots_active && press_visual)      bg = slot.style.press_bg;
+        else if (is_armed)                     bg = slot.style.press_bg;
+        else if (slots_active && slot.hovered) bg = slot.style.hover_bg;
+        draw_disc(s, cx, cy, button_r, bg);
+
+        if (slots_active && !slot.icon.empty()) {
+            hud.draw_image_disc(cx, cy, button_r, slot.icon);
+        }
+
+        // Border ring. Armed state takes the bar-wide accent color +
+        // thicker stroke, matching the classic style's behavior.
+        Color border_color = slot.style.border_color;
+        f32   border_w     = slot.style.border_width;
+        if (is_armed) {
+            border_color = cfg.style.armed_border_color;
+            border_w     = cfg.style.armed_border_width;
+        }
+        if (border_w > 0.0f && (border_color.rgba >> 24) != 0) {
+            f32 r_outer = button_r + border_w;
+            draw_ring_arc(s, cx, cy, r_outer, button_r, 0.0f, 6.2831853f, border_color);
+        }
+
+        if (slots_active && !slot.hotkey.empty()) {
+            f32 px_size = button_r * 0.45f;
+            if (px_size < 10.0f) px_size = 10.0f;
+            f32 text_w = hud.text_width_px(slot.hotkey, px_size);
+            f32 ascent = hud.text_ascent_px(px_size);
+            f32 x_left = cx + button_r * 0.55f - text_w * 0.5f;
+            f32 y_base = cy - button_r * 0.55f + ascent * 0.5f;
+            if ((cfg.style.hotkey_badge_bg.rgba >> 24) != 0) {
+                f32 pad_x = 3.0f, pad_y = 1.0f;
+                Rect bg_pill{
+                    x_left - pad_x, y_base - ascent - pad_y,
+                    text_w + pad_x * 2.0f, ascent + pad_y * 2.0f,
+                };
+                hud.draw_rect(bg_pill, cfg.style.hotkey_badge_bg);
+            }
+            hud.draw_text(x_left, y_base, slot.hotkey, cfg.style.hotkey_color, px_size);
+        }
+    }
+}
+
 static void draw_command_bar(Hud& hud, Hud::Impl& s) {
     const auto& cfg = s.command_bar_cfg;
     if (!cfg.enabled || !s.command_bar_rt.visible) return;
 
     if ((cfg.style.bg.rgba >> 24) != 0) hud.draw_rect(cfg.rect, cfg.style.bg);
+
+    if (cfg.style_id == CommandBarStyleId::Round) {
+        draw_command_bar_round(hud, s);
+        return;
+    }
 
     // Bar bg + slot frames always render. Slot CONTENT (icon, hotkey
     // badge, armed border) is gated — when no own unit is selected,
@@ -2593,19 +2844,69 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     }
 
     bool commit = (s.drag_cast.phase == Phase::Aiming);
-    // Pressed release for abilities — finger never left the slot rect.
-    // Player's mental model is "tap ability → it casts"; only the
-    // explicit cancel zone should cancel. TargetUnit needs a snapped
-    // target (filtered out below); TargetPoint commits at the drag
-    // world, which equals the caster's feet for a stationary press
-    // (sensible default for self-AoEs like Consecration).
-    // Commands aren't promoted — a tap on Move with no direction is
-    // genuinely ambiguous and should cancel.
-    if (!commit && !is_command && s.drag_cast.phase == Phase::Pressed) {
-        if (s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
-            s.drag_cast.snapped_target.is_valid()) {
+
+    // Tap-fire on a command (attack / attack_move / move) — only the
+    // attack family resolves through focus_target. A tap on Move with
+    // no drag direction is still genuinely ambiguous and stays a no-op.
+    if (!commit && is_command && s.drag_cast.phase == Phase::Pressed) {
+        if ((s.drag_cast.command_id == "attack" ||
+             s.drag_cast.command_id == "attack_move") &&
+            s.focus_target_unit.is_valid() && s.world_ctx && s.world_ctx->world &&
+            s.world_ctx->world->validate(s.focus_target_unit)) {
+            // Skip the alliance check — the command system handles
+            // friendly-fire rules at issue time. We just need a target
+            // handle to forward.
+            s.drag_cast.snapped_target = s.focus_target_unit;
+            if (auto* tf = s.world_ctx->world->transforms.get(
+                               s.focus_target_unit.id)) {
+                s.drag_cast.drag_world_x = tf->position.x;
+                s.drag_cast.drag_world_y = tf->position.y;
+                s.drag_cast.drag_world_z = tf->position.z;
+            }
             commit = true;
+        }
+    }
+
+    // Pressed release for abilities — finger never left the slot rect.
+    // Player's mental model is "tap ability → it casts" at the auto/
+    // manual focus_target. We prefer focus_target over the on-press
+    // local snap so a tap honors the player's lock; only the explicit
+    // cancel zone should cancel.
+    if (!commit && !is_command && s.drag_cast.phase == Phase::Pressed) {
+        // Resolve focus_target through the ability's target_filter so
+        // a heal-on-enemy focus falls back to the local snap instead
+        // of casting on something the spell can't touch.
+        bool focus_usable = false;
+        if (s.focus_target_unit.is_valid() && s.world_ctx && s.world_ctx->world &&
+            s.world_ctx->world->validate(s.focus_target_unit)) {
+            const auto* def = s.world_ctx->abilities
+                                ? s.world_ctx->abilities->get(s.drag_cast.ability_id)
+                                : nullptr;
+            if (def && s.world_ctx->simulation) {
+                focus_usable = s.world_ctx->simulation->target_filter_passes(
+                    def->target_filter, s.drag_cast.caster, s.focus_target_unit);
+            }
+        }
+
+        if (s.drag_cast.form == simulation::AbilityForm::TargetUnit) {
+            if (focus_usable) {
+                s.drag_cast.snapped_target = s.focus_target_unit;
+                commit = true;
+            } else if (s.drag_cast.snapped_target.is_valid()) {
+                commit = true;
+            }
         } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
+            // For AoE casts, drop the indicator on the focus target's
+            // position so a tap-and-fire feels like "this enemy gets
+            // hit" rather than always landing under the caster.
+            if (focus_usable) {
+                if (auto* tf = s.world_ctx->world->transforms.get(
+                                   s.focus_target_unit.id)) {
+                    s.drag_cast.drag_world_x = tf->position.x;
+                    s.drag_cast.drag_world_y = tf->position.y;
+                    s.drag_cast.drag_world_z = tf->position.z;
+                }
+            }
             commit = true;
         }
     }
@@ -3993,8 +4294,21 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     f32 inv = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
     x *= inv;
     y *= inv;
-    s.pointer_x = x;
-    s.pointer_y = y;
+
+    // Multi-touch lift fixup: when the gesture-owning finger lifts and
+    // another finger (typically the joystick) is still down, the app's
+    // pointer routing falls back to mouse_x — which now reflects the
+    // wrong finger. The press's last known position is in s.pointer_x
+    // / s.pointer_y from the previous frame; on a release edge we keep
+    // those instead of overwriting with the new (wrong) coords. Hit
+    // tests below then resolve to the slot the press actually ended on.
+    if (!button_down && s.pointer_down_prev) {
+        x = s.pointer_x;
+        y = s.pointer_y;
+    } else {
+        s.pointer_x = x;
+        s.pointer_y = y;
+    }
 
     // Composites sit on top of the node tree (drawn last in draw_tree);
     // hit-test them first so clicks beat anything underneath. Priority
@@ -4144,30 +4458,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 }
             }
             if (!drag_cast_started) {
-                // Press-to-fire for Instant/Toggle abilities (and the
-                // desktop fall-through). Drag-cast already owned the
-                // press for TargetUnit/TargetPoint above; everything
-                // else fires the ability immediately on press. No
-                // release-edge "did the lift land back on the slot"
-                // check — that was a constant source of drift bugs.
+                s.action_bar_pressed_slot = bar_slot;
                 s.action_bar_cfg.slots[bar_slot].pressed = true;
-                s.action_bar_pressed_slot = bar_slot;  // visual until release
-                if (s.world_ctx && s.action_bar_cast_fn) {
-                    const simulation::AbilityDef* def = nullptr;
-                    const simulation::AbilityInstance* inst =
-                        resolve_slot_ability(static_cast<u32>(bar_slot),
-                                             s.action_bar_cfg, *s.world_ctx, def);
-                    if (inst && def) {
-                        u32 unit_id = s.world_ctx->selection &&
-                                      !s.world_ctx->selection->selected().empty()
-                                        ? s.world_ctx->selection->selected().front().id
-                                        : UINT32_MAX;
-                        if (unit_id != UINT32_MAX &&
-                            slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) {
-                            s.action_bar_cast_fn(inst->ability_id);
-                        }
-                    }
-                }
             }
         } else if (cmd_slot >= 0) {
             // Mobile: command_bar slots use the same drag-cast machine
@@ -4219,6 +4511,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.area_angle  = 0;
                         s.drag_cast.snapped_target = simulation::Unit{};
                         s.command_bar_cfg.slots[cmd_slot].pressed = true;
+                        s.command_bar_cfg.slots[cmd_slot].press_pulse_until =
+                            std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
                         drag_cast_started = true;
                     }
                 }
@@ -4226,6 +4520,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             if (!drag_cast_started) {
                 s.command_bar_pressed_slot = cmd_slot;
                 s.command_bar_cfg.slots[cmd_slot].pressed = true;
+                s.command_bar_cfg.slots[cmd_slot].press_pulse_until =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
             }
         } else if (inv_slot >= 0) {
             // Mobile: capture into drag_cast so we can run the
@@ -4350,11 +4646,31 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // Release edge: up on this frame, was down last frame.
     if (!button_down && s.pointer_down_prev) {
         if (s.action_bar_pressed_slot >= 0) {
-            // The cast already fired on the press edge above. All we
-            // have to do here is drop the "slot pressed" visual.
+            // "Clicked" = released while still over the slot that was
+            // pressed. The lift-fixup at the top of handle_pointer
+            // restores the press's last-known coords on this release
+            // frame, so bar_slot resolves correctly even when another
+            // finger (joystick) was the only thing left on screen.
             u32 idx = static_cast<u32>(s.action_bar_pressed_slot);
+            bool over = (bar_slot == s.action_bar_pressed_slot);
             if (idx < s.action_bar_cfg.slots.size()) {
-                s.action_bar_cfg.slots[idx].pressed = false;
+                auto& slot = s.action_bar_cfg.slots[idx];
+                slot.pressed = false;
+                if (over && s.world_ctx && s.action_bar_cast_fn) {
+                    const simulation::AbilityDef* def = nullptr;
+                    const simulation::AbilityInstance* inst =
+                        resolve_slot_ability(idx, s.action_bar_cfg,
+                                             *s.world_ctx, def);
+                    if (inst && def) {
+                        u32 unit_id = s.world_ctx->selection
+                                        ? s.world_ctx->selection->selected().front().id
+                                        : UINT32_MAX;
+                        if (unit_id != UINT32_MAX &&
+                            slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) {
+                            s.action_bar_cast_fn(inst->ability_id);
+                        }
+                    }
+                }
             }
             s.action_bar_pressed_slot = -1;
         } else if (s.command_bar_pressed_slot >= 0) {
