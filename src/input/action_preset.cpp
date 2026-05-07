@@ -129,20 +129,26 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
         }
     }
 
-    // Cast just queued this same render frame? The HUD's drag-cast (or
-    // an instant tap that landed on an earlier handler) writes
-    // oq->current synchronously via issue_order. The sim hasn't ticked
-    // yet, so cast_state is still None — emitting MoveDirection now
-    // would overwrite the Cast in oq before the cast pump ever sees
-    // it. Only relevant while cast_state == None; once the sim has
-    // begun processing and entered MovingToTarget, the player driving
+    // Active intent in the unit's order queue takes precedence over
+    // the joystick. The HUD's drag-cast / attack-button taps write
+    // oq->current synchronously via issue_order this same render
+    // frame, before handle_movement runs. Without this gate, the
+    // joystick's MoveDirection would clobber the just-issued Cast /
+    // Attack / AttackMove on the next sim tick.
+    //
+    // Only checks while cast_state == None; once the sim begins
+    // processing a cast and enters MovingToTarget, the player driving
     // the stick is meant to override the approach (and the cast_state
     // gate above already lets MovingToTarget through).
     if (aset && aset->cast_state == simulation::CastState::None) {
         if (auto* oq = world.order_queues.get(lead.id)) {
-            if (oq->current.has_value() &&
-                std::get_if<simulation::orders::Cast>(&oq->current->payload)) {
-                return;
+            if (oq->current.has_value()) {
+                const auto& payload = oq->current->payload;
+                if (std::get_if<simulation::orders::Cast>(&payload)       ||
+                    std::get_if<simulation::orders::Attack>(&payload)     ||
+                    std::get_if<simulation::orders::AttackMove>(&payload)) {
+                    return;
+                }
             }
         }
     }

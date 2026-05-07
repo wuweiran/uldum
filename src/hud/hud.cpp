@@ -2886,33 +2886,49 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
 
     bool commit = (s.drag_cast.phase == Phase::Aiming);
 
+    // "Pure tap" detection. The Aiming phase only kicks in once the
+    // finger has crossed the slot rect's leave-margin (~8 dp), so a
+    // small but deliberate drag onto a snap target stays in Pressed
+    // even though the snap indicator is up. Without this gate, a
+    // short drag onto enemy A would discard the snap and use the
+    // auto-target focus instead. We treat any non-trivial drag as
+    // "honor the snap"; the focus-target fallback runs only when the
+    // finger barely moved.
+    f32 dox = s.drag_cast.drag_world_x - s.drag_cast.caster_x;
+    f32 doy = s.drag_cast.drag_world_y - s.drag_cast.caster_y;
+    constexpr f32 INTENT_DRAG_DIST_SQ = 1.0f;  // ~1 world unit
+    bool finger_moved = (dox * dox + doy * doy) > INTENT_DRAG_DIST_SQ;
+
     // Tap-fire on a command (attack / attack_move / move) — only the
     // attack family resolves through focus_target. A tap on Move with
     // no drag direction is still genuinely ambiguous and stays a no-op.
     if (!commit && is_command && s.drag_cast.phase == Phase::Pressed) {
-        if ((s.drag_cast.command_id == "attack" ||
-             s.drag_cast.command_id == "attack_move") &&
-            s.focus_target_unit.is_valid() && s.world_ctx && s.world_ctx->world &&
-            s.world_ctx->world->validate(s.focus_target_unit)) {
-            // Skip the alliance check — the command system handles
-            // friendly-fire rules at issue time. We just need a target
-            // handle to forward.
-            s.drag_cast.snapped_target = s.focus_target_unit;
-            if (auto* tf = s.world_ctx->world->transforms.get(
-                               s.focus_target_unit.id)) {
-                s.drag_cast.drag_world_x = tf->position.x;
-                s.drag_cast.drag_world_y = tf->position.y;
-                s.drag_cast.drag_world_z = tf->position.z;
+        if (s.drag_cast.command_id == "attack" ||
+            s.drag_cast.command_id == "attack_move") {
+            if (finger_moved && s.drag_cast.snapped_target.is_valid()) {
+                // Short drag onto a unit — honor the snap (drag-aim).
+                commit = true;
+            } else if (s.focus_target_unit.is_valid() && s.world_ctx &&
+                       s.world_ctx->world &&
+                       s.world_ctx->world->validate(s.focus_target_unit)) {
+                // Pure tap — fall back to the auto / manual focus.
+                s.drag_cast.snapped_target = s.focus_target_unit;
+                if (auto* tf = s.world_ctx->world->transforms.get(
+                                   s.focus_target_unit.id)) {
+                    s.drag_cast.drag_world_x = tf->position.x;
+                    s.drag_cast.drag_world_y = tf->position.y;
+                    s.drag_cast.drag_world_z = tf->position.z;
+                }
+                commit = true;
             }
-            commit = true;
         }
     }
 
     // Pressed release for abilities — finger never left the slot rect.
-    // Player's mental model is "tap ability → it casts" at the auto/
-    // manual focus_target. We prefer focus_target over the on-press
-    // local snap so a tap honors the player's lock; only the explicit
-    // cancel zone should cancel.
+    // Same tap-vs-short-drag distinction as the command branch above:
+    // a tap uses focus_target; any deliberate drag uses the snap that
+    // the player saw under their finger. Only the explicit cancel zone
+    // should cancel.
     if (!commit && !is_command && s.drag_cast.phase == Phase::Pressed) {
         // Resolve focus_target through the ability's target_filter so
         // a heal-on-enemy focus falls back to the local snap instead
@@ -2930,7 +2946,9 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         }
 
         if (s.drag_cast.form == simulation::AbilityForm::TargetUnit) {
-            if (focus_usable) {
+            if (finger_moved && s.drag_cast.snapped_target.is_valid()) {
+                commit = true;  // honor the drag-snap
+            } else if (focus_usable) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
                 commit = true;
             } else if (s.drag_cast.snapped_target.is_valid()) {
@@ -2939,8 +2957,9 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
             // For AoE casts, drop the indicator on the focus target's
             // position so a tap-and-fire feels like "this enemy gets
-            // hit" rather than always landing under the caster.
-            if (focus_usable) {
+            // hit" rather than always landing under the caster — but
+            // only on a pure tap. Any drag respects the dragged point.
+            if (!finger_moved && focus_usable) {
                 if (auto* tf = s.world_ctx->world->transforms.get(
                                    s.focus_target_unit.id)) {
                     s.drag_cast.drag_world_x = tf->position.x;
