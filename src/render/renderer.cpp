@@ -445,24 +445,33 @@ struct AnimStateInfo {
     bool           has_attack_info = false;
 };
 
+// Pick the animation state for a unit this frame. Priority order:
+//
+//   Death > Spell > Attack > Walk > Birth > Idle
+//
+// Each arm fetches only the components it needs. Birth sits below
+// the active states (Spell/Attack/Walk) so that an emerge clip
+// gets interrupted the moment the unit starts doing something —
+// equivalent to the explicit "Birth when not busy" gate, and lets
+// the lower-priority arms own the early-return path that already
+// consults their own components.
 static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
-                                        AnimationInstance& anim) {
-    // Birth animation plays once then transitions to idle
-    if (anim.current_state == AnimState::Birth && !anim.finished) {
-        return {AnimState::Birth, 0, false};
-    }
+                                       AnimationInstance& anim) {
+    using simulation::CastState;
+    using simulation::AttackState;
 
     if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
 
-    // Look up type def once (used by spell, walk)
-    const simulation::UnitTypeDef* type_def = nullptr;
-    auto* hi = world.handle_infos.get(id);
-    if (hi && world.types) type_def = world.types->get_unit_type(hi->type_id);
+    auto get_type_def = [&]() -> const simulation::UnitTypeDef* {
+        auto* hi = world.handle_infos.get(id);
+        return (hi && world.types) ? world.types->get_unit_type(hi->type_id) : nullptr;
+    };
 
-    // Spell casting — two-phase animation (ability seconds don't derive from fraction)
-    auto* aset = world.ability_sets.get(id);
-    if (aset && (aset->cast_state == simulation::CastState::CastPoint ||
-                 aset->cast_state == simulation::CastState::Backswing)) {
+    // Spell — cast pump in CastPoint or Backswing.
+    if (auto* aset = world.ability_sets.get(id);
+        aset && (aset->cast_state == CastState::CastPoint ||
+                 aset->cast_state == CastState::Backswing)) {
+        auto* type_def = get_type_def();
         f32 cp = type_def ? type_def->cast_pt : 0.5f;
         AttackAnimInfo info;
         info.dmg_point  = cp;
@@ -472,51 +481,50 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
         return {AnimState::Spell, dur, false, info, true};
     }
 
+    // Attack — combat in WindUp/Backswing/Cooldown. Holds the last
+    // frame during Cooldown so the silhouette reads as "follow-through".
     auto* combat = world.combats.get(id);
-    if (combat) {
-        using simulation::AttackState;
-
-        // Attack animation: two-phase speed (wind-up + backswing).
-        // Play during WindUp + Backswing + Cooldown (holds last frame during Cooldown).
-        if (combat->attack_state == AttackState::WindUp ||
-            combat->attack_state == AttackState::Backswing ||
-            combat->attack_state == AttackState::Cooldown) {
-
-            // Detect new attack swing
-            bool new_swing = false;
-            if (combat->attack_state == AttackState::WindUp) {
-                if (combat->attack_timer > combat->dmg_time * 0.8f) {
-                    u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);
-                    if (swing_id != anim.attack_swing_id) {
-                        anim.attack_swing_id = swing_id;
-                        new_swing = true;
-                    }
-                }
+    if (combat && (combat->attack_state == AttackState::WindUp     ||
+                   combat->attack_state == AttackState::Backswing  ||
+                   combat->attack_state == AttackState::Cooldown)) {
+        // Detect a fresh swing (wind-up nearing damage point, swing_id
+        // changed since last frame) so the renderer retriggers the
+        // attack clip from frame 0.
+        bool new_swing = false;
+        if (combat->attack_state == AttackState::WindUp &&
+            combat->attack_timer > combat->dmg_time * 0.8f) {
+            u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);
+            if (swing_id != anim.attack_swing_id) {
+                anim.attack_swing_id = swing_id;
+                new_swing = true;
             }
-
-            AttackAnimInfo info;
-            info.dmg_point  = combat->dmg_pt;
-            info.cast_point = combat->dmg_time;
-            info.backswing  = combat->backsw_time;
-            f32 dur = combat->dmg_time + combat->backsw_time;
-            return {AnimState::Attack, dur, new_swing, info, true};
         }
-
-        if (combat->attack_state == AttackState::MovingToTarget) {
-            auto* mov = world.movements.get(id);
-            f32 ref = type_def ? type_def->walk_speed : 0;
-            if (ref <= 0 && mov) ref = mov->speed;
-            f32 ratio = (mov && mov->speed > 0 && ref > 0) ? mov->speed / ref : 1.0f;
-            return {AnimState::Walk, -ratio, false};
-        }
+        AttackAnimInfo info;
+        info.dmg_point  = combat->dmg_pt;
+        info.cast_point = combat->dmg_time;
+        info.backswing  = combat->backsw_time;
+        f32 dur = combat->dmg_time + combat->backsw_time;
+        return {AnimState::Attack, dur, new_swing, info, true};
     }
 
+    // Walk — either driven by an active Move (`mov->moving`) or by
+    // the combat-approach phase before WindUp.
     auto* mov = world.movements.get(id);
-    if (mov && mov->moving) {
+    bool approach = combat && combat->attack_state == AttackState::MovingToTarget;
+    if ((mov && mov->moving) || approach) {
+        auto* type_def = get_type_def();
         f32 ref = type_def ? type_def->walk_speed : 0;
-        if (ref <= 0) ref = mov->speed;
-        f32 ratio = (mov->speed > 0 && ref > 0) ? mov->speed / ref : 1.0f;
+        if (ref <= 0 && mov) ref = mov->speed;
+        f32 ratio = (mov && mov->speed > 0 && ref > 0) ? mov->speed / ref : 1.0f;
         return {AnimState::Walk, -ratio, false};
+    }
+
+    // Birth — only relevant when nothing else is happening. Once
+    // interrupted (we returned Spell/Attack/Walk above on a previous
+    // frame), `anim.current_state` is no longer Birth, so this never
+    // reactivates.
+    if (anim.current_state == AnimState::Birth && !anim.finished) {
+        return {AnimState::Birth, 0, false};
     }
 
     return {AnimState::Idle, 0, false};
