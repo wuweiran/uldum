@@ -4044,7 +4044,14 @@ static void draw_minimap(Hud& hud, Hud::Impl& s) {
 // active. Filled circle background (idle vs. active palette per
 // current phase) plus an "✕" glyph centered.
 static void draw_action_bar_cancel_zone(Hud& hud, Hud::Impl& s) {
-    if (s.drag_cast.phase == Hud::Impl::DragCastPhase::Idle) return;
+    // Only show during an active aim — Idle (no gesture) or Pressed
+    // (finger still on the slot, hasn't crossed the leave-margin)
+    // both read as "this is a tap, not an aim", so the cancel zone
+    // would be UI noise. Aiming and Cancelling are the only phases
+    // where the player has actually committed to dragging.
+    using Phase = Hud::Impl::DragCastPhase;
+    if (s.drag_cast.phase != Phase::Aiming &&
+        s.drag_cast.phase != Phase::Cancelling) return;
     const auto& cfg = s.action_bar_cfg;
     const Rect& r = cfg.cancel_zone_rect;
     if (r.w <= 0.0f || r.h <= 0.0f) return;

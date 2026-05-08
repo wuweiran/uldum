@@ -27,7 +27,6 @@
         "border_width": 2
       },
 
-      "//arc": "Slot centers fan around the action_bar's bottom-right corner — the natural thumb-reach for right-handed mobile players. Fan center at (w-30, h-30) = (210, 210), radius 150, four slots evenly spread from 0° (left of corner) to 90° (above corner). Slot 1 sits closest to ground level, slot 4 closest to up.",
       "slots": [
         { "anchor": "tl", "x":  30, "y": 180, "w": 60, "h": 60, "hotkey": "1" },
         { "anchor": "tl", "x":  50, "y": 105, "w": 60, "h": 60, "hotkey": "2" },
@@ -35,7 +34,7 @@
         { "anchor": "tl", "x": 180, "y":  30, "w": 60, "h": 60, "hotkey": "4" }
       ],
 
-      "cancel_zone": { "anchor": "br", "x": -16, "y": -236, "w": 60, "h": 60 }
+      "cancel_zone": { "anchor": "tr", "x": -16, "y": 120, "w": 60, "h": 60 }
     },
 
     "command_bar": {
