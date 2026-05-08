@@ -354,11 +354,11 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
                 // 2 high corners on one edge: wall bisects the tile.
                 // Find which edge has both high corners.
                 // Edges: top={0,1}, bottom={2,3}, left={0,2}, right={1,3}
-                u32 edge_hi, edge_lo; // edges perpendicular to the wall
-                if (c[0] == cmax && c[1] == cmax)      { edge_hi = 0; edge_lo = 1; } // top high, wall at mid-Y
-                else if (c[2] == cmax && c[3] == cmax)  { edge_hi = 1; edge_lo = 0; } // bottom high
-                else if (c[0] == cmax && c[2] == cmax)  { edge_hi = 2; edge_lo = 3; } // left high
-                else if (c[1] == cmax && c[3] == cmax)  { edge_hi = 3; edge_lo = 2; } // right high
+                u32 edge_hi; // edge perpendicular to the wall, on the high side
+                if (c[0] == cmax && c[1] == cmax)      { edge_hi = 0; } // top high, wall at mid-Y
+                else if (c[2] == cmax && c[3] == cmax)  { edge_hi = 1; } // bottom high
+                else if (c[0] == cmax && c[2] == cmax)  { edge_hi = 2; } // left high
+                else if (c[1] == cmax && c[3] == cmax)  { edge_hi = 3; } // right high
                 else {
                     // Diagonal pair (TL+BR or TR+BL) — render as two 1-high triangles
                     // Each high corner gets a small triangle + wall, like the 1-high case

@@ -34,7 +34,8 @@ static ServerArgs parse_args(int argc, char* argv[]) {
             nlohmann::json j;
             file >> j;
             args.map_path = j.value("default_map", args.map_path);
-            args.port     = j.value("default_port", static_cast<int>(args.port));
+            args.port     = static_cast<uldum::u16>(
+                                j.value("default_port", static_cast<int>(args.port)));
         } catch (...) {}
     }
 

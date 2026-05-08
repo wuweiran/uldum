@@ -12,7 +12,7 @@ namespace uldum::render {
 
 static constexpr const char* TAG = "Particles";
 
-static f32 randf() { return static_cast<f32>(std::rand()) / RAND_MAX; }
+static f32 randf() { return static_cast<f32>(std::rand()) / static_cast<f32>(RAND_MAX); }
 static f32 randf_range(f32 lo, f32 hi) { return lo + randf() * (hi - lo); }
 
 // Random direction on a unit sphere

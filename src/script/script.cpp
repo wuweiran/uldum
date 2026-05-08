@@ -796,7 +796,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["RandomInt"] = [](i32 min, i32 max) -> i32 { return min + (std::rand() % (max - min + 1)); };
-    lua["RandomFloat"] = [](f32 min, f32 max) -> f32 { return min + static_cast<f32>(std::rand()) / RAND_MAX * (max - min); };
+    lua["RandomFloat"] = [](f32 min, f32 max) -> f32 { return min + static_cast<f32>(std::rand()) / static_cast<f32>(RAND_MAX) * (max - min); };
 
     // ── Effect API ─────────────────────────────────────────────────────
 

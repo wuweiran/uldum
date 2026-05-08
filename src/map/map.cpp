@@ -272,15 +272,6 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
     auto& types = sim.types();
     std::string types_dir = m_map_root + "/types/";
 
-    // Load each type file if it exists
-    auto try_load = [&](auto load_fn, const char* filename) {
-        std::string path = types_dir + filename;
-        auto handle = assets.load_config_absolute(path);
-        if (assets.get(handle)) {
-            (types.*load_fn)(assets, handle);
-        }
-    };
-
     // Load using the handle directly — need a different approach since load_*_types
     // takes a path. We'll load via absolute path support.
     std::string unit_path = types_dir + "unit_types.json";

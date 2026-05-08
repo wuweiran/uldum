@@ -3,13 +3,10 @@
 #include "simulation/order.h"
 #include "simulation/ability_def.h"
 #include "simulation/world.h"
-#include "core/log.h"
 
 #include <cmath>
 
 namespace uldum::input {
-
-static constexpr const char* TAG = "ActionInput";
 
 void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
     // Targeting first so a click commits the armed ability before any

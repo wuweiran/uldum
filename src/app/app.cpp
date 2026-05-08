@@ -924,7 +924,6 @@ void App::run() {
     auto previous_time = std::chrono::high_resolution_clock::now();
     float accumulator = 0.0f;
     float game_speed = 1.0f;
-    float game_time = 0.0f;
     u32 tick_counter = 0;
 
     m_state = AppState::Menu;
@@ -1155,7 +1154,7 @@ void App::run() {
 
             if (ready_to_play) {
                 m_state = AppState::Playing;
-                accumulator = 0; game_time = 0; tick_counter = 0;
+                accumulator = 0; tick_counter = 0;
                 log::info(TAG, "Loading complete → Playing");
             }
             break;
@@ -1205,7 +1204,6 @@ void App::run() {
                         log::warn(TAG, "Slow tick: {:.1f}ms (units: {})",
                                   tick_ms, active_world().transforms.count());
                     }
-                    game_time += game_dt;
                     tick_counter++;
                     if (m_args.net_mode == network::Mode::Host)
                         m_network.host_broadcast_tick(tick_counter);

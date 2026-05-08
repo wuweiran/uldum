@@ -31,16 +31,6 @@ void set_level(Level level) {
     s_min_level = level;
 }
 
-static constexpr std::string_view level_str(Level level) {
-    switch (level) {
-        case Level::Trace: return "TRACE";
-        case Level::Debug: return "DEBUG";
-        case Level::Info:  return "INFO ";
-        case Level::Warn:  return "WARN ";
-        case Level::Error: return "ERROR";
-    }
-    return "?????";
-}
 
 #ifdef ULDUM_PLATFORM_ANDROID
 static int android_priority(Level level) {
@@ -52,6 +42,17 @@ static int android_priority(Level level) {
         case Level::Error: return ANDROID_LOG_ERROR;
     }
     return ANDROID_LOG_DEFAULT;
+}
+#else
+static constexpr std::string_view level_str(Level level) {
+    switch (level) {
+        case Level::Trace: return "TRACE";
+        case Level::Debug: return "DEBUG";
+        case Level::Info:  return "INFO ";
+        case Level::Warn:  return "WARN ";
+        case Level::Error: return "ERROR";
+    }
+    return "?????";
 }
 #endif
 

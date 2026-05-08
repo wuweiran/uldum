@@ -119,10 +119,12 @@ private:
     // quit (window close); this covers in-app quit requests.
     bool m_wants_quit = false;
 
+#ifdef ULDUM_SHELL_UI
     // Most recent end-of-session elapsed time (seconds) pulled out of the
     // Lua stats JSON. Shown on the Results screen. Stays at 0 until the
-    // first EndGame call.
+    // first EndGame call. Only the Shell UI build reads it.
     f32 m_last_elapsed_seconds = 0.0f;
+#endif
 
     // Last safe-area insets we pushed to the HUD. Compared on each
     // refresh so the HUD doesn't re-resolve composites when nothing

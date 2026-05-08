@@ -15,8 +15,6 @@
 
 namespace uldum::simulation {
 
-static bool s_first_tick = true;
-
 void system_health(World& world, float dt) {
     for (u32 i = 0; i < world.healths.count(); ++i) {
         auto& hp = world.healths.data()[i];
@@ -65,7 +63,6 @@ static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const 
     // Find closest blocker ahead
     f32 best_dist = look_ahead;
     const Transform* blocker_t = nullptr;
-    f32 blocker_radius = 0;
 
     for (auto& other : nearby) {
         if (other.id == self_id) continue;
@@ -90,7 +87,6 @@ static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const 
         if (lateral < combined && d < best_dist) {
             best_dist = d;
             blocker_t = ot;
-            blocker_radius = other_radius;
         }
     }
 

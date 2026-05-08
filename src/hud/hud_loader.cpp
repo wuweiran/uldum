@@ -213,11 +213,11 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         // space — the same space Hud::begin_frame exposes each frame.
         // So a `br` anchor still lands at the physical corner; the
         // uniform px-per-dp scale is applied by the renderer at draw.
-        f32 s = hud.ui_scale();
-        if (s <= 0.0f) s = 1.0f;
+        f32 dp_scale = hud.ui_scale();
+        if (dp_scale <= 0.0f) dp_scale = 1.0f;
         Rect viewport_rect{ 0.0f, 0.0f,
-                            static_cast<f32>(viewport_w) / s,
-                            static_cast<f32>(viewport_h) / s };
+                            static_cast<f32>(viewport_w) / dp_scale,
+                            static_cast<f32>(viewport_h) / dp_scale };
 
         if (auto ab = comps->find("action_bar"); ab != comps->end() && ab->is_object()) {
             ActionBarConfig cfg{};

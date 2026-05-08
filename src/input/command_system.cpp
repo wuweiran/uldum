@@ -1,10 +1,7 @@
 #include "input/command_system.h"
 #include "simulation/world.h"
-#include "core/log.h"
 
 namespace uldum::input {
-
-static constexpr const char* TAG = "Command";
 
 void CommandSystem::submit(const GameCommand& cmd) {
     // Client mode: send to server instead of executing locally

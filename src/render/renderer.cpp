@@ -525,7 +525,6 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 void Renderer::set_environment(const map::EnvironmentConfig& env) {
     if (!m_env_ubo_mapped) return;
 
-    EnvironmentUBO ubo{};
     m_sun_direction = glm::normalize(env.sun_direction);
     m_env_data = {};
     m_env_data.sun_direction = glm::vec4(m_sun_direction, env.sun_intensity);
