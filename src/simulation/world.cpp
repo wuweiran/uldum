@@ -268,16 +268,31 @@ void issue_order(World& world, Unit unit, Order order) {
     auto* oq = world.order_queues.get(unit.id);
     if (!oq) return;
 
-    // Reject cast orders if ability is on cooldown (don't interrupt current order)
+    // Per-order-kind admission checks. `order.payload` is a variant —
+    // at most one of these branches ever matches; the `else if` chain
+    // makes that explicit. Self-targeting rejections here are
+    // simulation-level invariants, not UI-time errors: a multi-select
+    // Move/Attack on one of the selected units (or a Lua-issued Cast
+    // on an enemy-only ability targeting self) must not slip in.
     if (auto* cast = std::get_if<orders::Cast>(&order.payload)) {
+        // Cooldown — keep the existing activity untouched.
         auto* aset = world.ability_sets.get(unit.id);
         if (aset) {
             for (auto& a : aset->abilities) {
                 if (a.ability_id == cast->ability_id && a.cooldown_remaining > 0) {
-                    return;  // on cooldown — ignore order, keep current activity
+                    return;
                 }
             }
         }
+        // Self-target rejection for casts whose filter forbids it.
+        if (cast->target_unit.is_valid() && cast->target_unit.id == unit.id) {
+            const auto* def = world.abilities ? world.abilities->get(cast->ability_id) : nullptr;
+            if (def && !def->target_filter.self_) return;
+        }
+    } else if (auto* mv = std::get_if<orders::Move>(&order.payload)) {
+        if (mv->target_unit.is_valid() && mv->target_unit.id == unit.id) return;
+    } else if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
+        if (atk->target.is_valid() && atk->target.id == unit.id) return;
     }
 
     if (order.queued) {
