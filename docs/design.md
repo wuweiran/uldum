@@ -624,13 +624,15 @@ First gameplay primitive beyond combat / abilities. Engine stays policy-light: a
 - Lua bindings: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitDropItemFromSlot`, `GetItem{Charges,Level,TypeId}`, `SetItem{Charges,Level}`, `GetTriggerItem`, item events.
 - Network: rides existing entity-delta sync; no new message kinds.
 
-### Phase 18 — Regions + Dialogs + Camera scripting
+### Phase 18 — Scripting enrichment
 
-Three thin Lua-binding categories that together turn the engine into a genuine map-authoring platform. Bundled because each is small on its own and they compose — a typical map uses regions to detect the player reaching a story beat, fires a camera pan, then opens a dialog.
+Thin Lua-binding categories that together turn the engine into a genuine map-authoring platform. Bundled because each is small on its own and they compose — a typical map uses regions to detect the player reaching a story beat, fires a camera pan, opens a confirmation popup composed from atom nodes, then loads the next scene.
 
 - **Regions.** Rect / circle zones registered by Lua. Trigger events fire on enter / leave. Lua: `CreateRegion`, `AddRegionRect`, `AddRegionCircle`, `TriggerRegisterEnterRegion`, `IsUnitInRegion`, `GetUnitsInRegion`. The single biggest authoring primitive WC3 had outside of triggers themselves — without it, "step into the cave" / "kill zone" / "spawn-on-approach" all need hand-rolled distance polling.
-- **Dialogs.** Modal HUD overlay (new composite) with text + ordered button list. Tutorial prompts, story beats, NPC chat, victory / defeat screens. Lua: `CreateDialog`, `AddDialogButton`, `ShowDialog`, button-press fires a trigger event.
-- **Camera scripting.** Programmatic pan / zoom / shake / lock-to-unit. Lua: `PanCamera`, `SetCameraPosition`, `SetCameraZoom`, `SetCameraLockUnit`, `CameraShake`, `CinematicMode(on)` (hides HUD, optional letterbox). Tiny API but elevates production quality of small games disproportionately — boss reveals, screen-shake on big hits, scripted intros.
+- **Scene switching.** A map ships several scenes (terrain + placements + per-scene `main.lua`) and Lua can swap between them mid-session. Lua: `LoadScene(name)`. The engine tears down entities + reloads the new scene's placements, then `ScriptEngine` resets per-scene state (triggers, timers, event contexts) and runs the new `main()`. Map-level state (type registry, environment, network connection) survives. The Lua VM is restarted on each swap; cross-scene data rides the save channel (`SaveData` / `LoadData`). Pairs naturally with regions for "walk into portal → swap scene".
+- **Node-event + composite UI bindings.** Round out the HUD scripting surface so map authors can compose dialogs, popups, and tutorials from atom nodes (panel + label + button) declared in `hud.json` and triggered through the existing event system. New bindings: `ShowNode` / `HideNode`, `MinimapSetVisible`, `JoystickSetVisible`, `TriggerRegisterNodeEvent(trig, node, EVENT_BUTTON_PRESSED)`. Combined with templates the result is what a "dialog composite" would have shipped — without locking dialog shape into the engine.
+- **Game pause + single-player query.** `PauseGame()` / `UnpauseGame()` flip a script-owned flag the App reads each frame to gate sim ticks (independent of the network's reconnect-pause). `IsSinglePlayer()` reports whether the session is offline. Together they let dialogs and cutscenes freeze gameplay locally without breaking MP.
+- **Camera scripting.** Programmatic pan / zoom / shake / lock-to-unit. Lua: `PanCamera`, `SetCameraPosition`, `SetCameraZoom`, `SetCameraLockUnit`, `CameraShake`. Tiny API but elevates production quality of small games disproportionately — boss reveals, screen-shake on big hits, scripted intros.
 
 ### Phase 19 — Editor expansion
 
@@ -641,7 +643,7 @@ Authoring efficiency becomes the bottleneck once 17 + 18 land — the existing t
 - Doodad placement (decorative non-interactive props).
 - Basic trigger editor — pick an event from a dropdown (region-enter, item-pickup, unit-dies), bind to a Lua snippet or a script file.
 
-By this point items + regions + dialogs + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports.
+By this point items + regions + scene-driven UI + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports.
 
 ### Phase 20 — Rendering Pipeline Reckoning
 

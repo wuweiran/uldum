@@ -161,6 +161,11 @@ void EffectManager::destroy(u32 id) {
     std::erase_if(m_instances, [id](const EffectInstance& e) { return e.id == id; });
 }
 
+void EffectManager::clear() {
+    m_instances.clear();
+    if (m_particles) m_particles->clear();
+}
+
 void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
     for (auto& inst : m_instances) {
         if (!inst.alive) continue;

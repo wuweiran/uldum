@@ -170,6 +170,103 @@ void NetworkManager::mark_self_loaded() {
     m_self_loaded = true;
 }
 
+void NetworkManager::host_broadcast_scene_switch(std::string_view scene_name) {
+    if (m_mode != Mode::Host || !m_transport) return;
+    if (m_phase != Phase::Playing) {
+        log::warn(TAG, "host_broadcast_scene_switch called outside Playing (phase {})",
+                  static_cast<i32>(m_phase));
+        return;
+    }
+    m_scene_switching = true;
+    m_phase = Phase::Loading;
+    m_self_loaded = false;
+    for (auto& p : m_peers) p.loaded = false;
+    m_in_flight_scene_name = std::string(scene_name);
+
+    auto msg = build_scene_switch(scene_name);
+    m_transport->broadcast(msg, true);
+    log::info(TAG, "Host broadcasting scene switch → '{}' ({} peer(s) loading)",
+              scene_name, m_peers.size());
+}
+
+// ── Scripted-camera routing ──────────────────────────────────────────────
+
+namespace {
+// Walk the peer list to map a player id to its peer transport id.
+// Returns UINT32_MAX if no peer owns that slot (e.g. host's own slot,
+// disconnected player, dedicated-server case where no human plays).
+template <typename Peers>
+u32 peer_id_for_player(const Peers& peers, u32 player_id) {
+    for (const auto& p : peers) {
+        if (p.player.id == player_id) return p.peer_id;
+    }
+    return UINT32_MAX;
+}
+} // namespace
+
+bool NetworkManager::host_send_camera_set_position(u32 player_id, f32 x, f32 y) {
+    if (m_mode != Mode::Host || !m_transport) return false;
+    u32 peer = peer_id_for_player(m_peers, player_id);
+    if (peer == UINT32_MAX) return false;
+    auto msg = build_camera_set_position(x, y);
+    m_transport->send(peer, msg, true);
+    return true;
+}
+
+bool NetworkManager::host_send_camera_pan(u32 player_id, f32 x, f32 y, f32 duration) {
+    if (m_mode != Mode::Host || !m_transport) return false;
+    u32 peer = peer_id_for_player(m_peers, player_id);
+    if (peer == UINT32_MAX) return false;
+    auto msg = build_camera_pan(x, y, duration);
+    m_transport->send(peer, msg, true);
+    return true;
+}
+
+bool NetworkManager::host_send_camera_zoom(u32 player_id, f32 z) {
+    if (m_mode != Mode::Host || !m_transport) return false;
+    u32 peer = peer_id_for_player(m_peers, player_id);
+    if (peer == UINT32_MAX) return false;
+    auto msg = build_camera_zoom(z);
+    m_transport->send(peer, msg, true);
+    return true;
+}
+
+bool NetworkManager::host_send_camera_shake(u32 player_id, f32 intensity, f32 duration) {
+    if (m_mode != Mode::Host || !m_transport) return false;
+    u32 peer = peer_id_for_player(m_peers, player_id);
+    if (peer == UINT32_MAX) return false;
+    auto msg = build_camera_shake(intensity, duration);
+    m_transport->send(peer, msg, true);
+    return true;
+}
+
+bool NetworkManager::host_send_camera_lock_unit(u32 player_id, u32 entity_id) {
+    if (m_mode != Mode::Host || !m_transport) return false;
+    u32 peer = peer_id_for_player(m_peers, player_id);
+    if (peer == UINT32_MAX) return false;
+    auto msg = build_camera_lock_unit(entity_id);
+    m_transport->send(peer, msg, true);
+    return true;
+}
+
+void NetworkManager::host_finish_scene_switch() {
+    if (m_mode != Mode::Host || !m_scene_switching) return;
+
+    // Spawn burst per peer for the new scene's entities. host_send_spawn_burst
+    // resends every entity currently in the world; since switch_scene cleared
+    // the previous scene, only new-scene entities are visible.
+    for (auto& peer : m_peers) {
+        if (!peer.player.is_valid()) continue;
+        peer.known_entities.clear();
+        host_send_spawn_burst(peer);
+    }
+
+    m_phase = Phase::Playing;
+    m_scene_switching = false;
+    m_in_flight_scene_name.clear();
+    log::info(TAG, "Host finished scene switch — sim resumes");
+}
+
 bool NetworkManager::all_connected_peers_seated() const {
     if (m_mode != Mode::Host) return true;
     for (const auto& peer : m_peers) {
@@ -264,11 +361,33 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             m_transport->send(peer_id, welcome, true);
 
             m_peers.push_back(std::move(info));
-            host_send_spawn_burst(m_peers.back());
 
-            if (m_game_started) {
-                auto msg = build_start();
-                m_transport->send(peer_id, msg, true);
+            if (m_scene_switching) {
+                // Mid-barrier reconnect: the world is currently empty
+                // on the host (placements haven't loaded yet) and the
+                // new scene's main() hasn't run, so a normal spawn
+                // burst would send stale / empty state. Route the new
+                // peer onto the scene-load path instead — they ack
+                // via C_LOAD_DONE and the post-barrier finish will
+                // burst the new scene's entities to them along with
+                // every other peer.
+                auto& fresh = m_peers.back();
+                fresh.known_entities.clear();
+                fresh.loaded = false;
+                if (!m_in_flight_scene_name.empty()) {
+                    auto msg = build_scene_switch(m_in_flight_scene_name);
+                    m_transport->send(peer_id, msg, true);
+                }
+                log::info(TAG, "Player {} reconnected mid-scene-switch (peer {}) — joining barrier",
+                          slot, peer_id);
+            } else {
+                host_send_spawn_burst(m_peers.back());
+
+                if (m_game_started) {
+                    auto msg = build_start();
+                    m_transport->send(peer_id, msg, true);
+                }
+                log::info(TAG, "Player {} reconnected (peer {})", slot, peer_id);
             }
 
             if (m_paused && m_disconnected.empty()) {
@@ -276,7 +395,6 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
                 log::info(TAG, "All players reconnected — game resumed");
             }
 
-            log::info(TAG, "Player {} reconnected (peer {})", slot, peer_id);
             host_broadcast_pause_state();
             return;
         }
@@ -695,6 +813,57 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         m_pause_view_active  = ps.paused;
         m_disconnected_view  = std::move(ps.disconnected);
         if (on_pause_state_changed) on_pause_state_changed();
+        break;
+    }
+
+    case MsgType::S_SCENE_SWITCH: {
+        // Mirror the host: enter the scene-switch barrier so any
+        // sim-tick / tick-broadcast paths that depend on phase pause.
+        m_scene_switching = true;
+        m_phase = Phase::Loading;
+
+        std::string scene_name = parse_scene_switch(data);
+        log::info(TAG, "Client received scene switch → '{}'", scene_name);
+
+        // Run the App-supplied teardown (terrain swap, sim wipe, HUD
+        // / picker reset, camera re-pose). The callback runs inline —
+        // the reliable-ordered channel guarantees subsequent S_SPAWN /
+        // S_HUD_CREATE_NODE deltas land after this point.
+        if (m_scene_switch_recv_fn) m_scene_switch_recv_fn(scene_name);
+
+        // Ack so the host's barrier can clear once every peer reports.
+        send_load_done();
+        break;
+    }
+
+    case MsgType::S_CAMERA_SET_POSITION: {
+        ByteReader r(data); r.read_u8();
+        f32 x = r.read_f32(), y = r.read_f32();
+        if (m_camera_set_position_recv_fn) m_camera_set_position_recv_fn(x, y);
+        break;
+    }
+    case MsgType::S_CAMERA_PAN: {
+        ByteReader r(data); r.read_u8();
+        f32 x = r.read_f32(), y = r.read_f32(), dur = r.read_f32();
+        if (m_camera_pan_recv_fn) m_camera_pan_recv_fn(x, y, dur);
+        break;
+    }
+    case MsgType::S_CAMERA_ZOOM: {
+        ByteReader r(data); r.read_u8();
+        f32 z = r.read_f32();
+        if (m_camera_zoom_recv_fn) m_camera_zoom_recv_fn(z);
+        break;
+    }
+    case MsgType::S_CAMERA_SHAKE: {
+        ByteReader r(data); r.read_u8();
+        f32 intensity = r.read_f32(), dur = r.read_f32();
+        if (m_camera_shake_recv_fn) m_camera_shake_recv_fn(intensity, dur);
+        break;
+    }
+    case MsgType::S_CAMERA_LOCK_UNIT: {
+        ByteReader r(data); r.read_u8();
+        u32 entity_id = r.read_u32();
+        if (m_camera_lock_unit_recv_fn) m_camera_lock_unit_recv_fn(entity_id);
         break;
     }
 

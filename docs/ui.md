@@ -122,7 +122,7 @@ Deferred composites (may ship later; v1 doesn't include them):
 - **Unit info panels** (selection portrait for RTS, hero frame / target frame for action). Portrait + name + HP / mana bars for a bound entity. Deferred because every game has idiosyncratic layouts here (portrait style, stat rows, attribute icons, XP bar, class colors); we'd rather see real use cases before picking a shape. Maps that need one before we ship it can compose `image` + `label` + `bar` atoms.
 - **Status strip** (buff / debuff icons with timer ring + stack count). Conceptually part of unit-info display — ships together with unit_panel when we tackle that category.
 - **Resource bars** (gold / lumber / custom resources). Resource types vary per map, no universal layout — maps compose from atoms.
-- **Dialog** (modal popup for game-content prompts: tutorial callouts, in-world dialogue, mission briefings). A tutorial prompt is mostly a panel + label + button(s) — maps can build one from atoms. The only piece atoms don't cover is modal input capture (blocking world + HUD input while the dialog is up); that primitive ships when we decide we need it. System menus (pause / quit / settings) are not HUD — see below.
+- **Dialog** (modal popup for game-content prompts: tutorial callouts, in-world dialogue, mission briefings). A tutorial prompt is mostly a panel + label + button(s) — maps build one from atoms today. Modal input capture (blocking world + HUD input while the dialog is up) is not a primitive yet; in single-player, scripts pair the popup with `PauseGame()` to freeze the sim while the player chooses. System menus (pause / quit / settings) are not HUD — see below.
 
 **System menus are not HUD.** Pause / Settings / Quit / disconnect dialogs are **Shell UI** concerns, not HUD composites. Shell already owns those screens for the main menu flow; the same documents are reused when the player presses Escape mid-game. App binds Escape → load `pause.rml` into the active Shell context, pause sim ticking, and release on close. Dev builds do the same via DevConsole's pause / disconnect overlays. HUD never invokes Shell directly; routing is App's job.
 
@@ -215,20 +215,13 @@ local popup = CreateNode{
         { type = "label", id = "popup_text", text = "Tutorial: press Q to attack" }
     }
 }
+ShowNode(popup)
 DestroyNode(popup)
 
 -- Button events via trigger system
 local trig = CreateTrigger()
 TriggerRegisterNodeEvent(trig, GetNode("ready_button"), EVENT_BUTTON_PRESSED)
 TriggerAddAction(trig, function() StartGame() end)
-
--- action_bar composite
-ActionBarSetActor(player_hero)
-ActionBarSetSlot(0, "fireball")
-ActionBarClearSlot(0)
-ActionBarSwapSlots(0, 2)
-ActionBarSetSlotVisible(3, false)
-ActionBarSetVisible(true)
 
 -- minimap composite
 MinimapSetVisible(true)

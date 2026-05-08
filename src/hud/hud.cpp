@@ -1225,6 +1225,41 @@ void Hud::clear_nodes() {
     m_impl->pressed = nullptr;
 }
 
+void Hud::reset_scene_state() {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+
+    // Lua-created node children (per-scene). hud.json composites live
+    // outside the root tree, so they survive.
+    if (s.root) s.root->clear_children();
+    s.hover   = nullptr;
+    s.pressed = nullptr;
+
+    // Floating text tags spawned by the previous scene's main / triggers.
+    s.text_tags.clear();
+
+    // Transient input state — handles in flight refer to dead unit ids.
+    s.drag_cast = Impl::DragCastState{};
+    s.action_bar_hover_slot      = -1;
+    s.action_bar_pressed_slot    = -1;
+    s.action_bar_targeting_ability.clear();
+    s.command_bar_hover_slot     = -1;
+    s.command_bar_pressed_slot   = -1;
+    s.command_bar_armed_command.clear();
+    s.minimap_dragging           = false;
+    s.inventory_hover_slot       = -1;
+    s.inventory_pressed_slot     = -1;
+    s.focus_target_unit          = simulation::Unit{};
+    s.focus_manual               = false;
+
+    // Edge-tracking for ability hotkeys — stale entries would mis-fire
+    // on the new scene's first frame.
+    s.hidden_hotkey_prev.clear();
+
+    // Lua-created tree instances are tied to the just-cleared node tree.
+    s.instantiated_trees.clear();
+}
+
 void Hud::reset_session_state() {
     if (!m_impl) return;
     auto& s = *m_impl;

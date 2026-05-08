@@ -86,6 +86,11 @@ public:
     // Destroy a persistent effect by handle.
     void destroy(u32 id);
 
+    // Drop every live effect instance and any in-flight particles.
+    // Called on scene switch / session end so emitters from the
+    // previous scene don't keep spawning particles into the next one.
+    void clear();
+
     // Update all live effects (spawn particles, follow units, expire).
     // unit_pos_fn: callback to get current unit position (avoids depending on World).
     using UnitPosFn = glm::vec3(*)(simulation::Unit, void* ctx);

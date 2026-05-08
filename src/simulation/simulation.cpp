@@ -156,6 +156,9 @@ void Simulation::tick(float dt) {
     system_collision(m_world, m_spatial_grid, m_pathfinder);
     system_death(m_world);
     system_scale_pulse(m_world, dt);
+    // After all the state-changing systems — regions read final
+    // positions and dead/alive state for this tick.
+    system_regions(m_world);
 
     m_fog.update(m_world, *this);
 }

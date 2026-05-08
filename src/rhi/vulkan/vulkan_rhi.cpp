@@ -382,6 +382,11 @@ bool VulkanRhi::create_device() {
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2.pNext = &features_12;
+    // Renderer batches per-model draws into a single indirect call
+    // with drawCount = unique-model count. Without this feature, any
+    // scene with two distinct visible models (e.g. archer + grunt)
+    // trips a Vulkan validation error and undefined behavior.
+    features2.features.multiDrawIndirect = VK_TRUE;
 
     std::array device_extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,

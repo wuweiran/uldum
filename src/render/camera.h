@@ -35,6 +35,12 @@ public:
         m_dirty    = true;
     }
 
+    // Direct position setters used by scripted-camera commands.
+    // Pitch/yaw are unaffected.
+    void set_position(glm::vec3 p) { m_position = p; m_dirty = true; }
+    void set_position_xy(f32 x, f32 y) { m_position.x = x; m_position.y = y; m_dirty = true; }
+    void set_z(f32 z) { m_position.z = (z < 128.0f ? 128.0f : z); m_dirty = true; }
+
     glm::mat4 view_matrix() const;
     glm::mat4 projection_matrix() const;
     glm::mat4 view_projection() const;

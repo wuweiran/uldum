@@ -1415,4 +1415,72 @@ void system_death(World& world) {
 void system_scale_pulse(World& /*world*/, float /*dt*/) {
 }
 
+// Returns true if `pos` lies inside any of the region's shapes (rects
+// or circles). A region with no shapes never contains anything.
+static bool region_contains_point(const World::Region& r, glm::vec3 pos) {
+    for (const auto& rect : r.rects) {
+        if (pos.x >= rect.x0 && pos.x <= rect.x1 &&
+            pos.y >= rect.y0 && pos.y <= rect.y1) {
+            return true;
+        }
+    }
+    for (const auto& c : r.circles) {
+        f32 dx = pos.x - c.cx;
+        f32 dy = pos.y - c.cy;
+        if (dx * dx + dy * dy <= c.r * c.r) return true;
+    }
+    return false;
+}
+
+void system_regions(World& world) {
+    if (world.regions.empty()) return;
+    if (!world.on_region_enter && !world.on_region_leave) {
+        // No script consumer wired — keep `contained` in sync anyway
+        // so IsUnitInRegion queries return correct answers, but skip
+        // the diff dispatch.
+    }
+
+    // Reused across regions to avoid reallocation.
+    std::unordered_set<u32> current;
+
+    for (auto& [rid, region] : world.regions) {
+        if (!region.alive) continue;
+
+        current.clear();
+        // Cheap O(N) over alive units. Region authoring is sparse and
+        // unit counts are small; fine for v1. If maps start authoring
+        // many regions and many units, switch to a spatial-grid query
+        // sized to the region's bounding box.
+        for (u32 i = 0; i < world.transforms.count(); ++i) {
+            u32 uid = world.transforms.ids()[i];
+            if (world.dead_states.has(uid)) continue;
+            if (region_contains_point(region, world.transforms.data()[i].position)) {
+                current.insert(uid);
+            }
+        }
+
+        // Resolve each diff to a stable Unit handle (with generation)
+        // so the script side can validate before reading components.
+        for (u32 uid : current) {
+            if (region.contained.count(uid)) continue;
+            if (!world.on_region_enter) continue;
+            const auto* hi = world.handle_infos.get(uid);
+            Unit u; u.id = uid;
+            if (hi) u.generation = hi->generation;
+            world.on_region_enter(rid, u);
+        }
+        for (u32 uid : region.contained) {
+            if (current.count(uid)) continue;
+            if (!world.on_region_leave) continue;
+            const auto* hi = world.handle_infos.get(uid);
+            Unit u; u.id = uid;
+            if (hi) u.generation = hi->generation;
+            world.on_region_leave(rid, u);
+        }
+
+        region.contained = std::move(current);
+        current.clear();  // moved-from state may be unspecified; restore.
+    }
+}
+
 } // namespace uldum::simulation

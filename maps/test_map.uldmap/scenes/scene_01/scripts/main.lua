@@ -4,7 +4,8 @@
 --------------------------------------------------------------------------------
 
 require("constants")
-require("combat")
+local combat    = require("combat")
+local abilities = require("abilities")
 
 function main()
     Log("[Scene01] main() called — unit showcase")
@@ -12,10 +13,17 @@ function main()
     local player1 = GetPlayer(0)
 
     -- Register standard combat systems (shared)
-    register_armor_system()
-    register_hit_vfx()
-    register_death_vfx()
-    register_damage_text()
+    combat.register_armor_system()
+    combat.register_hit_vfx()
+    combat.register_death_vfx()
+    combat.register_damage_text()
+
+    -- Global ability-effect handlers — fire whenever any unit casts
+    -- holy_light or uses a healing potion. Scene_01's preplaced units
+    -- don't have holy_light bound, but the handler is harmless and
+    -- demonstrates the shared module across scenes.
+    abilities.register_holy_light_effect()
+    abilities.register_healing_potion()
 
     -- Find preplaced units (world origin = map center in centered coords)
     local units = GetUnitsInRange(-596, -396, 2000)

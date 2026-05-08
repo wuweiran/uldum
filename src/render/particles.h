@@ -90,6 +90,11 @@ public:
     // Draw all particles. Caller must have bound the particle pipeline.
     void draw(VkCommandBuffer cmd) const;
 
+    // Drop every live particle and emitter. Used on scene switch /
+    // session end so previous-scene particles don't bleed into the
+    // next scene.
+    void clear() { m_particles.clear(); m_emitters.clear(); m_quad_count = 0; }
+
     u32 particle_count() const { return static_cast<u32>(m_particles.size()); }
     u32 quad_count()     const { return m_quad_count; }
     std::span<const Particle> particle_data() const { return m_particles; }

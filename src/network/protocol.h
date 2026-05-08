@@ -63,6 +63,17 @@ enum class MsgType : u8 {
     S_START         = 0x60,   // all players loaded, game begins
     S_END           = 0x61,   // game over, includes results
     S_PAUSE_STATE   = 0x62,   // mid-game: list of disconnected players + timers
+    S_SCENE_SWITCH  = 0x63,   // host requests a scene swap; clients tear down
+                              // local state and ack via C_LOAD_DONE
+
+    // Playing — scripted-camera commands. Each is targeted at a single
+    // recipient; the host sends per-player. Lua scripts produce these
+    // via SetCameraPosition / PanCamera / etc.
+    S_CAMERA_SET_POSITION = 0x64,  // x: f32, y: f32
+    S_CAMERA_PAN          = 0x65,  // x: f32, y: f32, duration: f32
+    S_CAMERA_ZOOM         = 0x66,  // z: f32
+    S_CAMERA_SHAKE        = 0x67,  // intensity: f32, duration: f32
+    S_CAMERA_LOCK_UNIT    = 0x68,  // entity_id: u32 (UINT32_MAX = unlock)
 
     // Playing — HUD sync
     S_HUD_CREATE_NODE         = 0x70, // template instantiation + placement
@@ -573,6 +584,67 @@ inline LobbyState parse_lobby_state(std::span<const u8> data) {
 
 inline std::vector<u8> build_start() {
     return {static_cast<u8>(MsgType::S_START)};
+}
+
+// Scene-switch request. Host sends to every client when Lua calls
+// LoadScene(name); clients tear down local scene state and ack with
+// C_LOAD_DONE. Host runs the new scene's main() and bursts entity /
+// HUD spawns once everyone has acked.
+inline std::vector<u8> build_scene_switch(std::string_view scene_name) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_SCENE_SWITCH));
+    w.write_string(scene_name);
+    return std::move(w.data());
+}
+
+inline std::string parse_scene_switch(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    return r.read_string();
+}
+
+// ── Scripted-camera commands ────────────────────────────────────────
+// Each command has a fixed-size payload (no strings) and is sent per
+// player. Recipient is implied by the transport peer the host sent
+// to, so the message itself doesn't carry a player id.
+
+inline std::vector<u8> build_camera_set_position(f32 x, f32 y) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_POSITION));
+    w.write_f32(x);
+    w.write_f32(y);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_pan(f32 x, f32 y, f32 duration) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_PAN));
+    w.write_f32(x);
+    w.write_f32(y);
+    w.write_f32(duration);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_zoom(f32 z) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_ZOOM));
+    w.write_f32(z);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_shake(f32 intensity, f32 duration) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SHAKE));
+    w.write_f32(intensity);
+    w.write_f32(duration);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_lock_unit(u32 entity_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_LOCK_UNIT));
+    w.write_u32(entity_id);
+    return std::move(w.data());
 }
 
 // Mid-game pause snapshot. Host broadcasts to all clients so everyone sees

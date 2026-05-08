@@ -8,7 +8,8 @@
 --------------------------------------------------------------------------------
 
 require("constants")
-require("combat")
+local combat    = require("combat")
+local abilities = require("abilities")
 
 function main()
     Log("[Scene02] main() called — setting up ability test")
@@ -51,124 +52,25 @@ function main()
     AddAbility(paladin, "devotion_aura")
 
     -- Register standard combat systems (shared)
-    register_armor_system()
-    register_hit_vfx()
-    register_death_vfx()
-    register_damage_text()
+    combat.register_armor_system()
+    combat.register_hit_vfx()
+    combat.register_death_vfx()
+    combat.register_damage_text()
 
-    ---------------------------------------------------------------------------
-    -- Cleave: when footman deals damage, deal 30% to nearby enemy ground units
-    ---------------------------------------------------------------------------
-    local cleave_trig = CreateTrigger()
-    TriggerRegisterEvent(cleave_trig, EVENT_GLOBAL_DAMAGE)
-    TriggerAddCondition(cleave_trig, function()
-        return GetDamageType() == "attack" and GetDamageSource() == footman
-    end)
-    TriggerAddAction(cleave_trig, function()
-        local target = GetDamageTarget()
-        local dmg = GetDamageAmount() * 0.30
-        if dmg <= 0 then return end
+    -- Per-unit ability handlers (shared in scripts/abilities.lua).
+    abilities.register_cleave(footman, player1)
+    abilities.register_consecration(paladin)
+    abilities.register_devotion_aura(paladin, player1)
+    abilities.register_holy_light_effect()
+    Log("[Scene02] Hero abilities registered (cleave, consecration, aura, holy light)")
 
-        local tx = GetUnitX(target)
-        local ty = GetUnitY(target)
-        local nearby = GetUnitsInRange(tx, ty, 250, { enemy_of = player1, alive_only = true })
-        local hit = 0
-        for _, u in ipairs(nearby) do
-            if u ~= target then
-                DamageUnit(footman, u, dmg, "cleave")
-                hit = hit + 1
-            end
-        end
-        if hit > 0 then
-            Log("[Cleave] " .. string.format("%.0f", dmg) .. " splash to " .. hit .. " enemies")
-        end
-    end)
-    Log("[Scene02] Cleave trigger registered on Footman")
-
-    ---------------------------------------------------------------------------
-    -- Consecration: target-point AoE cast (declared in ability_types.json,
-    -- seeded onto the paladin via unit_types.json). On cast resolution,
-    -- deals ability.damage to every enemy in `area.radius` around the
-    -- target point and bursts a particle effect there. Mobile uses
-    -- drag-cast to pick the target point; desktop uses click-to-cast
-    -- targeting.
-    ---------------------------------------------------------------------------
-    local consecration_trig = CreateTrigger()
-    TriggerRegisterUnitEvent(consecration_trig, paladin, EVENT_UNIT_ABILITY_EFFECT)
-    TriggerAddCondition(consecration_trig, function()
-        return GetTriggerAbilityId() == "consecration"
-    end)
-    TriggerAddAction(consecration_trig, function()
-        local caster = GetTriggerUnit()
-        local tx = GetSpellTargetX()
-        local ty = GetSpellTargetY()
-        local radius = 300
-        local damage = 80
-        PlayEffect("consecration_burst", tx, ty, 0)
-        local caster_owner = GetUnitOwner(caster)
-        local nearby = GetUnitsInRange(tx, ty, radius,
-            { enemy_of = caster_owner, alive_only = true })
-        for _, u in ipairs(nearby) do
-            DamageUnit(caster, u, damage, "ability")
-        end
-        Log(string.format("[Consecration] %d enemies hit for %d at (%.0f,%.0f)",
-            #nearby, damage, tx, ty))
-    end)
-    Log("[Scene02] Consecration ability registered (target_point, AoE)")
-
-    ---------------------------------------------------------------------------
-    -- Devotion Aura: bonus to allies (handled by engine aura system) AND
-    -- a slow holy-damage tick to surrounding enemies. The buff side is
-    -- driven by the engine's aura scan (see ability_types.json); this
-    -- timer adds the offensive half map-side, which is also where the
-    -- pulse VFX lives.
-    ---------------------------------------------------------------------------
-    local AURA_DAMAGE_INTERVAL = 1.5
-    local AURA_RADIUS          = 600
-    local AURA_DAMAGE          = 6
-    CreateTimer(AURA_DAMAGE_INTERVAL, true, function()
-        if not IsUnitAlive(paladin) then return end
-        local px = GetUnitX(paladin)
-        local py = GetUnitY(paladin)
-        local nearby = GetUnitsInRange(px, py, AURA_RADIUS, { enemy_of = player1, alive_only = true })
-        if #nearby == 0 then return end
-        PlayEffectOnUnit("devotion_pulse", paladin, "overhead")
-        for _, u in ipairs(nearby) do
-            DamageUnit(paladin, u, AURA_DAMAGE, "aura")
-        end
-    end)
-    Log("[Scene02] Devotion Aura damage tick active on Paladin")
-
-    ---------------------------------------------------------------------------
-    -- Holy Light: on_ability_effect handler — heals the target
-    ---------------------------------------------------------------------------
-    local hl_effect_trig = CreateTrigger()
-    TriggerRegisterUnitEvent(hl_effect_trig, paladin, EVENT_UNIT_ABILITY_EFFECT)
-    TriggerAddCondition(hl_effect_trig, function()
-        return GetTriggerAbilityId() == "holy_light"
-    end)
-    TriggerAddAction(hl_effect_trig, function()
-        local caster = GetTriggerUnit()
-        local target = GetSpellTargetUnit()
-        if caster and target and IsUnitAlive(target) then
-            PlayEffectOnUnit("heal_glow", target, "overhead")
-            local hp_before = GetUnitHealth(target)
-            HealUnit(caster, target, 200)
-            local hp_after = GetUnitHealth(target)
-            Log("[Holy Light] Paladin healed " .. GetUnitTypeId(target)
-                .. " (HP: " .. string.format("%.0f", hp_before) .. " -> "
-                .. string.format("%.0f", hp_after) .. ")")
-        end
-    end)
-
-    -- Auto-cast: periodically order paladin to cast holy_light on footman when HP < 80%
+    -- Auto-cast Holy Light: paladin heals footman whenever footman drops
+    -- below 80% HP. Scene-specific because the caster→target binding
+    -- only makes sense for this scene's hero pair.
     CreateTimer(1.0, true, function()
         if not IsUnitAlive(paladin) then return end
         if not IsUnitAlive(footman) then return end
-
-        local hp = GetUnitHealth(footman)
-        local max_hp = GetUnitMaxHealth(footman)
-        if hp < max_hp * 0.80 then
+        if GetUnitHealth(footman) < GetUnitMaxHealth(footman) * 0.80 then
             IssueOrder(paladin, "cast", "holy_light", footman)
         end
     end)
@@ -228,28 +130,140 @@ function main()
     CreateItem("potion_healing", -1275, -930)
     Log("[Scene02] Spawned potion_healing at (-1275, -930)")
 
-    -- Heal-on-use: fire when the use_potion_healing instant resolves,
-    -- regardless of caster. Heal target = caster (potion form is
-    -- self-only).
-    local heal_use_trig = CreateTrigger()
-    TriggerRegisterEvent(heal_use_trig, EVENT_GLOBAL_ABILITY_EFFECT)
-    TriggerAddCondition(heal_use_trig, function()
-        return GetTriggerAbilityId() == "use_potion_healing"
-    end)
-    TriggerAddAction(heal_use_trig, function()
-        local caster = GetTriggerUnit()
-        local item   = GetTriggerItem()
-        if not caster or not IsUnitAlive(caster) then return end
-        PlayEffectOnUnit("heal_potion", caster, "overhead")
-        HealUnit(caster, caster, 250)
-        if item then
-            local c = GetItemCharges(item) - 1
-            SetItemCharges(item, c)
-            if c <= 0 then RemoveItem(item) end
-        end
-        Log("[Potion] " .. GetUnitTypeId(caster) .. " healed for 250")
-    end)
+    abilities.register_healing_potion()
     Log("[Scene02] Healing-potion charge consumption registered")
+
+    -- Portal region. Walk one of the heroes (or any player-1 unit)
+    -- onto this 200-unit circle to swap to scene_01. Far enough
+    -- from the central battle that creeps don't trip it by accident.
+    -- A persistent text tag at the center marks it visually since we
+    -- don't have a region-overlay primitive yet.
+    local portal_x, portal_y = 1500, 1500
+    local portal = CreateRegion()
+    AddRegionCircle(portal, portal_x, portal_y, 200)
+
+    CreateTextTag({
+        text = "[Portal: scene_01]",
+        size = 28,
+        pos  = { portal_x, portal_y, 200 },  -- raised above ground for legibility
+        color = "#FFD600FF",
+    })
+
+    -- Portal rim VFX. Continuous emitters (emit_rate > 0) ringed around
+    -- the region perimeter make the trigger volume legible without a
+    -- dedicated region-overlay primitive. CreateEffect (not PlayEffect)
+    -- because we want them to persist for the lifetime of the scene —
+    -- the scene swap clears the EffectManager, so no manual cleanup.
+    DefineEffect("portal_rim", {
+        emit_rate   = 14,
+        speed       = 60,
+        life        = 1.4,
+        size        = 9,
+        gravity     = 20,         -- slight upward drift, no fall
+        start_color = { r = 1.0, g = 0.85, b = 0.25, a = 0.9 },
+        end_color   = { r = 1.0, g = 0.55, b = 0.10, a = 0.0 },
+    })
+    local PORTAL_RIM_SEGMENTS = 16
+    for i = 0, PORTAL_RIM_SEGMENTS - 1 do
+        local theta = (i / PORTAL_RIM_SEGMENTS) * math.pi * 2
+        CreateEffect("portal_rim",
+            portal_x + math.cos(theta) * 200,
+            portal_y + math.sin(theta) * 200,
+            0)
+    end
+
+    -- Portal dialog. Composed from the `portal_dialog` template in
+    -- hud.json (panel + two buttons + labels). Centered, hidden at
+    -- spawn; ShowNode pops it on portal entry. The dialog only goes
+    -- to player 0 (the unit's owner) so other peers don't see it.
+    --
+    -- `dialog_open` guards re-entry: in MP we don't pause the sim,
+    -- so units keep moving while the prompt is up. Without the flag,
+    -- a second hero (or the same one if it walks out and back in)
+    -- would re-fire region_enter and we'd ShowNode on top of an
+    -- already-open dialog — the player would see no change and the
+    -- pending decision would silently switch which entry triggered
+    -- which subsequent button press. The flag also prevents the
+    -- region's leave→enter cycle (caused by the repel teleport
+    -- below) from re-opening the same dialog mid-cancel.
+    local dialog_open = false
+
+    CreateNode("portal_dialog", {
+        anchor = "mc", x = 0, y = 0, w = 340, h = 150,
+        owner  = GetPlayer(0),
+    })
+
+    -- Push every player-0 unit currently inside the portal region out
+    -- past its rim. Used after Cancel so the dialog doesn't fire on
+    -- the next tick from a unit standing on top of the portal.
+    -- Stop first so any in-flight move / attack-move order (or the
+    -- joystick-fed move-direction the player is still holding) doesn't
+    -- immediately walk the unit back into the region.
+    local PORTAL_RADIUS  = 200
+    local REPEL_DISTANCE = PORTAL_RADIUS + 40
+    local function repel_from_portal()
+        for _, u in ipairs(GetUnitsInRegion(portal)) do
+            local owner = GetUnitOwner(u)
+            if owner and owner.id == 0 then
+                IssueOrder(u, "stop")
+                local dx = GetUnitX(u) - portal_x
+                local dy = GetUnitY(u) - portal_y
+                local d  = math.sqrt(dx * dx + dy * dy)
+                if d < 1 then dx, dy, d = -1, -1, math.sqrt(2) end
+                SetUnitPosition(u,
+                    portal_x + dx / d * REPEL_DISTANCE,
+                    portal_y + dy / d * REPEL_DISTANCE)
+            end
+        end
+    end
+
+    local yes_trig = CreateTrigger()
+    TriggerRegisterNodeEvent(yes_trig, GetNode("portal_dialog_yes"), EVENT_BUTTON_PRESSED)
+    TriggerAddAction(yes_trig, function()
+        Log("[Scene02] Dialog: Yes — loading scene_01")
+        HideNode("portal_dialog")
+        dialog_open = false
+        if IsSinglePlayer() then UnpauseGame() end
+        LoadScene("scene_01")
+    end)
+
+    local cancel_trig = CreateTrigger()
+    TriggerRegisterNodeEvent(cancel_trig, GetNode("portal_dialog_cancel"), EVENT_BUTTON_PRESSED)
+    TriggerAddAction(cancel_trig, function()
+        Log("[Scene02] Dialog: Cancel — repelling unit, staying in scene_02")
+        HideNode("portal_dialog")
+        dialog_open = false
+        if IsSinglePlayer() then UnpauseGame() end
+        repel_from_portal()
+    end)
+
+    -- Camera pan-in for the portal-entry beat. Pan runs on real time
+    -- (CameraController updates each frame, not each tick) so it would
+    -- happily complete while paused — but timers don't advance during
+    -- pause, so we schedule the ShowNode + PauseGame on a timer that
+    -- fires once the pan finishes, *then* freeze.
+    local PORTAL_PAN_DURATION = 0.5
+
+    local portal_trig = CreateTrigger()
+    TriggerRegisterEnterRegion(portal_trig, portal)
+    TriggerAddAction(portal_trig, function()
+        if dialog_open then return end
+
+        local u = GetTriggerUnit()
+        if not u then return end
+        local owner = GetUnitOwner(u)
+        if not (owner and owner.id == 0) then return end
+
+        Log("[Scene02] Portal entered — panning camera")
+        dialog_open = true   -- block re-entries during the pan window
+        PanCamera(GetPlayer(0), portal_x, portal_y, PORTAL_PAN_DURATION)
+
+        CreateTimer(PORTAL_PAN_DURATION, false, function()
+            Log("[Scene02] Pan complete — opening dialog")
+            ShowNode("portal_dialog")
+            if IsSinglePlayer() then PauseGame() end
+        end)
+    end)
 
     Log("[Scene02] Setup complete — heroes defending center against creep waves")
 end

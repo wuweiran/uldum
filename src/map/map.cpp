@@ -106,6 +106,23 @@ bool MapManager::switch_scene(std::string_view scene_name, asset::AssetManager& 
     return true;
 }
 
+bool MapManager::switch_scene_terrain_only(std::string_view scene_name,
+                                           asset::AssetManager& assets,
+                                           simulation::Simulation& sim) {
+    sim.world().clear_entities();
+    m_scene = {};
+    if (!load_scene_terrain(scene_name, assets)) return false;
+    // Pure-data scene metadata (regions, cameras) belongs to the new
+    // scene's terrain swap — App reads m_scene.cameras to re-pose the
+    // camera right after this returns, and Lua scripts read regions.
+    // Doesn't touch the world, so safe before the MP barrier closes.
+    if (!load_scene_metadata(scene_name, assets)) {
+        log::warn(TAG, "Scene '{}': no metadata loaded", scene_name);
+    }
+    log::info(TAG, "Switched to scene '{}' (terrain only)", scene_name);
+    return true;
+}
+
 // ── Manifest ──────────────────────────────────────────────────────────────
 
 bool MapManager::load_manifest(asset::AssetManager& assets) {
@@ -293,7 +310,7 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
 
 // ── Scene ─────────────────────────────────────────────────────────────────
 
-bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
+bool MapManager::load_scene_terrain(std::string_view scene_name, asset::AssetManager& assets) {
     std::string scene_dir = m_map_root + "/scenes/" + std::string(scene_name);
 
     std::string terrain_path = scene_dir + "/terrain.bin";
@@ -309,12 +326,53 @@ bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& as
     }
     log::info(TAG, "Scene '{}': terrain {}x{} tiles",
               scene_name, m_scene.terrain.tiles_x, m_scene.terrain.tiles_y);
+    return true;
+}
 
-    // Load object placements
+bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
+    if (!load_scene_terrain(scene_name, assets)) return false;
+    if (!load_scene_metadata(scene_name, assets)) {
+        log::warn(TAG, "Scene '{}': no metadata loaded", scene_name);
+    }
     if (!load_placements(scene_name, assets, sim)) {
         log::warn(TAG, "Scene '{}': no placements loaded", scene_name);
     }
 
+    return true;
+}
+
+bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetManager& assets) {
+    std::string objects_path = m_map_root + "/scenes/" + std::string(scene_name) + "/objects.json";
+    auto handle = assets.load_config_absolute(objects_path);
+    auto* doc = assets.get(handle);
+    if (!doc) return false;
+
+    auto& j = doc->data;
+
+    if (j.contains("regions")) {
+        for (auto& r : j["regions"]) {
+            Region reg;
+            reg.name   = r.value("name", "");
+            reg.x      = r.value("x", 0.0f);
+            reg.y      = r.value("y", 0.0f);
+            reg.width  = r.value("width", 0.0f);
+            reg.height = r.value("height", 0.0f);
+            m_scene.regions.push_back(std::move(reg));
+        }
+    }
+
+    if (j.contains("cameras")) {
+        for (auto& c : j["cameras"]) {
+            CameraDef cam;
+            cam.name  = c.value("name", "");
+            cam.x     = c.value("x", 0.0f);
+            cam.y     = c.value("y", 0.0f);
+            cam.z     = c.value("z", 0.0f);
+            cam.pitch = c.value("pitch", 0.0f);
+            cam.yaw   = c.value("yaw", 0.0f);
+            m_scene.cameras.push_back(std::move(cam));
+        }
+    }
     return true;
 }
 
@@ -429,35 +487,8 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
         }
     }
 
-    // Regions
-    if (j.contains("regions")) {
-        for (auto& r : j["regions"]) {
-            Region reg;
-            reg.name   = r.value("name", "");
-            reg.x      = r.value("x", 0.0f);
-            reg.y      = r.value("y", 0.0f);
-            reg.width  = r.value("width", 0.0f);
-            reg.height = r.value("height", 0.0f);
-            m_scene.regions.push_back(std::move(reg));
-        }
-    }
-
-    // Cameras
-    if (j.contains("cameras")) {
-        for (auto& c : j["cameras"]) {
-            CameraDef cam;
-            cam.name  = c.value("name", "");
-            cam.x     = c.value("x", 0.0f);
-            cam.y     = c.value("y", 0.0f);
-            cam.z     = c.value("z", 0.0f);
-            cam.pitch = c.value("pitch", 0.0f);
-            cam.yaw   = c.value("yaw", 0.0f);
-            m_scene.cameras.push_back(std::move(cam));
-        }
-    }
-
-    log::info(TAG, "Placements: {} units, {} destructables, {} items, {} regions, {} cameras",
-              unit_count, dest_count, item_count, m_scene.regions.size(), m_scene.cameras.size());
+    log::info(TAG, "Placements: {} units, {} destructables, {} items",
+              unit_count, dest_count, item_count);
     return true;
 }
 

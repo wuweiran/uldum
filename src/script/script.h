@@ -51,6 +51,8 @@ struct Trigger {
         std::string event_name;
         u32         unit_id    = UINT32_MAX;  // UINT32_MAX = any unit
         u32         player_id  = UINT32_MAX;  // UINT32_MAX = any player
+        u32         region_id  = UINT32_MAX;  // UINT32_MAX = any region
+        std::string node_id;                  // empty = any node
     };
 
     std::vector<EventBinding>            events;
@@ -83,6 +85,31 @@ public:
     using UnitUpdateFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
     void set_unit_update_fn(UnitUpdateFn fn) { m_unit_update_fn = std::move(fn); }
 
+    // Callback fired when Lua calls LoadScene(name). The actual switch
+    // (entity teardown, terrain reload, script reload, main() call)
+    // lives at the App layer where map/asset/sim/script are all in
+    // scope; this callback just forwards the request.
+    using SceneSwitchFn = std::function<void(std::string_view scene_name)>;
+    void set_scene_switch_fn(SceneSwitchFn fn) { m_scene_switch_fn = std::move(fn); }
+
+    // Per-player scripted-camera routing. App installs these; the
+    // implementation decides whether to apply locally (own player or
+    // offline) or send across the wire (remote peers). Lua APIs:
+    // SetCameraPosition(player, x, y), PanCamera(player, x, y, dur),
+    // SetCameraZoom(player, z), CameraShake(player, intensity, dur),
+    // SetCameraLockUnit(player, unit).
+    using CameraSetPositionFn = std::function<void(u32 player_id, f32 x, f32 y)>;
+    using CameraPanFn         = std::function<void(u32 player_id, f32 x, f32 y, f32 duration)>;
+    using CameraZoomFn        = std::function<void(u32 player_id, f32 z)>;
+    using CameraShakeFn       = std::function<void(u32 player_id, f32 intensity, f32 duration)>;
+    using CameraLockUnitFn    = std::function<void(u32 player_id, simulation::Unit unit)>;
+    void set_camera_set_position_fn(CameraSetPositionFn fn) { m_camera_set_position_fn = std::move(fn); }
+    void set_camera_pan_fn         (CameraPanFn fn)         { m_camera_pan_fn          = std::move(fn); }
+    void set_camera_zoom_fn        (CameraZoomFn fn)        { m_camera_zoom_fn         = std::move(fn); }
+    void set_camera_shake_fn       (CameraShakeFn fn)       { m_camera_shake_fn        = std::move(fn); }
+    void set_camera_lock_unit_fn   (CameraLockUnitFn fn)    { m_camera_lock_unit_fn    = std::move(fn); }
+
+
     // Connect input systems (call after input is initialized, before scripts run).
     void set_input(input::SelectionState* selection, input::CommandSystem* commands);
 
@@ -94,9 +121,22 @@ public:
     void shutdown();
     void update(float dt);
 
+    // Lua-driven sim pause (PauseGame/UnpauseGame). Read by App's
+    // should_tick gate so scripts can freeze gameplay during dialogs,
+    // cutscenes, etc. Independent of the network's reconnect-pause.
+    bool is_paused() const { return m_paused; }
+    void set_paused(bool p) { m_paused = p; }
+
+    // True when the engine is running offline (no network). Set once
+    // by App at init based on launch mode; surfaced to Lua via
+    // IsSinglePlayer().
+    void set_singleplayer(bool sp) { m_singleplayer = sp; }
+    bool is_singleplayer() const   { return m_singleplayer; }
+
     // Fire a game event — evaluates all triggers registered for this event.
     void fire_event(std::string_view event_name, u32 unit_id = UINT32_MAX,
-                    std::string_view ability_id = "", u32 player_id = UINT32_MAX);
+                    std::string_view ability_id = "", u32 player_id = UINT32_MAX,
+                    u32 region_id = UINT32_MAX, std::string_view node_id = "");
 
     // Fire a HUD node event (button press, etc.) tagged with the issuing
     // player. Sets the node-id context so Lua can read `GetTriggerNode()`
@@ -125,6 +165,7 @@ public:
     void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
     void set_context_item(simulation::Item it)   { m_ctx_item = it; }
     void set_context_node_id(std::string id) { m_ctx_node_id = std::move(id); }
+    void set_context_region_id(u32 id) { m_ctx_region_id = id; }
 
     // Configure Lua package.path so require() resolves from these directories.
     // Searched in order: scene scripts, shared scripts, engine scripts.
@@ -165,6 +206,12 @@ private:
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
     UnitUpdateFn             m_unit_update_fn;
+    SceneSwitchFn            m_scene_switch_fn;
+    CameraSetPositionFn      m_camera_set_position_fn;
+    CameraPanFn              m_camera_pan_fn;
+    CameraZoomFn             m_camera_zoom_fn;
+    CameraShakeFn            m_camera_shake_fn;
+    CameraLockUnitFn         m_camera_lock_unit_fn;
 
     // Input (set via set_input)
     input::SelectionState*   m_selection = nullptr;
@@ -213,6 +260,10 @@ private:
     f32  m_ctx_spell_target_y    = 0;
     simulation::Item m_ctx_item{};  // for item events / item-sourced casts (GetTriggerItem)
     std::string m_ctx_node_id;   // which HUD node fired the event (button_pressed etc.)
+    u32 m_ctx_region_id = UINT32_MAX;  // which region fired region_enter / region_leave
+
+    bool m_paused        = false;  // PauseGame()/UnpauseGame() — App reads via is_paused()
+    bool m_singleplayer  = false;  // IsSinglePlayer() — App sets once at init
 };
 
 } // namespace uldum::script

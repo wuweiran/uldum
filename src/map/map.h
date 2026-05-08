@@ -207,11 +207,34 @@ public:
     // Switch to a different scene (reloads terrain + placements).
     bool switch_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
 
+    // Switch to a different scene's terrain only — does NOT spawn the
+    // scene's placement entities. Used by client-side scene switch
+    // (host re-spawns entities via S_SPAWN) and by the host's MP
+    // path which defers placement instantiation until after the
+    // client-load barrier so spawn deltas don't fire before clients
+    // have torn down the previous scene.
+    bool switch_scene_terrain_only(std::string_view scene_name,
+                                   asset::AssetManager& assets,
+                                   simulation::Simulation& sim);
+
+    // Public entry to load placements for the current scene. Pairs
+    // with switch_scene_terrain_only on the host's MP path.
+    bool load_scene_placements(std::string_view scene_name,
+                               asset::AssetManager& assets,
+                               simulation::Simulation& sim) {
+        return load_placements(scene_name, assets, sim);
+    }
+
 private:
     bool load_manifest(asset::AssetManager& assets);
     bool load_tileset(asset::AssetManager& assets);
     bool load_types(asset::AssetManager& assets, simulation::Simulation& sim);
     bool load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
+    bool load_scene_terrain(std::string_view scene_name, asset::AssetManager& assets);
+    // Pure data — regions + cameras from objects.json. No entity
+    // creation, so safe to call in MP scene-switch teardown before
+    // the barrier closes.
+    bool load_scene_metadata(std::string_view scene_name, asset::AssetManager& assets);
     bool load_placements(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
 
     bool                  m_loaded = false;

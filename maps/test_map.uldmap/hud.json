@@ -166,6 +166,72 @@
           "style":  { "bg_color": "#282C38DC", "fill_color": "#50C878F0" }
         }
       ]
+    },
+
+    {
+      "id":      "portal_dialog",
+      "type":    "panel",
+      "visible": false,
+      "style":   { "bg": "#141620F0" },
+
+      "children": [
+        {
+          "id":     "portal_dialog_title",
+          "type":   "label",
+          "anchor": "tl",
+          "x": 10, "y": 14, "w": 320, "h": 24,
+          "text":   "Travel to Scene 01?",
+          "style":  { "color": "#FFD600FF", "size": 18, "align": "center" }
+        },
+        {
+          "id":     "portal_dialog_text",
+          "type":   "label",
+          "anchor": "tl",
+          "x": 10, "y": 48, "w": 320, "h": 40,
+          "text":   "You've reached the portal. Switch scenes?",
+          "style":  { "color": "#FFFFFFFF", "size": 14, "align": "center" }
+        },
+        {
+          "id":     "portal_dialog_yes",
+          "type":   "button",
+          "anchor": "tl",
+          "x": 40, "y": 100, "w": 100, "h": 36,
+          "style":  {
+            "bg":       "#303448F0",
+            "hover_bg": "#484C60FA",
+            "press_bg": "#666A84FF"
+          },
+          "children": [
+            {
+              "type":   "label",
+              "anchor": "tl",
+              "x": 0, "y": 0, "w": 100, "h": 36,
+              "text":   "Yes",
+              "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
+            }
+          ]
+        },
+        {
+          "id":     "portal_dialog_cancel",
+          "type":   "button",
+          "anchor": "tl",
+          "x": 200, "y": 100, "w": 100, "h": 36,
+          "style":  {
+            "bg":       "#303448F0",
+            "hover_bg": "#484C60FA",
+            "press_bg": "#666A84FF"
+          },
+          "children": [
+            {
+              "type":   "label",
+              "anchor": "tl",
+              "x": 0, "y": 0, "w": 100, "h": 36,
+              "text":   "Cancel",
+              "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

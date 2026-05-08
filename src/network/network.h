@@ -181,6 +181,58 @@ public:
     // S_WELCOME + S_SPAWN burst per peer, then S_START. Phase → Playing.
     void host_finish_start();
 
+    // Host: enter the scene-switch barrier. Resets self_loaded + every
+    // peer's loaded flag, sets phase → Loading, and broadcasts
+    // S_SCENE_SWITCH(name) so each client tears down its scene state
+    // and acks via the existing C_LOAD_DONE path. Caller is responsible
+    // for the host's own local teardown immediately after, then calls
+    // mark_self_loaded() once that's done.
+    void host_broadcast_scene_switch(std::string_view scene_name);
+
+    // Host: barrier is satisfied (all peers acked) and the host has
+    // already loaded the new scene's entities + run main(). Bursts
+    // S_SPAWN to every peer for the new scene's entities and flips
+    // phase → Playing so ticks resume. Doesn't re-send S_WELCOME or
+    // S_START — those are first-load primitives.
+    void host_finish_scene_switch();
+
+    // True iff the host is sitting in the scene-switch barrier — sim
+    // ticks must skip while this is true (entities + Lua aren't yet
+    // bound to the new scene). Used by App's should_tick gate.
+    bool is_scene_switching() const { return m_scene_switching; }
+
+    // Client: registered by App during start_session for client mode.
+    // Fires when S_SCENE_SWITCH arrives; the App handler tears the
+    // local scene state down (terrain swap, entity wipe, HUD/picker
+    // reset, camera re-pose). NetworkManager calls send_load_done()
+    // automatically right after the callback returns.
+    using SceneSwitchRecvFn = std::function<void(std::string_view scene_name)>;
+    void set_scene_switch_recv_fn(SceneSwitchRecvFn fn) { m_scene_switch_recv_fn = std::move(fn); }
+
+    // ── Scripted-camera routing ─────────────────────────────────────
+    // Host: route a camera command to a player. If the player is the
+    // host's local slot the caller has already applied locally and we
+    // skip; otherwise we send to the matching peer's transport id.
+    // Returns false if the player id has no matching peer (logged).
+    bool host_send_camera_set_position(u32 player_id, f32 x, f32 y);
+    bool host_send_camera_pan(u32 player_id, f32 x, f32 y, f32 duration);
+    bool host_send_camera_zoom(u32 player_id, f32 z);
+    bool host_send_camera_shake(u32 player_id, f32 intensity, f32 duration);
+    bool host_send_camera_lock_unit(u32 player_id, u32 entity_id);
+
+    // Client: registered by App to apply incoming camera commands to
+    // the local CameraController.
+    using CameraSetPositionRecvFn = std::function<void(f32 x, f32 y)>;
+    using CameraPanRecvFn         = std::function<void(f32 x, f32 y, f32 duration)>;
+    using CameraZoomRecvFn        = std::function<void(f32 z)>;
+    using CameraShakeRecvFn       = std::function<void(f32 intensity, f32 duration)>;
+    using CameraLockUnitRecvFn    = std::function<void(u32 entity_id)>;
+    void set_camera_set_position_recv_fn(CameraSetPositionRecvFn fn) { m_camera_set_position_recv_fn = std::move(fn); }
+    void set_camera_pan_recv_fn         (CameraPanRecvFn fn)         { m_camera_pan_recv_fn          = std::move(fn); }
+    void set_camera_zoom_recv_fn        (CameraZoomRecvFn fn)        { m_camera_zoom_recv_fn         = std::move(fn); }
+    void set_camera_shake_recv_fn       (CameraShakeRecvFn fn)       { m_camera_shake_recv_fn        = std::move(fn); }
+    void set_camera_lock_unit_recv_fn   (CameraLockUnitRecvFn fn)    { m_camera_lock_unit_recv_fn    = std::move(fn); }
+
     // Client: this client has finished loading — tell the host. No-op on
     // the host (host tracks self-loaded via mark_self_loaded).
     void send_load_done();
@@ -256,6 +308,26 @@ private:
     std::vector<DisconnectedView> m_disconnected_view;
     bool m_pause_view_active = false;
     f32  m_pause_broadcast_timer = 0.0f;  // host: time since last broadcast
+
+    // Scene-switch barrier. Host sets true on host_broadcast_scene_switch
+    // and clears it in host_finish_scene_switch. App's should_tick gate
+    // reads it via is_scene_switching().
+    bool m_scene_switching = false;
+    // Cached during the barrier so a peer reconnecting mid-switch can
+    // be re-routed onto the scene-load path (vs the normal Playing
+    // reconnect that would burst stale entities).
+    std::string m_in_flight_scene_name;
+
+    // Client: callback into App that tears down the client's local
+    // scene state when S_SCENE_SWITCH arrives.
+    SceneSwitchRecvFn m_scene_switch_recv_fn;
+
+    // Client: scripted-camera apply callbacks.
+    CameraSetPositionRecvFn m_camera_set_position_recv_fn;
+    CameraPanRecvFn         m_camera_pan_recv_fn;
+    CameraZoomRecvFn        m_camera_zoom_recv_fn;
+    CameraShakeRecvFn       m_camera_shake_recv_fn;
+    CameraLockUnitRecvFn    m_camera_lock_unit_recv_fn;
 
     void host_on_connect(u32 peer_id);
     void host_on_disconnect(u32 peer_id);

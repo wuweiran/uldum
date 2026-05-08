@@ -1,12 +1,18 @@
 --------------------------------------------------------------------------------
 -- combat.lua — Shared combat systems (armor, VFX)
--- Used by all scenes via require("combat")
+--
+-- Module pattern: returns a table of `register_*` functions. Use as:
+--     local combat = require("combat")
+--     combat.register_armor_system()
+--     ...
 --------------------------------------------------------------------------------
+
+local M = {}
 
 --- Register WC3-style armor damage reduction.
 -- Runs at HIGH priority so cleave/other effects see the reduced amount.
 -- Formula: reduction = armor * 0.06 / (1 + armor * 0.06)
-function register_armor_system()
+function M.register_armor_system()
     local armor_trig = CreateTrigger(TRIGGER_PRIORITY_HIGH)
     TriggerRegisterEvent(armor_trig, EVENT_GLOBAL_DAMAGE)
     TriggerAddCondition(armor_trig, function()
@@ -25,7 +31,7 @@ function register_armor_system()
 end
 
 --- Register hit spark VFX on attack damage.
-function register_hit_vfx()
+function M.register_hit_vfx()
     local hit_vfx = CreateTrigger(TRIGGER_PRIORITY_LOW)
     TriggerRegisterEvent(hit_vfx, EVENT_GLOBAL_DAMAGE)
     TriggerAddCondition(hit_vfx, function()
@@ -41,7 +47,7 @@ end
 
 --- Register floating damage numbers. Fires on attack damage and creates
 --- a red text tag above the target unit that rises and fades out.
-function register_damage_text()
+function M.register_damage_text()
     local trig = CreateTrigger(TRIGGER_PRIORITY_LOW)
     TriggerRegisterEvent(trig, EVENT_GLOBAL_DAMAGE)
     TriggerAddCondition(trig, function()
@@ -65,7 +71,7 @@ function register_damage_text()
 end
 
 --- Register death burst VFX + logging.
-function register_death_vfx()
+function M.register_death_vfx()
     local death_trig = CreateTrigger()
     TriggerRegisterEvent(death_trig, EVENT_GLOBAL_DEATH)
     TriggerAddAction(death_trig, function()
@@ -76,3 +82,5 @@ function register_death_vfx()
         end
     end)
 end
+
+return M

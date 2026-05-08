@@ -204,6 +204,13 @@ public:
     // font, image cache) is preserved.
     void reset_session_state();
 
+    // Slimmer reset used when swapping scenes within the same map.
+    // Clears per-scene state (text tags, drag-cast, focus target,
+    // pressed/hover slot indices, Lua-created node children) but
+    // KEEPS composite configs from hud.json, the image cache, node
+    // templates, and the local player slot — those are map-level.
+    void reset_scene_state();
+
     // Walk the tree and return the first node with the matching JSON id.
     // O(N) in the number of nodes — N is small in practice (tens to a few
     // hundred); revisit with a hash map if profiling shows hot lookups.

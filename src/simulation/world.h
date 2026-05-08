@@ -9,6 +9,9 @@
 #include <glm/vec3.hpp>
 #include <functional>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace uldum::simulation {
 
@@ -41,6 +44,23 @@ struct World {
     SparseSet<ScalePulse>          scale_pulses;
     SparseSet<DeadState>           dead_states;
     SparseSet<Renderable>           renderables;
+
+    // Regions — Lua-authored zones used to fire enter/leave triggers.
+    // Defined out of band (not per-unit), so it lives flat on World
+    // instead of as a SparseSet. Scanned by `system_regions` each tick.
+    struct RegionRect   { f32 x0, y0, x1, y1; };
+    struct RegionCircle { f32 cx, cy, r; };
+    struct Region {
+        u32  id    = 0;
+        bool alive = true;
+        std::vector<RegionRect>   rects;
+        std::vector<RegionCircle> circles;
+        // Last-tick set of unit ids inside this region. Diffed against
+        // the current scan to derive enter / leave events.
+        std::unordered_set<u32>   contained;
+    };
+    std::unordered_map<u32, Region> regions;
+    u32 next_region_id = 0;
 
     // Handle allocator
     HandleAllocator handles;
@@ -90,6 +110,14 @@ struct World {
     ItemPickupCallback on_item_picked_up;
     ItemDropCallback   on_item_dropped;
 
+    // Region events — fired by system_regions each tick when a unit
+    // crosses into / out of a region's shape. Map Lua hooks these via
+    // TriggerRegisterEnterRegion / LeaveRegion. Engine takes no
+    // further action — just spatial detection + dispatch.
+    using RegionEventCallback = std::function<void(u32 region_id, Unit unit)>;
+    RegionEventCallback on_region_enter;
+    RegionEventCallback on_region_leave;
+
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
 
@@ -103,6 +131,7 @@ struct World {
         constructions.clear(); destructables.clear(); pathing_blockers.clear();
         item_infos.clear(); carriables.clear(); projectiles.clear();
         scale_pulses.clear(); dead_states.clear(); renderables.clear();
+        regions.clear(); next_region_id = 0;
         handles = HandleAllocator{};
     }
 };

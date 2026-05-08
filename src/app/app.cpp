@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <thread>
 
 namespace uldum {
@@ -167,6 +168,7 @@ bool App::init(const LaunchArgs& args) {
         log::error(TAG, "Renderer init failed");
         return false;
     }
+    m_camera_controller.attach(&m_renderer.camera());
 
     // HUD — custom retained-mode UI for in-game overlays. Initialized once
     // alongside the renderer; lives across sessions.
@@ -731,6 +733,11 @@ bool App::start_session() {
         m_server.script().set_hud(&m_hud);
         m_network.set_script(&m_server.script());
 
+        // Surface the launch mode to Lua before main() runs so scripts
+        // can branch on IsSinglePlayer() at scene-init time (e.g.
+        // build SP-only HUD nodes, register pause-aware triggers).
+        m_server.script().set_singleplayer(m_args.net_mode == network::Mode::Offline);
+
         // Host mode: every local HUD mutation also emits a protocol packet
         // via NetworkManager::host_hud_sync. The network layer routes it
         // to the owning peer (or broadcasts). Offline skips sync entirely.
@@ -774,6 +781,7 @@ bool App::start_session() {
         m_server.script().set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
             m_network.host_broadcast_update(entity_id, pkt);
         });
+        register_script_camera_callbacks();
         m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {
                 m_network.host_end_game(winner_id, stats);
@@ -796,10 +804,54 @@ bool App::start_session() {
 #endif
             m_state = AppState::Results;
         });
+        // Lua-driven scene swap. The actual heavy lift (entity reset,
+        // script reload, main() rerun) happens in perform_scene_switch
+        // off the main loop — this just defers the request.
+        m_server.script().set_scene_switch_fn(
+            [this](std::string_view scene) {
+                m_pending_scene_switch.assign(scene);
+            });
     } else {
         m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
         };
+        // Host-driven scene swap. NetworkManager fires this when an
+        // S_SCENE_SWITCH arrives; the App tears down local scene
+        // state inline (terrain swap, sim wipe, HUD/picker reset,
+        // camera re-pose). NetworkManager handles the C_LOAD_DONE
+        // ack right after the callback returns. The host then bursts
+        // S_SPAWN/S_HUD_* messages once every peer has acked, so the
+        // client renders the new scene as those deltas arrive.
+        m_network.set_scene_switch_recv_fn([this](std::string_view scene) {
+            scene_switch_local_teardown(std::string(scene));
+        });
+        // Scripted-camera apply. The host has already chosen this
+        // client as the recipient; just hand off to the controller.
+        m_network.set_camera_set_position_recv_fn([this](f32 x, f32 y) {
+            m_camera_controller.set_position(x, y);
+        });
+        m_network.set_camera_pan_recv_fn([this](f32 x, f32 y, f32 d) {
+            m_camera_controller.pan(x, y, d);
+        });
+        m_network.set_camera_zoom_recv_fn([this](f32 z) {
+            m_camera_controller.set_zoom(z);
+        });
+        m_network.set_camera_shake_recv_fn([this](f32 i, f32 d) {
+            m_camera_controller.shake(i, d);
+        });
+        m_network.set_camera_lock_unit_recv_fn([this](u32 entity_id) {
+            if (entity_id == UINT32_MAX) {
+                m_camera_controller.unlock_unit();
+            } else {
+                // Resolve to a stable Unit handle (with generation) so
+                // the controller's lookup-fn can detect deaths.
+                simulation::Unit u; u.id = entity_id;
+                if (auto* hi = m_server.simulation().world().handle_infos.get(entity_id)) {
+                    u.generation = hi->generation;
+                }
+                m_camera_controller.lock_unit(u);
+            }
+        });
     }
 
     // Picking: needs camera + terrain, both ready after map content load.
@@ -914,6 +966,301 @@ void App::end_session() {
     m_session_active = false;
     m_lobby_active   = false;
     log::info(TAG, "=== Session ended ===");
+}
+
+// ── Scene switch (Lua-driven) ─────────────────────────────────────────────
+//
+// Resets: sim entities & regions, terrain (mesh + pathfinder + spatial
+// grid), camera (re-posed to scene's authored start), selection, HUD
+// per-scene state (text tags, drag-cast, focus, slot input — but NOT
+// hud.json composites or the image cache), world overlays, picker, and
+// the Lua VM. SaveData/LoadData is the cross-scene data channel for
+// maps that need to persist values across scenes.
+//
+// Persists: map manifest, type registry, ability registry, tileset,
+// fog-of-war state (assumes scenes share terrain dimensions), audio,
+// renderer-cached models / effects / textures, network connection,
+// local player slot, lobby, hud.json composites.
+//
+// ── Scripted-camera routing ───────────────────────────────────────────────
+
+void App::route_camera_set_position(u32 player_id, f32 x, f32 y) {
+    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+        m_camera_controller.set_position(x, y);
+    }
+    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
+        if (!m_network.host_send_camera_set_position(player_id, x, y)) {
+            log::warn(TAG, "SetCameraPosition: no peer for player {}", player_id);
+        }
+    }
+}
+
+void App::route_camera_pan(u32 player_id, f32 x, f32 y, f32 duration) {
+    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+        m_camera_controller.pan(x, y, duration);
+    }
+    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
+        if (!m_network.host_send_camera_pan(player_id, x, y, duration)) {
+            log::warn(TAG, "PanCamera: no peer for player {}", player_id);
+        }
+    }
+}
+
+void App::route_camera_zoom(u32 player_id, f32 z) {
+    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+        m_camera_controller.set_zoom(z);
+    }
+    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
+        if (!m_network.host_send_camera_zoom(player_id, z)) {
+            log::warn(TAG, "SetCameraZoom: no peer for player {}", player_id);
+        }
+    }
+}
+
+void App::route_camera_shake(u32 player_id, f32 intensity, f32 duration) {
+    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+        m_camera_controller.shake(intensity, duration);
+    }
+    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
+        if (!m_network.host_send_camera_shake(player_id, intensity, duration)) {
+            log::warn(TAG, "CameraShake: no peer for player {}", player_id);
+        }
+    }
+}
+
+void App::route_camera_lock_unit(u32 player_id, simulation::Unit unit) {
+    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+        if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
+        else                       m_camera_controller.lock_unit(unit);
+    }
+    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
+        if (!m_network.host_send_camera_lock_unit(player_id, unit.id)) {
+            log::warn(TAG, "SetCameraLockUnit: no peer for player {}", player_id);
+        }
+    }
+}
+
+void App::register_script_camera_callbacks() {
+    auto& script = m_server.script();
+    script.set_camera_set_position_fn([this](u32 p, f32 x, f32 y) { route_camera_set_position(p, x, y); });
+    script.set_camera_pan_fn         ([this](u32 p, f32 x, f32 y, f32 d) { route_camera_pan(p, x, y, d); });
+    script.set_camera_zoom_fn        ([this](u32 p, f32 z) { route_camera_zoom(p, z); });
+    script.set_camera_shake_fn       ([this](u32 p, f32 i, f32 d) { route_camera_shake(p, i, d); });
+    script.set_camera_lock_unit_fn   ([this](u32 p, simulation::Unit u) { route_camera_lock_unit(p, u); });
+}
+
+// Local teardown — runs on host AND clients when entering a new scene.
+// Wipes sim entities, swaps terrain, resets the HUD's per-scene tree,
+// re-poses the camera, and clears selection / picking handles. The
+// host's MP path defers placement instantiation + Lua reset until
+// after the client-load barrier (clients haven't reset yet at that
+// point), so this helper does NOT load placements or run main(). For
+// the host's offline + post-barrier path, scene_switch_run_main()
+// finishes the job.
+void App::scene_switch_local_teardown(const std::string& scene_name) {
+    log::info(TAG, "Scene switch teardown → '{}'", scene_name);
+
+    auto& sim = m_server.simulation();
+
+    // Terrain swap (and entity wipe). On host's offline + post-barrier
+    // paths we'd then call load_scene_placements; on host's pre-barrier
+    // and on clients we leave the world empty — the host re-spawns
+    // entities through S_SPAWN once the barrier clears.
+    if (!m_map.switch_scene_terrain_only(scene_name, m_asset, sim)) {
+        log::error(TAG, "scene switch teardown failed for '{}'", scene_name);
+        return;
+    }
+
+    if (m_map.terrain().is_valid()) {
+        sim.set_terrain(&m_map.terrain());
+    }
+    sim.sync_pathing_blockers();
+    sim.spatial_grid().update(sim.world());
+
+    // Renderer terrain mesh — without this the GPU still draws the
+    // previous scene's heightmap. Wait for the device first so we
+    // don't destroy old buffers that are still in flight.
+    vkDeviceWaitIdle(m_rhi.device());
+    if (m_map.terrain().is_valid()) {
+        m_renderer.set_terrain(m_map.terrain());
+    }
+
+    // Re-pose camera from the new scene's authored start camera.
+    if (!m_map.scene().cameras.empty()) {
+        const auto& cam = m_map.scene().cameras.front();
+        m_renderer.camera().set_pose({cam.x, cam.y, cam.z}, cam.pitch, cam.yaw);
+    }
+    // Drop any in-flight pan / shake / lock from the previous scene.
+    // Lock targets (entity ids) belong to the old world and won't
+    // resolve in the new one anyway; clearing keeps the camera under
+    // player input control until the new scene's main() decides to
+    // grab it.
+    m_camera_controller.reset();
+
+    // Drop the previous scene's persistent VFX. Without this,
+    // CreateEffect emitters (e.g. portal-rim glow) keep spawning
+    // particles into the new scene's world.
+    m_renderer.effect_manager().clear();
+
+    // Local UI / picking state — handles all reference dead unit ids.
+    // World overlays' decal textures (SelectionRing, AoE shapes, etc.)
+    // are map-level — set once from hud.json's cast_indicator config —
+    // so we leave them alone here. Per-frame ring / path commands are
+    // already cleared each frame by the renderer; nothing to reset.
+    m_selection = input::SelectionState{};
+    m_selection.set_player(simulation::Player{m_args.local_slot});
+    m_hud.reset_scene_state();
+    m_picker.init(&m_renderer.camera(), &m_map.terrain(), &active_world(),
+                  m_platform->width(), m_platform->height());
+
+    // Client: rebuild the fog mirror against the new terrain
+    // dimensions. Host's authoritative fog lives on its own
+    // simulation and is rebuilt by sim.set_terrain above.
+    if (m_args.net_mode == network::Mode::Client && m_map.terrain().is_valid()) {
+        m_network.init_client_fog(m_map.terrain(), m_map, m_server.simulation());
+        m_picker.set_fog(&m_network.client_fog(), simulation::Player{m_args.local_slot});
+    }
+}
+
+// Host-only second half — instantiate the new scene's placements,
+// reset the Lua VM, re-wire callbacks, and run main(). Per the design
+// contract, Lua state does not survive a scene swap; maps carry data
+// across scenes via SaveData / LoadData.
+void App::scene_switch_run_main(const std::string& scene_name) {
+    auto& sim    = m_server.simulation();
+    auto& script = m_server.script();
+
+    // Spawn placement entities for the new scene. host_send_spawn_burst
+    // (called later by host_finish_scene_switch in MP) iterates the
+    // current world, so the entities have to exist before the burst
+    // goes out.
+    if (!m_map.load_scene_placements(scene_name, m_asset, sim)) {
+        log::warn(TAG, "Scene '{}': no placements loaded", scene_name);
+    }
+    sim.sync_pathing_blockers();
+    sim.spatial_grid().update(sim.world());
+
+    // Lua VM full reset.
+    script.shutdown();
+    if (!script.init(sim, m_map,
+                     &m_renderer.effect_registry(), &m_renderer.effect_manager(),
+                     &m_audio, &m_renderer)) {
+        log::error(TAG, "ScriptEngine re-init failed for scene '{}'", scene_name);
+        return;
+    }
+
+    // App-owned wiring (mirrors start_session). Pre-init bindings
+    // (input + hud) are set first so the script's main() can use
+    // them at scene init time.
+    script.set_input(&m_selection, &m_commands);
+    script.set_hud(&m_hud);
+    m_network.set_script(&script);
+    script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+        return m_renderer.get_attachment_point(entity_id, bone);
+    });
+    script.set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
+        m_network.host_broadcast_update(entity_id, pkt);
+    });
+    register_script_camera_callbacks();
+    script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
+    script.set_end_game_fn([this](u32 winner_id, std::string_view stats) {
+        log::info(TAG, "Game ended — winner: player {}", winner_id);
+#ifdef ULDUM_SHELL_UI
+        f32 elapsed = 0.0f;
+        try {
+            auto j = nlohmann::json::parse(stats);
+            elapsed = j.value("elapsed", 0.0f);
+        } catch (...) {}
+        m_last_elapsed_seconds = elapsed;
+#else
+        (void)stats;
+#endif
+        m_state = AppState::Results;
+    });
+    script.set_scene_switch_fn([this](std::string_view scene) {
+        m_pending_scene_switch.assign(scene);
+    });
+
+    // Save path + script paths + bootstrap scripts. Same shape as
+    // GameServer::init_game; per-scene data transfer goes through
+    // the save channel since the VM itself is fresh.
+    {
+        std::string map_id = m_map.manifest().id;
+        if (map_id.empty()) map_id = m_map.manifest().name;
+        std::string save_dir;
+#ifdef _WIN32
+        char* appdata = nullptr;
+        size_t appdata_len = 0;
+        if (_dupenv_s(&appdata, &appdata_len, "APPDATA") == 0 && appdata) {
+            save_dir = std::string(appdata) + "/saves/" + map_id;
+            free(appdata);
+        } else {
+            save_dir = "saves/" + map_id;
+        }
+#else
+        save_dir = "saves/" + map_id;
+#endif
+        script.set_save_path(save_dir);
+    }
+    std::string scene_scripts  = m_map.map_root() + "/scenes/" + scene_name + "/scripts";
+    std::string shared_scripts = m_map.map_root() + "/scripts";
+    std::string engine_scripts = "engine/scripts";
+    script.set_script_paths(scene_scripts, shared_scripts, engine_scripts);
+    script.load_script("engine/scripts/constants.lua");
+
+    std::string main_script = scene_scripts + "/main.lua";
+    bool loaded = script.load_script(main_script);
+    if (!loaded) {
+        std::string fallback = m_map.map_root() + "/scripts/main.lua";
+        loaded = script.load_script(fallback);
+    }
+    if (!loaded) {
+        log::error(TAG, "Scene '{}' has no main.lua", scene_name);
+        return;
+    }
+    script.call_function("main");
+}
+
+// Orchestrator. Offline: teardown + run_main back-to-back. Host MP:
+// broadcast the swap and run teardown locally, then defer run_main +
+// the entity-spawn burst until every client has acked C_LOAD_DONE.
+// Clients never call this directly — they react to S_SCENE_SWITCH
+// via the recv_fn registered in start_session.
+void App::perform_scene_switch(const std::string& scene_name) {
+    if (m_args.net_mode == network::Mode::Client) return;
+
+    log::info(TAG, "Scene switch → '{}'", scene_name);
+
+    if (m_args.net_mode == network::Mode::Offline) {
+        scene_switch_local_teardown(scene_name);
+        scene_switch_run_main(scene_name);
+        return;
+    }
+
+    // Host MP path. Tell clients first (reliable-ordered ENet
+    // guarantees they process this before any later S_SPAWN /
+    // S_HUD_* delta), then do the host's own teardown, then mark
+    // self-loaded so the barrier closes once peers ack. Phase-2
+    // (run_main + spawn burst) is fired from finalize_scene_switch
+    // when m_network.all_peers_loaded() goes true.
+    m_network.host_broadcast_scene_switch(scene_name);
+    scene_switch_local_teardown(scene_name);
+    m_pending_scene_switch_finalize = scene_name;
+    m_network.mark_self_loaded();
+}
+
+// Host MP only. Called from the main loop once every peer has acked
+// C_LOAD_DONE for the in-flight scene swap.
+void App::finalize_scene_switch() {
+    std::string scene = std::move(m_pending_scene_switch_finalize);
+    m_pending_scene_switch_finalize.clear();
+
+    scene_switch_run_main(scene);
+
+    // Burst spawns to each peer for the new scene's entities + flip
+    // network phase back to Playing so ticks resume.
+    m_network.host_finish_scene_switch();
+    log::info(TAG, "Scene switch '{}' complete — sim resuming", scene);
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────
@@ -1184,9 +1531,30 @@ void App::run() {
                 break;
             }
 
+            // Pending scene switch from Lua (LoadScene). Done before
+            // ticking so the new scene's main() runs first, and the
+            // tick that follows operates on the new scene's entities.
+            if (!is_client && !m_pending_scene_switch.empty()) {
+                std::string scene = std::move(m_pending_scene_switch);
+                m_pending_scene_switch.clear();
+                perform_scene_switch(scene);
+            }
+
+            // Host MP: close the scene-switch barrier once every peer
+            // has acked C_LOAD_DONE. Runs the new scene's main() and
+            // bursts spawns to clients before resuming ticks.
+            if (!is_client &&
+                m_network.is_scene_switching() &&
+                !m_pending_scene_switch_finalize.empty() &&
+                m_network.all_peers_loaded()) {
+                finalize_scene_switch();
+            }
+
             bool should_tick = !is_client &&
                 (m_args.net_mode == network::Mode::Offline || m_network.is_game_started()) &&
-                !m_network.is_paused();
+                !m_network.is_paused() &&
+                !m_network.is_scene_switching() &&
+                !m_server.script().is_paused();
             if (should_tick) {
                 float game_dt = TICK_DT * game_speed;
                 accumulator += frame_dt;
@@ -1359,6 +1727,29 @@ void App::run() {
                 if (m_input_preset && m_input_preset->is_targeting() && !was_targeting) {
                     m_hud.cancel_held_item();
                 }
+            }
+
+            // Scripted-camera overlay. Runs after the input preset so
+            // a script's lock / pan / shake silently overrides player
+            // input the same frame. Lookup function returns the unit's
+            // current XY for lock-tracking; NaN on stale handle so the
+            // controller drops the lock.
+            {
+                auto& world = active_world();
+                m_camera_controller.update(frame_dt,
+                    [&world](simulation::Unit unit) -> glm::vec2 {
+                        const auto* hi = world.handle_infos.get(unit.id);
+                        if (!hi || hi->generation != unit.generation) {
+                            f32 nan = std::numeric_limits<f32>::quiet_NaN();
+                            return { nan, nan };
+                        }
+                        const auto* t = world.transforms.get(unit.id);
+                        if (!t) {
+                            f32 nan = std::numeric_limits<f32>::quiet_NaN();
+                            return { nan, nan };
+                        }
+                        return { t->position.x, t->position.y };
+                    });
             }
 
             {

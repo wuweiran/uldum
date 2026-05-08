@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 17 (Items) complete. Next: Phase 18 (Regions + Dialogs + Camera).
+Phase 18 (Enrich scripting) complete. Next: Phase 19 (Editor expansion).
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -207,28 +207,21 @@ Phase 17 (Items) complete. Next: Phase 18 (Regions + Dialogs + Camera).
   - Sample game ships main menu / options / lobby / loading / results screens
   - Networked lobby (host-authoritative slot table, S_LOBBY_STATE / S_LOBBY_COMMIT)
 - HUD system — custom Lua-driven in-game UI (Phase 16c):
-  - 2D quad batcher + MSDF text + retained node tree, dp-based authoring
-  - Atom nodes (panel, label, image, bar, button) and engine composites (action_bar, command_bar, minimap, joystick)
-  - World-anchored overlays (entity health bars, name labels, WC3-style text tags)
-  - Selection circles + cast/range/AoE/reticle indicators via unified WorldOverlays decal renderer (one shader, per-slot textures)
-  - Mobile drag-cast: hold ability slot → drag-aim → release to fire (with cancel zone)
-  - `hud.json` per-map: composite layouts, world-overlay style, cast-indicator decal overrides
-  - Lua API: GetNode / SetLabelText / SetBarFill / CreateNode / DestroyNode / TriggerRegisterNodeEvent / CreateTextTag / etc.
-  - Server-authoritative HUD state, S_HUD_UPDATE deltas
+  - Retained node tree (atoms + composites) with 2D quad batcher and MSDF text, dp-authored
+  - World overlays (health bars, name labels, text tags) and decal-based selection / cast indicators
+  - Mobile drag-cast for ability targeting
+  - Server-authoritative HUD state synced to clients
 - Android dev parity + Shell polish (Phase 16d):
-  - ImGui dev console on Android — same map picker / session controls as `uldum_dev` on desktop
-  - Shell screen transitions (Menu → Lobby → Loading → Playing → Results) with RCSS fade animations
-  - GameActivity touch routed through the existing mouse-mirror path to RmlUi
-  - Mobile-tuned tap targets (64dp buttons, dp font sizes)
+  - Dev console + map picker on Android, RCSS shell transitions, mobile-tuned tap targets
 - Items (Phase 17):
-  - Item entity = collection of abilities; activeness derived from `abilities[0].form` (no separate `kind` field)
-  - `item_types.json` schema (icon, model, model_scale, pickup_radius, abilities, classifications, initial_charges, initial_level)
-  - Per-unit `Inventory` component (default size 0; engine cap 16 slots) — picked up items grant their abilities to the carrier (`from_item` flag hides them from the action bar)
-  - Two engine-stored integer fields per item — `charges` and `level` — rendered as corner badges when > 0; engine never interprets them (consumption / level-up are map-Lua)
-  - Smart right-click on a ground item issues `PickupItem`; carrier walks to within `pickup_radius` and claims the first free slot. Fog-of-war in the picker so clicks on items in unscouted tiles fall through to a Move order
-  - Cast pump tracks `source_item` so `GetTriggerItem()` resolves inside `EVENT_GLOBAL_ABILITY_EFFECT` triggers
-  - HUD `inventory` composite (engine composite alongside `action_bar` / `command_bar` / `minimap`): WC3-style 2×3 vertical slot grid, item icon + charges (bottom-right) + level (top-left) + cooldown radial; click on an active item slot fires `abilities[0]` with the item handle attached
-  - Lua API: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitDropItemFromSlot`, `UnitGetItemFromSlot`, `UnitItemCount`, `UnitInventorySize`, `UnitHasItemOfType`, `GetItemTypeId`, `Get/SetItemCharges`, `Get/SetItemLevel`, `GetItemOwner`, `GetItemPosition`, `GetTriggerItem`, item events (`EVENT_GLOBAL_ITEM_PICKED_UP`, `EVENT_UNIT_ITEM_DROPPED`, etc.)
+  - Item entity = collection of abilities; engine stores charges + level (badged), never interprets them
+  - Per-unit inventory component, smart-pickup, HUD inventory composite, item-aware cast trigger context
+- Enrich scripting (Phase 18):
+  - Regions — rect/circle zones with enter/leave triggers
+  - Scene switching — terrain + entities + Lua VM swap mid-session, MP-synchronized via a host barrier; cross-scene data via the save channel
+  - Node-event + composite UI bindings so maps can compose dialogs from atoms
+  - Script-driven game pause and single-player query
+  - Camera scripting — per-player addressed (scripts run server-only), WC3-style ground-target semantics, plus zoom, trauma shake, and a hard lock-to-unit
 - Ninja build system for parallel compilation
 
 ## Prerequisites

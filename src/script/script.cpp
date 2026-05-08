@@ -203,6 +203,21 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         fire_event("unit_item_dropped", unit.id);
     };
 
+    // Region events fired by system_regions per tick. Region id is
+    // passed both as the event filter (so a trigger registered for one
+    // specific region fires only for it) and via the context, so the
+    // action body can read GetTriggerRegion() if it needs to.
+    sim.world().on_region_enter = [this](u32 region_id, simulation::Unit unit) {
+        set_context_unit(unit.id);
+        set_context_region_id(region_id);
+        fire_event("region_enter", unit.id, "", UINT32_MAX, region_id);
+    };
+    sim.world().on_region_leave = [this](u32 region_id, simulation::Unit unit) {
+        set_context_unit(unit.id);
+        set_context_region_id(region_id);
+        fire_event("region_leave", unit.id, "", UINT32_MAX, region_id);
+    };
+
     log::info(TAG, "ScriptEngine initialized — Lua 5.4 + sol2");
     return true;
 }
@@ -440,19 +455,22 @@ void ScriptEngine::fire_node_event(std::string_view event_name, u32 player_id,
                                     std::string_view node_id) {
     set_context_node_id(std::string(node_id));
     set_context_player(player_id);
-    fire_event(event_name, UINT32_MAX, "", player_id);
+    fire_event(event_name, UINT32_MAX, "", player_id, UINT32_MAX, node_id);
     m_ctx_node_id.clear();
 }
 
 void ScriptEngine::fire_event(std::string_view event_name, u32 unit_id,
-                               std::string_view /*ability_id*/, u32 player_id) {
+                               std::string_view /*ability_id*/, u32 player_id,
+                               u32 region_id, std::string_view node_id) {
     m_ctx_event = std::string(event_name);
 
     auto matches = [&](const Trigger& trig) -> bool {
         for (auto& eb : trig.events) {
             if (eb.event_name != event_name) continue;
-            if (eb.unit_id != UINT32_MAX && eb.unit_id != unit_id) continue;
+            if (eb.unit_id   != UINT32_MAX && eb.unit_id   != unit_id)   continue;
             if (eb.player_id != UINT32_MAX && eb.player_id != player_id) continue;
+            if (eb.region_id != UINT32_MAX && eb.region_id != region_id) continue;
+            if (!eb.node_id.empty() && eb.node_id != node_id)            continue;
             return true;
         }
         return false;
@@ -914,6 +932,43 @@ void ScriptEngine::bind_api() {
         m_audio->set_volume(ch, volume);
     };
 
+    // ── Camera API ────────────────────────────────────────────────────────
+    // Per-player. Scripts run on the host only, so each command takes
+    // a Player handle (from GetPlayer(N)) so the host knows whose
+    // screen to drive. Targeting "all players" means looping in Lua.
+    // Offline collapses to "apply locally" inside the registered fn.
+    //
+    // Position arguments below (SetCameraPosition / PanCamera) are
+    // GROUND TARGET XY — the point on the world floor the camera
+    // should look at, matching WC3's SetCameraPosition / PanCameraTo
+    // semantics. Eye position is derived from current pitch / yaw /
+    // height so scripts don't redo the math when zoom changes.
+    //
+    // SetCameraLockUnit is a hard lock — while active, the targeted
+    // player's WASD / drag / scroll inputs do nothing until the
+    // script unlocks (`SetCameraLockUnit(player, nil)`).
+
+    lua["SetCameraPosition"] = [this](simulation::Player p, f32 x, f32 y) {
+        if (m_camera_set_position_fn) m_camera_set_position_fn(p.id, x, y);
+    };
+    lua["PanCamera"] = [this](simulation::Player p, f32 x, f32 y, f32 duration) {
+        if (m_camera_pan_fn) m_camera_pan_fn(p.id, x, y, duration);
+    };
+    lua["SetCameraZoom"] = [this](simulation::Player p, f32 z) {
+        if (m_camera_zoom_fn) m_camera_zoom_fn(p.id, z);
+    };
+    lua["CameraShake"] = [this](simulation::Player p, f32 intensity, f32 duration) {
+        if (m_camera_shake_fn) m_camera_shake_fn(p.id, intensity, duration);
+    };
+    // unit is optional — pass nil to release the lock.
+    lua["SetCameraLockUnit"] = [this](simulation::Player p, sol::optional<simulation::Unit> u) {
+        if (!m_camera_lock_unit_fn) return;
+        // Default-constructed Unit has id = UINT32_MAX, which the
+        // controller treats as "unlock".
+        simulation::Unit unit = u.value_or(simulation::Unit{});
+        m_camera_lock_unit_fn(p.id, unit);
+    };
+
     // ── Fog of War API ────────────────────────────────────────────────────
 
     auto fog_table = lua.create_named_table("FogOfWar");
@@ -1336,6 +1391,161 @@ void ScriptEngine::bind_trigger_api() {
         return {m_ctx_spell_target_x, m_ctx_spell_target_y};
     };
 
+    // ── Regions ───────────────────────────────────────────────────────
+    // Authored from Lua via CreateRegion + AddRegionRect/Circle. The
+    // sim's `system_regions` walks every authored region per tick and
+    // fires "region_enter" / "region_leave" through this script
+    // engine's callback hooks (wired in init()). Triggers that want
+    // to listen use TriggerRegisterEnterRegion(trig, region) which
+    // attaches a region-id filter to the trigger's binding.
+
+    lua["CreateRegion"] = [&]() -> sol::table {
+        u32 id = ++sim.world().next_region_id;
+        sim.world().regions[id] = simulation::World::Region{id};
+
+        sol::table r = lua.create_table();
+        r["_id"]  = id;
+        r["data"] = lua.create_table();
+        return r;
+    };
+
+    lua["AddRegionRect"] = [&](sol::table region, f32 x0, f32 y0, f32 x1, f32 y1) {
+        if (!region.valid()) return;
+        u32 id = region["_id"].get_or<u32>(0);
+        auto it = sim.world().regions.find(id);
+        if (it == sim.world().regions.end()) return;
+        // Author may pass corners in any order — normalise so the
+        // contains-check below stays simple.
+        if (x1 < x0) std::swap(x0, x1);
+        if (y1 < y0) std::swap(y0, y1);
+        it->second.rects.push_back({x0, y0, x1, y1});
+    };
+
+    lua["AddRegionCircle"] = [&](sol::table region, f32 cx, f32 cy, f32 r) {
+        if (!region.valid()) return;
+        u32 id = region["_id"].get_or<u32>(0);
+        auto it = sim.world().regions.find(id);
+        if (it == sim.world().regions.end()) return;
+        if (r < 0.0f) r = 0.0f;
+        it->second.circles.push_back({cx, cy, r});
+    };
+
+    lua["RemoveRegion"] = [&](sol::table region) {
+        if (!region.valid()) return;
+        u32 id = region["_id"].get_or<u32>(0);
+        // Soft-delete: keep around for one more tick so any
+        // in-flight enter/leave action that's mid-iteration doesn't
+        // dereference into a freed slot. system_regions skips
+        // alive=false; we erase next session reset.
+        auto it = sim.world().regions.find(id);
+        if (it != sim.world().regions.end()) it->second.alive = false;
+    };
+
+    lua["IsUnitInRegion"] = [&](simulation::Unit unit, sol::table region) -> bool {
+        if (!region.valid()) return false;
+        u32 id = region["_id"].get_or<u32>(0);
+        auto it = sim.world().regions.find(id);
+        if (it == sim.world().regions.end()) return false;
+        return it->second.contained.count(unit.id) > 0;
+    };
+
+    lua["GetUnitsInRegion"] = [&](sol::table region) -> sol::table {
+        sol::table out = lua.create_table();
+        if (!region.valid()) return out;
+        u32 id = region["_id"].get_or<u32>(0);
+        auto it = sim.world().regions.find(id);
+        if (it == sim.world().regions.end()) return out;
+        u32 idx = 1;
+        for (u32 uid : it->second.contained) {
+            const auto* hi = sim.world().handle_infos.get(uid);
+            simulation::Unit u; u.id = uid;
+            if (hi) u.generation = hi->generation;
+            out[idx++] = u;
+        }
+        return out;
+    };
+
+    lua["TriggerRegisterEnterRegion"] = [&](sol::table t, sol::table region) {
+        u32 trig_id   = t["_id"].get_or<u32>(0);
+        u32 region_id = region.valid() ? region["_id"].get_or<u32>(0) : 0;
+        auto trig_it = m_triggers.find(trig_id);
+        if (trig_it == m_triggers.end()) return;
+        Trigger::EventBinding eb;
+        eb.event_name = "region_enter";
+        eb.region_id  = region_id;
+        trig_it->second.events.push_back(std::move(eb));
+    };
+
+    lua["TriggerRegisterLeaveRegion"] = [&](sol::table t, sol::table region) {
+        u32 trig_id   = t["_id"].get_or<u32>(0);
+        u32 region_id = region.valid() ? region["_id"].get_or<u32>(0) : 0;
+        auto trig_it = m_triggers.find(trig_id);
+        if (trig_it == m_triggers.end()) return;
+        Trigger::EventBinding eb;
+        eb.event_name = "region_leave";
+        eb.region_id  = region_id;
+        trig_it->second.events.push_back(std::move(eb));
+    };
+
+    // Read the region id for the currently firing region_enter /
+    // region_leave action. UINT32_MAX outside that context.
+    lua["GetTriggerRegion"] = [&]() -> u32 { return m_ctx_region_id; };
+
+    // ── Node events ─────────────────────────────────────────────────
+    // TriggerRegisterNodeEvent(trig, node, event_name) — bind the
+    // trigger to a HUD-node event filtered by node id. The id is
+    // accepted as a string (returned by GetNode/CreateNode) or as a
+    // table with a "_id" field for forward-compat with handle-style
+    // wrappers.
+    lua["TriggerRegisterNodeEvent"] = [&](sol::table t, sol::object node_obj,
+                                          sol::object event_obj) {
+        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
+            log::warn(TAG, "TriggerRegisterNodeEvent: event name is nil or empty");
+            return;
+        }
+        std::string node_id;
+        if (node_obj.is<std::string>()) {
+            node_id = node_obj.as<std::string>();
+        } else if (node_obj.is<sol::table>()) {
+            sol::table nt = node_obj.as<sol::table>();
+            sol::object idv = nt["_id"];
+            if (idv.is<std::string>()) node_id = idv.as<std::string>();
+        }
+        if (node_id.empty()) {
+            log::warn(TAG, "TriggerRegisterNodeEvent: node id is nil or empty");
+            return;
+        }
+        u32 trig_id = t["_id"].get<u32>();
+        auto trig_it = m_triggers.find(trig_id);
+        if (trig_it == m_triggers.end()) return;
+        Trigger::EventBinding eb;
+        eb.event_name = event_obj.as<std::string>();
+        eb.node_id    = std::move(node_id);
+        trig_it->second.events.push_back(std::move(eb));
+    };
+
+    // ── Scene switching ─────────────────────────────────────────────
+    // LoadScene("scene_01") — request a swap to the named scene of
+    // the currently loaded map. Defers actual work to the App
+    // (registered via set_scene_switch_fn) so it can run between
+    // ticks rather than during trigger iteration.
+    lua["LoadScene"] = [this](std::string_view scene_name) {
+        if (m_scene_switch_fn) m_scene_switch_fn(scene_name);
+    };
+
+    // ── Game pause / single-player query ────────────────────────────
+    // PauseGame()/UnpauseGame() flip a script-owned flag the App reads
+    // each frame to gate sim ticks. Independent of the network's
+    // reconnect-pause; safe to use during dialogs, cutscenes, etc.
+    lua["PauseGame"]   = [this]() { m_paused = true;  };
+    lua["UnpauseGame"] = [this]() { m_paused = false; };
+    lua["IsGamePaused"] = [this]() -> bool { return m_paused; };
+
+    // IsSinglePlayer() — true when launched offline (no network
+    // session). Lets map authors gate features that don't make sense
+    // in MP (e.g., script-driven pause, save-to-file from gameplay).
+    lua["IsSinglePlayer"] = [this]() -> bool { return m_singleplayer; };
+
 }
 
 // ── Timer API Bindings ────────────────────────────────────────────────────
@@ -1564,6 +1774,18 @@ void ScriptEngine::bind_hud_api() {
     lua["SetBarFill"]       = [this](const std::string& id, f32 fill)              { if (m_hud) m_hud->set_bar_fill(id, fill); };
     lua["SetImageSource"]   = [this](const std::string& id, const std::string& p)  { if (m_hud) m_hud->set_image_source(id, p); };
     lua["SetButtonEnabled"] = [this](const std::string& id, bool enabled)          { if (m_hud) m_hud->set_button_enabled(id, enabled); };
+
+    // ShowNode / HideNode — short-hand that mirrors ui.md's preferred
+    // call form for one-shot toggles (popups, dialogs, alerts). Both
+    // route through SetNodeVisible.
+    lua["ShowNode"] = [this](const std::string& id) { if (m_hud) m_hud->set_node_visible(id, true);  };
+    lua["HideNode"] = [this](const std::string& id) { if (m_hud) m_hud->set_node_visible(id, false); };
+
+    // ── Composite visibility ─────────────────────────────────────────
+    // No content API beyond visibility for these — the engine drives
+    // their per-frame state internally.
+    lua["MinimapSetVisible"]  = [this](bool v) { if (m_hud) m_hud->minimap_set_visible(v);  };
+    lua["JoystickSetVisible"] = [this](bool v) { if (m_hud) m_hud->joystick_set_visible(v); };
 
     // CreateNode(template_id, { anchor, x, y, w, h, owner }): instantiate
     // a template defined in the map's hud.json `nodes` block at the

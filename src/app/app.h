@@ -4,6 +4,7 @@
 #include "rhi/vulkan/vulkan_rhi.h"
 #include "asset/asset.h"
 #include "render/renderer.h"
+#include "render/camera_controller.h"
 #include "render/world_overlays.h"
 #include "audio/audio.h"
 #include "core/settings.h"
@@ -119,6 +120,35 @@ private:
     // quit (window close); this covers in-app quit requests.
     bool m_wants_quit = false;
 
+    // Lua-driven scene-switch request. Set from `LoadScene(name)` via
+    // ScriptEngine's SceneSwitchFn callback; processed once per frame
+    // before the tick loop, then cleared. Empty = no request pending.
+    std::string m_pending_scene_switch;
+    void perform_scene_switch(const std::string& scene_name);
+
+    // Host MP path: scene name being switched to, held while the host
+    // waits for every peer to ack C_LOAD_DONE. Empty when no swap is
+    // mid-barrier. finalize_scene_switch consumes it.
+    std::string m_pending_scene_switch_finalize;
+    void scene_switch_local_teardown(const std::string& scene_name);
+    void scene_switch_run_main(const std::string& scene_name);
+    void finalize_scene_switch();
+
+    // Wire ScriptEngine's per-player camera callbacks to App's
+    // CameraController + network. Called by start_session and the
+    // scene-switch run_main path (after script.init re-instantiates
+    // the VM and clears prior callbacks).
+    void register_script_camera_callbacks();
+
+    // Route a per-player camera command. Apply locally if the target
+    // is the host's own slot or we're offline; otherwise forward to
+    // the remote peer via NetworkManager.
+    void route_camera_set_position(u32 player_id, f32 x, f32 y);
+    void route_camera_pan(u32 player_id, f32 x, f32 y, f32 duration);
+    void route_camera_zoom(u32 player_id, f32 z);
+    void route_camera_shake(u32 player_id, f32 intensity, f32 duration);
+    void route_camera_lock_unit(u32 player_id, simulation::Unit unit);
+
 #ifdef ULDUM_SHELL_UI
     // Most recent end-of-session elapsed time (seconds) pulled out of the
     // Lua stats JSON. Shown on the Results screen. Stays at 0 until the
@@ -136,6 +166,7 @@ private:
     rhi::VulkanRhi           m_rhi;
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
+    render::CameraController m_camera_controller;
     render::WorldOverlays    m_world_overlays;
     audio::AudioEngine       m_audio;
     settings::Store          m_settings;
