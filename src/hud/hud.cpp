@@ -2851,9 +2851,11 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     }
 
     // Phase transitions:
-    //   - Press → Aiming when finger leaves the originating slot rect.
-    //     Tap-without-drag (release while still on the slot) is treated
-    //     as cancel by the release handler below.
+    //   - Press → Aiming once the finger moves more than `TAP_SLOP` dp
+    //     from the press point. Below that threshold the touch reads
+    //     as a tap candidate (jitter / accidental motion within the
+    //     tap-slop budget); release-on-slot fires the no-target use,
+    //     release-off-slot cancels.
     //   - Aiming ↔ Cancelling driven by the AoV-style cancel zone, NOT
     //     the slot itself. Dragging back over the slot used to trigger
     //     cancel; that was awkward (the finger naturally returns near
@@ -2861,6 +2863,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     //     screen rect that the player explicitly drags into.
     constexpr f32 CANCEL_MARGIN     = 16.0f;
     constexpr f32 SLOT_LEAVE_MARGIN = 8.0f;
+    constexpr f32 TAP_SLOP          = 8.0f;
     // Slot rect comes from whichever composite started the drag —
     // action_bar for ability slots, command_bar for command slots,
     // inventory for item slots.
@@ -2910,12 +2913,14 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                     return;
                 }
             }
-            // Leaving the slot rect commits to Aiming — but only when
-            // a drag-cast actually makes sense. For non-targetable
-            // inventory items (passive, self-only, or on cooldown)
-            // we stay in Pressed; release after slide-off is handled
-            // as a cancel by the inventory release branch below.
-            if (!over_slot) {
+            // Moving past TAP_SLOP commits to Aiming — but only when a
+            // drag-cast actually makes sense. For non-targetable
+            // inventory items (passive, self-only, or on cooldown) we
+            // stay in Pressed; release after slide-off is handled as
+            // a cancel by the inventory release branch below.
+            f32 mdx = px - s.drag_cast.press_x;
+            f32 mdy = py - s.drag_cast.press_y;
+            if (mdx * mdx + mdy * mdy > TAP_SLOP * TAP_SLOP) {
                 bool can_aim = !is_inventory || s.drag_cast.inventory_targetable;
                 if (can_aim) s.drag_cast.phase = Phase::Aiming;
             }
@@ -2970,32 +2975,17 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
 
     bool commit = (s.drag_cast.phase == Phase::Aiming);
 
-    // "Pure tap" detection. The Aiming phase only kicks in once the
-    // finger has crossed the slot rect's leave-margin (~8 dp), so a
-    // small but deliberate drag onto a snap target stays in Pressed
-    // even though the snap indicator is up. Without this gate, a
-    // short drag onto enemy A would discard the snap and use the
-    // auto-target focus instead. We treat any non-trivial drag as
-    // "honor the snap"; the focus-target fallback runs only when the
-    // finger barely moved.
-    f32 dox = s.drag_cast.drag_world_x - s.drag_cast.caster_x;
-    f32 doy = s.drag_cast.drag_world_y - s.drag_cast.caster_y;
-    constexpr f32 INTENT_DRAG_DIST_SQ = 1.0f;  // ~1 world unit
-    bool finger_moved = (dox * dox + doy * doy) > INTENT_DRAG_DIST_SQ;
-
-    // Tap-fire on a command (attack / attack_move / move) — only the
-    // attack family resolves through focus_target. A tap on Move with
-    // no drag direction is still genuinely ambiguous and stays a no-op.
+    // Tap-fire on a command (attack / attack_move) — Pressed at
+    // release means the finger never moved past TAP_SLOP, so it's a
+    // genuine tap. Resolve through focus_target (the auto / manual
+    // focus). A tap on Move with no direction is still genuinely
+    // ambiguous and stays a no-op.
     if (!commit && is_command && s.drag_cast.phase == Phase::Pressed) {
         if (s.drag_cast.command_id == "attack" ||
             s.drag_cast.command_id == "attack_move") {
-            if (finger_moved && s.drag_cast.snapped_target.is_valid()) {
-                // Short drag onto a unit — honor the snap (drag-aim).
-                commit = true;
-            } else if (s.focus_target_unit.is_valid() && s.world_ctx &&
-                       s.world_ctx->world &&
-                       s.world_ctx->world->validate(s.focus_target_unit)) {
-                // Pure tap — fall back to the auto / manual focus.
+            if (s.focus_target_unit.is_valid() && s.world_ctx &&
+                s.world_ctx->world &&
+                s.world_ctx->world->validate(s.focus_target_unit)) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
                 if (auto* tf = s.world_ctx->world->transforms.get(
                                    s.focus_target_unit.id)) {
@@ -3008,11 +2998,11 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         }
     }
 
-    // Pressed release for abilities — finger never left the slot rect.
-    // Same tap-vs-short-drag distinction as the command branch above:
-    // a tap uses focus_target; any deliberate drag uses the snap that
-    // the player saw under their finger. Only the explicit cancel zone
-    // should cancel.
+    // Pressed release for abilities — finger never moved past
+    // TAP_SLOP, so it's a tap. Use focus_target when the ability's
+    // target_filter accepts it; otherwise fall back to whatever snap
+    // the player saw under their finger (typically nothing for a
+    // pure tap). Only the explicit cancel zone should cancel.
     if (!commit && !is_command && s.drag_cast.phase == Phase::Pressed) {
         // Resolve focus_target through the ability's target_filter so
         // a heal-on-enemy focus falls back to the local snap instead
@@ -3030,9 +3020,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         }
 
         if (s.drag_cast.form == simulation::AbilityForm::TargetUnit) {
-            if (finger_moved && s.drag_cast.snapped_target.is_valid()) {
-                commit = true;  // honor the drag-snap
-            } else if (focus_usable) {
+            if (focus_usable) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
                 commit = true;
             } else if (s.drag_cast.snapped_target.is_valid()) {
@@ -3041,9 +3029,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
             // For AoE casts, drop the indicator on the focus target's
             // position so a tap-and-fire feels like "this enemy gets
-            // hit" rather than always landing under the caster — but
-            // only on a pure tap. Any drag respects the dragged point.
-            if (!finger_moved && focus_usable) {
+            // hit" rather than always landing under the caster.
+            if (focus_usable) {
                 if (auto* tf = s.world_ctx->world->transforms.get(
                                    s.focus_target_unit.id)) {
                     s.drag_cast.drag_world_x = tf->position.x;
@@ -4079,11 +4066,10 @@ static void draw_minimap(Hud& hud, Hud::Impl& s) {
 // active. Filled circle background (idle vs. active palette per
 // current phase) plus an "✕" glyph centered.
 static void draw_action_bar_cancel_zone(Hud& hud, Hud::Impl& s) {
-    // Only show during an active aim — Idle (no gesture) or Pressed
-    // (finger still on the slot, hasn't crossed the leave-margin)
-    // both read as "this is a tap, not an aim", so the cancel zone
-    // would be UI noise. Aiming and Cancelling are the only phases
-    // where the player has actually committed to dragging.
+    // Show only during an actual drag — Aiming or Cancelling. Pressed
+    // means the finger hasn't moved past TAP_SLOP yet (tap candidate),
+    // so the cancel zone would just clutter taps. Once any drag past
+    // TAP_SLOP commits to Aiming, the cancel zone appears.
     using Phase = Hud::Impl::DragCastPhase;
     if (s.drag_cast.phase != Phase::Aiming &&
         s.drag_cast.phase != Phase::Cancelling) return;
