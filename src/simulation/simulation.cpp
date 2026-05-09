@@ -12,9 +12,10 @@ bool Simulation::init(asset::AssetManager& /*assets*/) {
     m_world.types     = &m_types;
     m_world.abilities = &m_abilities;
 
-    // Wire pathing unblock: when a building is destroyed, release its blocked vertices
-    m_world.on_pathing_unblock = [this](const std::vector<glm::ivec2>& verts) {
-        m_pathfinder.unblock_vertices(verts);
+    // Wire pathing unblock: when a building is destroyed, release the
+    // tile rectangle it occupied.
+    m_world.on_pathing_unblock = [this](i32 tx, i32 ty, u32 w, u32 h) {
+        m_pathfinder.unblock_tiles(tx, ty, w, h);
     };
 
     log::info(TAG, "Simulation initialized");
@@ -48,7 +49,7 @@ void Simulation::set_terrain(const map::TerrainData* terrain) {
 void Simulation::sync_pathing_blockers() {
     for (u32 i = 0; i < m_world.pathing_blockers.count(); ++i) {
         auto& blocker = m_world.pathing_blockers.data()[i];
-        m_pathfinder.block_vertices(blocker.blocked_vertices);
+        m_pathfinder.block_tiles(blocker.tx, blocker.ty, blocker.w, blocker.h);
     }
 }
 

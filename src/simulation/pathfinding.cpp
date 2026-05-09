@@ -23,12 +23,10 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
     if (!m_terrain->is_tile_passable(tx, ty)) return false;
     if (move_type == MoveType::Ground && m_terrain->is_tile_deep_water(tx, ty)) return false;
 
-    // Runtime blocks (buildings): all 4 corners must be unblocked
-    if (!m_runtime_blocked.empty()) {
-        if (is_vertex_blocked(tx, ty) || is_vertex_blocked(tx+1, ty) ||
-            is_vertex_blocked(tx, ty+1) || is_vertex_blocked(tx+1, ty+1))
-            return false;
-    }
+    // Runtime blocks (buildings): direct per-tile lookup. WC3-style
+    // pathing — a building with a W×H footprint marks exactly W×H
+    // tiles, adjacent tiles stay walkable.
+    if (is_tile_blocked(tx, ty)) return false;
     return true;
 }
 
@@ -64,11 +62,10 @@ bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
 
     for (u32 vy = min_vy; vy <= max_vy; ++vy) {
         for (u32 vx = min_vx; vx <= max_vx; ++vx) {
-            u8 flags = td.pathing_at(vx, vy);
-            bool walkable = (flags & map::PATHING_WALKABLE) != 0;
-            bool deep = td.is_deep_water(vx, vy);
-            if (move_type == MoveType::Ground && (!walkable || deep)) return false;
-            if (move_type == MoveType::Amphibious && !walkable) return false;
+            // Ground units bounce off deep-water vertices. Per-vertex
+            // walkable / flyable bits are gone (see terrain_data.h);
+            // can_occupy already covers tile-level building blocks.
+            if (move_type == MoveType::Ground && td.is_deep_water(vx, vy)) return false;
         }
     }
 
@@ -253,27 +250,51 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     glm::ivec2 s = world_to_tile(start.x, start.y);
     glm::ivec2 g = world_to_tile(goal.x, goal.y);
 
-    // Goal must be occupiable; if not, find nearest occupiable tile
+    // Goal must be occupiable; if not, find the nearest walkable tile
+    // to the goal — preferring the side facing the start position
+    // when several candidates are equidistant. Picking the *first*
+    // walkable in iteration order is biased to the corner of the
+    // search region (always (-r, -r) for the smallest non-empty
+    // ring), which for a multi-tile building footprint is the
+    // diagonal-corner tile — *farther* from the goal than the
+    // cardinal-edge alternatives. That made approaches from SW (or
+    // any diagonal) target a tile outside attack range and the unit
+    // looked stuck. Now we evaluate every ring tile and minimize
+    // distance² to the goal, with ties broken by distance² to start.
     if (!can_occupy(g.x, g.y, move_type)) {
-        // Search in expanding rings
         bool found = false;
+        glm::ivec2 best_g = g;
+        f32 best_d2_goal  = 1e30f;
+        f32 best_d2_start = 1e30f;
         for (i32 r = 1; r <= 10 && !found; ++r) {
-            for (i32 dy = -r; dy <= r && !found; ++dy) {
+            for (i32 dy = -r; dy <= r; ++dy) {
                 for (i32 dx = -r; dx <= r; ++dx) {
                     if (std::abs(dx) != r && std::abs(dy) != r) continue;
                     i32 nx = g.x + dx, ny = g.y + dy;
                     if (nx < 0 || ny < 0 ||
                         static_cast<u32>(nx) >= td.tiles_x ||
                         static_cast<u32>(ny) >= td.tiles_y) continue;
-                    if (can_occupy(nx, ny, move_type)) {
-                        g = {nx, ny};
+                    if (!can_occupy(nx, ny, move_type)) continue;
+                    f32 d2_g = static_cast<f32>(dx*dx + dy*dy);
+                    f32 sx   = static_cast<f32>(nx) - static_cast<f32>(s.x);
+                    f32 sy   = static_cast<f32>(ny) - static_cast<f32>(s.y);
+                    f32 d2_s = sx*sx + sy*sy;
+                    if (d2_g < best_d2_goal ||
+                        (d2_g == best_d2_goal && d2_s < best_d2_start)) {
+                        best_d2_goal  = d2_g;
+                        best_d2_start = d2_s;
+                        best_g = {nx, ny};
                         found = true;
-                        break;
                     }
                 }
             }
+            // Once we've found *any* walkable in a ring, the smallest
+            // ring radius is fixed — but we kept scanning the rest of
+            // the ring above to pick the best within it. Stop now,
+            // outer rings can only be worse.
         }
         if (!found) return result;
+        g = best_g;
     }
 
     // Same tile: trivial corridor
@@ -544,38 +565,42 @@ glm::vec2 Pathfinder::find_nearest_valid(f32 x, f32 y, MoveType move_type) const
 
 // ── Runtime pathing blocks ───────────────────────────────────────────────
 
-void Pathfinder::block_vertices(const std::vector<glm::ivec2>& verts) {
-    if (!m_terrain) return;
-    if (m_runtime_blocked.empty())
-        m_runtime_blocked.resize(m_terrain->vertex_count(), 0);
-
-    for (auto& v : verts) {
-        if (v.x >= 0 && v.y >= 0 &&
-            static_cast<u32>(v.x) < m_terrain->verts_x() &&
-            static_cast<u32>(v.y) < m_terrain->verts_y()) {
-            u32 idx = v.y * m_terrain->verts_x() + v.x;
-            if (m_runtime_blocked[idx] < 255) m_runtime_blocked[idx]++;
+void Pathfinder::block_tiles(i32 tx, i32 ty, u32 w, u32 h) {
+    if (!m_terrain || w == 0 || h == 0) return;
+    u32 nt = m_terrain->tiles_x * m_terrain->tiles_y;
+    if (m_runtime_blocked_tiles.empty()) {
+        m_runtime_blocked_tiles.resize(nt, 0);
+    }
+    for (u32 dy = 0; dy < h; ++dy) {
+        i32 y = ty + static_cast<i32>(dy);
+        if (y < 0 || static_cast<u32>(y) >= m_terrain->tiles_y) continue;
+        for (u32 dx = 0; dx < w; ++dx) {
+            i32 x = tx + static_cast<i32>(dx);
+            if (x < 0 || static_cast<u32>(x) >= m_terrain->tiles_x) continue;
+            u32 idx = static_cast<u32>(y) * m_terrain->tiles_x + static_cast<u32>(x);
+            if (m_runtime_blocked_tiles[idx] < 255) m_runtime_blocked_tiles[idx]++;
         }
     }
 }
 
-void Pathfinder::unblock_vertices(const std::vector<glm::ivec2>& verts) {
-    if (m_runtime_blocked.empty()) return;
-
-    for (auto& v : verts) {
-        if (v.x >= 0 && v.y >= 0 &&
-            static_cast<u32>(v.x) < m_terrain->verts_x() &&
-            static_cast<u32>(v.y) < m_terrain->verts_y()) {
-            u32 idx = v.y * m_terrain->verts_x() + v.x;
-            if (m_runtime_blocked[idx] > 0) m_runtime_blocked[idx]--;
+void Pathfinder::unblock_tiles(i32 tx, i32 ty, u32 w, u32 h) {
+    if (m_runtime_blocked_tiles.empty() || !m_terrain) return;
+    for (u32 dy = 0; dy < h; ++dy) {
+        i32 y = ty + static_cast<i32>(dy);
+        if (y < 0 || static_cast<u32>(y) >= m_terrain->tiles_y) continue;
+        for (u32 dx = 0; dx < w; ++dx) {
+            i32 x = tx + static_cast<i32>(dx);
+            if (x < 0 || static_cast<u32>(x) >= m_terrain->tiles_x) continue;
+            u32 idx = static_cast<u32>(y) * m_terrain->tiles_x + static_cast<u32>(x);
+            if (m_runtime_blocked_tiles[idx] > 0) m_runtime_blocked_tiles[idx]--;
         }
     }
 }
 
-bool Pathfinder::is_vertex_blocked(u32 vx, u32 vy) const {
-    if (m_runtime_blocked.empty() || !m_terrain) return false;
-    if (vx >= m_terrain->verts_x() || vy >= m_terrain->verts_y()) return false;
-    return m_runtime_blocked[vy * m_terrain->verts_x() + vx] > 0;
+bool Pathfinder::is_tile_blocked(u32 tx, u32 ty) const {
+    if (m_runtime_blocked_tiles.empty() || !m_terrain) return false;
+    if (tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return false;
+    return m_runtime_blocked_tiles[ty * m_terrain->tiles_x + tx] > 0;
 }
 
 } // namespace uldum::simulation

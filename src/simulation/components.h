@@ -246,8 +246,18 @@ struct DestructableComp {
     u8          variation = 0;
 };
 
+// Tile rectangle a building occupies on the runtime pathing grid.
+// (tx, ty) is the south-west tile of the footprint; the block covers
+// tiles [tx, tx+w) × [ty, ty+h). Per-tile to match WC3's pathing-map
+// convention; previously stored as a vertex list, which made
+// tile-walkability derivation conservative (any blocked corner →
+// tile blocked) and expanded every footprint by one tile on each
+// side. See Pathfinder::block_tiles / unblock_tiles.
 struct PathingBlocker {
-    std::vector<glm::ivec2> blocked_vertices;  // vertex coords blocked at runtime
+    i32 tx = 0;
+    i32 ty = 0;
+    u32 w  = 0;
+    u32 h  = 0;
 };
 
 // ── Item Components ────────────────────────────────────────────────────────

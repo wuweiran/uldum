@@ -658,10 +658,20 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         to_target.z = 0;
         f32 dist = glm::length(to_target);
 
+        // WC3-style center-to-edge range: attacker can fire when the
+        // distance from its center to the target's *edge* is within
+        // its attack_range. Without the target-radius term, a melee
+        // attacker can never get close enough to a large building
+        // (center-to-center distance always exceeds attack_range
+        // because the building itself is wider than the gap).
+        f32 target_radius = 0.0f;
+        if (auto* tm = world.movements.get(target.id)) target_radius = tm->collision_radius;
+        f32 effective_range = combat.range + target_radius;
+
         switch (combat.attack_state) {
         case AttackState::Idle:
         case AttackState::MovingToTarget: {
-            if (dist > combat.range) {
+            if (dist > effective_range) {
                 if (is_holding) {
                     // Hold Position: never pursue. Drop the target so next
                     // tick's auto-acquire picks up only enemies already in
@@ -680,7 +690,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     auto* mov = world.movements.get(id);
                     if (mov) {
                         mov->approach_target = target;
-                        mov->approach_range = combat.range;
+                        mov->approach_range = effective_range;
                     }
                 }
             } else {
@@ -698,7 +708,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
 
         case AttackState::TurningToFace: {
-            if (dist > combat.range * 1.2f) {
+            if (dist > effective_range * 1.2f) {
                 if (is_holding) {
                     combat.target = Unit{};
                     combat.attack_state = AttackState::Idle;
@@ -767,7 +777,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             combat.attack_timer -= dt;
             if (combat.attack_timer <= 0) {
                 // If target still valid and in range, go straight to next swing
-                if (target_valid && dist <= combat.range) {
+                if (target_valid && dist <= effective_range) {
                     combat.attack_state = AttackState::TurningToFace;
                 } else {
                     combat.attack_state = AttackState::Idle;
@@ -1245,7 +1255,7 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.destructables.remove(h.id);
     if (world.on_pathing_unblock) {
         auto* pb = world.pathing_blockers.get(h.id);
-        if (pb) world.on_pathing_unblock(pb->blocked_vertices);
+        if (pb) world.on_pathing_unblock(pb->tx, pb->ty, pb->w, pb->h);
     }
     world.pathing_blockers.remove(h.id);
     world.item_infos.remove(h.id);
@@ -1370,6 +1380,19 @@ void system_death(World& world) {
             world.order_queues.remove(id);
             world.ability_sets.remove(id);
             world.visions.remove(id);
+
+            // Drop the runtime pathing block immediately. WC3-style:
+            // the moment a building dies, its rubble is walkable —
+            // even though the corpse renderable lingers for a few
+            // seconds before despawning. Without this, pathfinding
+            // still treats the dead building as an obstacle until the
+            // entity is fully destroyed.
+            if (auto* pb = world.pathing_blockers.get(id)) {
+                if (world.on_pathing_unblock) {
+                    world.on_pathing_unblock(pb->tx, pb->ty, pb->w, pb->h);
+                }
+                world.pathing_blockers.remove(id);
+            }
 
             // Add dead state — corpse visible for duration, then cleaned up
             world.dead_states.add(id, DeadState{});

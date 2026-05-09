@@ -11,14 +11,14 @@
 
 namespace uldum::map {
 
-// Per-vertex pathing flags.
+// Per-vertex flags. The walkable/flyable bits used to gate ground /
+// air movement; runtime building blocks now own that responsibility
+// (see Pathfinder::block_tiles), so only the ramp marker remains.
+// Storage is unchanged for backward compatibility with existing
+// terrain.bin files — we just ignore the now-meaningless lower bits.
 enum PathingFlag : u8 {
-    PATHING_WALKABLE = 1 << 0,   // ground units can traverse
-    PATHING_FLYABLE  = 1 << 1,   // air units can traverse
-    PATHING_RAMP     = 1 << 2,   // allows walk between adjacent cliff levels
+    PATHING_RAMP = 1 << 2,   // allows walk between adjacent cliff levels
 };
-
-static constexpr u8 PATHING_DEFAULT = PATHING_WALKABLE | PATHING_FLYABLE;
 
 // Water layer IDs are determined by the tileset, not hardcoded.
 // Call set_water_layers() after tileset is parsed.
@@ -135,6 +135,20 @@ f32 sample_height(const TerrainData& td, f32 x, f32 y);
 
 // Terrain surface normal at world position (central differences).
 glm::vec3 sample_normal(const TerrainData& td, f32 x, f32 y);
+
+// Snap a world coordinate to the building-placement grid given a
+// footprint extent (tiles) along that axis. Odd extent → snap to a
+// tile center (half-tile offset from origin); even extent → snap to a
+// tile corner (vertex). Used at placement time so a building's
+// pathing footprint lines up exactly with the tile grid — matches
+// WC3's "buildings sit on the tile grid" rule.
+f32 snap_building_axis(const TerrainData& td, f32 x, f32 origin, u32 footprint_extent);
+inline f32 snap_building_x(const TerrainData& td, f32 x, u32 footprint_w) {
+    return snap_building_axis(td, x, td.origin_x(), footprint_w);
+}
+inline f32 snap_building_y(const TerrainData& td, f32 y, u32 footprint_h) {
+    return snap_building_axis(td, y, td.origin_y(), footprint_h);
+}
 
 // Create a flat terrain with all default values.
 TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 128.0f, f32 base_height = 0.0f);

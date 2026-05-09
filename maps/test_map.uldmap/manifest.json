@@ -36,7 +36,7 @@
     ],
 
     "tileset": "tileset.json",
-    "start_scene": "scene_02",
+    "start_scene": "scene_01",
 
     "classifications": ["ground", "air", "hero", "structure", "mechanical", "undead", "worker", "summoned"],
     "attack_types": ["normal", "pierce", "siege", "magic", "chaos", "hero"],

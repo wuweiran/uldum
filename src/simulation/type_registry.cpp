@@ -79,6 +79,20 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.move_type         = parse_move_type(m.value("type", "ground"));
         }
 
+        // Pathing footprint — either a 2-element array `[w, h]` or
+        // separate `pathing_footprint_w` / `pathing_footprint_h` fields
+        // on the unit type. Buildings should set this; mobile units
+        // leave it absent.
+        if (auto fp = val.find("pathing_footprint"); fp != val.end()) {
+            if (fp->is_array() && fp->size() == 2) {
+                def.pathing_footprint_w = fp->at(0).get<u32>();
+                def.pathing_footprint_h = fp->at(1).get<u32>();
+            }
+        } else {
+            def.pathing_footprint_w = val.value("pathing_footprint_w", 0u);
+            def.pathing_footprint_h = val.value("pathing_footprint_h", 0u);
+        }
+
         if (val.contains("combat")) {
             auto& c = val["combat"];
             def.damage           = c.value("damage", 10.0f);

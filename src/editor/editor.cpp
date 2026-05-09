@@ -539,12 +539,6 @@ void Editor::apply_brush(f32 dt) {
     case Tool::RampClear:
         if (!m_brush_applied) { brush_ramp_clear(); m_brush_applied = true; }
         break;
-    case Tool::PathingBlock:
-        if (!m_brush_applied) { brush_pathing_block(); m_brush_applied = true; }
-        break;
-    case Tool::PathingAllow:
-        if (!m_brush_applied) { brush_pathing_allow(); m_brush_applied = true; }
-        break;
     default: break;
     }
 }
@@ -826,44 +820,6 @@ void Editor::brush_ramp_clear() {
 }
 
 
-void Editor::brush_pathing_block() {
-    auto& td = m_map.terrain();
-    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r = m_brush_size - 1;
-    i32 r2 = r * r;
-
-    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
-        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
-            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
-            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
-            if (dx * dx + dy * dy > r2) continue;
-
-            td.pathing_at(ix, iy) &= ~map::PATHING_WALKABLE;
-            m_terrain_dirty = true;
-            m_pathing_cache_dirty = true;
-        }
-    }
-}
-
-void Editor::brush_pathing_allow() {
-    auto& td = m_map.terrain();
-    auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
-    i32 r = m_brush_size - 1;
-    i32 r2 = r * r;
-
-    for (u32 iy = br.min_iy; iy < br.max_iy; ++iy) {
-        for (u32 ix = br.min_ix; ix < br.max_ix; ++ix) {
-            i32 dx = static_cast<i32>(ix) - m_cursor_vx;
-            i32 dy = static_cast<i32>(iy) - m_cursor_vy;
-            if (dx * dx + dy * dy > r2) continue;
-
-            td.pathing_at(ix, iy) |= map::PATHING_WALKABLE;
-            m_terrain_dirty = true;
-            m_pathing_cache_dirty = true;
-        }
-    }
-}
-
 // ── Undo/Redo ────────────────────────────────────────────────────────────
 
 void Editor::begin_stroke() {
@@ -927,7 +883,6 @@ void Editor::apply_edit(const TerrainEdit& edit, bool use_new) {
                      edit.old_heightmap, edit.old_cliff, edit.old_tile_layer, edit.old_pathing);
     }
     m_terrain_dirty = true;
-    m_pathing_cache_dirty = true;
 }
 
 void Editor::undo() {
@@ -953,7 +908,6 @@ void Editor::rebuild_terrain_mesh() {
     vkDeviceWaitIdle(m_rhi.device());
     m_renderer.set_terrain(m_map.terrain());
     m_simulation.set_terrain(&m_map.terrain());
-    m_pathing_cache_dirty = true;
 
     // Update entities after terrain edit: adjust Z, remove units on impassable tiles
     auto& td = m_map.terrain();
@@ -983,33 +937,6 @@ void Editor::rebuild_terrain_mesh() {
     }
 }
 
-void Editor::rebuild_pathing_cache() {
-    m_blocked_tiles.clear();
-    m_blocked_verts.clear();
-    if (!m_map_loaded || !m_map.terrain().is_valid()) return;
-    auto& td = m_map.terrain();
-
-    for (u32 ty = 0; ty < td.tiles_y; ++ty) {
-        for (u32 tx = 0; tx < td.tiles_x; ++tx) {
-            bool w00 = (td.pathing_at(tx, ty)     & map::PATHING_WALKABLE) != 0;
-            bool w10 = (td.pathing_at(tx+1, ty)   & map::PATHING_WALKABLE) != 0;
-            bool w01 = (td.pathing_at(tx, ty+1)   & map::PATHING_WALKABLE) != 0;
-            bool w11 = (td.pathing_at(tx+1, ty+1) & map::PATHING_WALKABLE) != 0;
-            if (!w00 || !w10 || !w01 || !w11)
-                m_blocked_tiles.push_back({tx, ty});
-        }
-    }
-
-    for (u32 vy = 0; vy <= td.tiles_y; ++vy) {
-        for (u32 vx = 0; vx <= td.tiles_x; ++vx) {
-            if (!(td.pathing_at(vx, vy) & map::PATHING_WALKABLE))
-                m_blocked_verts.push_back({vx, vy});
-        }
-    }
-
-    m_pathing_cache_dirty = false;
-}
-
 void Editor::switch_scene(const std::string& scene_name) {
     if (!m_map_loaded || scene_name == m_current_scene) return;
 
@@ -1021,7 +948,6 @@ void Editor::switch_scene(const std::string& scene_name) {
             m_renderer.set_terrain(m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
         }
-        m_pathing_cache_dirty = true;
         log::info(TAG, "Switched to scene: {}", scene_name);
     }
 }
@@ -1054,7 +980,6 @@ void Editor::open_map(const std::string& path) {
             m_renderer.set_terrain(m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
         }
-        m_pathing_cache_dirty = true;
         log::info(TAG, "Opened map: {}", m_map_path);
     } else {
         log::error(TAG, "Failed to open map: {}", m_map_path);
@@ -1270,46 +1195,6 @@ void Editor::draw_overlays() {
         }
     }
 
-    // Pathing visualization — toggled via View menu
-    if (m_show_pathing) {
-        if (m_pathing_cache_dirty) rebuild_pathing_cache();
-
-        auto* fg = ImGui::GetForegroundDrawList();
-        ImU32 fill_color = IM_COL32(0, 0, 0, 60);
-        ImU32 dot_color  = IM_COL32(0, 0, 0, 200);
-        f32 z_off = 2.0f;
-        f32 sw = static_cast<f32>(m_rhi.extent().width);
-        f32 sh = static_cast<f32>(m_rhi.extent().height);
-
-        for (auto& [tx, ty] : m_blocked_tiles) {
-            glm::vec3 c00{td.vertex_world_x(tx),     td.vertex_world_y(ty),     td.world_z_at(tx, ty) + z_off};
-            glm::vec3 c10{td.vertex_world_x(tx + 1), td.vertex_world_y(ty),     td.world_z_at(tx+1, ty) + z_off};
-            glm::vec3 c01{td.vertex_world_x(tx),     td.vertex_world_y(ty + 1), td.world_z_at(tx, ty+1) + z_off};
-            glm::vec3 c11{td.vertex_world_x(tx + 1), td.vertex_world_y(ty + 1), td.world_z_at(tx+1, ty+1) + z_off};
-
-            ImVec2 s00, s10, s01, s11;
-            if (!world_to_screen(c00, s00) || !world_to_screen(c10, s10) ||
-                !world_to_screen(c01, s01) || !world_to_screen(c11, s11)) continue;
-
-            // Quick screen bounds check
-            f32 min_x = std::min({s00.x, s10.x, s01.x, s11.x});
-            f32 max_x = std::max({s00.x, s10.x, s01.x, s11.x});
-            f32 min_y = std::min({s00.y, s10.y, s01.y, s11.y});
-            f32 max_y = std::max({s00.y, s10.y, s01.y, s11.y});
-            if (max_x < 0 || min_x > sw || max_y < 0 || min_y > sh) continue;
-
-            ImVec2 quad[] = {s00, s10, s11, s01};
-            fg->AddConvexPolyFilled(quad, 4, fill_color);
-        }
-
-        for (auto& [vx, vy] : m_blocked_verts) {
-            glm::vec3 pos{td.vertex_world_x(vx), td.vertex_world_y(vy), td.world_z_at(vx, vy) + z_off};
-            ImVec2 sp;
-            if (!world_to_screen(pos, sp)) continue;
-            if (sp.x < 0 || sp.x > sw || sp.y < 0 || sp.y > sh) continue;
-            fg->AddCircleFilled(sp, 4.0f, dot_color);
-        }
-    }
 }
 
 // ── UI ───────────────────────────────────────────────────────────────────
@@ -1400,10 +1285,6 @@ void Editor::draw_ui() {
             if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !m_redo_stack.empty())) redo();
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Show Pathing", nullptr, &m_show_pathing);
-            ImGui::EndMenu();
-        }
         ImGui::EndMainMenuBar();
     }
 
@@ -1437,8 +1318,6 @@ void Editor::draw_ui() {
     ImGui::RadioButton("Cliff Lower", &tool, static_cast<int>(Tool::CliffLower));
     ImGui::RadioButton("Ramp Set",    &tool, static_cast<int>(Tool::RampSet));
     ImGui::RadioButton("Ramp Clear",  &tool, static_cast<int>(Tool::RampClear));
-    ImGui::RadioButton("Path Block",  &tool, static_cast<int>(Tool::PathingBlock));
-    ImGui::RadioButton("Path Allow",  &tool, static_cast<int>(Tool::PathingAllow));
     m_tool = static_cast<Tool>(tool);
 
     ImGui::Separator();
@@ -1446,7 +1325,6 @@ void Editor::draw_ui() {
 
     bool is_one_shot = m_tool == Tool::CliffRaise || m_tool == Tool::CliffLower ||
                        m_tool == Tool::RampSet || m_tool == Tool::RampClear ||
-                       m_tool == Tool::PathingBlock || m_tool == Tool::PathingAllow ||
                        m_tool == Tool::Paint;
     if (!is_one_shot) {
         ImGui::SliderFloat("Amount", &m_brush_amount, 1.0f, 32.0f, "%.0f");
@@ -1505,10 +1383,7 @@ void Editor::draw_ui() {
         ImGui::Text("Height: %.1f  Cliff: %d",
                      td.height_at(m_cursor_vx, m_cursor_vy),
                      td.cliff_at(m_cursor_vx, m_cursor_vy));
-        ImGui::Text("Walk:%s Fly:%s Ramp:%s",
-                     (flags & map::PATHING_WALKABLE) ? "Y" : "N",
-                     (flags & map::PATHING_FLYABLE) ? "Y" : "N",
-                     (flags & map::PATHING_RAMP) ? "Y" : "N");
+        ImGui::Text("Ramp:%s", (flags & map::PATHING_RAMP) ? "Y" : "N");
 
         // Layer at the cursor vertex — id, tileset name, and LayerType.
         u32 vi = m_cursor_vy * td.verts_x() + m_cursor_vx;

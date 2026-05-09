@@ -98,8 +98,10 @@ struct World {
     using SoundCallback = std::function<void(std::string_view path, glm::vec3 position)>;
     SoundCallback on_sound;
 
-    // Called when a pathing blocker is removed (unblock runtime vertices).
-    using PathingUnblockCallback = std::function<void(const std::vector<glm::ivec2>& verts)>;
+    // Called when a pathing blocker is removed (unblock runtime tiles).
+    // Receives the tile rectangle (tx, ty) + (w, h) the blocker had
+    // occupied; the simulation forwards it to Pathfinder::unblock_tiles.
+    using PathingUnblockCallback = std::function<void(i32 tx, i32 ty, u32 w, u32 h)>;
     PathingUnblockCallback on_pathing_unblock;
 
     // Item events — fired by system_items after a pickup / drop completes.

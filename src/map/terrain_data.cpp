@@ -37,14 +37,12 @@ i32 TerrainData::tile_effective_level(u32 tx, u32 ty) const {
 
 bool TerrainData::is_tile_passable(u32 tx, u32 ty) const {
     if (tx >= tiles_x || ty >= tiles_y) return false;
-    if (tile_effective_level(tx, ty) == -2) return false;
-
-    for (u32 vy = ty; vy <= ty + 1; ++vy) {
-        for (u32 vx = tx; vx <= tx + 1; ++vx) {
-            if (!(pathing_at(vx, vy) & PATHING_WALKABLE)) return false;
-        }
-    }
-    return true;
+    // tile_effective_level returns -2 for "uncrossable cliff transition"
+    // and -1 for "ramp" (passable). Anything >= 0 is a flat tile at
+    // that level. Per-vertex walkable / flyable bits are gone — the
+    // runtime pathing-blocker layer is now the sole source of truth
+    // for "this tile is occupied by a building".
+    return tile_effective_level(tx, ty) != -2;
 }
 
 bool TerrainData::is_tile_deep_water(u32 tx, u32 ty) const {
@@ -72,6 +70,19 @@ u8 TerrainData::cliff_level_at(f32 x, f32 y) const {
     vx = std::min(vx, tiles_x);
     vy = std::min(vy, tiles_y);
     return cliff_at(vx, vy);
+}
+
+// ── Building placement snap ──────────────────────────────────────────────
+
+f32 snap_building_axis(const TerrainData& td, f32 x, f32 origin, u32 footprint_extent) {
+    if (!td.is_valid() || footprint_extent == 0) return x;
+    f32 rel = (x - origin) / td.tile_size;
+    if ((footprint_extent & 1u) != 0u) {
+        // Odd footprint → tile center (half-tile offset).
+        return origin + (std::floor(rel) + 0.5f) * td.tile_size;
+    }
+    // Even footprint → tile corner (vertex).
+    return origin + std::round(rel) * td.tile_size;
 }
 
 // ── Terrain sampling (visual only) ───────────────────────────────────────
@@ -119,7 +130,7 @@ TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size, f32 bas
     td.heightmap.assign(vc, base_height);
     td.cliff_level.assign(vc, 0);
     td.tile_layer.assign(vc, 0);  // default: layer 0
-    td.pathing.assign(vc, PATHING_DEFAULT);
+    td.pathing.assign(vc, 0);     // ramp marker only; no ramps on flat terrain
 
     log::info(TAG, "Created flat terrain: {}x{} tiles, tile_size={}", tiles_x, tiles_y, tile_size);
     return td;
@@ -162,7 +173,9 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
     td.heightmap.resize(vc);
     td.cliff_level.assign(vc, 0);
     td.tile_layer.assign(vc, 0);
-    td.pathing.assign(vc, PATHING_DEFAULT);
+    // pathing field stays for the RAMP bit; procedural terrain has
+    // no ramps so it's all zeroes.
+    td.pathing.assign(vc, 0);
 
     // Generate heights: two octaves of value noise
     for (u32 iy = 0; iy < td.verts_y(); ++iy) {

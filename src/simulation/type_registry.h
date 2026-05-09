@@ -28,6 +28,17 @@ struct UnitTypeDef {
     f32      collision_radius = 32.0f;
     MoveType move_type = MoveType::Ground;
 
+    // Pathing footprint in tiles. Buildings declare this (typically
+    // 2×2, 3×3, 4×4); mobile units leave it 0×0. The footprint is the
+    // tile region the building physically occupies — both for runtime
+    // pathing blocks and for placement snapping (odd extent → tile
+    // center, even extent → tile corner). Independent of
+    // collision_radius, which still drives unit physics and attack
+    // range. Mirrors WC3's split between a Pathing Map and a
+    // Collision Size, simplified to a rectangle for v1.
+    u32 pathing_footprint_w = 0;
+    u32 pathing_footprint_h = 0;
+
     // Combat
     f32 damage = 10;
     f32 attack_range = 1.0f;

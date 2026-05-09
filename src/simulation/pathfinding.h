@@ -37,9 +37,9 @@ public:
     void set_terrain(const map::TerrainData* terrain) {
         m_terrain = terrain;
         // Old runtime blocks (buildings on the previous map / scene)
-        // index into the previous terrain's vertex grid. Drop them so
-        // a same-size new terrain doesn't inherit stale blocks.
-        m_runtime_blocked.clear();
+        // index into the previous terrain's tile grid. Drop them so a
+        // same-size new terrain doesn't inherit stale blocks.
+        m_runtime_blocked_tiles.clear();
         build_cache();
     }
     const map::TerrainData* terrain() const { return m_terrain; }
@@ -94,18 +94,23 @@ public:
 
     // ── Runtime pathing blocks (buildings) ────────────────────────────────
 
-    // Block/unblock vertices at runtime (buildings, destructables).
-    // These are NOT saved to terrain — they exist only while the blocker lives.
-    void block_vertices(const std::vector<glm::ivec2>& verts);
-    void unblock_vertices(const std::vector<glm::ivec2>& verts);
-    bool is_vertex_blocked(u32 vx, u32 vy) const;
+    // Block/unblock a tile rectangle at runtime (buildings, destructables).
+    // These are NOT saved to terrain — they exist only while the
+    // blocker lives. Per-tile refcount so overlapping blockers (or a
+    // building rebuilt over a corpse) compose correctly.
+    void block_tiles  (i32 tx, i32 ty, u32 w, u32 h);
+    void unblock_tiles(i32 tx, i32 ty, u32 w, u32 h);
+    bool is_tile_blocked(u32 tx, u32 ty) const;
 
     // Build connectivity cache from terrain data. Call after set_terrain().
     void build_cache();
 
 private:
     const map::TerrainData* m_terrain = nullptr;
-    std::vector<u8> m_runtime_blocked;  // per-vertex refcount (multiple buildings can overlap)
+    // Per-tile refcount of runtime blockers (buildings, etc.). Sized
+    // to terrain.tiles_x * tiles_y on first use; cleared on
+    // set_terrain (terrain swap means old blocks are stale).
+    std::vector<u8> m_runtime_blocked_tiles;
 
     // Pre-computed terrain cache (built once at terrain load)
     std::vector<bool> m_occupiable;       // can_occupy(tx, ty, Ground) per tile

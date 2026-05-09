@@ -26,8 +26,6 @@ enum class Tool : u8 {
     CliffLower,
     RampSet,
     RampClear,
-    PathingBlock,
-    PathingAllow,
     Count
 };
 
@@ -63,8 +61,6 @@ private:
     void brush_cliff_lower();
     void brush_ramp_set();
     void brush_ramp_clear();
-    void brush_pathing_block();
-    void brush_pathing_allow();
     void cleanup_ramp_flags();  // remove RAMP from vertices with no adjacent cliff difference
 
     // Modules
@@ -130,17 +126,6 @@ private:
     void apply_edit(const TerrainEdit& edit, bool use_new);
     bool m_prev_undo_key = false;
     bool m_prev_redo_key = false;
-
-    // View options
-    bool m_show_pathing = true;
-
-    // Cached blocked tile/vertex lists — rebuilt only when pathing changes
-    struct BlockedTile { u32 tx, ty; };
-    struct BlockedVertex { u32 vx, vy; };
-    std::vector<BlockedTile>   m_blocked_tiles;
-    std::vector<BlockedVertex> m_blocked_verts;
-    bool m_pathing_cache_dirty = true;
-    void rebuild_pathing_cache();
 
     // Right-click drag pan: anchor point on ground plane
     bool      m_drag_active = false;

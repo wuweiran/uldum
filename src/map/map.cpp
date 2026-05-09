@@ -408,6 +408,22 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             pu.y      = u.value("y", 0.0f);
             pu.facing = u.value("facing", 0.0f) * (glm::pi<f32>() / 180.0f);
             pu.owner  = u.value("owner", 0u);
+
+            // If the unit type declares a pathing footprint, snap the
+            // authored XY to the building-placement grid before
+            // creating the entity. WC3 rule: odd footprint extent
+            // snaps to a tile center, even snaps to a tile corner —
+            // this guarantees the footprint vertices line up with the
+            // tile grid exactly, so adjacent units have a clean
+            // walkable corridor. Authored coords that already line up
+            // are no-ops; mis-aligned ones are corrected silently.
+            const auto* type_def = sim.types().get_unit_type(pu.type);
+            u32 fw = type_def ? type_def->pathing_footprint_w : 0u;
+            u32 fh = type_def ? type_def->pathing_footprint_h : 0u;
+            if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
+                pu.x = snap_building_x(m_scene.terrain, pu.x, fw);
+                pu.y = snap_building_y(m_scene.terrain, pu.y, fh);
+            }
             m_scene.units.push_back(pu);
 
             simulation::Player owner{pu.owner};
@@ -425,21 +441,25 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                     mov->cliff_level = td.cliff_at(vx, vy);
                 }
 
-                // Buildings block pathing at runtime via PathingBlocker component
-                auto* cls = world.classifications.get(unit.id);
-                if (cls && simulation::has_classification(cls->flags, "structure")) {
+                // Generate the runtime PathingBlocker rectangle from
+                // the type's footprint. Snapped position guarantees
+                // the SW corner tile lands on an integer index.
+                if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
                     auto& td = m_scene.terrain;
-                    if (td.is_valid()) {
-                        i32 cx = static_cast<i32>((pu.x - td.origin_x()) / td.tile_size);
-                        i32 cy = static_cast<i32>((pu.y - td.origin_y()) / td.tile_size);
-                        simulation::PathingBlocker blocker;
-                        for (i32 dy = -1; dy <= 2; ++dy) {
-                            for (i32 dx = -1; dx <= 2; ++dx) {
-                                blocker.blocked_vertices.push_back({cx + dx, cy + dy});
-                            }
-                        }
-                        world.pathing_blockers.add(unit.id, std::move(blocker));
-                    }
+                    f32 left_tx_f   = (pu.x - td.origin_x()) / td.tile_size - 0.5f * static_cast<f32>(fw);
+                    f32 bottom_ty_f = (pu.y - td.origin_y()) / td.tile_size - 0.5f * static_cast<f32>(fh);
+                    simulation::PathingBlocker blocker;
+                    blocker.tx = static_cast<i32>(std::round(left_tx_f));
+                    blocker.ty = static_cast<i32>(std::round(bottom_ty_f));
+                    blocker.w  = fw;
+                    blocker.h  = fh;
+                    log::info(TAG,
+                        "Placed building '{}' at ({:.0f},{:.0f}) "
+                        "[footprint {}x{}, blocking tiles x={}..{} y={}..{}]",
+                        pu.type, pu.x, pu.y, fw, fh,
+                        blocker.tx, blocker.tx + static_cast<i32>(fw) - 1,
+                        blocker.ty, blocker.ty + static_cast<i32>(fh) - 1);
+                    world.pathing_blockers.add(unit.id, std::move(blocker));
                 }
 
                 unit_count++;
