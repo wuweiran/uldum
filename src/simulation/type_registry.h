@@ -126,6 +126,15 @@ public:
     u32 destructable_type_count() const { return static_cast<u32>(m_destructable_types.size()); }
     u32 item_type_count() const { return static_cast<u32>(m_item_types.size()); }
 
+    // Drop every loaded type so the next map starts with an empty
+    // registry. Without this, types declared by a previous map's
+    // JSON linger and shadow new maps that omit them.
+    void clear() {
+        m_unit_types.clear();
+        m_destructable_types.clear();
+        m_item_types.clear();
+    }
+
 private:
     bool load_unit_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
     bool load_destructable_types_from_doc(const asset::JsonDocument* doc, std::string_view source);

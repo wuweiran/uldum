@@ -266,6 +266,10 @@ void Renderer::end_session() {
         // # of units we run; revisit when sessions are very long-lived.
     }
     m_anim_instances.clear();
+    // Drop every persistent effect + in-flight particle so the next
+    // session doesn't start with the previous map's emitters still
+    // running.
+    m_effect_manager.clear();
 }
 
 void Renderer::shutdown() {

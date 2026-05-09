@@ -53,6 +53,14 @@ public:
     // map. Engine state (ma_engine, sound groups, volumes) survives.
     void reset_session_state();
 
+    // Stop every active sound but keep the per-map resource cache
+    // (encoded bytes registered with miniaudio's resource manager).
+    // Called by App::scene_switch_local_teardown so a scene swap
+    // within the same map doesn't bleed music / ambient loops into
+    // the next scene, but doesn't pay the cost of re-registering
+    // sounds the new scene will likely use again.
+    void reset_scene_state();
+
 private:
     std::string resolve_path(std::string_view path) const;
 

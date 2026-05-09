@@ -98,12 +98,12 @@ void AudioEngine::shutdown() {
     log::info(TAG, "AudioEngine shut down");
 }
 
-void AudioEngine::reset_session_state() {
+void AudioEngine::reset_scene_state() {
     if (!m_initialized) return;
 
-    // Stop every per-session sound. Same uninit pattern as shutdown(),
-    // but the ma_engine + groups stay alive so the next session can
-    // start playing immediately without re-init.
+    // Stop every active sound. Same uninit pattern as shutdown(),
+    // but the ma_engine + groups + resource cache stay alive so the
+    // new scene (same map) can replay sounds without re-registering.
     for (auto& sfx : m_active_sfx) {
         if (sfx.sound) {
             ma_sound_uninit(sfx.sound);
@@ -133,11 +133,19 @@ void AudioEngine::reset_session_state() {
     }
     m_music_fade_in = m_music_fade_out = 0;
     m_music_fade_timer = m_music_prev_fade_timer = 0;
+}
 
-    // Drop the cached encoded bytes. Sounds were registered with
-    // miniaudio's resource manager keyed by their virtual path; once
-    // the underlying ma_sound objects are gone, the resource manager
-    // doesn't need the bytes either. Next session re-registers fresh.
+void AudioEngine::reset_session_state() {
+    if (!m_initialized) return;
+
+    // Stop active sounds first (shared with scene reset) ...
+    reset_scene_state();
+
+    // ... then drop the cached encoded bytes. Sounds were registered
+    // with miniaudio's resource manager keyed by their virtual path;
+    // once the underlying ma_sound objects are gone the resource
+    // manager doesn't need the bytes either. Next session
+    // re-registers fresh from the new map.
     if (m_engine) {
         auto* rm = ma_engine_get_resource_manager(m_engine);
         for (auto& [key, bytes] : m_sound_cache) {

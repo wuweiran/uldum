@@ -129,6 +129,10 @@ public:
     const AbilityDef* get(std::string_view id) const;
     u32 count() const { return static_cast<u32>(m_defs.size()); }
 
+    // Drop every registered ability. Mirrors TypeRegistry::clear so
+    // session shutdown leaves a fresh registry for the next map.
+    void clear() { m_defs.clear(); }
+
 private:
     bool load_from_doc(const asset::JsonDocument* doc, std::string_view source);
     std::unordered_map<std::string, AbilityDef> m_defs;

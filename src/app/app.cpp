@@ -963,6 +963,11 @@ void App::end_session() {
     m_renderer.end_session();
     m_world_overlays.reset_session_state();
 
+    // A pending LoadScene request that hadn't fired yet (or a host-side
+    // barrier in progress) is meaningless after the session ends.
+    m_pending_scene_switch.clear();
+    m_pending_scene_switch_finalize.clear();
+
     m_session_active = false;
     m_lobby_active   = false;
     log::info(TAG, "=== Session ended ===");
@@ -1101,6 +1106,12 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
     // CreateEffect emitters (e.g. portal-rim glow) keep spawning
     // particles into the new scene's world.
     m_renderer.effect_manager().clear();
+
+    // Stop any music / ambient loops / lingering SFX from the previous
+    // scene. The map's audio resource cache is preserved so common
+    // sounds don't have to re-register; only the active playback
+    // graph is wiped.
+    m_audio.reset_scene_state();
 
     // Local UI / picking state — handles all reference dead unit ids.
     // World overlays' decal textures (SelectionRing, AoE shapes, etc.)

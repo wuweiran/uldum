@@ -22,6 +22,18 @@ bool Simulation::init(asset::AssetManager& /*assets*/) {
 }
 
 void Simulation::shutdown() {
+    // Wipe all per-session state so the next start_session begins
+    // from a clean slate. The Simulation instance itself is reused
+    // across sessions, so nothing leaves scope on its own.
+    m_world.clear_entities();
+    m_pathfinder.set_terrain(nullptr);   // drops runtime blocks too
+    m_terrain = nullptr;
+    m_types.clear();
+    m_abilities.clear();
+    m_fog.init(0, 0, 0, 0, FogMode::None);  // releases per-player grids
+    m_alliances.clear();
+    m_player_count = 0;
+    m_player_names.clear();
     log::info(TAG, "Simulation shut down");
 }
 

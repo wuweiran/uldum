@@ -34,7 +34,14 @@ struct Corridor {
 // Z coordinates are NEVER used for pathfinding. Z is for visual/height only.
 class Pathfinder {
 public:
-    void set_terrain(const map::TerrainData* terrain) { m_terrain = terrain; build_cache(); }
+    void set_terrain(const map::TerrainData* terrain) {
+        m_terrain = terrain;
+        // Old runtime blocks (buildings on the previous map / scene)
+        // index into the previous terrain's vertex grid. Drop them so
+        // a same-size new terrain doesn't inherit stale blocks.
+        m_runtime_blocked.clear();
+        build_cache();
+    }
     const map::TerrainData* terrain() const { return m_terrain; }
 
     // ── Tile queries (delegate to TerrainData + MoveType logic) ─────────
