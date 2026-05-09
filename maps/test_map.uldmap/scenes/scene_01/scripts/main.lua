@@ -19,9 +19,9 @@ function main()
     combat.register_damage_text()
 
     -- Global ability-effect handlers — fire whenever any unit casts
-    -- holy_light or uses a healing potion. Scene_01's preplaced units
-    -- don't have holy_light bound, but the handler is harmless and
-    -- demonstrates the shared module across scenes.
+    -- the matching ability. Scene_01's preplaced paladin can cast
+    -- consecration / holy_light if the player drives it.
+    abilities.register_consecration()
     abilities.register_holy_light_effect()
     abilities.register_healing_potion()
 

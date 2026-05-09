@@ -45,30 +45,31 @@ function M.register_cleave(caster, owner, opts)
     end)
 end
 
--- Consecration: target-point AoE on `caster`'s consecration cast.
--- Damages enemies of the caster's own owner within radius of the
--- target point. Auto-resolves owner from the trigger context, so the
--- registration only needs the caster bound.
-function M.register_consecration(caster, opts)
+-- Consecration: target-point AoE on any consecration cast. Damages
+-- enemies of the caster's owner within radius of the target point.
+-- Global (any caster) so each scene only has to register once,
+-- mirroring how holy_light is wired below.
+function M.register_consecration(opts)
     opts = opts or {}
     local radius = opts.radius or 300
     local damage = opts.damage or 80
 
     local trig = CreateTrigger()
-    TriggerRegisterUnitEvent(trig, caster, EVENT_UNIT_ABILITY_EFFECT)
+    TriggerRegisterEvent(trig, EVENT_GLOBAL_ABILITY_EFFECT)
     TriggerAddCondition(trig, function()
         return GetTriggerAbilityId() == "consecration"
     end)
     TriggerAddAction(trig, function()
-        local trigger_caster = GetTriggerUnit()
+        local caster = GetTriggerUnit()
+        if not caster then return end
         local tx = GetSpellTargetX()
         local ty = GetSpellTargetY()
         PlayEffect("consecration_burst", tx, ty, 0)
-        local owner = GetUnitOwner(trigger_caster)
+        local owner = GetUnitOwner(caster)
         local nearby = GetUnitsInRange(tx, ty, radius,
             { enemy_of = owner, alive_only = true })
         for _, u in ipairs(nearby) do
-            DamageUnit(trigger_caster, u, damage, "ability")
+            DamageUnit(caster, u, damage, "ability")
         end
         Log(string.format("[Consecration] %d enemies hit for %d at (%.0f,%.0f)",
             #nearby, damage, tx, ty))

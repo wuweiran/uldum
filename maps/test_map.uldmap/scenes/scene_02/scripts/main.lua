@@ -57,9 +57,11 @@ function main()
     combat.register_death_vfx()
     combat.register_damage_text()
 
-    -- Per-unit ability handlers (shared in scripts/abilities.lua).
+    -- Ability handlers (shared in scripts/abilities.lua). Global ones
+    -- (consecration, holy_light) only need a single registration per
+    -- scene; per-caster ones (cleave, devotion_aura) bind to a unit.
     abilities.register_cleave(footman, player1)
-    abilities.register_consecration(paladin)
+    abilities.register_consecration()
     abilities.register_devotion_aura(paladin, player1)
     abilities.register_holy_light_effect()
     Log("[Scene02] Hero abilities registered (cleave, consecration, aura, holy light)")
