@@ -645,60 +645,17 @@ Authoring efficiency becomes the bottleneck once 17 + 18 land — the existing t
 
 By this point items + regions + scene-driven UI + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports. Triggers stay in Lua scripts (no in-editor trigger graph) — the script-side `TriggerRegister*` surface is the authoring interface there.
 
-### Phase 20 — Rendering Pipeline Reckoning
+### Phase 20 — Gameplay Enrichment
 
-A scheduled audit of the rendering pipeline against what "modern" actually means for a unit-centric engine. Phase 14 added the visible feature work — GPU-driven rendering, MSAA, terrain blending, lighting. What's left isn't more features so much as ensuring foundations are sound before the engine is asked to carry assets it can't render correctly today. Several shortcuts in the current pipeline produce correct-looking results only because no asset has stressed them yet (terrain noise normal maps tolerate any tangent direction; ad-hoc shading tolerates any color space). Each sub-phase below has a concrete *trigger* — the kind of asset whose arrival will make the gap visible.
+The engine's gameplay surface is thin compared to what map authors hitting WC3 expectations will want. Phase 20 expands it — primarily ability mechanics, since today's six forms (Passive / Aura / Instant / TargetUnit / TargetPoint / Toggle) leave a lot on the table.
 
-**Phase 20a — Tangent Space (MikkTSpace)**
-
-The terrain fragment shader builds a tangent on the fly via `cross((0,1,0), N)` — fine for tileable detail textures with no meaningful orientation, wrong for any painted / baked normal map (sword bevel, character wrinkles, brick mortar lines) where the detail's authored direction has to agree with the runtime tangent.
-
-- Add `tangent: vec4` to model vertex format (xyz = tangent, w = bitangent handedness sign).
-- glTF importer: read `TANGENT` attribute when present; otherwise generate via MikkTSpace (~500 LOC drop-in, de-facto standard, matches what Blender / Substance / glTF exporters produce).
-- Update model shaders to read the tangent attribute.
-- Terrain shader keeps its current implicit-tangent path — the textures are rotation-invariant by authoring convention.
-
-Trigger: first imported model with a hand-authored normal map.
-
-**Phase 20b — Color-Space Correctness**
-
-Audit every texture binding (sRGB vs linear) and the framebuffer chain. Mistakes here are subtle — slightly wrong gamma everywhere — but they compound and break PBR materials.
-
-- Diffuse / albedo: sRGB sampled, linear to shader.
-- Normal maps / packed masks (roughness, AO, metallic): always linear.
-- Render in linear; convert to sRGB exactly once on swapchain present.
-
-**Phase 20c — PBR Material Model**
-
-Move from the current per-shader Lambert + ad-hoc specular to one shared metallic/roughness BRDF (Cook-Torrance). Required for glTF `pbrMetallicRoughness` materials to render as the artist authored them.
-
-Trigger: first imported asset with a metallic-roughness texture.
-
-**Phase 20d — HDR + Tonemap**
-
-Render to a floating-point color target. Tonemap (ACES, or Khronos PBR Neutral) once on present. Without this, emissive surfaces clip, bright sun + dark shadow can't both be exposed correctly, and any future bloom / sky-atmospherics has nothing to operate on.
-
-**Phase 20e — Shadow Cascades** *(promoted from Deferred)*
-
-Replace the fixed world-space shadow box (`scene_center` / `scene_radius` in `renderer.cpp`) with view-frustum-derived cascaded shadow maps, so shadow resolution is uniform regardless of map size.
-
-**Phase 20f — Triplanar Terrain Sampling**
-
-Today every terrain fragment samples the layer texture by `(world.x, world.y)`, regardless of surface orientation — fine for flat ground, but vertical cliff walls have constant Y across their height, so the same texel column gets stretched the entire vertical extent and looks ugly. Triplanar mapping fixes this without authoring a separate cliff texture (which would create a visible boundary against the surrounding layer): in the fragment shader, sample the layer three times — `(world.xy)`, `(world.yz)`, `(world.xz)` — and blend by `abs(normal)` weights.
-
-- Flat ground (N≈+Z) reads only the XY projection — identical to today.
-- N/S walls (N≈±Y) read the XZ projection — texture follows the wall's run and rise, no stretch.
-- E/W walls (N≈±X) read the YZ projection — same.
-- Chamfer / slanted faces blend all three weighted by the normal direction.
-- Cliff↔ground seam blends smoothly because both projections sample the same layer texture (a grass cliff continues into a grass ground via the texture's tileability).
-
-Performance: skip the extra two samples when `abs(normal.z) > 0.95` so only cliff/slope areas pay the 3× lookup cost.
-
-Trigger: this is the right fix for the current "stretched terrain texture on vertical cliff walls" complaint, scheduled here because it sits in the same shader as the rest of the rendering reckoning.
-
-**Phase 20g — Audit Pass**
-
-While the above are in flight, sweep the rendering code for other shortcuts that should be promoted out of "works because nothing's stressed it." Candidates seen so far: hardcoded ambient as a single uniform; no post-process pipeline (bloom / vignette / color grading); no SSAO; no anisotropic filtering setup; HUD and world rendering in the same gamma. Record findings as new sub-phases or items in Deferred.
+- Ability mechanics expansion — more forms (channeling, spellbook, morph, autocast, target-destructable / target-item, etc.), per-ability cooldown / mana semantics on cancel-vs-complete, and whatever other gaps surface as we port WC3-shaped abilities.
+- Status flags — built-in unit states (stunned / silenced / disarmed / invulnerable / paused) settable from script and visible in the HUD. Today silencing or stunning has to be modeled as a passive ability that Lua-checks gate on, with no engine-side enforcement; this makes them first-class.
+- Animation control — `SetUnitAnimation` / `QueueUnitAnimation` so map authors can drive custom-ability cast poses and cinematic beats without waiting for the state machine to pick the right clip.
+- Ability render integrations — engine-side pipeline support for visual states that can't be done from script alone. Wind walk / invisibility is the canonical one (engine hides the unit from the right players, reveals on attack/cast); ethereal / phased rendering is the next step.
+- Effect attachment slots — `CreateEffectOnUnit` currently follows the unit's origin only. Add named attachment points (`head`, `hand,left`, `weapon`, `origin`) so abilities can place FX where the author meant.
+- Fog-of-war scripting — `Vision` exists at the component layer; expose `RevealArea`, `CreateFogModifier`, `MakeUnitVisible`, `IsVisibleToPlayer` for stealth / scout / cinematic-reveal authoring.
+- Order events — `EVENT_UNIT_ISSUED_ORDER` (and per-unit variant), so triggers can react to commands as they arrive instead of inferring from state changes.
 
 ## 16. Deferred / Future Work
 
@@ -711,3 +668,10 @@ Topics scoped out of current phases — revisit when the time comes.
 - CJK / RTL text shaping (HarfBuzz).
 - Rich custom shader decorators (game-project art concern).
 - UI designer tool — authors edit RML / RCSS directly.
+- **Tangent space (MikkTSpace)** — terrain shader builds tangents on the fly (`cross((0,1,0), N)`); fine for tileable detail textures, wrong for any painted / baked normal map. Add `tangent: vec4` to the model vertex format, read glTF `TANGENT` when present, generate via MikkTSpace otherwise. Triggered by the first imported model with a hand-authored normal map.
+- **Color-space correctness** — audit every texture binding (sRGB vs linear) and the framebuffer chain. Albedo sRGB-sampled, normal/mask textures linear, render in linear, sRGB-convert once on present.
+- **PBR material model** — move from per-shader Lambert + ad-hoc specular to one shared metallic/roughness BRDF (Cook-Torrance). Required for glTF `pbrMetallicRoughness` materials to render as authored. Triggered by the first imported asset with a metallic-roughness texture.
+- **HDR + tonemap** — render to a floating-point color target, tonemap (ACES / Khronos PBR Neutral) on present. Without it, emissives clip, bright sun + dark shadow can't both be exposed, and bloom/sky-atmospherics have nothing to operate on.
+- **Shadow cascades** — replace the fixed world-space shadow box (`scene_center` / `scene_radius` in `renderer.cpp`) with view-frustum-derived cascaded shadow maps so shadow resolution is uniform regardless of map size.
+- **Triplanar terrain sampling** — terrain currently samples by `(world.x, world.y)` regardless of surface orientation, so vertical cliff walls stretch the same texel column over their full height. Sample three projections (XY/YZ/XZ) blended by `abs(normal)` weights; skip the extra two samples when `abs(normal.z) > 0.95` so only slopes pay the 3× cost. Right fix for the cliff-stretching complaint when we get to it.
+- **Rendering audit pass** — sweep the renderer for other "works because nothing's stressed it" shortcuts (hardcoded ambient uniform, no post-process pipeline, no SSAO, no anisotropic filtering, HUD/world gamma mismatch). Promote individual findings out of Deferred when something hits them.
