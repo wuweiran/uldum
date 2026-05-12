@@ -1048,3 +1048,55 @@ A per-frame fog texture (tiles_x * tiles_y, RGBA) is uploaded to the GPU and sam
 - `FogOfWar.is_visible(player, x, y)` — check visibility at world position
 - `FogOfWar.is_explored(player, x, y)` — check if explored
 - `FogOfWar.is_enabled()` — whether fog is active
+
+## Status Flags
+
+Built-in unit states that gate orders / combat / casting / targeting. A first-class bitset on the unit so the sim, HUD, and combat AI all read the same source of truth.
+
+```
+StatusFlags {
+    u32  flags    // bitset of StatusFlag values
+}
+
+enum StatusFlag : u32 {
+    Stunned       = 1 << 0,   // no orders, no movement, no attack, no cast
+    Silenced      = 1 << 1,   // can't cast
+    Muted         = 1 << 2,   // can't use items
+    Disarmed      = 1 << 3,   // can't auto-attack
+    Rooted        = 1 << 4,   // can't move (can turn, cast, attack)
+    Invulnerable  = 1 << 5,   // takes no damage
+    MagicImmune   = 1 << 6,   // takes no spell damage; hostile spells can't pick this unit
+    Untargetable  = 1 << 7,   // can't be auto-attack-targeted or click-selected
+    Paused        = 1 << 8,   // sim freezes the unit (cinematics)
+}
+```
+
+### Sim enforcement
+
+Each flag has a specific point where the sim has to honor it:
+
+- `Stunned` — orders rejected at issue time; current order cancelled; movement / attack / cast systems skip the unit.
+- `Silenced` — cast attempt rejected at `IssueOrder(unit, "cast", ...)`.
+- `Muted` — item-use order rejected.
+- `Disarmed` — auto-attack target acquisition skipped; manual `attack` order rejected.
+- `Rooted` — movement systems hold position; turning and combat continue.
+- `Invulnerable` — `DamageUnit` short-circuits (no HP change, no `on_damage`, no `on_death`).
+- `MagicImmune` — `DamageUnit` short-circuits when `damage_type` is the configured spell type; hostile spell targeting filters this unit out.
+- `Untargetable` — **two-place fix, not just the flag**:
+  1. Auto-attack target-picker excludes flagged units.
+  2. Click-to-select excludes flagged units (cursor passes through).
+- `Paused` — sim systems skip every per-unit update for the entity. HUD still renders.
+
+### HUD
+
+Flagged units get a status-icon strip near the HP bar (same place WC3's buff icons live). Icon set ships with the engine; map can override the icon textures via hud.json.
+
+### Lua API
+
+- `SetUnitStatus(unit, flag, on)` — set/clear a single flag.
+- `GetUnitStatus(unit, flag) → bool` — query.
+- `ClearAllUnitStatus(unit)` — reset every flag.
+
+### Composition with passive abilities
+
+Status flags don't replace passive abilities — they're the low-level primitive that passives drive. A "Stun for 3s" ability is a passive with a 3s duration whose `on_add` sets `Stunned` and whose `on_remove` clears it (plus whatever VFX). The engine guarantees the gating behavior; the ability owns timing and visuals.

@@ -647,15 +647,18 @@ By this point items + regions + scene-driven UI + camera have produced concrete 
 
 ### Phase 20 — Gameplay Enrichment
 
-The engine's gameplay surface is thin compared to what map authors hitting WC3 expectations will want. Phase 20 expands it — primarily ability mechanics, since today's six forms (Passive / Aura / Instant / TargetUnit / TargetPoint / Toggle) leave a lot on the table.
+The engine's gameplay surface is thin compared to what map authors hitting WC3 expectations will want. Phase 20 expands it. Detailed designs live in the linked docs; this list is the work breakdown.
 
-- Ability mechanics expansion — more forms (channeling, spellbook, morph, autocast, target-destructable / target-item, etc.), per-ability cooldown / mana semantics on cancel-vs-complete, and whatever other gaps surface as we port WC3-shaped abilities.
-- Status flags — built-in unit states (stunned / silenced / disarmed / invulnerable / paused) settable from script and visible in the HUD. Today silencing or stunning has to be modeled as a passive ability that Lua-checks gate on, with no engine-side enforcement; this makes them first-class.
-- Animation control — `SetUnitAnimation` / `QueueUnitAnimation` so map authors can drive custom-ability cast poses and cinematic beats without waiting for the state machine to pick the right clip.
-- Ability render integrations — engine-side pipeline support for visual states that can't be done from script alone. Wind walk / invisibility is the canonical one (engine hides the unit from the right players, reveals on attack/cast); ethereal / phased rendering is the next step.
-- Effect attachment slots — `CreateEffectOnUnit` currently follows the unit's origin only. Add named attachment points (`head`, `hand,left`, `weapon`, `origin`) so abilities can place FX where the author meant.
-- Fog-of-war scripting — `Vision` exists at the component layer; expose `RevealArea`, `CreateFogModifier`, `MakeUnitVisible`, `IsVisibleToPlayer` for stealth / scout / cinematic-reveal authoring.
-- Order events — `EVENT_UNIT_ISSUED_ORDER` (and per-unit variant), so triggers can react to commands as they arrive instead of inferring from state changes.
+- Ability forms expansion — channel lifecycle, spellbook, morph, target_destructable, target_item, resurrection, AoE-around-caster indicator, render integrations. See [ability-system.md](ability-system.md).
+- Status flags — first-class unit states (stunned / silenced / muted / disarmed / rooted / invulnerable / magic_immune / untargetable / paused). See [gameplay-model.md](gameplay-model.md).
+- Animation control — `SetUnitAnimation` / `QueueUnitAnimation` Lua bindings.
+- Effect attachment slots — named points (`head`, `hand,left`, `weapon`, `origin`). See [effects.md](effects.md).
+- Fog-of-war scripting — Lua bindings (`RevealArea`, `CreateFogModifier`, `MakeUnitVisible`, `IsVisibleToPlayer`).
+- Order events — `EVENT_UNIT_ISSUED_ORDER` and per-unit variant.
+
+### Phase 21: Projectile
+
+### Phase 22: I18n
 
 ## 16. Deferred / Future Work
 

@@ -19,7 +19,9 @@
 
 ## Ability Forms
 
-The engine provides ~7 mechanical forms. Each handles the complex plumbing (timing, targeting, state management). The actual gameplay effect is either declarative (modifiers) or a Lua callback.
+The engine provides six mechanical forms (`AbilityForm` enum). Each handles the complex plumbing (timing, targeting, state management). The actual gameplay effect is a Lua trigger that registers against the relevant ability event — see [Engine Events for Scripts](#engine-events-for-scripts) below for the full list.
+
+Channelling is **not** a form. Any form can declare a `channel_time` on its per-level data to make the cast sustained — see [Channeling](#channeling).
 
 ### passive
 
@@ -27,49 +29,39 @@ Always active while the ability is on the unit. No casting required.
 
 **Engine handles:**
 - Apply/revert attribute modifiers when ability is added/removed/leveled
-- Optional periodic tick at `tick_interval` → calls Lua `on_tick` callback
-- Optional duration (`remaining_duration`) — auto-removed when expired
+- Optional duration via `ApplyPassiveAbility(target, ability, source, duration)` — auto-removed when expired
 - This is also the form used for buffs/debuffs applied via `ApplyPassiveAbility()`
 
 **Map defines:**
 - `modifiers`: attribute changes (e.g., `move_speed_percent: -25`, `armor_flat: 3`)
-- `tick_interval`: if > 0, engine calls `on_tick` at this rate (Lua callback)
-- `on_tick(unit, ability)`: Lua function called each tick interval
-- `on_add(unit, ability, source)`: Lua callback when this passive is applied to a unit
-- `on_remove(unit, ability)`: Lua callback when this passive is removed
 
 **Stacking:** Controlled by `stackable` field on the AbilityDef:
 - `stackable: false` (default) — `AddAbility` and `ApplyPassiveAbility` check if already present. If yes, refresh duration instead of adding another instance.
 - `stackable: true` — always adds a new instance. Modifiers stack additively. Item passive abilities (e.g., +5 armor from multiple items) use this.
-- Map scripts can override via `on_ability_added` event for custom logic (e.g., "stack up to 3 times, then reject").
 
 ### aura
 
-Periodically scans for nearby units and applies/removes a passive ability.
+Periodically scans for nearby units and applies a passive ability.
 
 **Engine handles:**
-- Scan units in radius at a fixed interval (default `aura_interval = 0.25s`, uniform for all auras)
-- Apply the specified passive to units that enter the radius
-- Remove (or let expire) from units that leave the radius
-- Uses the target filter to decide who is affected
+- Scan units in radius at a fixed cadence (~0.25s)
+- Apply the specified passive to units in radius
+- Let the passive expire naturally on units that leave (applied with a duration slightly longer than the scan interval so it refreshes for units still inside)
+- Uses the passive's target filter to decide who is affected
 
 **Map defines:**
 - `aura_radius`: scan radius (per level)
-- `aura_ability`: id of the passive ability to apply to nearby units
-- `aura_duration`: how long the applied passive lasts (should be slightly > aura_interval so it refreshes)
+- `aura_ability`: id of the passive ability to apply
 
 ### instant
 
 Player or AI activates. No target selection.
 
 **Engine handles:**
-- Validate: cooldown ready? state cost affordable? (+ Lua `can_cast` stub)
+- Validate: cooldown ready? state cost affordable?
 - Deduct state cost
-- cast_time (foreswing) → fire effect → backsw_time (cancellable)
+- `cast_time` (foreswing) → fire effect → `backsw_time` (cancellable)
 - Start cooldown
-
-**Map defines:**
-- `on_effect(caster, ability)`: Lua callback when effect fires
 
 ### target_unit
 
@@ -77,12 +69,11 @@ Like instant, but requires selecting a unit target.
 
 **Engine handles:**
 - All of instant, plus:
-- Target validation: range check, target filter (+ Lua `can_target` stub)
+- Target validation: range check, target filter
 - Turn to face target
 - Optional projectile (if `projectile_speed > 0`): spawn homing projectile, effect fires on impact
 
 **Map defines:**
-- `on_effect(caster, target, ability)`: Lua callback
 - `target_filter`: who can be targeted
 
 ### target_point
@@ -91,10 +82,7 @@ Like instant, but requires selecting a ground position.
 
 **Engine handles:**
 - Range check to the point
-- cast_time → fire effect → backsw_time
-
-**Map defines:**
-- `on_effect(caster, point, ability)`: Lua callback
+- `cast_time` → fire effect → `backsw_time`
 
 ### toggle
 
@@ -106,24 +94,18 @@ On/off ability. May drain a state while active.
 - Auto-deactivate when state runs out
 
 **Map defines:**
-- `on_activate(caster, ability)`: Lua callback
-- `on_deactivate(caster, ability)`: Lua callback
 - `toggle_cost_per_sec`: map of state_name → amount per second
 
-### channel
+### Channeling
 
-Sustained cast. Ticks over duration. Interrupted by stun or new order.
+Any form can be made sustained by setting `channel_time > 0` on its per-level data.
 
 **Engine handles:**
-- Cast point → begin channel
-- Tick at `channel_interval` for `channel_duration`
-- Interrupt on stun, movement order, or another cast
-- Backswing after channel ends (if not interrupted)
+- After `cast_time`, hold the cast for `channel_time` seconds
+- Interrupt on stun, on a new order, or on the caster taking certain damage (per gameplay rules)
+- On natural completion, run backswing as usual
 
-**Map defines:**
-- `on_channel_tick(caster, ability, tick_number)`: Lua callback per interval
-- `on_channel_end(caster, ability, completed)`: Lua callback (completed = true if finished, false if interrupted)
-- `channel_duration`, `channel_interval`: per level
+**Cancel rule:** a cancelled channel **does not trigger cooldown and does not refund cost**. The mana / state is already spent at cast start; cooldown only begins on natural completion. A map author who wants post-cancel cooldown simulates it with a scripted timer.
 
 ## AbilityDef Structure
 
@@ -495,3 +477,59 @@ The engine validates built-in checks first (cooldown, cost, range, target_filter
 calls the registered Lua callback if one exists for that ability id. If no callback is
 registered, the engine just runs the mechanical part (e.g., a passive with modifiers needs
 no Lua at all).
+
+## Additional Forms
+
+### spellbook
+
+Composite ability whose icon opens a sub-bar of contained abilities. Each contained ability has independent cooldowns / costs / state requirements. Used for class kits, hero ult selection, item-granted spell groups.
+
+### morph
+
+Unit-type transformation. Swaps model + ability set + (optionally) attribute block. Variants on a single form:
+
+- One-shot (hero ultimate that doesn't revert).
+- Toggle (bear ↔ human; second cast reverts).
+- Timed (auto-reverts after `morph_duration`).
+
+### target_destructable
+
+Cast on a destructable entity. Range check + filter; lifecycle mirrors `target_unit`. Used for Eat Tree / harvest-shaped abilities.
+
+### target_item
+
+Cast on an item (in inventory or on the ground). Used for "apply enchant to item slot" / "drink potion" / "combine items".
+
+### resurrection
+
+Reviving the dead. Engine-built form rather than a passive listening on the death event, because reviving has to happen during the death pipeline — by the time `on_death` fires the entity has already been reaped. Per-level fields: `resurrect_count` (how many corpses), `resurrect_radius` (for AoE-style resurrects), `health_restore_pct`. Two flavors:
+
+- Self-resurrect (Reincarnation): the dying unit itself. The form's level data lives on a passive ability the unit owns; engine intercepts the death.
+- Target / area resurrect (Animate Dead, Raise Dead variants): consumes corpses in radius.
+
+## AoE-around-caster Indicator (`IndicatorShape::AreaSelf`)
+
+`IndicatorShape` previously rendered only for `target_point` abilities. Instant / Toggle abilities with an area effect (Thunder Clap, War Stomp, Permanent Immolation) need their own indicator — the player can't see the radius before casting.
+
+`IndicatorShape::AreaSelf` is valid on `instant` / `toggle`. Geometry is a disc centered on the caster with radius from `level.area.radius`. Doesn't move with a cursor (it's caster-anchored).
+
+**Preview trigger** — same affordance for all indicator shapes (range circles too, not just AreaSelf):
+
+- Desktop: hover the ability's action_bar slot for ~300ms → indicator shows under the caster until the cursor leaves.
+- Mobile: long-press the action_bar slot → indicator shows until release.
+
+One generic "preview-on-hover" path in the HUD covers every indicator shape.
+
+## Render Integrations
+
+Two categories, split by who owns the visual.
+
+**Engine-side (multiplayer-aware).** Visibility states the engine must know about because they're per-player. Invisibility (Wind Walk, Permanent Invisibility) lives here — engine hides the unit from non-allied players, reveals on attack / cast / damage taken (or on entering the vision of a true-sight unit). Same family as fog of war (see [scripting.md](scripting.md)).
+
+**Map-driven (per-unit visual primitives).** Engine exposes a small set of per-unit visual modulation knobs that map Lua drives:
+
+- `SetUnitColor(unit, r, g, b, a)` — multiplicative tint.
+- `SetUnitAlpha(unit, a)` — opacity override.
+- `SetUnitShaderVariant(unit, tag)` — picks a preset rendering path (`"ethereal"`, `"petrified"`, etc.), backed by a small enum in the renderer. Engine ships the variants; map says when to switch.
+
+Engine does **not** bake state visuals (ethereal-blue, petrified-grey, on-fire-glow) into ability forms — map composes them on top of the primitives above when its abilities fire.
