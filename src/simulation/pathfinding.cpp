@@ -198,13 +198,26 @@ bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
     if (!m_terrain || !m_terrain->is_valid()) return true;
     if (move_type == MoveType::Air) return true;
 
-    glm::ivec2 src = world_to_tile(old_x, old_y);
-    glm::ivec2 dst = world_to_tile(new_x, new_y);
+    // Destination block check at CELL granularity. A destructable's
+    // footprint can straddle a tile boundary (a 2×2-cell tree snapped
+    // to the cell grid lands on the corner shared by four tiles), so
+    // is_tile_blocked's "any cell blocked → tile blocked" aggregate
+    // would falsely reject moves into the clear portion of those
+    // tiles. The cell test rejects only the actual blocked cells.
+    glm::ivec2 dst_cell = world_to_cell(new_x, new_y);
+    if (!can_occupy_cell(dst_cell.x, dst_cell.y, move_type)) return false;
 
-    if (src == dst) return true;  // same tile
-    if (!can_occupy(dst.x, dst.y, move_type)) return false;
+    glm::ivec2 src_tile = world_to_tile(old_x, old_y);
+    glm::ivec2 dst_tile = world_to_tile(new_x, new_y);
+    if (src_tile == dst_tile) return true;
 
-    return are_connected(src.x, src.y, dst.x, dst.y, move_type);
+    // Cross-tile transition still respects cliff levels and deep
+    // water, but skips the tile-level runtime-block aggregate (handled
+    // by the cell check above).
+    return tiles_terrain_connected(*m_terrain,
+                                   static_cast<u32>(src_tile.x), static_cast<u32>(src_tile.y),
+                                   static_cast<u32>(dst_tile.x), static_cast<u32>(dst_tile.y),
+                                   move_type);
 }
 
 // ── A* on tile graph ─────────────────────────────────────────────────────
