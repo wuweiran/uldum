@@ -656,9 +656,26 @@ The engine's gameplay surface is thin compared to what map authors hitting WC3 e
 - Fog-of-war scripting — Lua bindings (`RevealArea`, `CreateFogModifier`, `MakeUnitVisible`, `IsVisibleToPlayer`).
 - Order events — `EVENT_UNIT_ISSUED_ORDER` and per-unit variant.
 
-### Phase 21: Projectile
+### Phase 21 — Projectile
 
-### Phase 22: I18n
+Today's projectile entity is a transient ballistic mover with no payload — auto-attack arrows resolve by re-reading the caster's current `Combat.damage` at impact, and ability-launched projectiles can't carry per-instance gameplay state. Phase 21 promotes projectiles to a vehicle for ability and attack effects, with state captured at emit-time and a scriptable hit interface.
+
+- Unified system — one projectile shape covers both auto-attack projectiles and ability-launched projectiles. No separate "arrow" vs "spell projectile" types.
+- Emit-time state capture — damage, source identity, source's relevant attributes at launch are snapshotted onto the projectile. A buff that lands on the caster after launch does *not* retroactively modify the in-flight projectile (today's "read damage at impact" behavior is the bug this fixes).
+- Arbitrary data slots — Lua attaches a per-emit table of values; engine carries the table opaquely. Used for "this fireball remembers who lit it on fire" / "this arrow knows what crit roll already happened" / etc.
+- Hit events + Lua data accessors — `EVENT_PROJECTILE_HIT` fires when a projectile resolves on a unit or a point; the registered trigger reads emit-time payload via `GetProjectileData(...)` and friends.
+- Tracking projectiles — homing on a target unit. Re-aims each frame; defines behavior when the target dies / despawns mid-flight (configurable: detonate at last position, ground-explode, fizzle).
+- Free-flight projectiles — direction-controlled. Path is set at emit (line, arc, scripted curve); flies through the world until it hits something or expires by distance / lifetime.
+- Open question — should projectiles be Widgets (have HP, be targetable for Spell Steal / Disjoint / etc.)? WC3 didn't make them Widgets; DotA-style would. Decision deferred until a real map needs it.
+
+### Phase 22 — I18n
+
+Full internationalization across rendering, content, and UI. Today the engine is English-default; complex scripts need shaping work and map authors have no way to localize strings.
+
+- Glyph rendering — CJK and other complex scripts via HarfBuzz integration in the HUD text stack. Font fallback chain (Latin → CJK face for codepoints outside the primary font).
+- Map content i18n — translatable strings in unit type defs, ability defs, dialogs, text tags, scene scripts. Maps ship per-locale string tables (`strings/en.json`, `strings/zh.json`, …) and reference entries by key; engine resolves at load time based on player locale.
+- Shell + HUD i18n — RmlUi and HUD authors reference string keys rather than literal text; engine looks up against the active locale.
+- RTL shaping — Hebrew / Arabic visual ordering. Same HarfBuzz integration covers it.
 
 ## 16. Deferred / Future Work
 
@@ -667,8 +684,8 @@ Topics scoped out of current phases — revisit when the time comes.
 - **Multi-lobby server** — today's `uldum_server` hosts one game per process. Multi-tenant support (lobby directory, browse / create / join) is deferred. Workaround: multiple server processes on different ports.
 - **LAN game discovery** — WC3-style auto-populated list of local hosts via UDP broadcast, so clients don't have to type an IP.
 - **OpenGL ES RHI** — alternative backend for Android devices / emulators where Vulkan is unavailable, buggy, or poorly supported (e.g. Mesa-emulated paths).
+- **Binary `objects.json`** — current JSON serialization is human-readable and editor-friendly but bloats on large maps and slows load. Switch the in-package representation to FlatBuffers (same family as `terrain.bin`) once map sizes / load times warrant it. Editor's source-folder mode keeps JSON for hand-editing; packed `.uldmap` ships binary.
 - Controller / gamepad input.
-- CJK / RTL text shaping (HarfBuzz).
 - Rich custom shader decorators (game-project art concern).
 - UI designer tool — authors edit RML / RCSS directly.
 - **Tangent space (MikkTSpace)** — terrain shader builds tangents on the fly (`cross((0,1,0), N)`); fine for tileable detail textures, wrong for any painted / baked normal map. Add `tangent: vec4` to the model vertex format, read glTF `TANGENT` when present, generate via MikkTSpace otherwise. Triggered by the first imported model with a hand-authored normal map.
