@@ -96,8 +96,10 @@ struct Movement {
     u8        cliff_level = 0;  // current cliff level the unit is on
     bool      moving    = false;
 
-    // Corridor from A* (tile path) and current straight-line waypoint
-    std::vector<glm::ivec2> corridor;  // tile coordinates
+    // Corridor from A* (cell path) and current straight-line waypoint.
+    // Stored in pathing-cell coordinates (terrain tile × PATHING_SUBDIV);
+    // find_straight_waypoint consumes these cell centers.
+    std::vector<glm::ivec2> corridor;
     glm::vec2 waypoint{0};             // current straight-line target (world XY)
     bool      has_waypoint = false;
 
@@ -122,7 +124,8 @@ struct Movement {
     // stuck-terminate; the player explicitly asked us to keep trying.
     f32       stuck_timer       = 0;
     glm::vec2 stuck_anchor{0};          // last position from which we measure progress
-    static constexpr f32 STUCK_TIMEOUT     = 1.25f;  // seconds without progress → give up
+    static constexpr f32 STUCK_TIMEOUT     = 3.0f;   // seconds without progress → give up
+                                                     // (3s = two repath attempts at 1.5s interval before quitting)
     static constexpr f32 STUCK_PROGRESS_EPS = 4.0f;  // world units of motion that count as progress
 };
 
@@ -246,16 +249,25 @@ struct DestructableComp {
     u8          variation = 0;
 };
 
-// Tile rectangle a building occupies on the runtime pathing grid.
-// (tx, ty) is the south-west tile of the footprint; the block covers
-// tiles [tx, tx+w) × [ty, ty+h). Per-tile to match WC3's pathing-map
-// convention; previously stored as a vertex list, which made
-// tile-walkability derivation conservative (any blocked corner →
-// tile blocked) and expanded every footprint by one tile on each
-// side. See Pathfinder::block_tiles / unblock_tiles.
+// ── Doodad Components ──────────────────────────────────────────────────────
+// Doodads are pure decoration: no health, no collision, no pathing block.
+// We keep the variation so save_objects can round-trip the JSON entry
+// (type_id lives in HandleInfo).
+struct DoodadComp {
+    u8 variation = 0;
+};
+
+// Cell rectangle an object occupies on the runtime pathing grid.
+// (cx, cy) is the south-west pathing CELL of the footprint; the block
+// covers cells [cx, cx+w) × [cy, cy+h). Cell units (32 game units each
+// = 1/4 terrain tile) so a tree can block a 2×2 sub-tile patch instead
+// of a whole tile. Buildings author footprints in tiles and convert
+// via Pathfinder::block_tiles, which expands to cell units internally;
+// destructables author footprints directly in cells. See
+// Pathfinder::block_cells / unblock_cells.
 struct PathingBlocker {
-    i32 tx = 0;
-    i32 ty = 0;
+    i32 cx = 0;
+    i32 cy = 0;
     u32 w  = 0;
     u32 h  = 0;
 };

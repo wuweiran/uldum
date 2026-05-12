@@ -72,6 +72,134 @@ u8 TerrainData::cliff_level_at(f32 x, f32 y) const {
     return cliff_at(vx, vy);
 }
 
+// ── Ray-vs-heightmap (DDA + per-tile bilinear) ───────────────────────────
+
+bool raycast_terrain(const TerrainData& td,
+                     glm::vec3 ray_origin, glm::vec3 ray_dir,
+                     glm::vec3& hit) {
+    if (!td.is_valid()) return false;
+
+    const f32 ts = td.tile_size;
+    const f32 ox = td.origin_x();
+    const f32 oy = td.origin_y();
+    const i32 nx = static_cast<i32>(td.tiles_x);
+    const i32 ny = static_cast<i32>(td.tiles_y);
+
+    // ── 1. Clip the ray to the terrain XY bbox ───────────────────────
+    // Slab test; produces [t_min, t_max] where the ray is inside the
+    // terrain footprint. Rays that don't enter bail out cheaply.
+    f32 t_min = 0.0f, t_max = 1e9f;
+    auto clip_axis = [&](f32 o, f32 d, f32 lo, f32 hi) -> bool {
+        if (std::abs(d) < 1e-9f) return o >= lo && o <= hi;  // parallel slab
+        f32 inv = 1.0f / d;
+        f32 t0 = (lo - o) * inv;
+        f32 t1 = (hi - o) * inv;
+        if (t0 > t1) std::swap(t0, t1);
+        t_min = std::max(t_min, t0);
+        t_max = std::min(t_max, t1);
+        return t_min <= t_max;
+    };
+    if (!clip_axis(ray_origin.x, ray_dir.x, ox, ox + ts * nx)) return false;
+    if (!clip_axis(ray_origin.y, ray_dir.y, oy, oy + ts * ny)) return false;
+
+    // ── 2. DDA grid traversal (Amanatides-Woo) ───────────────────────
+    // Walk one tile boundary at a time. Each iteration enters exactly
+    // one new tile along the ray; no skips, no duplicates.
+    glm::vec3 entry = ray_origin + ray_dir * t_min;
+    i32 tx = std::clamp(static_cast<i32>(std::floor((entry.x - ox) / ts)), 0, nx - 1);
+    i32 ty = std::clamp(static_cast<i32>(std::floor((entry.y - oy) / ts)), 0, ny - 1);
+
+    i32 step_x = (ray_dir.x > 0) ? 1 : (ray_dir.x < 0 ? -1 : 0);
+    i32 step_y = (ray_dir.y > 0) ? 1 : (ray_dir.y < 0 ? -1 : 0);
+    f32 t_delta_x = (step_x != 0) ? std::abs(ts / ray_dir.x) : 1e9f;
+    f32 t_delta_y = (step_y != 0) ? std::abs(ts / ray_dir.y) : 1e9f;
+
+    auto next_boundary = [&](f32 origin_a, f32 dir_a, f32 axis_origin, i32 tile, i32 step) -> f32 {
+        if (step == 0) return 1e9f;
+        i32 target = (step > 0) ? (tile + 1) : tile;
+        f32 boundary_world = axis_origin + static_cast<f32>(target) * ts;
+        return (boundary_world - origin_a) / dir_a;
+    };
+    f32 t_next_x = next_boundary(ray_origin.x, ray_dir.x, ox, tx, step_x);
+    f32 t_next_y = next_boundary(ray_origin.y, ray_dir.y, oy, ty, step_y);
+
+    // ── 3. Per-tile analytical intersection ──────────────────────────
+    // bilinear(lx, ly) = a + b·lx + c·ly + d·lx·ly. Substituting
+    // lx(t) = Lx0 + Lx1·t, ly(t) = Ly0 + Ly1·t gives A·t² + B·t + C = 0
+    // (linear when A == 0). Closed form, no march, no refine.
+    f32 t_enter = t_min;
+    while (t_enter <= t_max && tx >= 0 && ty >= 0 && tx < nx && ty < ny) {
+        f32 t_exit = std::min({t_next_x, t_next_y, t_max});
+
+        f32 h00 = td.world_z_at(static_cast<u32>(tx),     static_cast<u32>(ty));
+        f32 h10 = td.world_z_at(static_cast<u32>(tx + 1), static_cast<u32>(ty));
+        f32 h01 = td.world_z_at(static_cast<u32>(tx),     static_cast<u32>(ty + 1));
+        f32 h11 = td.world_z_at(static_cast<u32>(tx + 1), static_cast<u32>(ty + 1));
+
+        f32 a = h00;
+        f32 b = h10 - h00;
+        f32 c = h01 - h00;
+        f32 d = h00 - h10 - h01 + h11;
+
+        f32 inv_ts = 1.0f / ts;
+        f32 vx = ox + static_cast<f32>(tx) * ts;
+        f32 vy = oy + static_cast<f32>(ty) * ts;
+        f32 Lx0 = (ray_origin.x - vx) * inv_ts;
+        f32 Ly0 = (ray_origin.y - vy) * inv_ts;
+        f32 Lx1 = ray_dir.x * inv_ts;
+        f32 Ly1 = ray_dir.y * inv_ts;
+
+        f32 A = d * Lx1 * Ly1;
+        f32 B = b * Lx1 + c * Ly1 + d * (Lx0 * Ly1 + Lx1 * Ly0) - ray_dir.z;
+        f32 C = a + b * Lx0 + c * Ly0 + d * Lx0 * Ly0 - ray_origin.z;
+
+        auto in_tile_range = [&](f32 t) -> bool {
+            constexpr f32 SLOP = 1e-3f;
+            return t >= t_enter - SLOP && t <= t_exit + SLOP;
+        };
+
+        f32 t_hit = -1.0f;
+        if (std::abs(A) < 1e-9f) {
+            // Flat tile or ray parallel to one axis — linear in t.
+            if (std::abs(B) > 1e-9f) {
+                f32 t_candidate = -C / B;
+                if (in_tile_range(t_candidate)) t_hit = t_candidate;
+            }
+        } else {
+            f32 disc = B * B - 4.0f * A * C;
+            if (disc >= 0.0f) {
+                f32 sq = std::sqrt(disc);
+                f32 t1 = (-B - sq) / (2.0f * A);
+                f32 t2 = (-B + sq) / (2.0f * A);
+                if (in_tile_range(t1)) t_hit = t1;
+                if (t_hit < 0 && in_tile_range(t2)) t_hit = t2;
+            }
+        }
+
+        if (t_hit >= 0) {
+            glm::vec3 p = ray_origin + ray_dir * t_hit;
+            f32 lx = (p.x - vx) * inv_ts;
+            f32 ly = (p.y - vy) * inv_ts;
+            hit.x = p.x;
+            hit.y = p.y;
+            hit.z = a + b * lx + c * ly + d * lx * ly;
+            return true;
+        }
+
+        if (t_next_x < t_next_y) {
+            tx += step_x;
+            t_enter = t_next_x;
+            t_next_x += t_delta_x;
+        } else {
+            ty += step_y;
+            t_enter = t_next_y;
+            t_next_y += t_delta_y;
+        }
+    }
+
+    return false;
+}
+
 // ── Building placement snap ──────────────────────────────────────────────
 
 f32 snap_building_axis(const TerrainData& td, f32 x, f32 origin, u32 footprint_extent) {
@@ -83,6 +211,16 @@ f32 snap_building_axis(const TerrainData& td, f32 x, f32 origin, u32 footprint_e
     }
     // Even footprint → tile corner (vertex).
     return origin + std::round(rel) * td.tile_size;
+}
+
+f32 snap_cell_axis(const TerrainData& td, f32 x, f32 origin) {
+    if (!td.is_valid()) return x;
+    // PATHING_SUBDIV is 4 (lives in pathfinding.h, but duplicating the
+    // 4 here keeps map/ from depending on simulation/).
+    constexpr u32 PATHING_SUBDIV = 4;
+    f32 cell_size = td.tile_size / static_cast<f32>(PATHING_SUBDIV);
+    f32 rel = (x - origin) / cell_size;
+    return origin + (std::floor(rel) + 0.5f) * cell_size;
 }
 
 // ── Terrain sampling (visual only) ───────────────────────────────────────

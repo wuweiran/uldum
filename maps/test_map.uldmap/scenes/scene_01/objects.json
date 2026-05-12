@@ -10,9 +10,13 @@
     "items": [],
     "doodads": [],
     "regions": [
-        { "name": "spawn_area", "x": -1664.0, "y": -1024.0, "width": 2560.0, "height": 1536.0 }
+        {
+            "id": "spawn_area",
+            "rects":   [{ "x0": -1664.0, "y0": -1024.0, "x1":  896.0, "y1":  512.0 }],
+            "circles": []
+        }
     ],
     "cameras": [
-        { "name": "default", "x": -576.0, "y": -1536.0, "z": 1650.0, "pitch": -0.98, "yaw": 0.0 }
+        { "id": "default", "x": -576.0, "y": -1536.0, "z": 1650.0, "pitch": -0.98, "yaw": 0.0 }
     ]
 }

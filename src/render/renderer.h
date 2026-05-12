@@ -62,14 +62,15 @@ public:
     // Set the map root directory for resolving model asset paths.
     void set_map_root(std::string_view root) { m_map_root = root; }
 
-    // Build (or rebuild) the terrain GPU mesh and splatmap from terrain data.
-    void set_terrain(const map::TerrainData& terrain);
+    // Set the active terrain. Builds the GPU mesh and splatmap and
+    // stores a CPU pointer for per-frame queries (entity slope tilt,
+    // future terrain-aware overlays). Pass nullptr to tear down both.
+    // The pointer must outlive the renderer's use of it — typically
+    // the map's TerrainData lives on MapManager across the session.
+    void set_terrain(const map::TerrainData* terrain);
 
     // Load terrain layer textures from tileset (call after set_map_root, before set_terrain).
     void load_tileset_textures(const map::Tileset& tileset);
-
-    // Set terrain data pointer for height/normal sampling (entity slope tilt).
-    void set_terrain_data(const map::TerrainData* td) { m_terrain_data = td; }
 
     // Set environment (sun, ambient, fog, skybox) from map config.
     void set_environment(const map::EnvironmentConfig& env);

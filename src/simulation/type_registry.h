@@ -88,13 +88,25 @@ struct UnitTypeDef {
 };
 
 struct DestructableTypeDef {
-    std::string id;
-    std::string display_name;
-    std::string model_path;
-    f32         max_health = 50;
+    std::string              id;
+    std::string              display_name;
+    std::vector<std::string> models;        // one entry per visual variation; length = variation count
+    f32                      model_scale = 1.0f;            // uniform render scale
+    f32                      max_health = 50;
     std::map<std::string, f32>         attributes_numeric;  // "armor" → 0
     std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
-    u8          variations = 1;
+    u32                      pathing_footprint_w = 0;       // tiles; 0 = no pathing block
+    u32                      pathing_footprint_h = 0;
+    f32                      collision_radius = 0;          // half-extent used by combat range checks
+};
+
+// Pure-decoration object: no health, no collision, no pathing block.
+// Only the model + variation + scale; loader is intentionally minimal.
+struct DoodadTypeDef {
+    std::string              id;
+    std::string              display_name;
+    std::vector<std::string> models;
+    f32                      model_scale = 1.0f;
 };
 
 struct ItemTypeDef {
@@ -122,20 +134,31 @@ public:
     // Load types from a path relative to engine root.
     bool load_unit_types(asset::AssetManager& assets, std::string_view path);
     bool load_destructable_types(asset::AssetManager& assets, std::string_view path);
+    bool load_doodad_types(asset::AssetManager& assets, std::string_view path);
     bool load_item_types(asset::AssetManager& assets, std::string_view path);
 
     // Load types from an absolute path (for map files).
     bool load_unit_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
     bool load_destructable_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
+    bool load_doodad_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
     bool load_item_types_absolute(asset::AssetManager& assets, std::string_view abs_path);
 
     const UnitTypeDef*          get_unit_type(std::string_view id) const;
     const DestructableTypeDef*  get_destructable_type(std::string_view id) const;
+    const DoodadTypeDef*        get_doodad_type(std::string_view id) const;
     const ItemTypeDef*          get_item_type(std::string_view id) const;
 
     u32 unit_type_count() const { return static_cast<u32>(m_unit_types.size()); }
     u32 destructable_type_count() const { return static_cast<u32>(m_destructable_types.size()); }
+    u32 doodad_type_count() const { return static_cast<u32>(m_doodad_types.size()); }
     u32 item_type_count() const { return static_cast<u32>(m_item_types.size()); }
+
+    // Read-only iteration over loaded types — used by the editor's
+    // Place-mode type pickers to build dropdowns.
+    const std::unordered_map<std::string, UnitTypeDef>&         unit_types()         const { return m_unit_types; }
+    const std::unordered_map<std::string, DestructableTypeDef>& destructable_types() const { return m_destructable_types; }
+    const std::unordered_map<std::string, DoodadTypeDef>&       doodad_types()       const { return m_doodad_types; }
+    const std::unordered_map<std::string, ItemTypeDef>&         item_types()         const { return m_item_types; }
 
     // Drop every loaded type so the next map starts with an empty
     // registry. Without this, types declared by a previous map's
@@ -143,16 +166,19 @@ public:
     void clear() {
         m_unit_types.clear();
         m_destructable_types.clear();
+        m_doodad_types.clear();
         m_item_types.clear();
     }
 
 private:
     bool load_unit_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
     bool load_destructable_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
+    bool load_doodad_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
     bool load_item_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
 
     std::unordered_map<std::string, UnitTypeDef>          m_unit_types;
     std::unordered_map<std::string, DestructableTypeDef>  m_destructable_types;
+    std::unordered_map<std::string, DoodadTypeDef>        m_doodad_types;
     std::unordered_map<std::string, ItemTypeDef>          m_item_types;
 };
 

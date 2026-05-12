@@ -1260,7 +1260,7 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
             auto* destr_def = m_client_types->get_destructable_type(type_id);
             if (destr_def) {
                 cat = simulation::Category::Destructable;
-                if (!destr_def->model_path.empty()) model_path = destr_def->model_path;
+                if (!destr_def->models.empty()) model_path = destr_def->models[0];
                 max_health = destr_def->max_health;
             }
         }

@@ -636,14 +636,14 @@ Thin Lua-binding categories that together turn the engine into a genuine map-aut
 
 ### Phase 19 — Editor expansion
 
-Authoring efficiency becomes the bottleneck once 17 + 18 land — the existing terrain editor doesn't know about units, items, regions, or triggers. This phase fills that out:
+Authoring efficiency becomes the bottleneck once 17 + 18 land — the existing terrain editor doesn't know about units, items, destructables, or regions. This phase fills that out:
 
-- Unit / item placement on the terrain canvas.
+- Fine-grained pathing grid — split the pathing tile from the terrain cell so pathing resolution is a fraction of a terrain tile (WC3 ships ¼-cell pathing). Prerequisite for destructables and small footprints to feel right.
+- Unit / item / destructable / doodad placement on the terrain canvas. Selecting a placed object exposes the few toggles that matter — unit facing + owner, destructable variation — and any object can be dragged to a new position.
 - Region tool — draw rect / circle, name it, persist into the scene.
-- Doodad placement (decorative non-interactive props).
-- Basic trigger editor — pick an event from a dropdown (region-enter, item-pickup, unit-dies), bind to a Lua snippet or a script file.
+- Asset management — import authoring-friendly source files into the engine's runtime formats. First target: PNG → KTX2 (Basis-Universal compressed), with options exposed for cases like HUD icons that need zstd disabled. Imports need a clear destination: the editor exposes the map package's directory tree (e.g. `textures/`, `models/`, `audio/`) and the import dialog lets the author pick the target sub-path so it's obvious where the converted file lands.
 
-By this point items + regions + scene-driven UI + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports.
+By this point items + regions + scene-driven UI + camera have produced concrete authoring pain points the editor can address with knowledge of what the engine actually supports. Triggers stay in Lua scripts (no in-editor trigger graph) — the script-side `TriggerRegister*` surface is the authoring interface there.
 
 ### Phase 20 — Rendering Pipeline Reckoning
 

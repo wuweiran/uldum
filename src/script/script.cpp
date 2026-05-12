@@ -23,10 +23,13 @@
 
 #include <glm/geometric.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
+#include <tuple>
 
 namespace uldum::script {
 
@@ -1407,6 +1410,52 @@ void ScriptEngine::bind_trigger_api() {
         r["_id"]  = id;
         r["data"] = lua.create_table();
         return r;
+    };
+
+    // Look up an editor-authored region by its string id (set in
+    // objects.json). Returns nil if no region with that id exists.
+    // The returned handle is identical in shape to CreateRegion()'s
+    // return value, so AddRegionRect / TriggerRegisterEnterRegion /
+    // IsUnitInRegion all accept it.
+    lua["GetRegion"] = [&](sol::object id_obj) -> sol::object {
+        if (!id_obj.is<std::string>()) return sol::lua_nil;
+        const std::string id_str = id_obj.as<std::string>();
+        if (id_str.empty()) return sol::lua_nil;
+        for (const auto& [rid, reg] : sim.world().regions) {
+            if (!reg.alive) continue;
+            if (reg.id_str == id_str) {
+                sol::table r = lua.create_table();
+                r["_id"]  = rid;
+                r["data"] = lua.create_table();
+                return r;
+            }
+        }
+        return sol::lua_nil;
+    };
+
+    // Union AABB across the region's rects and circles. Callers can
+    // derive center / size / membership tests from this without the
+    // engine baking those into the API. Returns four zeros for an
+    // empty / invalid region rather than nil so the multi-return
+    // destructure on the Lua side stays uniform.
+    lua["GetRegionBounds"] = [&](sol::table region) -> std::tuple<f32, f32, f32, f32> {
+        if (!region.valid()) return {0.0f, 0.0f, 0.0f, 0.0f};
+        u32 id = region["_id"].get_or<u32>(0);
+        auto it = sim.world().regions.find(id);
+        if (it == sim.world().regions.end()) return {0.0f, 0.0f, 0.0f, 0.0f};
+        const auto& reg = it->second;
+        if (reg.rects.empty() && reg.circles.empty()) return {0.0f, 0.0f, 0.0f, 0.0f};
+        constexpr f32 INF = std::numeric_limits<f32>::infinity();
+        f32 x0 =  INF, y0 =  INF, x1 = -INF, y1 = -INF;
+        for (const auto& rc : reg.rects) {
+            x0 = std::min(x0, rc.x0); y0 = std::min(y0, rc.y0);
+            x1 = std::max(x1, rc.x1); y1 = std::max(y1, rc.y1);
+        }
+        for (const auto& c : reg.circles) {
+            x0 = std::min(x0, c.cx - c.r); y0 = std::min(y0, c.cy - c.r);
+            x1 = std::max(x1, c.cx + c.r); y1 = std::max(y1, c.cy + c.r);
+        }
+        return {x0, y0, x1, y1};
     };
 
     lua["AddRegionRect"] = [&](sol::table region, f32 x0, f32 y0, f32 x1, f32 y1) {

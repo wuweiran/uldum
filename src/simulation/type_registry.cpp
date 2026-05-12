@@ -31,6 +31,13 @@ bool TypeRegistry::load_item_types(asset::AssetManager& assets, std::string_view
     return load_item_types_from_doc(doc, path);
 }
 
+bool TypeRegistry::load_doodad_types(asset::AssetManager& assets, std::string_view path) {
+    auto handle = assets.load_config(path);
+    auto* doc = assets.get(handle);
+    if (!doc) { log::error(TAG, "Failed to load doodad types from '{}'", path); return false; }
+    return load_doodad_types_from_doc(doc, path);
+}
+
 // ── Public loaders (absolute path) ────────────────────────────────────────
 
 bool TypeRegistry::load_unit_types_absolute(asset::AssetManager& assets, std::string_view abs_path) {
@@ -52,6 +59,13 @@ bool TypeRegistry::load_item_types_absolute(asset::AssetManager& assets, std::st
     auto* doc = assets.get(handle);
     if (!doc) return false;
     return load_item_types_from_doc(doc, abs_path);
+}
+
+bool TypeRegistry::load_doodad_types_absolute(asset::AssetManager& assets, std::string_view abs_path) {
+    auto handle = assets.load_config_absolute(abs_path);
+    auto* doc = assets.get(handle);
+    if (!doc) return false;
+    return load_doodad_types_from_doc(doc, abs_path);
 }
 
 // ── Internal parsers ──────────────────────────────────────────────────────
@@ -182,8 +196,15 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
         DestructableTypeDef def;
         def.id = key;
         def.display_name = val.value("display_name", key);
-        def.model_path   = val.value("model", "");
-        def.variations   = static_cast<u8>(val.value("variations", 1));
+        if (val.contains("models") && val["models"].is_array()) {
+            for (auto& m : val["models"]) {
+                if (m.is_string()) def.models.push_back(m.get<std::string>());
+            }
+        }
+        if (def.models.empty()) {
+            log::warn(TAG, "Destructable type '{}' has no models", key);
+        }
+        def.model_scale = val.value("model_scale", 1.0f);
 
         if (val.contains("health")) {
             auto& h = val["health"];
@@ -199,6 +220,13 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
                 }
             }
         }
+
+        if (auto fp = val.find("pathing_footprint"); fp != val.end() && fp->is_array() && fp->size() == 2) {
+            def.pathing_footprint_w = fp->at(0).get<u32>();
+            def.pathing_footprint_h = fp->at(1).get<u32>();
+        }
+
+        def.collision_radius = val.value("collision_radius", 0.0f);
 
         m_destructable_types[key] = std::move(def);
     }
@@ -236,6 +264,27 @@ bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std:
     return true;
 }
 
+bool TypeRegistry::load_doodad_types_from_doc(const asset::JsonDocument* doc, std::string_view source) {
+    for (auto& [key, val] : doc->data.items()) {
+        DoodadTypeDef def;
+        def.id           = key;
+        def.display_name = val.value("display_name", key);
+        if (val.contains("models") && val["models"].is_array()) {
+            for (auto& m : val["models"]) {
+                if (m.is_string()) def.models.push_back(m.get<std::string>());
+            }
+        }
+        if (def.models.empty()) {
+            log::warn(TAG, "Doodad type '{}' has no models", key);
+        }
+        def.model_scale = val.value("model_scale", 1.0f);
+
+        m_doodad_types[key] = std::move(def);
+    }
+    log::info(TAG, "Loaded {} doodad types from '{}'", m_doodad_types.size(), source);
+    return true;
+}
+
 // ── Lookups ───────────────────────────────────────────────────────────────
 
 const UnitTypeDef* TypeRegistry::get_unit_type(std::string_view id) const {
@@ -251,6 +300,11 @@ const DestructableTypeDef* TypeRegistry::get_destructable_type(std::string_view 
 const ItemTypeDef* TypeRegistry::get_item_type(std::string_view id) const {
     auto it = m_item_types.find(std::string(id));
     return it != m_item_types.end() ? &it->second : nullptr;
+}
+
+const DoodadTypeDef* TypeRegistry::get_doodad_type(std::string_view id) const {
+    auto it = m_doodad_types.find(std::string(id));
+    return it != m_doodad_types.end() ? &it->second : nullptr;
 }
 
 } // namespace uldum::simulation

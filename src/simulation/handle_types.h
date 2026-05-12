@@ -22,6 +22,7 @@ struct Handle {
 struct Unit         : Handle {};
 struct Destructable : Handle {};
 struct Item         : Handle {};
+struct Doodad       : Handle {};
 
 struct Player {
     u32 id = UINT32_MAX;

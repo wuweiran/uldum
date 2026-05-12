@@ -65,7 +65,7 @@ Handle (u32 id + u32 generation)
 │   │                           Movement.speed = 0 (immobile)
 │   │                           e.g. Barracks, Town Hall
 │   │
-│   ├── Destructable (Widget + Destructable + PathingBlocker)
+│   ├── Destructable (Widget + Destructable + PathingBlocker + Renderable)
 │   │                   e.g. Tree, Rock, Barrel, Gate
 │   │
 │   └── Item (Widget + ItemInfo + Carriable)
@@ -275,7 +275,8 @@ Destructable {
 }
 
 PathingBlocker {
-    std::vector<TileCoord>  blocked_tiles
+    i32  cell_x, cell_y    // origin (lower-left pathing cell of the footprint)
+    u32  width, height     // footprint size in pathing cells (1 cell = 1/4 terrain tile)
 }
 ```
 
@@ -671,13 +672,13 @@ for the map package structure.
 
 ### Unit Type Example (Regular Unit)
 
-All units (regular, hero, building) use `"category": "unit"`. Subtypes are determined
+Types live in per-category files (`unit_types.json`, `destructable_types.json`,
+`item_types.json`); the loader routes by filename. Unit subtypes are determined
 by classification flags and presence of extra blocks (`"hero"`, `"building"`).
 
 ```json
 {
     "footman": {
-        "category": "unit",
         "display_name": "Footman",
         "model": "models/units/footman.gltf",
         "icon": "icons/footman.ktx2",
@@ -707,7 +708,6 @@ A hero is a unit with `"classifications": ["hero", ...]` and a `"hero"` block.
 ```json
 {
     "paladin": {
-        "category": "unit",
         "display_name": "Paladin",
         "model": "models/units/paladin.gltf",
         "health": { "max": 650, "regen": 2.0 },
@@ -742,7 +742,6 @@ Movement speed is 0 (immobile).
 ```json
 {
     "barracks": {
-        "category": "unit",
         "display_name": "Barracks",
         "model": "models/buildings/barracks.gltf",
         "health": { "max": 1500, "regen": 0.5 },
@@ -759,7 +758,7 @@ Movement speed is 0 (immobile).
             "trains": ["footman", "rifleman"],
             "researches": ["defend"]
         },
-        "pathing": { "blocked_tiles": [[0,0], [1,0], [0,1], [1,1]] },
+        "pathing_footprint": [2, 2],
         "selection": { "radius": 2.0, "priority": 2 }
     }
 }
@@ -770,23 +769,34 @@ Movement speed is 0 (immobile).
 ```json
 {
     "tree_ashenvale": {
-        "category": "destructable",
         "display_name": "Ashenvale Tree",
-        "model": "models/destructables/tree_ashenvale.gltf",
+        "models": [
+            "models/destructables/tree_ashenvale_a.gltf",
+            "models/destructables/tree_ashenvale_b.gltf",
+            "models/destructables/tree_ashenvale_c.gltf"
+        ],
         "health": { "max": 50 },
         "attributes": { "armor": 0, "armor_type": "fortified" },
-        "pathing": { "blocked_tiles": [[0, 0]] },
-        "variations": 3
+        "pathing_footprint": [2, 2]
     }
 }
 ```
+
+**Note on `pathing_footprint` units.** Building footprints
+(`unit_types.json` with a footprint) are authored in **terrain tiles**
+(128 game units each). Destructable footprints
+(`destructable_types.json`) are authored in **pathing cells** (32 game
+units = ¼ tile). This mirrors WC3's split between tile-aligned
+buildings and finer-grained doodads, and lets a tree block a 2×2-cell
+patch instead of a whole tile. Internally both end up on the same
+cell grid; the engine multiplies tile counts by `PATHING_SUBDIV = 4`
+on emit.
 
 ### Item Type Example
 
 ```json
 {
     "potion_healing": {
-        "category": "item",
         "display_name": "Potion of Healing",
         "icon": "textures/icons/potion_healing.ktx2",
         "charges": 1,

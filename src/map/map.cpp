@@ -2,9 +2,15 @@
 #include "asset/asset.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
+#include "simulation/handle_types.h"
+#include "simulation/pathfinding.h"  // PATHING_SUBDIV
 #include "core/log.h"
 
+#include <nlohmann/json.hpp>
+#include <fstream>
 #include <filesystem>
+#include <unordered_set>
+#include <glm/gtc/constants.hpp>
 
 namespace uldum::map {
 
@@ -294,17 +300,20 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
     std::string unit_path = types_dir + "unit_types.json";
     std::string dest_path = types_dir + "destructable_types.json";
     std::string item_path = types_dir + "item_types.json";
+    std::string dood_path = types_dir + "doodad_types.json";
 
     types.load_unit_types_absolute(assets, unit_path);
     types.load_destructable_types_absolute(assets, dest_path);
     types.load_item_types_absolute(assets, item_path);
+    types.load_doodad_types_absolute(assets, dood_path);  // ok if file doesn't exist
 
     // Load ability definitions
     std::string ability_path = types_dir + "ability_types.json";
     sim.abilities().load(assets, ability_path);  // ok if file doesn't exist
 
-    log::info(TAG, "Types loaded — {} units, {} destructables, {} items",
-              types.unit_type_count(), types.destructable_type_count(), types.item_type_count());
+    log::info(TAG, "Types loaded — {} units, {} destructables, {} doodads, {} items",
+              types.unit_type_count(), types.destructable_type_count(),
+              types.doodad_type_count(), types.item_type_count());
     return true;
 }
 
@@ -350,21 +359,55 @@ bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetMa
     auto& j = doc->data;
 
     if (j.contains("regions")) {
+        std::unordered_set<std::string> seen_ids;
         for (auto& r : j["regions"]) {
             Region reg;
-            reg.name   = r.value("name", "");
-            reg.x      = r.value("x", 0.0f);
-            reg.y      = r.value("y", 0.0f);
-            reg.width  = r.value("width", 0.0f);
-            reg.height = r.value("height", 0.0f);
+            reg.id = r.value("id", "");
+            if (reg.id.empty()) {
+                log::warn(TAG, "Scene '{}': region with empty id, skipping", scene_name);
+                continue;
+            }
+            if (!seen_ids.insert(reg.id).second) {
+                log::warn(TAG, "Scene '{}': duplicate region id '{}', skipping", scene_name, reg.id);
+                continue;
+            }
+            if (r.contains("rects")) {
+                for (auto& rj : r["rects"]) {
+                    RegionRect rect{
+                        rj.value("x0", 0.0f), rj.value("y0", 0.0f),
+                        rj.value("x1", 0.0f), rj.value("y1", 0.0f),
+                    };
+                    if (rect.x1 < rect.x0) std::swap(rect.x0, rect.x1);
+                    if (rect.y1 < rect.y0) std::swap(rect.y0, rect.y1);
+                    reg.rects.push_back(rect);
+                }
+            }
+            if (r.contains("circles")) {
+                for (auto& cj : r["circles"]) {
+                    RegionCircle circle{
+                        cj.value("cx", 0.0f), cj.value("cy", 0.0f),
+                        std::max(0.0f, cj.value("r", 0.0f)),
+                    };
+                    reg.circles.push_back(circle);
+                }
+            }
             m_scene.regions.push_back(std::move(reg));
         }
     }
 
     if (j.contains("cameras")) {
+        std::unordered_set<std::string> seen_ids;
         for (auto& c : j["cameras"]) {
             CameraDef cam;
-            cam.name  = c.value("name", "");
+            cam.id    = c.value("id", "");
+            if (cam.id.empty()) {
+                log::warn(TAG, "Scene '{}': camera with empty id, skipping", scene_name);
+                continue;
+            }
+            if (!seen_ids.insert(cam.id).second) {
+                log::warn(TAG, "Scene '{}': duplicate camera id '{}', skipping", scene_name, cam.id);
+                continue;
+            }
             cam.x     = c.value("x", 0.0f);
             cam.y     = c.value("y", 0.0f);
             cam.z     = c.value("z", 0.0f);
@@ -442,23 +485,26 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
                 }
 
                 // Generate the runtime PathingBlocker rectangle from
-                // the type's footprint. Snapped position guarantees
-                // the SW corner tile lands on an integer index.
+                // the type's footprint. Buildings author in TILES; we
+                // expand to cells (×PATHING_SUBDIV) so the stored rect
+                // matches the pathfinder's native cell grid.
                 if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
                     auto& td = m_scene.terrain;
                     f32 left_tx_f   = (pu.x - td.origin_x()) / td.tile_size - 0.5f * static_cast<f32>(fw);
                     f32 bottom_ty_f = (pu.y - td.origin_y()) / td.tile_size - 0.5f * static_cast<f32>(fh);
+                    i32 tx0 = static_cast<i32>(std::round(left_tx_f));
+                    i32 ty0 = static_cast<i32>(std::round(bottom_ty_f));
                     simulation::PathingBlocker blocker;
-                    blocker.tx = static_cast<i32>(std::round(left_tx_f));
-                    blocker.ty = static_cast<i32>(std::round(bottom_ty_f));
-                    blocker.w  = fw;
-                    blocker.h  = fh;
+                    blocker.cx = tx0 * static_cast<i32>(simulation::PATHING_SUBDIV);
+                    blocker.cy = ty0 * static_cast<i32>(simulation::PATHING_SUBDIV);
+                    blocker.w  = fw * simulation::PATHING_SUBDIV;
+                    blocker.h  = fh * simulation::PATHING_SUBDIV;
                     log::info(TAG,
                         "Placed building '{}' at ({:.0f},{:.0f}) "
-                        "[footprint {}x{}, blocking tiles x={}..{} y={}..{}]",
+                        "[footprint {}x{} tiles, blocking cells x={}..{} y={}..{}]",
                         pu.type, pu.x, pu.y, fw, fh,
-                        blocker.tx, blocker.tx + static_cast<i32>(fw) - 1,
-                        blocker.ty, blocker.ty + static_cast<i32>(fh) - 1);
+                        blocker.cx, blocker.cx + static_cast<i32>(blocker.w) - 1,
+                        blocker.cy, blocker.cy + static_cast<i32>(blocker.h) - 1);
                     world.pathing_blockers.add(unit.id, std::move(blocker));
                 }
 
@@ -479,10 +525,41 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
             pd.y         = d.value("y", 0.0f);
             pd.facing    = d.value("facing", 0.0f) * (glm::pi<f32>() / 180.0f);
             pd.variation = static_cast<u8>(d.value("variation", 0));
+
+            const auto* def = sim.types().get_destructable_type(pd.type);
+            u32 fw = def ? def->pathing_footprint_w : 0u;
+            u32 fh = def ? def->pathing_footprint_h : 0u;
+            // Cell-snap (1/4 tile) at load time so saved scene-files
+            // round-trip cleanly through the editor's same snap rule.
+            if (m_scene.terrain.is_valid()) {
+                pd.x = snap_cell_x(m_scene.terrain, pd.x);
+                pd.y = snap_cell_y(m_scene.terrain, pd.y);
+            }
             m_scene.destructables.push_back(pd);
 
             auto dest = simulation::create_destructable(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
-            if (dest.is_valid()) dest_count++;
+            if (dest.is_valid()) {
+                if (auto* t = world.transforms.get(dest.id)) {
+                    t->position.z = sample_height(pd.x, pd.y);
+                    t->prev_position.z = t->position.z;
+                }
+                // Destructable footprints are CELL units. Center the rect
+                // on the snapped position (cell snap means pd.x/pd.y are
+                // already on a cell-center grid).
+                if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
+                    auto& td = m_scene.terrain;
+                    f32 cs = td.tile_size / static_cast<f32>(simulation::PATHING_SUBDIV);
+                    f32 left_cx_f   = (pd.x - td.origin_x()) / cs - 0.5f * static_cast<f32>(fw);
+                    f32 bottom_cy_f = (pd.y - td.origin_y()) / cs - 0.5f * static_cast<f32>(fh);
+                    simulation::PathingBlocker blocker;
+                    blocker.cx = static_cast<i32>(std::round(left_cx_f));
+                    blocker.cy = static_cast<i32>(std::round(bottom_cy_f));
+                    blocker.w  = fw;
+                    blocker.h  = fh;
+                    world.pathing_blockers.add(dest.id, std::move(blocker));
+                }
+                dest_count++;
+            }
         }
     }
 
@@ -507,9 +584,158 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
         }
     }
 
-    log::info(TAG, "Placements: {} units, {} destructables, {} items",
-              unit_count, dest_count, item_count);
+    // Doodads (pure decoration — no health, no collision, no pathing)
+    u32 dood_count = 0;
+    if (j.contains("doodads")) {
+        for (auto& d : j["doodads"]) {
+            PlacedDoodad pd;
+            pd.type      = d.value("type", "");
+            pd.x         = d.value("x", 0.0f);
+            pd.y         = d.value("y", 0.0f);
+            pd.facing    = d.value("facing", 0.0f) * (glm::pi<f32>() / 180.0f);
+            pd.variation = static_cast<u8>(d.value("variation", 0));
+            m_scene.doodads.push_back(pd);
+
+            auto dood = simulation::create_doodad(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
+            if (dood.is_valid()) {
+                if (auto* t = world.transforms.get(dood.id)) {
+                    t->position.z = sample_height(pd.x, pd.y);
+                    t->prev_position.z = t->position.z;
+                }
+                dood_count++;
+            }
+        }
+    }
+
+    // Register authored regions into the runtime world so scripts
+    // can pick them up by id via GetRegion(). Lua-created regions
+    // (CreateRegion()) continue to live in the same world.regions
+    // map; the difference is just whether `id_str` is set.
+    for (const auto& r : m_scene.regions) {
+        u32 rid = ++world.next_region_id;
+        simulation::World::Region wr;
+        wr.id     = rid;
+        wr.id_str = r.id;
+        for (const auto& rect : r.rects) {
+            wr.rects.push_back({rect.x0, rect.y0, rect.x1, rect.y1});
+        }
+        for (const auto& c : r.circles) {
+            wr.circles.push_back({c.cx, c.cy, c.r});
+        }
+        world.regions[rid] = std::move(wr);
+    }
+
+    log::info(TAG, "Placements: {} units, {} destructables, {} doodads, {} items, {} regions",
+              unit_count, dest_count, dood_count, item_count, m_scene.regions.size());
     return true;
+}
+
+// Save the scene's placement state back to objects.json. Iterates
+// the live simulation world (single source of truth) for entities;
+// regions and cameras pass through from the authored scene data
+// since they aren't represented as entities yet. Requires the map
+// to be mounted as a source folder.
+bool MapManager::save_objects(const simulation::World& world, std::string_view scene_name) const {
+    namespace fs = std::filesystem;
+    if (!fs::is_directory(m_map_root)) {
+        log::error(TAG, "save_objects: map_root '{}' is not a directory; packed-map save path "
+                        "goes through the unpack → modify → repack flow", m_map_root);
+        return false;
+    }
+
+    nlohmann::json doc;
+    doc["units"]         = nlohmann::json::array();
+    doc["destructables"] = nlohmann::json::array();
+    doc["doodads"]       = nlohmann::json::array();
+    doc["items"]         = nlohmann::json::array();
+
+    const f32 rad_to_deg = 180.0f / glm::pi<f32>();
+
+    for (u32 i = 0; i < world.handle_infos.count(); ++i) {
+        u32 id = world.handle_infos.ids()[i];
+        const auto& info = world.handle_infos.data()[i];
+        const auto* t = world.transforms.get(id);
+        if (!t) continue;
+
+        nlohmann::json e;
+        e["type"] = info.type_id;
+        e["x"]    = t->position.x;
+        e["y"]    = t->position.y;
+
+        switch (info.category) {
+        case simulation::Category::Unit: {
+            const auto* owner = world.owners.get(id);
+            e["facing"] = t->facing * rad_to_deg;
+            e["owner"]  = owner ? owner->player.id : 0u;
+            doc["units"].push_back(std::move(e));
+            break;
+        }
+        case simulation::Category::Destructable: {
+            const auto* dc = world.destructables.get(id);
+            e["facing"]    = t->facing * rad_to_deg;
+            e["variation"] = dc ? dc->variation : 0u;
+            doc["destructables"].push_back(std::move(e));
+            break;
+        }
+        case simulation::Category::Item:
+            doc["items"].push_back(std::move(e));
+            break;
+        case simulation::Category::Doodad: {
+            const auto* dc = world.doodads.get(id);
+            e["facing"]    = t->facing * rad_to_deg;
+            e["variation"] = dc ? dc->variation : 0u;
+            doc["doodads"].push_back(std::move(e));
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    // Regions / cameras: pass through from authored scene data —
+    // they aren't entities so they don't appear in the world loop.
+    doc["regions"] = nlohmann::json::array();
+    for (const auto& r : m_scene.regions) {
+        nlohmann::json j;
+        j["id"]      = r.id;
+        j["rects"]   = nlohmann::json::array();
+        for (const auto& rc : r.rects) {
+            j["rects"].push_back({
+                {"x0", rc.x0}, {"y0", rc.y0},
+                {"x1", rc.x1}, {"y1", rc.y1},
+            });
+        }
+        j["circles"] = nlohmann::json::array();
+        for (const auto& c : r.circles) {
+            j["circles"].push_back({
+                {"cx", c.cx}, {"cy", c.cy}, {"r", c.r},
+            });
+        }
+        doc["regions"].push_back(std::move(j));
+    }
+    doc["cameras"] = nlohmann::json::array();
+    for (const auto& c : m_scene.cameras) {
+        nlohmann::json j;
+        j["id"]    = c.id;
+        j["x"]     = c.x;
+        j["y"]     = c.y;
+        j["z"]     = c.z;
+        j["pitch"] = c.pitch;
+        j["yaw"]   = c.yaw;
+        doc["cameras"].push_back(std::move(j));
+    }
+
+    std::string path = m_map_root + "/scenes/" + std::string(scene_name) + "/objects.json";
+    std::ofstream file(path);
+    if (!file) {
+        log::error(TAG, "save_objects: failed to open '{}' for writing", path);
+        return false;
+    }
+    file << doc.dump(4);
+    log::info(TAG, "save_objects: wrote {} units / {} destructables / {} doodads / {} items to {}",
+              doc["units"].size(), doc["destructables"].size(),
+              doc["doodads"].size(), doc["items"].size(), path);
+    return file.good();
 }
 
 } // namespace uldum::map

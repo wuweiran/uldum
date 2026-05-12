@@ -295,19 +295,23 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
         // ── Re-path: compute corridor + straight-line waypoint ──────────
         mov.repath_timer -= dt;
+        // Repath only on the timer or a moved goal. "no waypoint" and
+        // "empty corridor" don't trigger repath any more — they'd cause
+        // a fresh A* every tick after a failure (spam) and are already
+        // covered by the natural startup case where repath_timer is 0
+        // until the first repath runs. Mid-corridor advances are handled
+        // by find_straight_waypoint and never set has_waypoint=false.
         f32 dest_drift = glm::length(goal2d - mov.path_dest);
-        bool rp_empty = mov.corridor.empty();
         bool rp_timer = mov.repath_timer <= 0;
-        bool rp_no_wp = !mov.has_waypoint;
         bool rp_drift = dest_drift > pathfinder.tile_size();
-        bool need_repath = rp_empty || rp_timer || rp_no_wp || rp_drift;
+        bool need_repath = rp_drift || rp_timer;
 
         if (need_repath) {
             mov.repath_timer = Movement::REPATH_INTERVAL;
             mov.path_dest = goal2d;
             auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type, &world, id);
-            if (corridor.valid && !corridor.tiles.empty()) {
-                mov.corridor = std::move(corridor.tiles);
+            if (corridor.valid && !corridor.cells.empty()) {
+                mov.corridor = std::move(corridor.cells);
                 mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.cliff_level, mov.type);
                 mov.has_waypoint = true;
                 mov.moving = true;
@@ -319,6 +323,38 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 mov.approach_target = simulation::Unit{};
                 mov.approach_range = 0;
             }
+        }
+
+        // Stuck detection runs FIRST — before the no-waypoint early-out
+        // — so an A* that keeps failing accumulates stuck-time too. If
+        // the unit hasn't progressed STUCK_PROGRESS_EPS units in
+        // STUCK_TIMEOUT seconds, give up the order. Point-Move only
+        // (Follow / Approach are exempt: those orders are about
+        // tracking, not arriving — keep the timer reset so the next
+        // point-Move starts from a clean slate).
+        if (!is_approach && !is_follow) {
+            f32 progress = glm::length(pos2d - mov.stuck_anchor);
+            if (progress >= Movement::STUCK_PROGRESS_EPS) {
+                mov.stuck_anchor = pos2d;
+                mov.stuck_timer  = 0;
+            } else {
+                mov.stuck_timer += dt;
+                if (mov.stuck_timer >= Movement::STUCK_TIMEOUT) {
+                    mov.corridor.clear();
+                    mov.has_waypoint = false;
+                    mov.moving = false;
+                    mov.stuck_timer = 0;
+                    oq->current.reset();
+                    if (!oq->queued.empty()) {
+                        oq->current = std::move(oq->queued.front());
+                        oq->queued.pop_front();
+                    }
+                    continue;
+                }
+            }
+        } else {
+            mov.stuck_anchor = pos2d;
+            mov.stuck_timer  = 0;
         }
 
         // Face toward goal even if no path
@@ -381,39 +417,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             }
         }
 
-        // ── Stuck detection (Move order only, point form) ────────────
-        // If we're trying to reach a fixed point but haven't moved for
-        // STUCK_TIMEOUT seconds, end the order. This is what unjams
-        // crowds piling up at one click point: outer units that can't
-        // get closer don't keep replanning forever, they just stop.
-        // Follow orders intentionally don't time out — the player
-        // asked us to track that unit.
-        if (!is_approach && !is_follow) {
-            f32 progress = glm::length(pos2d - mov.stuck_anchor);
-            if (progress >= Movement::STUCK_PROGRESS_EPS) {
-                mov.stuck_anchor = pos2d;
-                mov.stuck_timer  = 0;
-            } else {
-                mov.stuck_timer += dt;
-                if (mov.stuck_timer >= Movement::STUCK_TIMEOUT) {
-                    mov.corridor.clear();
-                    mov.has_waypoint = false;
-                    mov.moving = false;
-                    mov.stuck_timer = 0;
-                    oq->current.reset();
-                    if (!oq->queued.empty()) {
-                        oq->current = std::move(oq->queued.front());
-                        oq->queued.pop_front();
-                    }
-                    continue;
-                }
-            }
-        } else {
-            // Outside of point-Move context, keep the timer fresh so
-            // the next Move starts from a clean slate.
-            mov.stuck_anchor = pos2d;
-            mov.stuck_timer  = 0;
-        }
+        // (Stuck detection moved above the no-waypoint early-return.)
 
         // ── Move toward waypoint ─────────────────────────────────────────
         glm::vec2 to_wp = mov.waypoint - pos2d;
@@ -424,29 +428,39 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             to_wp = mov.waypoint - pos2d;
             wp_dist = glm::length(to_wp);
             if (wp_dist < 1.0f) {
-                // End-of-corridor handling mirrors the arrival branch
-                // above: Approach and Follow stay; only point-Move
-                // ends its order.
-                if (!is_approach && !is_follow) {
-                    mov.corridor.clear();
-                    mov.has_waypoint = false;
-                    mov.moving = false;
-                    mov.stuck_timer = 0;
-                    oq->current.reset();
-                    if (!oq->queued.empty()) {
-                        oq->current = std::move(oq->queued.front());
-                        oq->queued.pop_front();
+                // We've walked to the last cell of the corridor without
+                // the arrival check (earlier in this tick) firing —
+                // meaning the corridor ended SHORT of the goal. That
+                // happens whenever A* hit its cap and returned a
+                // partial path. Don't cancel the order: clear the
+                // waypoint and let the natural cycle take over.
+                //
+                // If we *did* progress meaningfully during this corridor
+                // (current position is more than a tile away from where
+                // A* started), reset repath_timer so the next tick gets
+                // a fresh A* from this closer vantage. If we barely
+                // moved (truly stuck), don't reset — let the full 1.5s
+                // pass before the next attempt, and let stuck_timer
+                // (3s) give up if all retries fail.
+                if (!mov.corridor.empty()) {
+                    glm::vec2 corridor_start = pathfinder.cell_center(
+                        mov.corridor.front().x, mov.corridor.front().y);
+                    f32 walked = glm::length(pos2d - corridor_start);
+                    if (walked > pathfinder.tile_size()) {
+                        mov.repath_timer = 0;
                     }
                 }
+                mov.has_waypoint = false;
+                mov.moving = false;
                 continue;
             }
         }
 
         glm::vec3 forward{to_wp.x / wp_dist, to_wp.y / wp_dist, 0.0f};
 
-        // Local steering: avoid nearby units (1/3 frequency, staggered by ID)
+        // Local steering: avoid nearby units (1/4 frequency, staggered by ID)
         glm::vec3 dir = forward;
-        if ((id + steer_tick) % 3 == 0) {
+        if ((id + steer_tick) % 4 == 0) {
             // Deterministic side preference: stable per unit for ~0.3s
             u32 time_bucket = steer_tick / 10;  // flips every ~10 ticks (~0.3s at 32Hz)
             bool prefer_left = ((id + time_bucket) % 2) == 0;
@@ -1253,9 +1267,10 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.buildings.remove(h.id);
     world.constructions.remove(h.id);
     world.destructables.remove(h.id);
+    world.doodads.remove(h.id);
     if (world.on_pathing_unblock) {
         auto* pb = world.pathing_blockers.get(h.id);
-        if (pb) world.on_pathing_unblock(pb->tx, pb->ty, pb->w, pb->h);
+        if (pb) world.on_pathing_unblock(pb->cx, pb->cy, pb->w, pb->h);
     }
     world.pathing_blockers.remove(h.id);
     world.item_infos.remove(h.id);
@@ -1365,8 +1380,11 @@ void system_death(World& world) {
                 }
             }
 
-            // Fire death callback for script engine
-            if (world.on_death) {
+            // Fire death callback for script engine — units only. The
+            // callback is typed as Unit; destructables share the handle
+            // layout but the script side fires unit_death events that
+            // would be confusing for environment objects.
+            if (world.on_death && info->category == Category::Unit) {
                 Unit dying;
                 dying.id = id;
                 dying.generation = info->generation;
@@ -1389,7 +1407,7 @@ void system_death(World& world) {
             // entity is fully destroyed.
             if (auto* pb = world.pathing_blockers.get(id)) {
                 if (world.on_pathing_unblock) {
-                    world.on_pathing_unblock(pb->tx, pb->ty, pb->w, pb->h);
+                    world.on_pathing_unblock(pb->cx, pb->cy, pb->w, pb->h);
                 }
                 world.pathing_blockers.remove(id);
             }

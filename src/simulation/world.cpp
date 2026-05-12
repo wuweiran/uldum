@@ -27,9 +27,10 @@ static void remove_all_components(World& world, u32 id) {
     world.buildings.remove(id);
     world.constructions.remove(id);
     world.destructables.remove(id);
+    world.doodads.remove(id);
     if (world.on_pathing_unblock) {
         auto* pb = world.pathing_blockers.get(id);
-        if (pb) world.on_pathing_unblock(pb->tx, pb->ty, pb->w, pb->h);
+        if (pb) world.on_pathing_unblock(pb->cx, pb->cy, pb->w, pb->h);
     }
     world.pathing_blockers.remove(id);
     world.item_infos.remove(id);
@@ -166,7 +167,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     Handle h = world.handles.allocate();
     u32 id = h.id;
 
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, 1.0f, {x, y, 0.0f}, facing});
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
     world.healths.add(id, Health{def->max_health, def->max_health, 0});
     world.selectables.add(id, Selectable{1.0f, 50.0f, 1});
@@ -179,8 +180,22 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
         world.attribute_blocks.add(id, std::move(ab));
     }
 
-    if (!def->model_path.empty()) {
-        world.renderables.add(id, Renderable{def->model_path, true});
+    if (!def->models.empty()) {
+        u32 idx = (def->models.size() > 0) ? (variation % static_cast<u32>(def->models.size())) : 0;
+        world.renderables.add(id, Renderable{def->models[idx], true});
+    }
+
+    // Movement-with-speed-0 carries the collision radius that combat
+    // range checks read via world.movements.get(target.id). Destructables
+    // never tick movement (no OrderQueue), so the Movement component is
+    // inert apart from this field.
+    if (def->collision_radius > 0) {
+        Movement m{};
+        m.speed = 0;
+        m.turn_rate = 0;
+        m.collision_radius = def->collision_radius;
+        m.type = MoveType::Ground;
+        world.movements.add(id, std::move(m));
     }
 
     Destructable d;
@@ -219,6 +234,33 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     return item;
 }
 
+Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 facing, u8 variation) {
+    assert(world.types);
+    const auto* def = world.types->get_doodad_type(type_id);
+    if (!def) {
+        log::error(TAG, "Unknown doodad type '{}'", type_id);
+        return {};
+    }
+
+    Handle h = world.handles.allocate();
+    u32 id = h.id;
+
+    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Doodad, h.generation});
+    world.doodads.add(id, DoodadComp{variation});
+    if (!def->models.empty()) {
+        u32 idx = variation % static_cast<u32>(def->models.size());
+        world.renderables.add(id, Renderable{def->models[idx], true});
+    }
+
+    Doodad d;
+    d.id = h.id;
+    d.generation = h.generation;
+
+    log::trace(TAG, "Created doodad '{}' (id={})", type_id, id);
+    return d;
+}
+
 // ── Destruction ────────────────────────────────────────────────────────────
 
 static void destroy_handle(World& world, Handle h) {
@@ -230,6 +272,7 @@ static void destroy_handle(World& world, Handle h) {
 void destroy(World& world, Unit unit)         { destroy_handle(world, unit); }
 void destroy(World& world, Destructable d)    { destroy_handle(world, d); }
 void destroy(World& world, Item item)         { destroy_handle(world, item); }
+void destroy(World& world, Doodad d)          { destroy_handle(world, d); }
 
 // ── Unit API ───────────────────────────────────────────────────────────────
 
@@ -301,13 +344,20 @@ void issue_order(World& world, Unit unit, Order order) {
         oq->queued.clear();
         oq->current = std::move(order);
 
-        // Clear pathfinding + approach state so the movement system re-paths immediately
+        // Clear pathfinding + approach state and force a fresh repath
+        // on the next system_movement tick. Setting repath_timer = 0 is
+        // load-bearing: `need_repath` is gated by rp_drift / rp_timer
+        // only, so without this an identical-goal re-issue (e.g. the
+        // player spam-clicking the same spot) wouldn't trigger A* and
+        // the unit would stand still until the previous 1.5s timer
+        // expired.
         auto* mov = world.movements.get(unit.id);
         if (mov) {
             mov->corridor.clear();
             mov->has_waypoint = false;
             mov->approach_target = Unit{};
             mov->approach_range = 0;
+            mov->repath_timer = 0;
         }
 
         // Clear combat target so the unit stops fighting and obeys the new order

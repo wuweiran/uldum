@@ -550,10 +550,13 @@ function GetNearestUnit(x, y, radius, filter) end
 -- Regions
 --------------------------------------------------------------------------------
 
---- Get a named region from the current scene.
---- @param name string
---- @return region
-function GetRegion(name) end
+--- Get an authored region from the current scene by its id (the
+--- `id` field in the scene's objects.json `regions[]` array).
+--- Returns nil if no region with that id exists. The handle is
+--- interchangeable with one returned by `CreateRegion`.
+--- @param id string
+--- @return region?
+function GetRegion(id) end
 
 --- @param unit unit
 --- @param region region
@@ -565,9 +568,11 @@ function IsUnitInRegion(unit, region) end
 --- @return unit[]
 function GetUnitsInRegion(region, filter) end
 
+--- Axis-aligned bounding box union over the region's rects and
+--- circles. Returns four zeros if the region has no shapes.
 --- @param region region
---- @return number, number   x, y
-function GetRegionCenter(region) end
+--- @return number, number, number, number   x0, y0, x1, y1
+function GetRegionBounds(region) end
 
 --------------------------------------------------------------------------------
 -- Timers

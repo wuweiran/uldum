@@ -135,14 +135,20 @@ function main()
     abilities.register_healing_potion()
     Log("[Scene02] Healing-potion charge consumption registered")
 
-    -- Portal region. Walk one of the heroes (or any player-1 unit)
-    -- onto this 200-unit circle to swap to scene_01. Far enough
-    -- from the central battle that creeps don't trip it by accident.
-    -- A persistent text tag at the center marks it visually since we
-    -- don't have a region-overlay primitive yet.
-    local portal_x, portal_y = 1500, 1500
-    local portal = CreateRegion()
-    AddRegionCircle(portal, portal_x, portal_y, 200)
+    -- Portal region. Authored in scene_02/objects.json as the
+    -- "portal" region. Walk a hero onto it to swap to scene_01.
+    -- The script derives its center and radius from the authored
+    -- bounds so moving the region in the editor moves the visuals
+    -- and repel math with it — no constants to keep in sync.
+    local portal = GetRegion("portal")
+    if not portal then
+        Log("[Scene02] ERROR: portal region missing from objects.json")
+        return
+    end
+    local px0, py0, px1, py1 = GetRegionBounds(portal)
+    local portal_x = (px0 + px1) * 0.5
+    local portal_y = (py0 + py1) * 0.5
+    local portal_r = math.max(px1 - portal_x, py1 - portal_y)
 
     CreateTextTag({
         text = "[Portal: scene_01]",
@@ -169,8 +175,8 @@ function main()
     for i = 0, PORTAL_RIM_SEGMENTS - 1 do
         local theta = (i / PORTAL_RIM_SEGMENTS) * math.pi * 2
         CreateEffect("portal_rim",
-            portal_x + math.cos(theta) * 200,
-            portal_y + math.sin(theta) * 200,
+            portal_x + math.cos(theta) * portal_r,
+            portal_y + math.sin(theta) * portal_r,
             0)
     end
 

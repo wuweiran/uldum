@@ -212,6 +212,29 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
             textures.push_back(std::move(tex));
         }
     }
+
+    // Fallback: if the model has no texture images but its first material
+    // declares a baseColorFactor, synthesize a 1×1 RGBA texture from that
+    // color. Without this, models authored as "color-only" (no diffuse
+    // map) all render with the engine's default white material — making
+    // variations indistinguishable. Uses material[0] only; per-primitive
+    // material colors aren't supported yet.
+    if (textures.empty() && data->materials_count > 0) {
+        const cgltf_material& mat = data->materials[0];
+        if (mat.has_pbr_metallic_roughness) {
+            const float* c = mat.pbr_metallic_roughness.base_color_factor;
+            auto to_u8 = [](float v) {
+                int i = static_cast<int>(v * 255.0f + 0.5f);
+                if (i < 0) i = 0;
+                if (i > 255) i = 255;
+                return static_cast<u8>(i);
+            };
+            TextureData tex;
+            tex.width = 1; tex.height = 1; tex.channels = 4;
+            tex.pixels = {to_u8(c[0]), to_u8(c[1]), to_u8(c[2]), to_u8(c[3])};
+            textures.push_back(std::move(tex));
+        }
+    }
 }
 
 // ── Model loading ─────────────────────────────────────────────────────────

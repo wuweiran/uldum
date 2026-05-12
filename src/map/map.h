@@ -141,13 +141,25 @@ struct PlacedItem {
     f32 x = 0, y = 0;
 };
 
+struct PlacedDoodad {
+    std::string type;
+    f32 x = 0, y = 0, facing = 0;
+    u8  variation = 0;
+};
+
+// Authored region — script-addressable zone with one or more rect /
+// circle shapes. `id` is the lookup key code uses; the runtime
+// allocates a numeric handle on top of it (see World::Region).
+struct RegionRect   { f32 x0 = 0, y0 = 0, x1 = 0, y1 = 0; };
+struct RegionCircle { f32 cx = 0, cy = 0, r  = 0; };
 struct Region {
-    std::string name;
-    f32 x = 0, y = 0, width = 0, height = 0;
+    std::string              id;
+    std::vector<RegionRect>   rects;
+    std::vector<RegionCircle> circles;
 };
 
 struct CameraDef {
-    std::string name;
+    std::string id;
     f32 x = 0, y = 0, z = 0, pitch = 0, yaw = 0;
 };
 
@@ -156,6 +168,7 @@ struct SceneData {
     std::vector<PlacedUnit>         units;
     std::vector<PlacedDestructable> destructables;
     std::vector<PlacedItem>         items;
+    std::vector<PlacedDoodad>       doodads;
     std::vector<Region>             regions;
     std::vector<CameraDef>          cameras;
 };
@@ -199,6 +212,12 @@ public:
     TerrainData&       terrain()        { return m_scene.terrain; }
     const SceneData&   scene()    const { return m_scene; }
 
+    // Mutable region list — the editor is the only legitimate caller.
+    // m_scene.regions is the canonical authored data; save_objects
+    // serializes from this vector and runtime registration in
+    // load_placements reads from it.
+    std::vector<Region>& mutable_regions() { return m_scene.regions; }
+
     const std::string& map_root() const { return m_map_root; }
 
     // List scene directories found under the map root.
@@ -206,6 +225,20 @@ public:
 
     // Switch to a different scene (reloads terrain + placements).
     bool switch_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
+
+    // Write the live simulation state back to <map_root>/scenes/<scene>/objects.json.
+    // Iterates world entities (units, destructables, items) and emits
+    // their placement records; regions + cameras pass through from
+    // the authored scene data. Requires the map to be a source-folder
+    // mount (not a packed .uldmap) — packed maps go through the
+    // unpack → modify → repack flow in the editor.
+    bool save_objects(const simulation::World& world, std::string_view scene_name) const;
+
+    // Editor helper: temporarily redirect save_objects to a staging
+    // directory (used by the packed-.uldmap save flow that unpacks
+    // into a temp folder, writes there, then repacks). Caller is
+    // responsible for restoring the original root afterward.
+    void set_map_root_for_save(std::string root) { m_map_root = std::move(root); }
 
     // Switch to a different scene's terrain only — does NOT spawn the
     // scene's placement entities. Used by client-side scene switch

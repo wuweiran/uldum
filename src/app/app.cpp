@@ -399,7 +399,7 @@ void App::leave_lobby() {
     if (!m_lobby_active) return;
     log::info(TAG, "=== Leaving lobby (not started) ===");
     m_renderer.set_simulation(nullptr);
-    m_renderer.set_terrain_data(nullptr);
+    m_renderer.set_terrain(nullptr);
     m_renderer.set_fog_grid(nullptr, 0, 0);
     m_network.shutdown();
     m_map.shutdown();
@@ -444,8 +444,7 @@ bool App::start_session() {
     m_renderer.load_tileset_textures(m_map.tileset());
     m_renderer.set_environment(m_map.manifest().environment);
     if (m_map.terrain().is_valid()) {
-        m_renderer.set_terrain(m_map.terrain());
-        m_renderer.set_terrain_data(&m_map.terrain());
+        m_renderer.set_terrain(&m_map.terrain());
     }
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
@@ -958,7 +957,7 @@ void App::end_session() {
     // textures so a future map's slot defaults aren't shadowed by
     // the previous map's overrides.
     m_renderer.set_simulation(nullptr);
-    m_renderer.set_terrain_data(nullptr);
+    m_renderer.set_terrain(nullptr);
     m_renderer.set_fog_grid(nullptr, 0, 0);
     m_renderer.end_session();
     m_world_overlays.reset_session_state();
@@ -1087,7 +1086,7 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
     // don't destroy old buffers that are still in flight.
     vkDeviceWaitIdle(m_rhi.device());
     if (m_map.terrain().is_valid()) {
-        m_renderer.set_terrain(m_map.terrain());
+        m_renderer.set_terrain(&m_map.terrain());
     }
 
     // Re-pose camera from the new scene's authored start camera.
@@ -2210,15 +2209,6 @@ void App::run() {
                 if (m_dev_console) m_dev_console->render(cmd);
 #endif
                 m_rhi.end_frame();
-            }
-            auto r1 = std::chrono::steady_clock::now();
-            f32 render_ms = std::chrono::duration<f32, std::milli>(r1 - r0).count();
-            static f32 render_log_timer = 0;
-            render_log_timer += frame_dt;
-            if (render_log_timer >= 3.0f) {
-                render_log_timer = 0;
-                log::info(TAG, "Frame: {:.1f}ms, Render: {:.1f}ms, Units: {}",
-                          frame_dt * 1000.0f, render_ms, world.transforms.count());
             }
         }
 #ifdef ULDUM_SHELL_UI

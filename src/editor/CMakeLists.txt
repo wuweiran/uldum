@@ -1,6 +1,7 @@
 add_executable(uldum_editor
     main.cpp
     editor.cpp
+    editor_overlays.cpp
 )
 
 target_include_directories(uldum_editor PRIVATE ${ULDUM_SRC})

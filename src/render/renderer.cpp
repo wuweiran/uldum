@@ -644,13 +644,23 @@ void Renderer::add_point_light(glm::vec3 position, glm::vec3 color, f32 radius, 
     m_env_data.light_count.x = static_cast<i32>(count + 1);
 }
 
-void Renderer::set_terrain(const map::TerrainData& terrain) {
+void Renderer::set_terrain(const map::TerrainData* terrain) {
     VmaAllocator alloc = m_rhi->allocator();
     destroy_terrain_mesh(alloc, m_terrain);
-    m_terrain = build_terrain_mesh(alloc, terrain);
+
+    if (!terrain) {
+        // Teardown: free GPU mesh + drop CPU data pointer. Used by
+        // App::end_session / leave_lobby so the renderer doesn't keep
+        // a stale reference into a destroyed map.
+        m_terrain_data = nullptr;
+        return;
+    }
+
+    m_terrain = build_terrain_mesh(alloc, *terrain);
+    m_terrain_data = terrain;
 
     // Re-allocate terrain descriptor set.
-    if (terrain.is_valid()) {
+    if (terrain->is_valid()) {
         m_terrain_material.descriptor_set = allocate_terrain_descriptor(m_terrain_material);
     }
 }
@@ -3002,11 +3012,15 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             return h;
         }
     };
+    // group_map: mesh geometry → index into per-group instance buckets.
+    // Buckets are kept separate during traversal because entities iterate
+    // in sparse-set dense order (which interleaves meshes when variations
+    // alternate). Concatenating buckets at the end gives each draw group
+    // a contiguous slice of the instance buffer — required by multi-draw
+    // indirect (each command reads instances[firstInstance .. +count]).
     std::unordered_map<GroupKey, u32, GroupKeyHash> group_map;
-
-    // CPU staging for instance data (model matrix + material index)
-    std::vector<InstanceData> instances;
-    instances.reserve(256);
+    std::vector<std::vector<InstanceData>> buckets;
+    buckets.reserve(8);
 
     for (u32 i = 0; i < renderables.count(); ++i) {
         u32 id = renderables.ids()[i];
@@ -3061,28 +3075,41 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
         }
 
-        // Find or create draw group keyed by mesh geometry (Phase 14b)
+        // Find or create draw group keyed by mesh geometry.
         GroupKey key{mesh.first_index, mesh.index_count,
                      static_cast<i32>(mesh.first_vertex)};
         auto git = group_map.find(key);
+        u32 gi;
         if (git == group_map.end()) {
-            u32 gi = static_cast<u32>(m_draw_groups.size());
+            gi = static_cast<u32>(m_draw_groups.size());
             group_map[key] = gi;
             DrawGroup dg{};
             dg.first_index    = mesh.first_index;
             dg.index_count    = mesh.index_count;
             dg.vertex_offset  = static_cast<i32>(mesh.first_vertex);
-            dg.first_instance = static_cast<u32>(instances.size());
+            dg.first_instance = 0;   // filled in after concatenation
             dg.instance_count = 0;
             m_draw_groups.push_back(dg);
-            git = group_map.find(key);
+            buckets.emplace_back();
+        } else {
+            gi = git->second;
         }
 
-        m_draw_groups[git->second].instance_count++;
         InstanceData inst{};
         inst.model = model;
         inst.material_index = tex_idx;
-        instances.push_back(inst);
+        buckets[gi].push_back(inst);
+    }
+
+    // Concatenate buckets into the final instance buffer; record each
+    // group's first_instance + instance_count from the contiguous slice.
+    std::vector<InstanceData> instances;
+    instances.reserve(256);
+    for (u32 gi = 0; gi < m_draw_groups.size(); ++gi) {
+        auto& dg = m_draw_groups[gi];
+        dg.first_instance = static_cast<u32>(instances.size());
+        dg.instance_count = static_cast<u32>(buckets[gi].size());
+        instances.insert(instances.end(), buckets[gi].begin(), buckets[gi].end());
     }
 
     m_static_instance_count = static_cast<u32>(instances.size());

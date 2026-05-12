@@ -37,6 +37,7 @@ struct World {
     SparseSet<BuildingComp>        buildings;
     SparseSet<Construction>         constructions;
     SparseSet<DestructableComp>    destructables;
+    SparseSet<DoodadComp>           doodads;
     SparseSet<PathingBlocker>       pathing_blockers;
     SparseSet<ItemInfo>             item_infos;
     SparseSet<Carriable>            carriables;
@@ -53,6 +54,10 @@ struct World {
     struct Region {
         u32  id    = 0;
         bool alive = true;
+        // Editor-authored identifier. Empty for regions created at
+        // runtime via CreateRegion(). GetRegion(id_str) looks regions
+        // up by this field.
+        std::string               id_str;
         std::vector<RegionRect>   rects;
         std::vector<RegionCircle> circles;
         // Last-tick set of unit ids inside this region. Diffed against
@@ -130,7 +135,7 @@ struct World {
         owners.clear(); movements.clear(); combats.clear(); visions.clear();
         order_queues.clear(); ability_sets.clear(); classifications.clear();
         inventories.clear(); buildings.clear();
-        constructions.clear(); destructables.clear(); pathing_blockers.clear();
+        constructions.clear(); destructables.clear(); doodads.clear(); pathing_blockers.clear();
         item_infos.clear(); carriables.clear(); projectiles.clear();
         scale_pulses.clear(); dead_states.clear(); renderables.clear();
         regions.clear(); next_region_id = 0;
@@ -145,10 +150,12 @@ struct World {
 Unit          create_unit(World& world, std::string_view type_id, Player owner, f32 x, f32 y, f32 facing = 0);
 Destructable  create_destructable(World& world, std::string_view type_id, f32 x, f32 y, f32 facing = 0, u8 variation = 0);
 Item          create_item(World& world, std::string_view type_id, f32 x, f32 y);
+Doodad        create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 facing = 0, u8 variation = 0);
 
 void          destroy(World& world, Unit unit);
 void          destroy(World& world, Destructable d);
 void          destroy(World& world, Item item);
+void          destroy(World& world, Doodad d);
 
 // ── Unit API ───────────────────────────────────────────────────────────────
 

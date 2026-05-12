@@ -136,6 +136,22 @@ f32 sample_height(const TerrainData& td, f32 x, f32 y);
 // Terrain surface normal at world position (central differences).
 glm::vec3 sample_normal(const TerrainData& td, f32 x, f32 y);
 
+// Cast a ray against the heightmap surface. Returns the world hit
+// point in `hit` if the ray intersects the terrain, false otherwise.
+// Uses 2D DDA grid traversal (Amanatides-Woo) + per-tile analytical
+// bilinear intersection: each tile entered along the ray's XY path
+// gets one closed-form quadratic test. Smooth at all camera angles
+// because there's no march-step quantization to refine away.
+//
+// On cliff-wall tiles the bilinear is a slanted approximation of
+// the rendered step geometry — the hit is consistent (same XY for
+// the same ray) but classifies high vs low based on the slope's
+// midpoint rather than the rendered cliff edge. Fine for cursor
+// placement; revisit if cliff-pixel-accurate clicks become a need.
+bool raycast_terrain(const TerrainData& td,
+                     glm::vec3 ray_origin, glm::vec3 ray_dir,
+                     glm::vec3& hit);
+
 // Snap a world coordinate to the building-placement grid given a
 // footprint extent (tiles) along that axis. Odd extent → snap to a
 // tile center (half-tile offset from origin); even extent → snap to a
@@ -148,6 +164,18 @@ inline f32 snap_building_x(const TerrainData& td, f32 x, u32 footprint_w) {
 }
 inline f32 snap_building_y(const TerrainData& td, f32 y, u32 footprint_h) {
     return snap_building_axis(td, y, td.origin_y(), footprint_h);
+}
+
+// Snap to the nearest pathing-cell center (cell_size = tile_size / 4).
+// Used for destructables so trees / rocks land on cell positions —
+// finer-than-tile placement (WC3 doodads can sit at sub-tile spots)
+// while still landing on a deterministic, save-stable grid.
+f32 snap_cell_axis(const TerrainData& td, f32 x, f32 origin);
+inline f32 snap_cell_x(const TerrainData& td, f32 x) {
+    return snap_cell_axis(td, x, td.origin_x());
+}
+inline f32 snap_cell_y(const TerrainData& td, f32 y) {
+    return snap_cell_axis(td, y, td.origin_y());
 }
 
 // Create a flat terrain with all default values.

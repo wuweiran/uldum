@@ -14,8 +14,11 @@ bool Simulation::init(asset::AssetManager& /*assets*/) {
 
     // Wire pathing unblock: when a building is destroyed, release the
     // tile rectangle it occupied.
-    m_world.on_pathing_unblock = [this](i32 tx, i32 ty, u32 w, u32 h) {
-        m_pathfinder.unblock_tiles(tx, ty, w, h);
+    // PathingBlocker stores its rect in cell units, so we forward directly
+    // to unblock_cells. The parameter names below were tile-flavored
+    // historically; they now carry cell coords.
+    m_world.on_pathing_unblock = [this](i32 cx, i32 cy, u32 w, u32 h) {
+        m_pathfinder.unblock_cells(cx, cy, w, h);
     };
 
     log::info(TAG, "Simulation initialized");
@@ -49,7 +52,7 @@ void Simulation::set_terrain(const map::TerrainData* terrain) {
 void Simulation::sync_pathing_blockers() {
     for (u32 i = 0; i < m_world.pathing_blockers.count(); ++i) {
         auto& blocker = m_world.pathing_blockers.data()[i];
-        m_pathfinder.block_tiles(blocker.tx, blocker.ty, blocker.w, blocker.h);
+        m_pathfinder.block_cells(blocker.cx, blocker.cy, blocker.w, blocker.h);
     }
 }
 

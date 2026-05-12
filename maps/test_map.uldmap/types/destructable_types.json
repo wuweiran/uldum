@@ -1,9 +1,14 @@
 {
     "tree_ashenvale": {
         "display_name": "Ashenvale Tree",
-        "model": "models/destructables/tree.gltf",
+        "models": [
+            "models/destructables/tree_simple.glb",
+            "models/destructables/tree_simple_dark.glb"
+        ],
+        "model_scale": 120,
         "health": { "max": 50 },
         "attributes": { "armor": 0, "armor_type": "fortified" },
-        "variations": 3
+        "pathing_footprint": [2, 2],
+        "collision_radius": 32
     }
 }
