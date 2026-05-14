@@ -50,21 +50,28 @@ function main()
     -- aura mechanic supplants the script side, this line moves into
     -- unit_types.json alongside the others.
     AddAbility(paladin, "devotion_aura")
+    -- Wind Walk on the footman is the proof-of-life for the
+    -- invisibility primitive (UNIT_STATUS_INVISIBLE + SetUnitAlpha
+    -- composed in scripts/abilities.lua). Scene-specific because the
+    -- footman's gameplay role differs per scene — scene_01's footman
+    -- doesn't need it.
+    AddAbility(footman, "wind_walk")
 
     -- Register standard combat systems (shared)
     combat.register_armor_system()
     combat.register_hit_vfx()
     combat.register_death_vfx()
-    combat.register_damage_text()
 
     -- Ability handlers (shared in scripts/abilities.lua). Global ones
-    -- (consecration, holy_light) only need a single registration per
-    -- scene; per-caster ones (cleave, devotion_aura) bind to a unit.
+    -- (consecration, holy_light, wind_walk) only need a single
+    -- registration per scene; per-caster ones (cleave, devotion_aura)
+    -- bind to a unit.
     abilities.register_cleave(footman, player1)
     abilities.register_consecration()
     abilities.register_devotion_aura(paladin, player1)
     abilities.register_holy_light_effect()
-    Log("[Scene02] Hero abilities registered (cleave, consecration, aura, holy light)")
+    abilities.register_wind_walk()
+    Log("[Scene02] Hero abilities registered (cleave, consecration, aura, holy light, wind walk)")
 
     -- Auto-cast Holy Light: paladin heals footman whenever footman drops
     -- below 80% HP. Scene-specific because the caster→target binding
@@ -162,15 +169,8 @@ function main()
     -- dedicated region-overlay primitive. CreateEffect (not PlayEffect)
     -- because we want them to persist for the lifetime of the scene —
     -- the scene swap clears the EffectManager, so no manual cleanup.
-    DefineEffect("portal_rim", {
-        emit_rate   = 14,
-        speed       = 60,
-        life        = 1.4,
-        size        = 9,
-        gravity     = 20,         -- slight upward drift, no fall
-        start_color = { r = 1.0, g = 0.85, b = 0.25, a = 0.9 },
-        end_color   = { r = 1.0, g = 0.55, b = 0.10, a = 0.0 },
-    })
+    -- portal_rim's def lives in types/effects.json so both host and
+    -- client have it at load time.
     local PORTAL_RIM_SEGMENTS = 16
     for i = 0, PORTAL_RIM_SEGMENTS - 1 do
         local theta = (i / PORTAL_RIM_SEGMENTS) * math.pi * 2

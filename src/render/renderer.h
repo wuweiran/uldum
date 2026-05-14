@@ -16,6 +16,7 @@
 #include <vk_mem_alloc.h>
 #include <glm/mat4x4.hpp>
 
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -37,11 +38,15 @@ struct LoadedModel {
     u32              texture_index = 0;  // index into bindless texture array (Phase 14b)
 };
 
-// Per-instance data for static mesh SSBO (80 bytes, std430 aligned)
+// Per-instance data for static mesh SSBO (80 bytes, std430 aligned).
+// `alpha` is the SetUnitAlpha multiplier carried into the fragment so
+// the editor's ghost preview (and any future map-side fade) works on
+// the static pipeline just like it already does on the skinned one.
 struct InstanceData {
     glm::mat4 model;          // 64 bytes
     u32       material_index; // 4 bytes — index into bindless texture array
-    u32       _pad[3];        // 12 bytes — align to 16
+    f32       alpha;          // 4 bytes — visual_alpha (1.0 = opaque)
+    u32       _pad[2];        // 8 bytes — align to 16
 };
 
 class Renderer {
@@ -94,12 +99,21 @@ public:
 
     // Record shadow depth pass (must be called before begin_rendering).
     // alpha: interpolation factor between previous and current tick (0..1).
-    void draw_shadows(VkCommandBuffer cmd, const simulation::World& world, f32 alpha = 1.0f);
+    // `world` is non-const because the renderer advances
+    // World::anim_queues as script-driven clips finish.
+    void draw_shadows(VkCommandBuffer cmd, simulation::World& world, f32 alpha = 1.0f);
 
     // Record main pass draw commands into the given command buffer.
     // Reads Transform + Renderable components from the world.
     // alpha: interpolation factor between previous and current tick (0..1).
-    void draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world, f32 alpha = 1.0f);
+    // `world` is non-const for the same reason as draw_shadows.
+    // `on_after_terrain` (optional): invoked after terrain + water,
+    // before any unit mesh — ground decals like selection rings record
+    // their draws here so meshes (including alpha-blended ones)
+    // composite *over* them rather than being depth-occluded by them.
+    void draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& world,
+              f32 alpha = 1.0f,
+              const std::function<void()>& on_after_terrain = {});
 
     Camera& camera() { return m_camera; }
     const Camera& camera() const { return m_camera; }
@@ -128,7 +142,7 @@ private:
     VkDescriptorSet allocate_shadow_descriptor();
     VkDescriptorSet allocate_bone_descriptor(VkBuffer bone_buffer, usize size);
 
-    void draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world, f32 alpha);
+    void draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f32 alpha);
 
     // Returns true if an entity should be hidden by fog of war (enemy in non-visible tile).
     bool is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const;

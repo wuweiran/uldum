@@ -1,7 +1,7 @@
 #include "input/picking.h"
 
 #include "map/terrain_data.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/geometric.hpp>
@@ -16,11 +16,11 @@ namespace uldum::input {
 // click on or smart-target things they aren't currently scouting. With
 // no fog reference (editor, server-side internal queries) everything
 // reads as visible.
-static bool fog_visible(const simulation::FogOfWar* fog,
+static bool fog_visible(const simulation::Vision* vision,
                         simulation::Player local,
                         const map::TerrainData* terrain,
                         const glm::vec3& world_pos) {
-    if (!fog || !terrain || !terrain->is_valid()) return true;
+    if (!vision || !terrain || !terrain->is_valid()) return true;
     f32 ts = terrain->tile_size;
     if (ts <= 0.0f) return true;
     i32 tx = static_cast<i32>((world_pos.x - terrain->origin_x()) / ts);
@@ -28,7 +28,7 @@ static bool fog_visible(const simulation::FogOfWar* fog,
     if (tx < 0 || ty < 0 ||
         static_cast<u32>(tx) >= terrain->tiles_x ||
         static_cast<u32>(ty) >= terrain->tiles_y) return true;
-    return fog->is_visible(local, static_cast<u32>(tx), static_cast<u32>(ty));
+    return vision->is_visible(local, static_cast<u32>(tx), static_cast<u32>(ty));
 }
 
 void Picker::init(const render::Camera* camera, const map::TerrainData* terrain,
@@ -144,6 +144,8 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         auto* info = handle_infos.get(id);
         if (!info || info->category != simulation::Category::Unit) continue;
         if (m_world->dead_states.has(id)) continue;
+        if (auto* sf = m_world->status_flags.get(id);
+            sf && (sf->flags & simulation::status::Untargetable)) continue;
 
         if (player.is_valid()) {
             auto* own = owners.get(id);
@@ -156,7 +158,7 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         if (m_local_player.is_valid()) {
             auto* own = owners.get(id);
             bool is_own = own && own->player.id == m_local_player.id;
-            if (!is_own && !fog_visible(m_fog, m_local_player, m_terrain, transform->position)) continue;
+            if (!is_own && !fog_visible(m_vision, m_local_player, m_terrain, transform->position)) continue;
         }
 
         f32 ray_t;
@@ -212,7 +214,7 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
         if (!transform) continue;
 
         // Fog filter — items in unscouted tiles aren't clickable.
-        if (!fog_visible(m_fog, m_local_player, m_terrain, transform->position)) continue;
+        if (!fog_visible(m_vision, m_local_player, m_terrain, transform->position)) continue;
 
         f32 ray_t;
         f32 dist = ray_cylinder_dist(origin, dir, transform->position,
@@ -253,6 +255,8 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
         auto* info = handle_infos.get(id);
         if (!info || info->category != simulation::Category::Unit) continue;
         if (m_world->dead_states.has(id)) continue;
+        if (auto* sf = m_world->status_flags.get(id);
+            sf && (sf->flags & simulation::status::Untargetable)) continue;
 
         auto* own = owners.get(id);
         if (!own || own->player.id != player.id) continue;

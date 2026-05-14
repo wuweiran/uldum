@@ -197,18 +197,24 @@ bool ActionPreset::handle_targeting(const InputContext& ctx) {
 
     if (input.mouse_left_pressed && !sel.empty()) {
         const auto* def = ctx.simulation.abilities().get(m_targeting_ability_id);
-        if (def) {
-            if (def->form == simulation::AbilityForm::TargetUnit) {
-                auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-                if (target.is_valid()) {
-                    GameCommand cmd;
-                    cmd.player = sel.player();
-                    cmd.units  = sel.selected();
-                    cmd.order  = simulation::orders::Cast{m_targeting_ability_id, target, {}};
-                    cmd.queued = input.key_shift;
-                    ctx.commands.submit(cmd);
-                }
-            } else if (def->form == simulation::AbilityForm::TargetPoint) {
+        if (def && def->form == simulation::AbilityForm::Target) {
+            // Widget-first: if the ability accepts a widget kind and one
+            // is under the cursor, cast on it. Otherwise fall through to
+            // the ground point if accept_point is on. Picker currently
+            // returns Units only — Destructable / Item targeting will
+            // need its scope extended when those forms ship.
+            simulation::Unit target{};
+            if (def->widget_kinds != 0) {
+                target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+            }
+            if (target.is_valid()) {
+                GameCommand cmd;
+                cmd.player = sel.player();
+                cmd.units  = sel.selected();
+                cmd.order  = simulation::orders::Cast{m_targeting_ability_id, target, {}};
+                cmd.queued = input.key_shift;
+                ctx.commands.submit(cmd);
+            } else if (def->accept_point) {
                 glm::vec3 world_pos;
                 if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                     GameCommand cmd;
@@ -372,16 +378,14 @@ void ActionPreset::dispatch_ability(const InputContext& ctx,
     const auto* def = ctx.simulation.abilities().get(std::string(ability_id));
     if (!def) return;
 
-    if (def->form == simulation::AbilityForm::Instant ||
-        def->form == simulation::AbilityForm::Toggle) {
+    if (def->form == simulation::AbilityForm::Instant) {
         GameCommand cmd;
         cmd.player = sel.player();
         cmd.units  = sel.selected();
         cmd.order  = simulation::orders::Cast{std::string(ability_id), {}, {}};
         cmd.queued = queued_modifier;
         ctx.commands.submit(cmd);
-    } else if (def->form == simulation::AbilityForm::TargetUnit ||
-               def->form == simulation::AbilityForm::TargetPoint) {
+    } else if (def->form == simulation::AbilityForm::Target) {
         m_targeting_ability    = true;
         m_targeting_ability_id = ability_id;
     }

@@ -1,7 +1,7 @@
 #include "simulation/spatial_query.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 
@@ -109,31 +109,36 @@ bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter&
         if (cls && has_classification(cls->flags, "structure")) return false;
     }
 
-    // Visibility check: skip units the named player can't see right now
-    // (in fog of war or unexplored). Skipped when fog is disabled, when
-    // we have no Simulation handle, or when terrain isn't ready.
+    // Untargetable: skipped by default, scripts that explicitly want
+    // every unit in an area (rare — e.g. Apocalypse-style scans) flip
+    // the include flag.
+    if (!filter.include_untargetable) {
+        auto* sf = world.status_flags.get(unit.id);
+        if (sf && (sf->flags & status::Untargetable)) return false;
+    }
+
+    // Visibility check: skip units the named player can't see right
+    // now. Delegates to the unified Vision query so it picks up every
+    // gate at once: owner / ally (always visible), UNIT_STATUS_INVISIBLE
+    // (only revealed by true sight or to allies), and fog of war tile
+    // state. Combat auto-acquisition passes `visible_to = owner` —
+    // invisible enemies fall out here automatically, which is the
+    // gameplay behavior Wind Walk-style spells expect (and matches
+    // what the renderer / network snapshot path do for the same unit).
     if (filter.visible_to.is_valid() && m_sim) {
-        const auto& fog = m_sim->fog();
-        const auto* terrain = m_sim->terrain();
-        if (fog.enabled() && terrain && terrain->is_valid() && terrain->tile_size > 0.0f) {
-            auto* tf = world.transforms.get(unit.id);
-            if (!tf) return false;
-            f32 ts = terrain->tile_size;
-            i32 tx = static_cast<i32>((tf->position.x - terrain->origin_x()) / ts);
-            i32 ty = static_cast<i32>((tf->position.y - terrain->origin_y()) / ts);
-            if (tx < 0 || ty < 0 ||
-                static_cast<u32>(tx) >= terrain->tiles_x ||
-                static_cast<u32>(ty) >= terrain->tiles_y) return false;
-            if (!fog.is_visible(filter.visible_to,
-                                static_cast<u32>(tx),
-                                static_cast<u32>(ty))) return false;
-        }
+        if (!m_sim->vision().is_unit_visible_to(world, *m_sim, unit.id,
+                                                filter.visible_to)) return false;
     }
 
     // Custom predicate
     if (filter.predicate && !filter.predicate(unit)) return false;
 
     return true;
+}
+
+bool SpatialGrid::is_visible_to(const World& world, u32 target_id, Player player) const {
+    if (!m_sim) return true;  // no Vision wired — fall through to "visible"
+    return m_sim->vision().is_unit_visible_to(world, *m_sim, target_id, player);
 }
 
 std::vector<Unit> SpatialGrid::units_in_range(const World& world, glm::vec3 center, f32 radius, const UnitFilter& filter) const {

@@ -6,7 +6,7 @@ add_library(uldum_simulation STATIC
     systems.cpp
     pathfinding.cpp
     spatial_query.cpp
-    fog_of_war.cpp
+    vision.cpp
 )
 
 target_include_directories(uldum_simulation PUBLIC ${ULDUM_SRC})

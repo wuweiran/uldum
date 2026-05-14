@@ -1,4 +1,5 @@
 #include "render/animation.h"
+#include "core/log.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
@@ -7,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <span>
+#include <string>
+#include <unordered_set>
 
 namespace uldum::render {
 
@@ -133,8 +136,11 @@ void set_anim_state(AnimationInstance& inst, AnimState state,
     inst.blend_factor   = (state == inst.previous_state) ? 1.0f : 0.0f;  // skip crossfade on restart
     inst.finished       = false;
 
-    // Looping: idle and walk loop; attack, spell, death play once
-    inst.looping = (state == AnimState::Idle || state == AnimState::Walk);
+    // Looping: idle and walk loop; attack, spell, death play once.
+    // Custom (script-driven) inherits looping from script_looping —
+    // the map author asked for a one-shot or a loop explicitly.
+    inst.looping = (state == AnimState::Idle || state == AnimState::Walk
+                    || (state == AnimState::Custom && inst.script_looping));
 
     // Compute playback speed
     i32 clip_idx = inst.state_to_clip[static_cast<u8>(state)];
@@ -268,22 +274,27 @@ void evaluate_animation(AnimationInstance& inst) {
     }
 }
 
-glm::vec3 get_attachment_point(const AnimationInstance& inst, std::string_view bone_name) {
-    if (!inst.model) return {0, 0, 0};
+static i32 find_bone(const AnimationInstance& inst, std::string_view bone_name) {
+    if (!inst.model) return -1;
     auto& skel = inst.model->skeleton;
-
-    // Try exact name, then with "attach_" prefix (Blender convention)
     std::string prefixed = "attach_" + std::string(bone_name);
-
     for (u32 i = 0; i < static_cast<u32>(skel.bones.size()); ++i) {
         if (skel.bones[i].name == bone_name || skel.bones[i].name == prefixed) {
-            if (i < inst.bone_globals.size()) {
-                return glm::vec3(inst.bone_globals[i][3]);
-            }
-            break;
+            return static_cast<i32>(i);
         }
     }
-    return {0, 0, 0};
+    static std::unordered_set<std::string> warned;
+    std::string key = inst.model->name + "|" + std::string(bone_name);
+    if (warned.insert(key).second) {
+        log::warn("Animation", "Bone '{}' not found on model '{}'", bone_name, inst.model->name);
+    }
+    return -1;
+}
+
+glm::vec3 get_attachment_point(const AnimationInstance& inst, std::string_view bone_name) {
+    i32 i = find_bone(inst, bone_name);
+    if (i < 0 || static_cast<usize>(i) >= inst.bone_globals.size()) return {0, 0, 0};
+    return glm::vec3(inst.bone_globals[i][3]);
 }
 
 } // namespace uldum::render

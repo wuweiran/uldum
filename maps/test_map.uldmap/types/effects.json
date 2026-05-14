@@ -1,4 +1,9 @@
 {
+    "portal_rim": {
+        "count": 1, "emit_rate": 14, "speed": 60, "life": 1.4, "size": 9, "gravity": 20,
+        "start_color": { "r": 1.0, "g": 0.85, "b": 0.25, "a": 0.9 },
+        "end_color":   { "r": 1.0, "g": 0.55, "b": 0.10, "a": 0.0 }
+    },
     "hit_spark": {
         "count": 5, "speed": 80, "life": 0.3, "size": 6, "gravity": -100,
         "texture": "spark",
@@ -12,7 +17,7 @@
         "end_color": { "r": 0.3, "g": 0, "b": 0, "a": 0 }
     },
     "heal_glow": {
-        "count": 15, "speed": 120, "life": 1.2, "size": 25, "gravity": 0, "spread": 0.03,
+        "count": 8, "emit_rate": 25, "speed": 120, "life": 0.6, "size": 35, "gravity": 0, "spread": 0.03,
         "texture": "glow",
         "start_color": { "r": 1, "g": 0.85, "b": 0.2, "a": 1 },
         "end_color": { "r": 1, "g": 0.7, "b": 0.1, "a": 0 }

@@ -46,7 +46,8 @@
         "name": "Consecration",
         "icon": "textures/icons/consecration.ktx2",
         "hotkey": "E",
-        "form": "target_point",
+        "form": "target",
+        "accept_point": true,
         "shape": "area",
         "max_level": 1,
         "levels": [

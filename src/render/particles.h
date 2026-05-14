@@ -40,7 +40,7 @@ struct Particle {
 };
 
 // Emitter shapes
-enum class EmitterShape : u8 { Point, Sphere };
+enum class EmitterShape : u8 { Point, Sphere, Ring };
 
 // A particle emitter — spawns particles over time or as a burst
 struct ParticleEmitter {
@@ -63,6 +63,7 @@ struct ParticleEmitter {
 
     u32          id           = 0;         // for external tracking
     u32          texture_id   = 0;         // particle texture (0 = default soft circle)
+    f32          radius       = 0;         // Ring shape: radius of the circle
 };
 
 // The particle system — manages emitters, particles, and GPU buffer
@@ -77,8 +78,9 @@ public:
     u32 add_emitter(const ParticleEmitter& emitter);
     void remove_emitter(u32 id);
 
-    // Spawn a one-shot burst at a position
-    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f, u32 texture_id = 0, f32 spread = 1.0f);
+    // Spawn a one-shot burst at a position. If `radius > 0`, the emitter
+    // uses Ring shape; otherwise shape is chosen from `spread`.
+    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f, u32 texture_id = 0, f32 spread = 1.0f, f32 radius = 0);
 
     // Update particles (spawn, simulate, kill dead). Call once per frame.
     void update(f32 dt);

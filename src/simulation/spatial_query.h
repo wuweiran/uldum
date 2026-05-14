@@ -23,6 +23,10 @@ struct UnitFilter {
     std::vector<std::string> classifications;   // unit must have ALL of these flags
     bool        alive_only = true;              // only living units
     bool        exclude_buildings = false;       // skip units with "structure" classification
+    // UNIT_STATUS_UNTARGETABLE excludes units from cursors / pickers /
+    // attack acquisition by default. AoE spells that want to hit the
+    // area regardless (e.g. Apocalypse) can flip this to true.
+    bool        include_untargetable = false;
 
     // Custom predicate (for C++ callers; Lua uses the fields above)
     std::function<bool(Unit)> predicate;
@@ -44,6 +48,12 @@ public:
 
     // Query: find the nearest unit matching filter within max_radius. Returns invalid handle if none.
     Unit nearest_unit(const World& world, glm::vec3 center, f32 max_radius, const UnitFilter& filter = {}) const;
+
+    // Single-shot visibility check, same rules as UnitFilter::visible_to:
+    // owner / ally + true-sight + fog-of-war + UNIT_STATUS_INVISIBLE.
+    // For per-tick re-validation of already-locked combat targets so
+    // attackers drop targets that go invisible mid-fight.
+    bool is_visible_to(const World& world, u32 target_id, Player player) const;
 
 private:
     bool passes_filter(const World& world, Unit unit, const UnitFilter& filter) const;

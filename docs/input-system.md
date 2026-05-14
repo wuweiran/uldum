@@ -62,7 +62,7 @@ UI (in WC3, the bottom row of the command card).
 
 ### Ability Slots
 
-Everything else: active spells, passive auras, toggles, channels. These
+Everything else: active spells, passive auras, channels. These
 go into numbered **slots** (0 through `MAX_ABILITY_SLOTS - 1`, currently 16).
 
 Initial slot assignment comes from the `"abilities"` list order in the unit
@@ -239,8 +239,8 @@ Default command keybindings (overridable per map):
 
 **Ability activation (RTS):** The RTS preset reads the selected unit's ability
 slots. When a key is pressed, it checks if any slotted ability has a matching
-`"hotkey"` value. If found, the preset enters targeting mode (for target_unit /
-target_point forms) or instant-casts (for no-target / toggle forms).
+`"hotkey"` value. If found, the preset enters targeting mode (for `target`-form
+abilities) or instant-casts (for `instant` forms).
 
 ### Action Preset
 
@@ -282,10 +282,11 @@ enter reticle mode (click picks ground).
 **Ability activation (Action mobile):** Each occupied slot becomes a touch
 button. Targeting interaction is derived from the ability's `form`:
 
-- `instant` / `toggle` → tap button
-- `target_unit` → tap button, uses current target slot (no extra tap needed)
-- `target_point` → tap button, then tap ground (or drag from button)
-- `channel` → tap button to start, tap again to cancel
+- `instant` → tap button
+- `target` (widget-only, `widget_kinds` non-empty + `accept_point=false`) → tap button, uses current target slot (no extra tap needed)
+- `target` (point-only, `widget_kinds=[]` + `accept_point=true`) → tap button, then tap ground (or drag from button)
+- `target` (hybrid) → tap button, then tap a widget (snap-first) or ground (fallback)
+- channel (any form with `channel_time > 0`) → tap button to start, tap again to cancel
 
 ## 6. Map Configuration
 

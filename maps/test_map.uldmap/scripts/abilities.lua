@@ -123,6 +123,131 @@ function M.register_holy_light_effect(opts)
     end)
 end
 
+-- Wind Walk — global. The caster fades from full alpha to a translucent
+-- ghost over `fade_time` (allies still see the ghost; enemies see
+-- nothing once the invisibility flag lands), stays invisible for the
+-- buff's declared duration, and pops back to full alpha on expiry.
+-- Attacking while fully invisible lands an additional `unveil_bonus`
+-- damage on the struck target and immediately ends invisibility.
+--
+-- All state-toggling is driven by two passive_flag buffs declared in
+-- ability_types.json:
+--   * windwalk_fading     — no_acquire, 1s
+--   * windwalk_invisible  — invisible + no_acquire, 10s
+-- The Lua side only owns the alpha tween (cosmetic, not yet a modifier)
+-- and the unveil-strike trigger. Stack/refresh semantics, refcount
+-- bookkeeping, and natural expiry all come from the engine.
+function M.register_wind_walk(opts)
+    opts = opts or {}
+    local FADE_TIME    = opts.fade_time    or 1.0
+    local FADE_STEPS   = 20
+    local GHOST_PCT    = -50    -- target visual_alpha_percent at end of fade
+    local UNVEIL_BONUS = opts.unveil_bonus or 80
+
+    local cast_trig = CreateTrigger()
+    TriggerRegisterEvent(cast_trig, EVENT_GLOBAL_ABILITY_EFFECT)
+    TriggerAddCondition(cast_trig, function()
+        return GetTriggerAbilityId() == "wind_walk"
+    end)
+    TriggerAddAction(cast_trig, function()
+        local caster = GetTriggerUnit()
+        if not caster or not IsUnitAlive(caster) then return end
+
+        -- Recast: drop both buffs so refcounts reset, then re-apply.
+        RemoveAbility(caster, "windwalk_fading")
+        RemoveAbility(caster, "windwalk_invisible")
+
+        AddAbility(caster, "windwalk_fading")
+
+        -- Ramp the fading buff's visual_alpha_percent from 0 to
+        -- GHOST_PCT over FADE_TIME. The ability owns the modifier
+        -- state; we just drive the value. recalculate_modifiers fires
+        -- on every SetAbilityModifier call, so the alpha tracks live.
+        --
+        -- Self-aborts if the buff is gone — wind walk can be broken
+        -- mid-fade by another cast (see break_trig below) or by the
+        -- unit dying; without this guard the timer would still finish
+        -- the swap to windwalk_invisible at step 20.
+        local step = 0
+        local dt   = FADE_TIME / FADE_STEPS
+        local fade_timer
+        fade_timer = CreateTimer(dt, true, function()
+            -- Self-abort if the buff was stripped externally (cast
+            -- break, death, recast). Without this guard the timer
+            -- would still finish the swap to windwalk_invisible even
+            -- after wind walk was explicitly ended.
+            if not (IsUnitAlive(caster) and HasAbility(caster, "windwalk_fading")) then
+                DestroyTimer(fade_timer)
+                return
+            end
+            step = step + 1
+            local t = step / FADE_STEPS
+            SetAbilityModifier(caster, "windwalk_fading",
+                               "visual_alpha_percent", GHOST_PCT * t)
+            if step >= FADE_STEPS then
+                DestroyTimer(fade_timer)
+                RemoveAbility(caster, "windwalk_fading")
+                AddAbility(caster, "windwalk_invisible")
+            end
+        end)
+    end)
+
+    -- Break-on-cast: any ability except wind_walk itself, fired by a
+    -- unit currently carrying either wind walk buff, ends invisibility.
+    -- The fade-timer's self-abort above keeps the fade ramp from
+    -- continuing once the fading buff has been removed.
+    local break_trig = CreateTrigger()
+    TriggerRegisterEvent(break_trig, EVENT_GLOBAL_ABILITY_EFFECT)
+    TriggerAddCondition(break_trig, function()
+        if GetTriggerAbilityId() == "wind_walk" then return false end
+        local caster = GetTriggerUnit()
+        if not caster then return false end
+        return HasAbility(caster, "windwalk_fading")
+            or HasAbility(caster, "windwalk_invisible")
+    end)
+    TriggerAddAction(break_trig, function()
+        local caster = GetTriggerUnit()
+        RemoveAbility(caster, "windwalk_fading")
+        RemoveAbility(caster, "windwalk_invisible")
+        Log(string.format("[WindWalk] %s revealed by cast", GetUnitTypeId(caster)))
+    end)
+
+    -- Unveiling strike: when a unit carrying windwalk_invisible deals
+    -- attack damage, boost it and clear the buff (which cascades to
+    -- dropping invisibility + no_acquire via refcount).
+    -- HIGH priority so the strike's damage boost lands BEFORE other
+    -- damage-event triggers read GetDamageAmount() — notably cleave,
+    -- which then splashes a share of the boosted hit rather than the
+    -- base swing.
+    local strike_trig = CreateTrigger(TRIGGER_PRIORITY_HIGH)
+    TriggerRegisterEvent(strike_trig, EVENT_GLOBAL_DAMAGE)
+    TriggerAddCondition(strike_trig, function()
+        if GetDamageType() ~= "attack" then return false end
+        local src = GetDamageSource()
+        if not src then return false end
+        return HasAbility(src, "windwalk_invisible")
+    end)
+    TriggerAddAction(strike_trig, function()
+        local src    = GetDamageSource()
+        local target = GetDamageTarget()
+        SetDamageAmount(GetDamageAmount() + UNVEIL_BONUS)
+        RemoveAbility(src, "windwalk_invisible")
+        local total = math.floor(GetDamageAmount() + 0.5)
+        CreateTextTag{
+            text      = string.format("%d!", total),
+            unit      = target,
+            z_offset  = 140.0,
+            size      = 20,
+            color     = "#FFD040FF",
+            velocity  = { 0, -50 },
+            lifespan  = 1.4,
+            fadepoint = 0.7,
+        }
+        Log(string.format("[WindWalk] %s unveiling strike +%d on %s (total %d)",
+            GetUnitTypeId(src), UNVEIL_BONUS, GetUnitTypeId(target), total))
+    end)
+end
+
 -- Healing potion — global. Heals the caster and decrements the item's
 -- charges field; removes the item when charges hit zero.
 function M.register_healing_potion(opts)

@@ -5,7 +5,7 @@
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 
 #include <string>
 #include <string_view>
@@ -36,8 +36,18 @@ public:
     // Call once after map entities are created.
     void sync_pathing_blockers();
 
-    World&       world()       { return m_world; }
-    const World& world() const { return m_world; }
+    // On the multiplayer client this Simulation is never ticked; its
+    // own m_world / m_vision stay empty and the network code populates
+    // a separate client world + vision. To keep call sites uniform
+    // (input presets, HUD, etc. all read sim.world() / sim.vision()),
+    // the client can install pointer overrides via the setters below.
+    // When set, world() / vision() — and methods like
+    // target_filter_passes that consult world internally — read through
+    // the override instead. Host / offline never sets these and behaves
+    // identically to before.
+    World&       world()       { return m_world_override ? *m_world_override : m_world; }
+    const World& world() const { return m_world_override ? *m_world_override : m_world; }
+    void set_world_override(World* w) { m_world_override = w; }
 
     TypeRegistry&       types()       { return m_types; }
     const TypeRegistry& types() const { return m_types; }
@@ -51,8 +61,9 @@ public:
     SpatialGrid&       spatial_grid()       { return m_spatial_grid; }
     const SpatialGrid& spatial_grid() const { return m_spatial_grid; }
 
-    FogOfWar&       fog()       { return m_fog; }
-    const FogOfWar& fog() const { return m_fog; }
+    Vision&       vision()       { return m_vision_override ? *m_vision_override : m_vision; }
+    const Vision& vision() const { return m_vision_override ? *m_vision_override : m_vision; }
+    void set_vision_override(Vision* v) { m_vision_override = v; }
 
     // ── Alliance system ──────────────────────────────────────────────────
     // Initialize with player count (call after loading manifest).
@@ -102,8 +113,10 @@ private:
     AbilityRegistry m_abilities;
     Pathfinder      m_pathfinder;
     SpatialGrid     m_spatial_grid;
-    FogOfWar        m_fog;
+    Vision          m_vision;
     const map::TerrainData* m_terrain = nullptr;
+    World*          m_world_override  = nullptr;  // set by client to client_world
+    Vision*         m_vision_override = nullptr;  // set by client to client_vision
 
     // Alliance table: m_alliances[a * m_player_count + b] = flags from a toward b
     std::vector<AllianceFlags> m_alliances;

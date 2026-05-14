@@ -758,7 +758,15 @@ bool App::start_session() {
         m_network.set_pause_on_disconnect(m_map.manifest().pause_on_disconnect);
     } else if (is_client) {
         m_network.set_type_registry(&m_server.simulation().types());
+        m_network.set_ability_registry(&m_server.simulation().abilities());
         m_network.init_client_fog(m_map.terrain(), m_map, m_server.simulation());
+        // Route the never-ticked server simulation's world/vision
+        // accessors to the network-mirrored state so input presets,
+        // HUD, target_filter_passes, and is_allied/is_enemy queries
+        // (which all reach in via m_server.simulation()) see the real
+        // entities and fog instead of the empty server-side defaults.
+        m_server.simulation().set_world_override(&m_network.client_world());
+        m_server.simulation().set_vision_override(&m_network.client_vision());
     }
 
     // Wire callbacks
@@ -780,6 +788,69 @@ bool App::start_session() {
         m_server.script().set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
             m_network.host_broadcast_update(entity_id, pkt);
         });
+        m_server.script().set_broadcast_fn([this](const std::vector<u8>& pkt) {
+            m_network.host_broadcast(pkt);
+        });
+        m_server.script().set_player_count(
+            static_cast<u32>(m_map.manifest().players.size()));
+        // Fog-aware effect delivery. ScriptEngine::update calls these
+        // per (player, effect) once that player's vision covers the
+        // effect's position. For the host's local player we drive the
+        // renderer directly; for peers we send the appropriate packet.
+        // Deliver and destroy go through the same Create/Destroy code
+        // path on the client — no burst-vs-persistent split. Particles
+        // already in flight fade out on their own; the EffectInstance
+        // is what the destroy actually removes.
+        m_server.script().set_effect_deliver_fn(
+            [this](u32 player_id, u32 server_id, std::string_view name,
+                   u32 entity_id, glm::vec3 pos, std::string_view attach_point) {
+                if (player_id == m_args.local_slot) {
+                    auto& mgr = m_renderer.effect_manager();
+                    u32 local_id;
+                    if (entity_id == UINT32_MAX) {
+                        local_id = mgr.create(std::string(name), pos);
+                    } else {
+                        simulation::Unit u;
+                        u.id = entity_id;
+                        auto* info = m_server.simulation().world().handle_infos.get(entity_id);
+                        u.generation = info ? info->generation : 0;
+                        local_id = mgr.create_on_unit(std::string(name), u, pos,
+                                                      std::string(attach_point));
+                    }
+                    m_effect_id_map[server_id] = local_id;
+                } else {
+                    auto pkt = network::build_effect_create(server_id, name, entity_id,
+                                                            pos, attach_point);
+                    m_network.host_send_to_player(player_id, pkt);
+                }
+            });
+        m_server.script().set_effect_destroy_fn(
+            [this](u32 player_id, u32 server_id) {
+                if (player_id == m_args.local_slot) {
+                    auto it = m_effect_id_map.find(server_id);
+                    if (it != m_effect_id_map.end()) {
+                        m_renderer.effect_manager().destroy(it->second);
+                        m_effect_id_map.erase(it);
+                    }
+                } else {
+                    auto pkt = network::build_effect_destroy(server_id);
+                    m_network.host_send_to_player(player_id, pkt);
+                }
+            });
+        // Ability lifecycle broadcasts — fire from every add / remove
+        // path (Lua, engine aura ticks, natural duration expiry) and
+        // ride the same per-entity visibility filter as other
+        // S_UPDATE packets.
+        m_server.simulation().world().on_ability_added =
+            [this](simulation::Unit unit, std::string_view ability_id, u32 level) {
+                auto pkt = network::build_update_ability_add(unit.id, ability_id, level);
+                m_network.host_broadcast_update(unit.id, pkt);
+            };
+        m_server.simulation().world().on_ability_removed =
+            [this](simulation::Unit unit, std::string_view ability_id) {
+                auto pkt = network::build_update_ability_remove(unit.id, ability_id);
+                m_network.host_broadcast_update(unit.id, pkt);
+            };
         register_script_camera_callbacks();
         m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {
@@ -813,6 +884,49 @@ bool App::start_session() {
     } else {
         m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
+        };
+        // Effect spawn from host. UINT32_MAX entity_id = free-position
+        // effect; otherwise attach to the named entity (using the
+        // local client's transform for live tracking).
+        m_network.on_effect = [this](std::string_view name, u32 entity_id,
+                                      glm::vec3 pos, std::string_view attach_point) {
+            if (entity_id == UINT32_MAX) {
+                m_renderer.effect_manager().play(std::string(name), pos);
+                return;
+            }
+            simulation::Unit u;
+            u.id = entity_id;
+            auto* info = m_network.client_world().handle_infos.get(entity_id);
+            u.generation = info ? info->generation : 0;
+            m_renderer.effect_manager().play_on_unit(std::string(name), u, pos,
+                                                    std::string(attach_point));
+        };
+        // CreateEffect: persistent effect with stable server-assigned
+        // id. Track server→local handle so a later destroy can find
+        // its EffectManager instance.
+        m_network.on_effect_create = [this](u32 server_id, std::string_view name,
+                                              u32 entity_id, glm::vec3 pos,
+                                              std::string_view attach_point) {
+            auto& mgr = m_renderer.effect_manager();
+            u32 local_id;
+            if (entity_id == UINT32_MAX) {
+                local_id = mgr.create(std::string(name), pos);
+            } else {
+                simulation::Unit u;
+                u.id = entity_id;
+                auto* info = m_network.client_world().handle_infos.get(entity_id);
+                u.generation = info ? info->generation : 0;
+                local_id = mgr.create_on_unit(std::string(name), u, pos,
+                                              std::string(attach_point));
+            }
+            m_effect_id_map[server_id] = local_id;
+        };
+        m_network.on_effect_destroy = [this](u32 server_id) {
+            auto it = m_effect_id_map.find(server_id);
+            if (it != m_effect_id_map.end()) {
+                m_renderer.effect_manager().destroy(it->second);
+                m_effect_id_map.erase(it);
+            }
         };
         // Host-driven scene swap. NetworkManager fires this when an
         // S_SCENE_SWITCH arrives; the App tears down local scene
@@ -862,9 +976,9 @@ bool App::start_session() {
     // fog as a ground click. Client mirrors fog from the server; host
     // / offline reads its own simulation fog directly.
     if (is_client) {
-        m_picker.set_fog(&m_network.client_fog(), simulation::Player{m_args.local_slot});
+        m_picker.set_vision(&m_network.client_vision(), simulation::Player{m_args.local_slot});
     } else {
-        m_picker.set_fog(&m_server.simulation().fog(), simulation::Player{m_args.local_slot});
+        m_picker.set_vision(&m_server.simulation().vision(), simulation::Player{m_args.local_slot});
     }
 
     // Input preset + bindings — preset is map-defined; bindings are the
@@ -893,10 +1007,10 @@ bool App::start_session() {
         m_hud_world_ctx = hud::WorldContext{};
         if (is_client) {
             m_hud_world_ctx.world = &m_network.client_world();
-            m_hud_world_ctx.fog   = &m_network.client_fog();
+            m_hud_world_ctx.vision = &m_network.client_vision();
         } else {
-            m_hud_world_ctx.world = &m_server.simulation().world();
-            m_hud_world_ctx.fog   = &m_server.simulation().fog();
+            m_hud_world_ctx.world  = &m_server.simulation().world();
+            m_hud_world_ctx.vision = &m_server.simulation().vision();
         }
         // Type registry: server/host owns one; client also needs it (set via
         // NetworkManager::set_type_registry earlier in start_session). Both
@@ -1128,7 +1242,7 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
     // simulation and is rebuilt by sim.set_terrain above.
     if (m_args.net_mode == network::Mode::Client && m_map.terrain().is_valid()) {
         m_network.init_client_fog(m_map.terrain(), m_map, m_server.simulation());
-        m_picker.set_fog(&m_network.client_fog(), simulation::Player{m_args.local_slot});
+        m_picker.set_vision(&m_network.client_vision(), simulation::Player{m_args.local_slot});
     }
 }
 
@@ -1600,9 +1714,12 @@ void App::run() {
                 // preset runs. A unit the player had selected stays in
                 // `m_selected` until something clears it — without this
                 // step, rings + action_bar + commands keep pretending
-                // the corpse is a live unit.
+                // the corpse is a live unit. Use active_world() so the
+                // pass reads from the client's mirror in MP mode —
+                // m_server.simulation().world() is empty on the client
+                // and would mark every selected unit dead.
                 {
-                    const auto& world = m_server.simulation().world();
+                    const auto& world = active_world();
                     const auto& cur = m_selection.selected();
                     bool any_dead = false;
                     for (auto& u : cur) {
@@ -1769,16 +1886,16 @@ void App::run() {
             m_audio.update();
 
             if (!is_client) {
-                auto& fog = m_server.simulation().fog();
-                if (fog.enabled()) {
-                    const f32* visual = fog.update_visual(simulation::Player{m_args.local_slot}, frame_dt);
-                    m_renderer.set_fog_grid(visual, fog.tiles_x(), fog.tiles_y());
+                auto& vision = m_server.simulation().vision();
+                if (vision.enabled()) {
+                    const f32* visual = vision.update_visual(simulation::Player{m_args.local_slot}, frame_dt);
+                    m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
                 }
             } else {
                 const f32* visual = m_network.update_client_fog(frame_dt);
                 if (visual) {
-                    m_renderer.set_fog_grid(visual, m_network.client_fog().tiles_x(),
-                                            m_network.client_fog().tiles_y());
+                    m_renderer.set_fog_grid(visual, m_network.client_vision().tiles_x(),
+                                            m_network.client_vision().tiles_y());
                 }
             }
             break;
@@ -1827,12 +1944,15 @@ void App::run() {
                 m_renderer.upload_fog(cmd);
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
-                m_renderer.draw(cmd, m_rhi.extent(), world, alpha);
 
                 // World overlays — selection rings, ability indicators,
-                // future build-placement ghosts. Drawn after the 3D
-                // scene so they can be occluded by buildings, before
-                // HUD so bars / labels stack above.
+                // future build-placement ghosts. We BUILD the overlay
+                // batch up front, then hand its draw call to
+                // renderer.draw via the on_after_terrain callback so it
+                // composites at the right depth-stencil point (after
+                // terrain + water, before unit meshes). That ordering
+                // makes alpha-blended units (Wind Walk fade) blend
+                // *over* the ring rather than depth-occluding it.
                 {
                     m_world_overlays.begin_frame();
                     using TexId = render::WorldOverlays::TextureId;
@@ -2165,8 +2285,10 @@ void App::run() {
                                                        TexId::SnapTarget);
                         }
                     }
-                    m_world_overlays.draw(cmd, m_renderer.camera().view_projection());
                 }
+                m_renderer.draw(cmd, m_rhi.extent(), world, alpha, [&]() {
+                    m_world_overlays.draw(cmd, m_renderer.camera().view_projection());
+                });
                 // HUD overlay. Pointer is already dispatched earlier in
                 // the frame (before input preset update) so its captured
                 // state gates gameplay input correctly — here we just

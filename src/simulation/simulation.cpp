@@ -34,7 +34,7 @@ void Simulation::shutdown() {
     m_terrain = nullptr;
     m_types.clear();
     m_abilities.clear();
-    m_fog.init(0, 0, 0, 0, FogMode::None);  // releases per-player grids
+    m_vision.init(0, 0, 0, 0, FogMode::None);  // releases per-player grids
     m_alliances.clear();
     m_player_count = 0;
     m_player_names.clear();
@@ -102,12 +102,16 @@ bool Simulation::has_shared_vision(Player a, Player b) const {
 
 bool Simulation::target_filter_passes(const TargetFilter& filter,
                                       Unit caster, Unit target) const {
-    if (!m_world.validate(target)) return false;
+    // Read world through the accessor so the client's m_world_override
+    // is honored — without this, MP clients query the empty server
+    // simulation's world and every target is rejected.
+    const World& w = world();
+    if (!w.validate(target)) return false;
 
     // Liveness gate. `alive` defaults true in JSON (parser-side), so
     // most filters only accept living targets. `dead` lets resurrect-
     // style abilities target corpses; both can be true for either.
-    bool dead = m_world.dead_states.has(target.id);
+    bool dead = w.dead_states.has(target.id);
     if (!filter.alive && !filter.dead) return false;
     if (dead) {
         if (!filter.dead) return false;
@@ -123,8 +127,8 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     if (is_self) {
         if (!filter.self_) return false;
     } else {
-        const auto* caster_owner = m_world.owners.get(caster.id);
-        const auto* target_owner = m_world.owners.get(target.id);
+        const auto* caster_owner = w.owners.get(caster.id);
+        const auto* target_owner = w.owners.get(target.id);
         if (!caster_owner || !target_owner) return false;
         bool allied = is_allied(caster_owner->player, target_owner->player);
         if (allied) {
@@ -137,7 +141,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // Optional classification list. If non-empty, the target's
     // classification set must contain at least one of the listed tags.
     if (!filter.classifications.empty()) {
-        const auto* cls = m_world.classifications.get(target.id);
+        const auto* cls = w.classifications.get(target.id);
         if (!cls) return false;
         bool any = false;
         for (const auto& want : filter.classifications) {
@@ -171,12 +175,11 @@ void Simulation::tick(float dt) {
     system_projectile(m_world, dt);
     system_collision(m_world, m_spatial_grid, m_pathfinder);
     system_death(m_world);
-    system_scale_pulse(m_world, dt);
     // After all the state-changing systems — regions read final
     // positions and dead/alive state for this tick.
     system_regions(m_world);
 
-    m_fog.update(m_world, *this);
+    m_vision.update(m_world, *this);
 }
 
 } // namespace uldum::simulation

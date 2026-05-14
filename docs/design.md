@@ -649,12 +649,12 @@ By this point items + regions + scene-driven UI + camera have produced concrete 
 
 The engine's gameplay surface is thin compared to what map authors hitting WC3 expectations will want. Phase 20 expands it. Detailed designs live in the linked docs; this list is the work breakdown.
 
-- Ability forms expansion — channel lifecycle, spellbook, morph, target_destructable, target_item, resurrection, AoE-around-caster indicator, render integrations. See [ability-system.md](ability-system.md).
-- Status flags — first-class unit states (stunned / silenced / muted / disarmed / rooted / invulnerable / magic_immune / untargetable / paused). See [gameplay-model.md](gameplay-model.md).
+- Ability forms expansion — split modifier passive into `passive_modifier` + `passive_flag`, refcounted flags, `aura` broadcasts buffs, ability-namespace attribute modifiers. See [ability-system.md](ability-system.md).
+- Events — `EVENT_UNIT_DYING`, `EVENT_UNIT_ISSUED_ORDER`, `EVENT_UNIT_ABILITY_CHANNEL`, `EVENT_UNIT_ABILITY_ENDCAST` and global variants.
+- Status flags — first-class unit states (stunned / silenced / muted / disarmed / rooted / invulnerable / magic_immune / untargetable / paused).
 - Animation control — `SetUnitAnimation` / `QueueUnitAnimation` Lua bindings.
-- Effect attachment slots — named points (`head`, `hand,left`, `weapon`, `origin`). See [effects.md](effects.md).
-- Fog-of-war scripting — Lua bindings (`RevealArea`, `CreateFogModifier`, `MakeUnitVisible`, `IsVisibleToPlayer`).
-- Order events — `EVENT_UNIT_ISSUED_ORDER` and per-unit variant.
+- Effect attachment slots — named points (`head`, `weapon`, `origin`).
+- Fog-of-war scripting — Lua bindings (`UnitShareVision`, `CreateFogModifier`, `MakeUnitVisible`, `IsVisibleToPlayer`).
 
 ### Phase 21 — Projectile
 

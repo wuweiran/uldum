@@ -146,6 +146,49 @@ function CreateUnit(type_id, player, x, y, facing) end
 --- @param unit unit
 function RemoveUnit(unit) end
 
+--- Transform a unit into a different type in place. Same handle, same
+--- position, same owner. Swaps every type-derived component: model,
+--- scale, max HP / regen, state defaults (mana, energy, …),
+--- attribute base values, movement, combat, vision, classifications,
+--- and the structure-building flag. Carries Health and shared State
+--- ids by percentage (60% mana on morph in → 60% of new max). Cancels
+--- in-flight cast / attack / movement.
+---
+--- Abilities are NOT touched. The map manages the kit explicitly:
+--- before morphing, RemoveAbility old type's abilities (read cooldowns
+--- via GetAbilityCooldown first if you want to preserve them); after
+--- morphing, AddAbility new type's abilities (and SetAbilityCooldown
+--- to restore). See the morph helper pattern in the engine scripts.
+---
+--- Returns false if the type id is unknown or the handle is stale.
+--- @param unit unit
+--- @param new_type_id string
+--- @return boolean
+function MorphUnit(unit, new_type_id) end
+
+--- Read the cooldown remaining (seconds) on a unit's ability.
+--- Returns 0 if the unit doesn't have the ability.
+--- @param unit unit
+--- @param ability_id string
+--- @return number
+function GetAbilityCooldown(unit, ability_id) end
+
+--- Set the cooldown remaining (seconds) on a unit's ability. No-op
+--- when the unit doesn't have the ability. Used by morph helpers to
+--- carry cooldowns across a Remove/Add round-trip.
+--- @param unit unit
+--- @param ability_id string
+--- @param seconds number
+function SetAbilityCooldown(unit, ability_id, seconds) end
+
+--- List the ability ids declared in a unit type's `abilities` array.
+--- Used by morph helpers that need to iterate the type's kit without
+--- duplicating the list in Lua. Returns an empty table if the type id
+--- is unknown.
+--- @param type_id string
+--- @return string[]
+function GetUnitTypeAbilities(type_id) end
+
 --- Check if a unit is alive (HP > 0 and not in dead state).
 --- @param unit unit
 --- @return boolean
@@ -294,6 +337,66 @@ function AddClassification(unit, flag) end
 function RemoveClassification(unit, flag) end
 
 --------------------------------------------------------------------------------
+-- Status flags
+--------------------------------------------------------------------------------
+
+--- Set or clear a status flag on a unit. Use the `UNIT_STATUS_*`
+--- constants from constants.lua (`UNIT_STATUS_STUNNED`,
+--- `UNIT_STATUS_SILENCED`, `UNIT_STATUS_MUTED`, `UNIT_STATUS_DISARMED`,
+--- `UNIT_STATUS_ROOTED`, `UNIT_STATUS_INVULNERABLE`,
+--- `UNIT_STATUS_MAGIC_IMMUNE`, `UNIT_STATUS_UNTARGETABLE`,
+--- `UNIT_STATUS_UNATTACKABLE`, `UNIT_STATUS_PAUSED`,
+--- `UNIT_STATUS_INVISIBLE`). See gameplay-model.md `## Status Flags`
+--- for the per-flag enforcement semantics.
+--- @param unit unit
+--- @param flag string  -- a UNIT_STATUS_* constant
+--- @param on boolean
+function SetUnitStatus(unit, flag, on) end
+
+--- Read a status flag on a unit. Returns false when the unit has no
+--- StatusFlags component (treated as "no flags set"). Pass a
+--- `UNIT_STATUS_*` constant for `flag`.
+--- @param unit unit
+--- @param flag string  -- a UNIT_STATUS_* constant
+--- @return boolean
+function GetUnitStatus(unit, flag) end
+
+--- Clear every status flag on a unit (resets the bitset to 0).
+--- @param unit unit
+function ClearAllUnitStatus(unit) end
+
+--------------------------------------------------------------------------------
+-- Visuals
+--------------------------------------------------------------------------------
+
+--- Play a glTF animation clip on a unit, overriding the engine's
+--- per-frame state derivation (idle/walk/attack/etc). The clip name
+--- must match a clip in the unit's loaded model. Replaces whatever
+--- script-driven clip was previously set (back-to-back calls do not
+--- queue — use QueueUnitAnimation for that). When the clip finishes
+--- (one-shot) and the queue is empty, the engine takes back over
+--- automatically. Death always wins: a dying unit's queue is cleared
+--- so the death clip plays.
+--- @param unit unit
+--- @param clip string    clip name in the unit's glTF
+--- @param looping boolean? if true and this clip is the last in the queue, it loops; default false (one-shot)
+function SetUnitAnimation(unit, clip, looping) end
+
+--- Append `clip` to the unit's animation queue. If the unit isn't
+--- currently script-controlled, this behaves like SetUnitAnimation
+--- for the first call. The renderer advances the queue each time
+--- the current clip finishes.
+--- @param unit unit
+--- @param clip string
+function QueueUnitAnimation(unit, clip) end
+
+--- Drop the unit's script-driven animation queue. The engine's
+--- per-frame state derivation resumes on the next frame and
+--- crossfades back to idle / walk / whatever sim state implies.
+--- @param unit unit
+function ResetUnitAnimation(unit) end
+
+--------------------------------------------------------------------------------
 -- Orders
 --------------------------------------------------------------------------------
 
@@ -338,6 +441,18 @@ function ApplyPassiveAbility(target, ability_id, source, duration) end
 --- @param ability_id string
 --- @return boolean
 function HasAbility(unit, ability_id) end
+
+--- Mutate a modifier value on every active instance of `ability_id`
+--- on the unit and re-run modifier recalculation immediately. The
+--- ability owns the modifier state; Lua just drives the curve. Used
+--- for smooth transitions (Wind Walk fade-in, slow ramp-down, etc.).
+--- Returns true if any instance was touched.
+--- @param unit unit
+--- @param ability_id string
+--- @param key string         modifier key (e.g. "visual_alpha_percent")
+--- @param value number
+--- @return boolean
+function SetAbilityModifier(unit, ability_id, key, value) end
 
 --- @param unit unit
 --- @param ability_id string
@@ -471,13 +586,97 @@ function IsPlayerAlly(player1, player2) end
 function IsPlayerEnemy(player1, player2) end
 
 --------------------------------------------------------------------------------
--- Effects
+-- Fog of war / vision
 --------------------------------------------------------------------------------
 
---- Define a named effect (map can override engine defaults).
---- @param name string
---- @param def table   { count, speed, life, size, gravity, emit_rate, start_color={r,g,b,a}, end_color={r,g,b,a} }
-function DefineEffect(name, def) end
+--- Turn fog of war on/off globally. `false` reveals the entire map to
+--- every player; `true` restores the authored fog mode (set in the
+--- manifest). Use for cinematic reveals.
+--- @param on boolean
+function FogEnable(on) end
+
+--- Whether fog of war is currently active for this map.
+--- @return boolean
+function IsFogEnabled() end
+
+--- Tile-state predicates at a world position. Mutually exclusive: at
+--- any (player, x, y) exactly one of Visible / Fogged / Masked is true.
+--- IsPointExplored is a convenience for Visible OR Fogged.
+--- All return true when fog is disabled.
+--- @param player player
+--- @param x number
+--- @param y number
+--- @return boolean
+function IsPointVisible(player, x, y) end
+function IsPointFogged(player, x, y) end
+function IsPointMasked(player, x, y) end
+function IsPointExplored(player, x, y) end
+
+--- Create a persistent fog-state override on a rectangular area for a
+--- player. State is "visible" | "fogged" | "masked". Returns a handle
+--- for later destruction.
+--- @param player player
+--- @param state string
+--- @param x0 number
+--- @param y0 number
+--- @param x1 number
+--- @param y1 number
+--- @return number
+function CreateFogModifierRect(player, state, x0, y0, x1, y1) end
+
+--- Create a persistent fog-state override on a circular area for a
+--- player. See CreateFogModifierRect for `state`.
+--- @param player player
+--- @param state string
+--- @param cx number
+--- @param cy number
+--- @param radius number
+--- @return number
+function CreateFogModifierRadius(player, state, cx, cy, radius) end
+
+--- Destroy a fog modifier by handle. No-op if the handle is unknown.
+--- @param handle number
+function DestroyFogModifier(handle) end
+
+--- Pause / resume a fog modifier without destroying it. Useful for
+--- scouting items that toggle on/off as the holder moves.
+--- @param handle number
+--- @param active boolean
+function SetFogModifierActive(handle, active) end
+
+--- Is `unit` visible to `player` right now? Combines owner/ally check,
+--- UnitReveal overrides, invisibility + true sight, and fog of war.
+--- @param unit unit
+--- @param player player
+--- @return boolean
+function IsUnitVisibleToPlayer(unit, player) end
+
+--- Is `unit` currently revealed to `player` by a true-sight detector?
+--- (False if the unit isn't invisible to begin with.)
+--- @param unit unit
+--- @param player player
+--- @return boolean
+function IsUnitDetected(unit, player) end
+
+--- Force-reveal a unit to a specific player (bypasses fog and
+--- invisibility). Pass `false` to clear. Multiple players can hold
+--- independent reveals on the same unit.
+--- @param unit unit
+--- @param player player
+--- @param on boolean
+function UnitReveal(unit, player, on) end
+
+--- Share `unit`'s vision with another player — the unit's sight
+--- circle stamps that player's fog map as well. Pass `false` to stop
+--- sharing.
+--- @param unit unit
+--- @param player player
+--- @param on boolean
+function UnitShareVision(unit, player, on) end
+
+--------------------------------------------------------------------------------
+-- Effects
+--------------------------------------------------------------------------------
 
 --- Create a persistent effect at a world position. Returns handle.
 --- @param name string

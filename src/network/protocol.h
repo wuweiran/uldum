@@ -5,6 +5,7 @@
 #include "network/lobby.h"
 
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <cstring>
 #include <span>
@@ -58,6 +59,9 @@ enum class MsgType : u8 {
     S_STATE         = 0x52,
     S_UPDATE        = 0x53,   // on-change: attribute, state, or ability update
     S_SOUND         = 0x54,
+    S_EFFECT        = 0x55,   // (reserved, currently unused — Create/Destroy pair below)
+    S_EFFECT_CREATE = 0x57,   // CreateEffect / CreateEffectOnUnit (with handle)
+    S_EFFECT_DESTROY = 0x58,  // DestroyEffect (handle)
 
     // Playing — session events
     S_START         = 0x60,   // all players loaded, game begins
@@ -321,6 +325,89 @@ inline std::vector<u8> build_sound(std::string_view path, glm::vec3 pos) {
     w.write_string(path);
     w.write_vec3(pos);
     return std::move(w.data());
+}
+
+// PlayEffect broadcast. `entity_id` is UINT32_MAX for a free
+// world-position effect; otherwise the effect attaches to the unit and
+// `pos` is taken from the unit's transform on the client (plus
+// `attach_point` if non-empty). Mirrors the server-side
+// EffectManager::play / play_on_unit dispatch.
+inline std::vector<u8> build_effect(std::string_view name, u32 entity_id,
+                                     glm::vec3 pos, std::string_view attach_point) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_EFFECT));
+    w.write_string(name);
+    w.write_u32(entity_id);
+    w.write_vec3(pos);
+    w.write_string(attach_point);
+    return std::move(w.data());
+}
+
+struct EffectData {
+    std::string name;
+    u32         entity_id = UINT32_MAX;
+    glm::vec3   pos{0};
+    std::string attach_point;
+};
+
+inline EffectData parse_effect(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    EffectData e;
+    e.name         = r.read_string();
+    e.entity_id    = r.read_u32();
+    e.pos          = r.read_vec3();
+    e.attach_point = r.read_string();
+    return e;
+}
+
+// CreateEffect — server-assigned handle + the same payload as the
+// fire-and-forget S_EFFECT. Client maps the server handle to its
+// local instance so a later S_EFFECT_DESTROY can find it.
+struct EffectCreateData {
+    u32         server_id = 0;
+    std::string name;
+    u32         entity_id = UINT32_MAX;
+    glm::vec3   pos{0};
+    std::string attach_point;
+};
+
+inline std::vector<u8> build_effect_create(u32 server_id, std::string_view name,
+                                            u32 entity_id, glm::vec3 pos,
+                                            std::string_view attach_point) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_EFFECT_CREATE));
+    w.write_u32(server_id);
+    w.write_string(name);
+    w.write_u32(entity_id);
+    w.write_vec3(pos);
+    w.write_string(attach_point);
+    return std::move(w.data());
+}
+
+inline EffectCreateData parse_effect_create(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    EffectCreateData e;
+    e.server_id    = r.read_u32();
+    e.name         = r.read_string();
+    e.entity_id    = r.read_u32();
+    e.pos          = r.read_vec3();
+    e.attach_point = r.read_string();
+    return e;
+}
+
+inline std::vector<u8> build_effect_destroy(u32 server_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_EFFECT_DESTROY));
+    w.write_u32(server_id);
+    return std::move(w.data());
+}
+
+inline u32 parse_effect_destroy(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    return r.read_u32();
 }
 
 // ── Client-side deserialization helpers ───────────────────────────────────
@@ -723,6 +810,8 @@ enum class UpdateType : u8 {
     AbilityAdd     = 3,   // ability added
     AbilityRemove  = 4,   // ability removed
     Owner          = 5,   // ownership changed
+    AbilityModifier = 6,  // SetAbilityModifier(unit, ability, key, value)
+    Status         = 7,   // SetUnitStatus(unit, flag, on) — manual_bits layer
 };
 
 inline std::vector<u8> build_update_attr(u32 entity_id, std::string_view key, f32 value) {
@@ -775,6 +864,33 @@ inline std::vector<u8> build_update_ability_remove(u32 entity_id, std::string_vi
     return std::move(w.data());
 }
 
+// Set a single modifier key on every instance of an ability on the
+// unit. Layout: ability_id (key), modifier key (str_value), value.
+// Mirrors the Lua-side SetAbilityModifier API used by tweens.
+inline std::vector<u8> build_update_ability_modifier(u32 entity_id, std::string_view ability_id,
+                                                      std::string_view modifier_key, f32 value) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::AbilityModifier));
+    w.write_string(ability_id);
+    w.write_string(modifier_key);
+    w.write_f32(value);
+    return std::move(w.data());
+}
+
+// SetUnitStatus — manual_bits layer (the refcount layer is plumbed via
+// AbilityAdd / AbilityRemove). flag is a single bit value (status::*).
+inline std::vector<u8> build_update_status(u32 entity_id, u32 flag, bool on) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::Status));
+    w.write_u32(flag);
+    w.write_bool(on);
+    return std::move(w.data());
+}
+
 inline std::vector<u8> build_update_owner(u32 entity_id, u8 new_owner) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
@@ -791,7 +907,8 @@ struct UpdateData {
     f32 value = 0;
     f32 value2 = 0;    // max for State
     std::string str_value;
-    u32 uint_value = 0; // level for AbilityAdd, owner for Owner
+    u32 uint_value = 0; // level for AbilityAdd, owner for Owner, flag bit for Status
+    bool bool_value = false; // on/off for Status
 };
 
 inline UpdateData parse_update(std::span<const u8> data) {
@@ -823,6 +940,15 @@ inline UpdateData parse_update(std::span<const u8> data) {
         break;
     case UpdateType::Owner:
         u.uint_value = r.read_u8();
+        break;
+    case UpdateType::AbilityModifier:
+        u.key = r.read_string();           // ability_id
+        u.str_value = r.read_string();     // modifier key (e.g. "visual_alpha_percent")
+        u.value = r.read_f32();
+        break;
+    case UpdateType::Status:
+        u.uint_value = r.read_u32();       // flag bit value
+        u.bool_value = r.read_bool();
         break;
     }
     return u;

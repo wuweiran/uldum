@@ -8,50 +8,62 @@
 
 ## API Names
 
-| Action | C++ / Lua API | Notes |
+| Action | Lua API | Notes |
 |--------|--------------|-------|
-| Give a unit an ability | `AddAbility(unit, ability_id)` | Adds a new Ability instance to the unit's AbilitySet |
-| Remove an ability | `RemoveAbility(unit, ability_id)` | Removes the instance, reverts modifiers |
-| Apply a passive to a target (buff) | `ApplyPassiveAbility(target, ability_id, source, duration)` | Creates a passive Ability instance with a duration. Source = the unit that applied it |
-| Check if unit has ability | `HasAbility(unit, ability_id)` | Returns true if any instance matches |
-| Get ability level | `GetAbilityLevel(unit, ability_id)` | 0 = not learned |
-| Set ability level | `SetAbilityLevel(unit, ability_id, level)` | Changes level, recalculates modifiers |
+| Add an ability to a unit | `AddAbility(unit, ability_id)` | Adds an Ability instance. If `stackable=false` and an instance already exists, the existing instance's duration refreshes instead. |
+| Remove an ability | `RemoveAbility(unit, ability_id)` | Removes **all** instances of that id on the unit. |
+| Check if unit has an ability | `HasAbility(unit, ability_id) -> bool` | True if at least one instance is present. |
+| Get ability level | `GetAbilityLevel(unit, ability_id)` | 0 = not learned. |
+| Set ability level | `SetAbilityLevel(unit, ability_id, level)` | Recalculates modifiers. |
+
+The Lua surface deliberately omits a `source` parameter and any per-instance handles. Auras attribute their applications internally; from a map script's perspective every `AddAbility` call is "the engine added this." Stack counts and per-instance source queries are intentionally not exposed — if you need them later, add a query then.
 
 ## Ability Forms
 
-The engine provides six mechanical forms (`AbilityForm` enum). Each handles the complex plumbing (timing, targeting, state management). The actual gameplay effect is a Lua trigger that registers against the relevant ability event — see [Engine Events for Scripts](#engine-events-for-scripts) below for the full list.
+The engine provides the following mechanical forms (`AbilityForm` enum). Each form handles the complex plumbing (timing, targeting, state management). The actual gameplay effect is a Lua trigger that registers against the relevant ability event — see [Engine Events for Scripts](#engine-events-for-scripts) below for the full list.
 
-Channelling is **not** a form. Any form can declare a `channel_time` on its per-level data to make the cast sustained — see [Channeling](#channeling).
+Channelling is not itself a form. Any active form can carry a `channel_time` on its per-level data, which inserts a sustained-cast phase between the cast-time effect fire and the backswing. Cancelling a channel (by issuing another order) drops the cast clean — no cooldown, no backswing; natural completion runs cooldown + backswing as usual.
 
-### passive
+### passive_modifier
 
-Always active while the ability is on the unit. No casting required.
+Always active while on the unit. Contributes numeric modifiers — either unit attributes (damage, armor, move_speed, …) or ability-scoped attributes (cooldown, cast_range, mana_cost, …). The two share the same `modifiers` map; the key namespace is what differs (see [Modifier Surface](#modifier-surface) below).
 
 **Engine handles:**
-- Apply/revert attribute modifiers when ability is added/removed/leveled
-- Optional duration via `ApplyPassiveAbility(target, ability, source, duration)` — auto-removed when expired
-- This is also the form used for buffs/debuffs applied via `ApplyPassiveAbility()`
+- Apply/revert contributions on add / remove / level-change via `recalculate_modifiers`
+- Optional `duration` on the per-level data — instance auto-removes on expiry
 
 **Map defines:**
-- `modifiers`: attribute changes (e.g., `move_speed_percent: -25`, `armor_flat: 3`)
+- `modifiers`: attribute deltas keyed by attribute name + `_flat` / `_percent` suffix (e.g., `armor_flat: 3`, `move_speed_percent: -25`, `cooldown_percent: -10`). Engine looks up which namespace each key belongs to.
 
-**Stacking:** Controlled by `stackable` field on the AbilityDef:
-- `stackable: false` (default) — `AddAbility` and `ApplyPassiveAbility` check if already present. If yes, refresh duration instead of adding another instance.
-- `stackable: true` — always adds a new instance. Modifiers stack additively. Item passive abilities (e.g., +5 armor from multiple items) use this.
+### passive_flag
+
+Always active while on the unit. Toggles one or more **refcounted** status flags (`silenced`, `disarmed`, `invisible`, `rooted`, `no_acquire`, …) for as long as the ability is present.
+
+**Engine handles:**
+- On add: increments the per-flag refcount for each listed flag
+- On remove: decrements; flag becomes "off" only when the count reaches zero
+- All engine sites that previously read a status bitset now query `is_flag_set(unit, flag) = refcount > 0`
+
+**Map defines:**
+- `flags`: list of flag names to apply (e.g., `["silenced", "no_acquire"]`)
+
+The refcount semantics mean two abilities both applying `silenced` cleanly compose — removing one leaves silence in effect until the other is also removed. Multiple sources of the same flag never trample each other.
 
 ### aura
 
-Periodically scans for nearby units and applies a passive ability.
+Periodically scans for nearby units and calls `AddAbility` on the unit with a configured buff ability id. The buff is a `passive_modifier` or `passive_flag` — the aura form itself only handles the broadcast.
 
 **Engine handles:**
 - Scan units in radius at a fixed cadence (~0.25s)
-- Apply the specified passive to units in radius
-- Let the passive expire naturally on units that leave (applied with a duration slightly longer than the scan interval so it refreshes for units still inside)
-- Uses the passive's target filter to decide who is affected
+- For each matching unit, apply the configured buff (duration ~0.35s — slightly longer than the scan interval so units still in range get refreshed before it decays)
+- Units that leave the radius stop being refreshed; the buff decays via duration → modifier/flag contributions revert through normal recalc
+- Uses the buff ability's `target_filter` to decide who is affected
 
 **Map defines:**
 - `aura_radius`: scan radius (per level)
-- `aura_ability`: id of the passive ability to apply
+- `aura_ability`: id of the `passive_modifier` / `passive_flag` to apply
+
+**Multiple auras of the same kind overlap correctly:** the applied buff is typically declared `stackable: false`. Each tick's `AddAbility` call refreshes the existing instance's duration rather than creating a duplicate, so two paladins running Devotion Aura on the same footman do not stack the buff (matching WC3 semantics). For genuinely stacking effects (Veno-style poison), declare the buff `stackable: true`.
 
 ### instant
 
@@ -63,49 +75,33 @@ Player or AI activates. No target selection.
 - `cast_time` (foreswing) → fire effect → `backsw_time` (cancellable)
 - Start cooldown
 
-### target_unit
+### target
 
-Like instant, but requires selecting a unit target.
+Cast on something in the world — a widget (unit / destructable / item) and/or a ground point. One form covers all "pick a target" shapes; what the cursor accepts is driven by two flags on the AbilityDef:
+
+- `widget_kinds: ["unit", "destructable", "item"]` — bitmask of widget categories the cursor snaps to. Empty array (or omitted) means no widget snap.
+- `accept_point: true` — does the cursor fall through to the ground when no widget snaps?
+
+Three resulting shapes from this one form:
+
+| Shape | `widget_kinds` | `accept_point` | Examples |
+|---|---|---|---|
+| Widget-only | `["unit"]` | omitted / `false` | Holy Light, Hex, Storm Bolt |
+| Point-only | `[]` / omitted | `true` | Blizzard, Flame Strike |
+| Hybrid (widget-first, point fallback) | `["unit"]` | `true` | Frost Bolt, Cluster Rockets, Chain Lightning |
 
 **Engine handles:**
-- All of instant, plus:
-- Target validation: range check, target filter
+- Validate: cooldown ready? state cost affordable?
+- Target validation: range check, target filter (filter still applies after widget-kind selection)
 - Turn to face target
-- Optional projectile (if `projectile_speed > 0`): spawn homing projectile, effect fires on impact
+- `cast_time` (foreswing) → fire effect → `backsw_time` (cancellable)
+- Optional projectile (if `projectile_speed > 0`): spawn homing projectile (widget cast) or directional projectile (point cast); effect fires on impact
+
+**Hit callback receives both** `target_widget` (may be nil if the cast resolved on a point) and `target_point` (always set — equal to the widget's position when a widget was picked). Lua branches with `if target_widget`.
 
 **Map defines:**
-- `target_filter`: who can be targeted
-
-### target_point
-
-Like instant, but requires selecting a ground position.
-
-**Engine handles:**
-- Range check to the point
-- `cast_time` → fire effect → `backsw_time`
-
-### toggle
-
-On/off ability. May drain a state while active.
-
-**Engine handles:**
-- Toggle state management
-- Periodic state cost drain while active (`toggle_cost_per_sec`)
-- Auto-deactivate when state runs out
-
-**Map defines:**
-- `toggle_cost_per_sec`: map of state_name → amount per second
-
-### Channeling
-
-Any form can be made sustained by setting `channel_time > 0` on its per-level data.
-
-**Engine handles:**
-- After `cast_time`, hold the cast for `channel_time` seconds
-- Interrupt on stun, on a new order, or on the caster taking certain damage (per gameplay rules)
-- On natural completion, run backswing as usual
-
-**Cancel rule:** a cancelled channel **does not trigger cooldown and does not refund cost**. The mana / state is already spent at cast start; cooldown only begins on natural completion. A map author who wants post-cancel cooldown simulates it with a scripted timer.
+- `widget_kinds` and/or `accept_point` (at least one must be present and non-empty)
+- `target_filter`: who can be picked when a widget is under the cursor
 
 ## AbilityDef Structure
 
@@ -117,13 +113,16 @@ All fields are optional except `form`. Omitted fields use these defaults:
 |-------|---------|-------|
 | `name` | `""` | Display name |
 | `icon` | `""` | Icon texture path |
-| `form` | **(required)** | passive, aura, instant, target_unit, target_point, toggle, channel |
+| `form` | **(required)** | `passive_modifier`, `passive_flag`, `aura`, `instant`, `target` |
+| `widget_kinds` | `[]` | Target form only: widget categories the cursor snaps to (`unit` / `destructable` / `item`) |
+| `accept_point` | `false` | Target form only: cursor falls through to ground when no widget snaps |
 | `stackable` | `false` | If false, duplicate instances refresh duration instead of stacking |
 | `max_level` | `1` | Number of learnable levels |
 | `target_filter` | `{}` (match all) | Who can be targeted |
 | `levels` | `[{}]` | Per-level data array (at least one entry) |
 | `hotkey` | `""` | Key for RTS preset (e.g., `"T"` for Holy Light). Empty = no hotkey. |
 | `hidden` | `false` | If true, ability is not auto-assigned to a slot (no UI presence). Used for system-level passives like item stat bonuses. |
+| `pierces_immune` | `false` | Target form only: bypasses `UNIT_STATUS_MAGIC_IMMUNE` on hostile cast targets. Dispels / purges / hexes set this. |
 
 ### Per-Level Field Defaults
 
@@ -139,16 +138,17 @@ Each entry in `levels[]` uses these defaults for omitted fields:
 | `backsw_time` | `0` | No recovery |
 | `damage` | `0` | |
 | `heal` | `0` | |
-| `modifiers` | `{}` | No attribute modifiers |
+| `modifiers` | `{}` | Attribute deltas keyed by `<attr>_flat` / `<attr>_percent`. Usually paired with `form: passive_modifier`, but a `passive_flag` buff may also declare them when the same conceptual effect bundles flags and stat changes (e.g. Wind Walk: invisible flag + alpha modifier). |
+| `flags` | `[]` | Refcounted status flags applied while the ability is active. Usually paired with `form: passive_flag`, but `passive_modifier` may also declare them when the bundle is naturally one effect. |
+| `duration` | `-1` | `-1` = permanent (innate), `>= 0` = timed (auto-removed on expiry) |
 | `aura_radius` | `0` | Aura form only |
-| `aura_ability` | `""` | Aura form: passive ability id to apply |
-| `channel_duration` | `0` | Channel form only — 0 means not a channel |
-| `toggle_cost_per_sec` | `{}` | Toggle form: no drain |
+| `aura_ability` | `""` | Aura form: id of the `passive_modifier` / `passive_flag` to broadcast |
+| `channel_time` | `0` | 0 means not a channel; > 0 inserts a sustained phase between fire and backswing |
 | `projectile_speed` | `0` | 0 = no projectile (instant hit) |
 
 A minimal ability definition only needs `form`:
 ```json
-{ "my_passive_buff": { "form": "passive", "levels": [{ "modifiers": { "armor_flat": 3 } }] } }
+{ "my_passive_buff": { "form": "passive_modifier", "levels": [{ "modifiers": { "armor_flat": 3 } }] } }
 ```
 
 ### Examples
@@ -158,7 +158,8 @@ A minimal ability definition only needs `form`:
     "holy_light": {
         "name": "Holy Light",
         "icon": "icons/holy_light.ktx2",
-        "form": "target_unit",
+        "form": "target",
+        "widget_kinds": ["unit"],
         "hotkey": "T",
         "stackable": false,
         "max_level": 3,
@@ -183,26 +184,35 @@ A minimal ability definition only needs `form`:
     },
     "devotion_aura_buff": {
         "name": "Devotion Aura",
-        "form": "passive",
+        "form": "passive_modifier",
         "max_level": 3,
         "levels": [
-            { "modifiers": { "armor_flat": 1.5 } },
-            { "modifiers": { "armor_flat": 3.0 } },
-            { "modifiers": { "armor_flat": 4.5 } }
+            { "modifiers": { "armor_flat": 1.5 }, "duration": 0.35 },
+            { "modifiers": { "armor_flat": 3.0 }, "duration": 0.35 },
+            { "modifiers": { "armor_flat": 4.5 }, "duration": 0.35 }
         ]
     },
     "frost_slow": {
         "name": "Frost Slow",
-        "form": "passive",
+        "form": "passive_modifier",
         "stackable": false,
         "max_level": 1,
         "levels": [
-            { "modifiers": { "move_speed_percent": -25 } }
+            { "modifiers": { "move_speed_percent": -25 }, "duration": 3.0 }
+        ]
+    },
+    "windwalk_invisible": {
+        "name": "Wind Walk",
+        "form": "passive_flag",
+        "stackable": false,
+        "max_level": 1,
+        "levels": [
+            { "flags": ["invisible", "no_acquire"], "duration": 10.0 }
         ]
     },
     "item_armor_bonus": {
         "name": "Armor Bonus",
-        "form": "passive",
+        "form": "passive_modifier",
         "hidden": true,
         "stackable": true,
         "max_level": 1,
@@ -212,17 +222,21 @@ A minimal ability definition only needs `form`:
     },
     "immolation": {
         "name": "Immolation",
-        "form": "toggle",
+        "form": "instant",
         "hotkey": "N",
         "max_level": 3,
         "levels": [
-            { "toggle_cost_per_sec": { "mana": 5 }, "aura_radius": 10, "aura_ability": "immolation_damage" },
-            { "toggle_cost_per_sec": { "mana": 5 }, "aura_radius": 10, "aura_ability": "immolation_damage" },
-            { "toggle_cost_per_sec": { "mana": 5 }, "aura_radius": 10, "aura_ability": "immolation_damage" }
+            { "cost": { "mana": 25 } },
+            { "cost": { "mana": 25 } },
+            { "cost": { "mana": 25 } }
         ]
     }
 }
 ```
+
+Toggle-style abilities (Immolation, Defend, Permanent Invisibility) are authored as plain `instant` abilities. The map's Lua script flips a per-unit "active" flag on cast, applies / revokes the effect (e.g. an aura passive), and runs its own periodic timer for any mana drain. The engine doesn't bake the on/off pattern in.
+
+Spellbook-style "icon that opens a sub-bar of contained abilities" (class kits, hero ult selection, item-granted spell groups) is also a composition, not a form. The button is an `instant` ability whose Lua callback toggles a HUD sub-bar node's visibility (`ShowNode` / `HideNode`); the contained abilities are added to the unit normally (`AddAbility`) and laid out on that sub-bar in `hud.json`. Cooldowns / costs / casts run through the regular pipeline; the spellbook button is just a UI gate. Active and passive abilities can both live inside — WC3's passive-only restriction was an implementation artifact, not an inherent constraint.
 
 ## Ability Slots
 
@@ -260,7 +274,7 @@ When a unit is created, its `"abilities"` list determines initial slot layout:
 - `AddAbility` auto-assigns to the first empty slot if `hidden` is false.
 - If all slots are full, the ability still gets added (functional) but not slotted.
 - `hidden` abilities bypass auto-slot assignment. They function normally but have no UI presence.
-- Applied passives from other units (aura buffs via `ApplyPassiveAbility`) are never slotted.
+- Aura-applied buffs (transient `passive_modifier` / `passive_flag` instances added by `aura` ticks) are never slotted.
 - Passive abilities that are not hidden CAN be slotted — they show icon/tooltip in the UI.
 
 ### Hotkey
@@ -281,17 +295,16 @@ Ability {
     level: u32                  // current level (0 = not learned, 1+ = active)
     cooldown_remaining: f32     // ticks down each frame
     auto_cast: bool             // auto-cast enabled
-    toggle_active: bool         // for toggle form
-    
-    // Applied passive (buff) fields
-    source: Unit                // who applied this (null if innate/self)
+
     remaining_duration: f32     // -1 = permanent, >= 0 = timed
     tick_timer: f32             // countdown to next periodic tick
-    
+
     // Active modifiers (computed from def at current level)
     active_modifiers: map<string, f32>
 }
 ```
+
+No `source` field. Stacking and refresh decisions use only `(ability_id, target)` — see [aura](#aura) for the per-tick refresh semantics.
 
 ## Cast Flow (Active Forms)
 
@@ -327,24 +340,106 @@ Ability cost references map-defined states by name:
 
 ## Modifier System
 
-Passive abilities can declare attribute modifiers:
+`passive_modifier` abilities declare attribute deltas in a flat `modifiers` map. Each key carries its composition rule in the suffix:
+
+- `<attr>_flat` — additive (sums across all active instances)
+- `<attr>_percent` — percentage of base (sums and composes via `(1 + sum/100)`)
 
 ```json
 "modifiers": {
     "armor_flat": 3,
     "move_speed_percent": -25,
-    "attack_speed_percent": 15
+    "attack_speed_percent": 15,
+    "cooldown_percent": -10
 }
 ```
 
-Convention: `_flat` = additive, `_percent` = percentage of base.
+### Two attribute namespaces
 
-When modifiers change (ability added/removed/leveled), the engine recalculates:
-```
-effective_value = base_value + sum(flat modifiers) * (1 + sum(percent modifiers) / 100)
+The engine routes keys to one of two namespaces based on the attribute name. Authors don't pick the namespace — it's an attribute property.
+
+| Namespace | Scope | Attributes |
+|---|---|---|
+| **unit** | the carrier's own stats | `damage`, `armor`, `move_speed`, `max_hp`, `hp_regen`, `max_mana`, `mana_regen`, `sight_range`, `true_sight`, `acquire_range`, `attack_range`, `attack_speed`, `magic_resistance`, `damage_taken`, `scale`, `visual_alpha` |
+| **ability** | every ability on the carrier | `cooldown`, `cast_range`, `mana_cost`, `cast_time`, `duration` |
+
+To scope an ability-namespace modifier to specific ability ids, dot-qualify the key:
+
+```json
+"modifiers": {
+    "wind_walk.cooldown_flat": -2,
+    "cooldown_percent": -10
+}
 ```
 
-Systems read effective values, not base values.
+The first row applies only to `wind_walk`'s cooldown; the second applies to every ability on the carrier.
+
+### Recalculation
+
+When an ability is added / removed / leveled, the engine recomputes effective values for the affected attributes:
+
+```
+effective(attr) = base(attr) + sum(*_flat contributions)
+                            * (1 + sum(*_percent contributions) / 100)
+```
+
+Systems read effective values, not base values. The recompute is keyed off attribute name so unrelated stats aren't disturbed.
+
+## Modifier Surface
+
+The full list of properties an ability can modify, what kind of modifier each one accepts, and which form expresses it.
+
+### Unit-namespace attributes (`passive_modifier`)
+
+| Attribute | `_flat` | `_percent` | Notes |
+|---|---|---|---|
+| `damage` | ✓ | ✓ | mult covers crit-amp passives |
+| `attack_range` | ✓ | — | |
+| `attack_speed` | — | ✓ | scales `attack_cooldown` |
+| `acquire_range` | ✓ | — | numeric only; on/off goes to the `no_acquire` flag |
+| `move_speed` | ✓ | ✓ | slow is `_percent`, boots are `_flat` |
+| `turn_rate` | — | ✓ | rare |
+| `max_hp` | ✓ | — | Strength items |
+| `hp_regen` | ✓ | — | |
+| `damage_taken` | — | ✓ | defensive auras |
+| `max_mana` | ✓ | — | Intelligence |
+| `mana_regen` | ✓ | — | |
+| `sight_range` | ✓ | — | |
+| `true_sight` | ✓ | — | gem |
+| `armor` | ✓ | — | Faerie Fire = −2 |
+| `magic_resistance` | ✓ | ✓ | |
+| `scale` | — | ✓ | Grow / Shrink |
+| `visual_alpha` | — | ✓ | each source contributes a factor; final = product |
+
+### Ability-namespace attributes (`passive_modifier`)
+
+| Attribute | `_flat` | `_percent` | Notes |
+|---|---|---|---|
+| `cooldown` | ✓ | ✓ | Aghs-style ult cooldown reduction |
+| `cast_range` | ✓ | ✓ | |
+| `mana_cost` | ✓ | ✓ | |
+| `cast_time` | — | ✓ | |
+| `duration` | — | ✓ | scales the duration of effects this ability applies |
+
+### Flags (`passive_flag`)
+
+All refcounted booleans — flag is "on" while at least one source applies it.
+
+| Flag | Engine behavior |
+|---|---|
+| `stunned` | skip move / attack / cast / turn |
+| `silenced` | reject cast orders |
+| `disarmed` | reject auto-attack and explicit attack orders |
+| `rooted` | movement system skips translation; reject blink-class abilities |
+| `paused` | freeze all systems |
+| `sleeping` | composite like stunned (wake on damage) |
+| `no_acquire` | block auto-acquire scan; drop current auto-acquired target |
+| `invulnerable` | `deal_damage` short-circuits |
+| `magic_immune` | reject hostile casts, unless `pierces_immune` |
+| `untargetable` | reject clicks / direct casts / picker |
+| `unattackable` | reject auto-attack acquire and attack orders |
+| `ethereal` | composite — typically `untargetable` + a `damage_taken_percent` shift |
+| `invisible` | per-player visibility cull |
 
 ## Aura Scanning
 
@@ -370,19 +465,17 @@ RegisterEvent(event_name, handler_fn)
 
 | Event | Fires when | Arguments |
 |-------|-----------|-----------|
-| `on_ability_added` | Ability added to any unit (including buffs) | unit, ability_id, source |
-| `on_ability_removed` | Ability removed from any unit (including expiry) | unit, ability_id |
 | `on_ability_cast_filter` | Before cast (after engine checks) | caster, ability_id, target → return bool |
 | `on_ability_target_filter` | Target validation (after engine filter) | caster, ability_id, target → return bool |
 | `on_ability_effect` | Effect fires (cast point / projectile impact) | caster, ability_id, target_or_point |
 | `on_ability_cast` | Active ability finishes full cast cycle | caster, ability_id, target |
-| `on_toggle_activate` | Toggle turned on | caster, ability_id |
-| `on_toggle_deactivate` | Toggle turned off | caster, ability_id |
 | `on_channel_start` | Channel begins | caster, ability_id |
 | `on_channel_end` | Channel finished/interrupted | caster, ability_id, completed |
 | `on_damage` | Damage dealt | source, target, amount, context |
 | `on_death` | Unit dies | unit, killer |
 | `on_attack` | Attack hits | attacker, target |
+
+No `on_ability_added` / `on_ability_removed` lifecycle events — buffs are pure data (modifiers, flags, duration). The engine applies and removes them, including natural duration-expiry, with no script involvement. If a buff needs a per-tick side effect (DoT damage, periodic visual), that should be expressed as a property of the buff definition rather than as a Lua trigger attached to add/remove events.
 
 ### Examples
 
@@ -400,46 +493,11 @@ function SetupHolyLight(hero)
     end)
     return trig  -- caller manages lifecycle
 end
-
--- Periodic damage: poison sting via timer
--- Clean up when ability is removed via on_ability_removed event
-local poison_triggers = {}
-
-RegisterEvent("on_ability_added", function()
-    local unit = GetTriggerUnit()
-    local ability_id = GetTriggerAbilityId()
-    if ability_id == "poison_sting" then
-        local source = GetAbilitySource(unit, "poison_sting")
-        local trig = CreateTrigger()
-        TriggerRegisterTimerEvent(trig, 1.0, true)
-        TriggerAddAction(trig, function()
-            DamageUnit(source, unit, 4)
-        end)
-        poison_triggers[unit] = trig
-    end
-end)
-
-RegisterEvent("on_ability_removed", function()
-    local unit = GetTriggerUnit()
-    local ability_id = GetTriggerAbilityId()
-    if ability_id == "poison_sting" and poison_triggers[unit] then
-        DestroyTrigger(poison_triggers[unit])
-        poison_triggers[unit] = nil
-    end
-end)
-```
 ```
 
 ### Stacking API
 
-The engine provides query functions for buff stacking:
-
-```lua
-GetAbilityStackCount(unit, ability_id)  -- how many instances of this ability
-HasAbility(unit, ability_id)            -- at least one instance exists
-GetAbilitySource(unit, ability_id)      -- who applied it (for the first instance)
-RefreshAbilityDuration(unit, ability_id, duration)  -- reset timer on existing instance
-```
+Only `HasAbility(unit, ability_id) -> bool` is exposed. Stack count and per-instance source are deliberately not part of the Lua surface; the engine handles stacking via the buff's `stackable` field and refresh-on-add semantics, so map scripts don't need to inspect instances. If a future ability genuinely needs a stack count, add the query then.
 
 ## Engine Events for Scripts
 
@@ -448,25 +506,9 @@ These are fire-and-forget — they notify, they don't control.
 
 | Event | Fires when | Context |
 |-------|-----------|---------|
-| `on_ability_added` | Any ability added to any unit (including passives/buffs) | unit, ability_id, source |
-| `on_ability_removed` | Any ability removed from any unit (including passive expiry) | unit, ability_id |
 | `on_ability_cast` | An active ability finishes casting | caster, ability_id, target |
 
-No separate passive/buff events — `on_ability_added`/`removed` covers all cases.
-
-Example: buff stacking logic via global events:
-
-```lua
-RegisterEvent("on_ability_added", function(unit, ability_id, source)
-    if ability_id == "frost_slow" then
-        -- Only allow one instance: if already present, refresh duration instead
-        if GetAbilityStackCount(unit, "frost_slow") > 1 then
-            RemoveAbility(unit, "frost_slow")  -- remove the older one
-            -- the new one stays with fresh duration
-        end
-    end
-end)
-```
+Buff add / remove / expiry deliberately do not fire script events — buffs are pure data and the engine owns their full lifecycle. Stacking is handled by the engine via the buff's `stackable` field; map scripts do not inspect or react to instance lifecycle.
 
 ## Script Binding Design
 
@@ -478,40 +520,11 @@ calls the registered Lua callback if one exists for that ability id. If no callb
 registered, the engine just runs the mechanical part (e.g., a passive with modifiers needs
 no Lua at all).
 
-## Additional Forms
-
-### spellbook
-
-Composite ability whose icon opens a sub-bar of contained abilities. Each contained ability has independent cooldowns / costs / state requirements. Used for class kits, hero ult selection, item-granted spell groups.
-
-### morph
-
-Unit-type transformation. Swaps model + ability set + (optionally) attribute block. Variants on a single form:
-
-- One-shot (hero ultimate that doesn't revert).
-- Toggle (bear ↔ human; second cast reverts).
-- Timed (auto-reverts after `morph_duration`).
-
-### target_destructable
-
-Cast on a destructable entity. Range check + filter; lifecycle mirrors `target_unit`. Used for Eat Tree / harvest-shaped abilities.
-
-### target_item
-
-Cast on an item (in inventory or on the ground). Used for "apply enchant to item slot" / "drink potion" / "combine items".
-
-### resurrection
-
-Reviving the dead. Engine-built form rather than a passive listening on the death event, because reviving has to happen during the death pipeline — by the time `on_death` fires the entity has already been reaped. Per-level fields: `resurrect_count` (how many corpses), `resurrect_radius` (for AoE-style resurrects), `health_restore_pct`. Two flavors:
-
-- Self-resurrect (Reincarnation): the dying unit itself. The form's level data lives on a passive ability the unit owns; engine intercepts the death.
-- Target / area resurrect (Animate Dead, Raise Dead variants): consumes corpses in radius.
-
 ## AoE-around-caster Indicator (`IndicatorShape::AreaSelf`)
 
-`IndicatorShape` previously rendered only for `target_point` abilities. Instant / Toggle abilities with an area effect (Thunder Clap, War Stomp, Permanent Immolation) need their own indicator — the player can't see the radius before casting.
+`IndicatorShape` only renders for `target`-form abilities that hit the ground. Instant abilities with an area effect (Thunder Clap, War Stomp) need their own indicator — the player can't see the radius before casting.
 
-`IndicatorShape::AreaSelf` is valid on `instant` / `toggle`. Geometry is a disc centered on the caster with radius from `level.area.radius`. Doesn't move with a cursor (it's caster-anchored).
+`IndicatorShape::AreaSelf` is valid on `instant`. Geometry is a disc centered on the caster with radius from `level.area.radius`. Doesn't move with a cursor (it's caster-anchored).
 
 **Preview trigger** — same affordance for all indicator shapes (range circles too, not just AreaSelf):
 
@@ -526,10 +539,10 @@ Two categories, split by who owns the visual.
 
 **Engine-side (multiplayer-aware).** Visibility states the engine must know about because they're per-player. Invisibility (Wind Walk, Permanent Invisibility) lives here — engine hides the unit from non-allied players, reveals on attack / cast / damage taken (or on entering the vision of a true-sight unit). Same family as fog of war (see [scripting.md](scripting.md)).
 
-**Map-driven (per-unit visual primitives).** Engine exposes a small set of per-unit visual modulation knobs that map Lua drives:
+**Map-driven (via abilities).** Per-unit visual modulation goes through `passive_modifier` on visual attributes (`scale_percent`, `visual_alpha_percent`) — multiple effects compose cleanly via the same recalc as combat stats. Authoring example: a Wind Walk fade declares a `passive_modifier` with `visual_alpha_percent: -50` and a 1 s duration; expiry restores alpha automatically.
 
-- `SetUnitColor(unit, r, g, b, a)` — multiplicative tint.
-- `SetUnitAlpha(unit, a)` — opacity override.
-- `SetUnitShaderVariant(unit, tag)` — picks a preset rendering path (`"ethereal"`, `"petrified"`, etc.), backed by a small enum in the renderer. Engine ships the variants; map says when to switch.
+`visual_alpha` is now ability-driven: `recalculate_modifiers` sums `visual_alpha_percent` contributions from every active instance on the unit and writes the clamped result into `Renderable::visual_alpha`. Buffs declare e.g. `"modifiers": { "visual_alpha_percent": -50 }` for a half-translucent ghost; multiple sources sum (two −50 sources stack to fully invisible). `SetUnitAlpha` / `GetUnitAlpha` are gone from the Lua surface.
 
-Engine does **not** bake state visuals (ethereal-blue, petrified-grey, on-fire-glow) into ability forms — map composes them on top of the primitives above when its abilities fire.
+Other direct setters (`SetUnitColor`, `SetUnitShaderVariant`, `EnableUnitAcquire`, `SetUnitStatus` for ability-domain flags, `SetUnitAttribute` for modifier-domain attributes) are slated for the same treatment as their effects migrate to the modifier system. Imperative-only operations (`SetUnitPosition`, `SetUnitFacing`, `SetUnitHealth`, `DamageUnit`, `HealUnit`) are not deprecated — they are actions, not modifiers.
+
+Engine still does **not** bake state visuals (ethereal-blue, petrified-grey, on-fire-glow) into ability forms — those compose from a `passive_modifier` plus a particle effect attached to the buff.

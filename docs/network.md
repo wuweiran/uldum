@@ -161,7 +161,7 @@ This means the client always renders one tick behind the server (~31ms at 32 Hz)
 
 Each client computes its own fog of war locally from the entities the server sends it. Since the server only sends visible entities (fog-filtered), the client's fog naturally matches — tiles with no visible allied units stay dark.
 
-The client still runs `FogOfWar::update()` and `update_visual()` locally for smooth fog transitions.
+The client still runs `Vision::update()` and `update_visual()` locally for smooth fog transitions.
 
 ## Command Flow
 

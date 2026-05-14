@@ -34,13 +34,15 @@ enum class FogMode : u8 {
 //
 // Visual smoothing: a separate float grid is lerped per frame toward
 // the target brightness, producing smooth reveal/fade transitions.
-class FogOfWar {
+class Vision {
 public:
     void init(u32 tiles_x, u32 tiles_y, f32 tile_size, u32 player_count, FogMode mode,
               const map::TerrainData* terrain = nullptr);
 
-    // Run one fog update. Call once per simulation tick.
-    void update(const World& world, const Simulation& sim);
+    // Run one vision pass. Call once per simulation tick. Mutates the
+    // per-player tile maps AND World::true_sight_vis — `World&` is
+    // non-const because we write per-unit reveal masks back.
+    void update(World& world, const Simulation& sim);
 
     // Advance visual interpolation for the given player. Call once per render frame.
     // dt = frame delta time. Returns the visual grid (tiles_x * tiles_y floats, 0..1).
@@ -51,13 +53,40 @@ public:
     bool is_visible(Player player, u32 tx, u32 ty) const;
     bool is_explored(Player player, u32 tx, u32 ty) const;
 
+    // Single-source-of-truth for "can `player` see this unit right now?"
+    // Used by both the renderer (client cull) and the server (network
+    // snapshot filter) so the rules cannot disagree. Combines:
+    //   1. owner / ally — always visible to friendly players
+    //   2. UNIT_STATUS_INVISIBLE — hidden unless `player` has a
+    //      true-sight detector covering the unit this tick
+    //   3. fog of war tile state at the unit's position
+    bool is_unit_visible_to(const World& world, const Simulation& sim,
+                            u32 entity_id, Player player) const;
+
     // Raw logical grid for the given player (tiles_x * tiles_y u8 values).
     // Returns nullptr if fog is disabled.
     const u8* grid(Player player) const;
 
     // ── Script API ─────────────────────────────────────────────────────
-    void reveal_all(Player player);
-    void unexplore_all(Player player);
+    // Toggle fog globally. False switches to FogMode::None (everything
+    // visible to everyone); true restores the authored mode from init.
+    void set_enabled(bool on);
+
+    // FogModifier — persistent per-player area override.
+    enum class Shape : u8 { Rect, Radius };
+    struct FogModifier {
+        u32        id     = 0;
+        Player     player;
+        Visibility state  = Visibility::Visible;
+        Shape      shape  = Shape::Rect;
+        bool       active = true;
+        f32 x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // Rect bounds
+        f32 cx = 0, cy = 0, radius = 0;       // Radius center/radius
+    };
+    u32 create_fog_modifier_rect(Player p, Visibility state, f32 x0, f32 y0, f32 x1, f32 y1);
+    u32 create_fog_modifier_radius(Player p, Visibility state, f32 cx, f32 cy, f32 radius);
+    void destroy_fog_modifier(u32 id);
+    void set_fog_modifier_active(u32 id, bool active);
 
     // ── Accessors ──────────────────────────────────────────────────────
     FogMode mode() const { return m_mode; }
@@ -79,11 +108,16 @@ private:
     bool has_cliff_los(u32 x0, u32 y0, u32 x1, u32 y1, u8 viewer_cliff) const;
 
     FogMode m_mode = FogMode::None;
+    FogMode m_authored_mode = FogMode::None;   // restored by set_enabled(true)
     u32 m_tiles_x = 0;
     u32 m_tiles_y = 0;
     f32 m_tile_size = 128.0f;
     u32 m_player_count = 0;
     const map::TerrainData* m_terrain = nullptr;
+
+    std::vector<FogModifier> m_fog_modifiers;
+    u32 m_next_modifier_id = 0;
+    void apply_fog_modifier(const FogModifier& fm);
 
     // Logical state: player_count * tiles_x * tiles_y, stores Visibility as u8.
     std::vector<u8> m_grids;

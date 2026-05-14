@@ -4,6 +4,8 @@
 #include "network/protocol.h"
 #include "simulation/simulation.h"
 #include "simulation/type_registry.h"
+#include "simulation/ability_def.h"
+#include "simulation/world.h"
 #include "input/command_system.h"
 #include "map/map.h"
 #include "map/terrain_data.h"
@@ -544,26 +546,12 @@ void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
 }
 
 bool NetworkManager::is_visible_to(u32 entity_id, simulation::Player player) const {
-    auto& world = m_simulation->world();
-    auto& fog = m_simulation->fog();
-
-    // Own entities are always visible
-    const auto* owner = world.owners.get(entity_id);
-    if (owner && owner->player.id == player.id) return true;
-
-    // Allied entities are always visible
-    if (owner && m_simulation->is_allied(player, owner->player)) return true;
-
-    // If fog is disabled, everything is visible
-    if (!fog.enabled()) return true;
-
-    // Check fog state
-    const auto* transform = world.transforms.get(entity_id);
-    if (!transform) return false;
-
-    auto& terrain = *m_simulation->terrain();
-    auto tile = terrain.world_to_tile(transform->position.x, transform->position.y);
-    return fog.is_visible(player, static_cast<u32>(tile.x), static_cast<u32>(tile.y));
+    // Server-side snapshot filter — refuses to serialize unit data for
+    // a peer that cannot see it. Shares logic with the renderer's
+    // is_fog_hidden via Vision::is_unit_visible_to so we can never
+    // ship invisibility data the client could mine for cheats.
+    return m_simulation->vision().is_unit_visible_to(
+        m_simulation->world(), *m_simulation, entity_id, player);
 }
 
 void NetworkManager::host_broadcast_tick(u32 tick) {
@@ -723,6 +711,23 @@ void NetworkManager::host_broadcast_update(u32 entity_id, std::span<const u8> up
     }
 }
 
+void NetworkManager::host_broadcast(std::span<const u8> packet) {
+    if (m_mode != Mode::Host || m_peers.empty()) return;
+    for (auto& peer : m_peers) {
+        m_transport->send(peer.peer_id, packet, true);
+    }
+}
+
+void NetworkManager::host_send_to_player(u32 player_id, std::span<const u8> packet) {
+    if (m_mode != Mode::Host) return;
+    for (auto& peer : m_peers) {
+        if (peer.player.id == player_id) {
+            m_transport->send(peer.peer_id, packet, true);
+            return;
+        }
+    }
+}
+
 void NetworkManager::host_end_game(u32 winner_id, std::string_view stats_json) {
     if (m_mode != Mode::Host) return;
     m_game_ended = true;
@@ -794,7 +799,10 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_SPAWN:   client_handle_spawn(data); break;
     case MsgType::S_DESTROY: client_handle_destroy(data); break;
     case MsgType::S_STATE:   client_handle_state(data); break;
-    case MsgType::S_SOUND:   client_handle_sound(data); break;
+    case MsgType::S_SOUND:           client_handle_sound(data); break;
+    case MsgType::S_EFFECT:          client_handle_effect(data); break;
+    case MsgType::S_EFFECT_CREATE:   client_handle_effect_create(data); break;
+    case MsgType::S_EFFECT_DESTROY:  client_handle_effect_destroy(data); break;
     case MsgType::S_UPDATE: client_handle_update(data); break;
     case MsgType::S_START:
         m_game_started = true;
@@ -1055,6 +1063,21 @@ void NetworkManager::client_handle_sound(std::span<const u8> data) {
     if (on_sound) on_sound(s.path, s.pos);
 }
 
+void NetworkManager::client_handle_effect(std::span<const u8> data) {
+    auto e = parse_effect(data);
+    if (on_effect) on_effect(e.name, e.entity_id, e.pos, e.attach_point);
+}
+
+void NetworkManager::client_handle_effect_create(std::span<const u8> data) {
+    auto e = parse_effect_create(data);
+    if (on_effect_create) on_effect_create(e.server_id, e.name, e.entity_id, e.pos, e.attach_point);
+}
+
+void NetworkManager::client_handle_effect_destroy(std::span<const u8> data) {
+    u32 id = parse_effect_destroy(data);
+    if (on_effect_destroy) on_effect_destroy(id);
+}
+
 void NetworkManager::client_apply_interpolation() {
     if (!m_has_two_snaps) {
         // Only one snapshot — snap to it directly
@@ -1190,38 +1213,101 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
         break;
     }
     case UpdateType::AbilityAdd: {
-        // Add to ability set if the client tracks abilities
+        // Mirror server-side add_ability: populate active_modifiers /
+        // active_flags from the def, bump per-flag refcounts, and run
+        // recalculate_modifiers so the client's renderable visual_alpha
+        // (and any other derived values) match the server. Without
+        // this, passive_flag buffs like windwalk_invisible would have
+        // no effect on the client — the unit wouldn't appear invisible
+        // or carry its alpha modifier even though it does on the host.
         auto* aset = world.ability_sets.get(u.entity_id);
         if (!aset) {
             world.ability_sets.add(u.entity_id, simulation::AbilitySet{});
             aset = world.ability_sets.get(u.entity_id);
         }
-        // Check if already present
-        bool found = false;
-        for (auto& a : aset->abilities) {
-            if (a.ability_id == u.key) { a.level = u.uint_value; found = true; break; }
+        const simulation::AbilityDef* def =
+            m_client_abilities ? m_client_abilities->get(u.key) : nullptr;
+
+        // Already-present: refresh duration (non-stackable) or fall
+        // through to add another instance (stackable). Matches the
+        // server's add_ability semantics.
+        bool refreshed = false;
+        if (def && !def->stackable) {
+            for (auto& a : aset->abilities) {
+                if (a.ability_id == u.key) {
+                    auto& lvl = def->level_data(a.level);
+                    a.remaining_duration = lvl.duration;
+                    refreshed = true;
+                    break;
+                }
+            }
         }
-        if (!found) {
+        if (!refreshed) {
             simulation::AbilityInstance inst;
             inst.ability_id = u.key;
             inst.level = u.uint_value;
+            inst.remaining_duration = -1.0f;
+            if (def) {
+                auto& lvl = def->level_data(u.uint_value);
+                inst.active_modifiers = lvl.modifiers;
+                inst.active_flags     = lvl.flags;
+                if (lvl.duration >= 0.0f) inst.remaining_duration = lvl.duration;
+            }
+            auto flags_snapshot = inst.active_flags;
             aset->abilities.push_back(std::move(inst));
+            simulation::flag_refcount_delta(world, u.entity_id, flags_snapshot, +1);
         }
+        simulation::recalculate_modifiers(world, u.entity_id);
         break;
     }
     case UpdateType::AbilityRemove: {
         auto* aset = world.ability_sets.get(u.entity_id);
         if (aset) {
             auto& abs = aset->abilities;
-            abs.erase(std::remove_if(abs.begin(), abs.end(),
-                [&](const simulation::AbilityInstance& a) { return a.ability_id == u.key; }),
-                abs.end());
+            for (auto it = abs.begin(); it != abs.end(); ) {
+                if (it->ability_id == u.key) {
+                    simulation::flag_refcount_delta(world, u.entity_id,
+                                                    it->active_flags, -1);
+                    it = abs.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            simulation::recalculate_modifiers(world, u.entity_id);
         }
         break;
     }
     case UpdateType::Owner: {
         auto* owner = world.owners.get(u.entity_id);
         if (owner) owner->player.id = u.uint_value;
+        break;
+    }
+    case UpdateType::AbilityModifier: {
+        // Mirror SetAbilityModifier: mutate the named modifier on every
+        // matching instance and recalculate. Drives Lua-side tweens
+        // like Wind Walk's fade-in.
+        auto* aset = world.ability_sets.get(u.entity_id);
+        if (!aset) break;
+        bool changed = false;
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == u.key) {
+                a.active_modifiers[u.str_value] = u.value;
+                changed = true;
+            }
+        }
+        if (changed) simulation::recalculate_modifiers(world, u.entity_id);
+        break;
+    }
+    case UpdateType::Status: {
+        // Mirror SetUnitStatus on the client — manual_bits layer only;
+        // ability-driven refcounts arrive through AbilityAdd/Remove
+        // already and compose with this via recompute_effective_flags
+        // inside set_unit_status.
+        simulation::Unit unit;
+        unit.id = u.entity_id;
+        auto* info = world.handle_infos.get(u.entity_id);
+        unit.generation = info ? info->generation : 0;
+        simulation::set_unit_status(world, unit, u.uint_value, u.bool_value);
         break;
     }
     }
@@ -1295,7 +1381,7 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
     }
 
     if (sight_range > 0) {
-        world.visions.add(entity_id, simulation::Vision{sight_range});
+        world.sights.add(entity_id, simulation::Sight{sight_range});
     }
 
     world.selectables.add(entity_id, simulation::Selectable{selection_radius, 5});
@@ -1309,7 +1395,7 @@ void NetworkManager::destroy_client_entity(u32 entity_id) {
     world.renderables.remove(entity_id);
     world.healths.remove(entity_id);
     world.movements.remove(entity_id);
-    world.visions.remove(entity_id);
+    world.sights.remove(entity_id);
     world.selectables.remove(entity_id);
     world.combats.remove(entity_id);
     world.dead_states.remove(entity_id);
@@ -1325,17 +1411,17 @@ void NetworkManager::init_client_fog(const map::TerrainData& terrain,
     if (manifest.fog_of_war == "explored") fog_mode = simulation::FogMode::Explored;
     else if (manifest.fog_of_war == "unexplored") fog_mode = simulation::FogMode::Unexplored;
 
-    m_client_fog.init(terrain.tiles_x, terrain.tiles_y, terrain.tile_size,
+    m_client_vision.init(terrain.tiles_x, terrain.tiles_y, terrain.tile_size,
                       static_cast<u32>(manifest.players.size()), fog_mode, &terrain);
     m_client_sim_ref = &sim;
 }
 
 const f32* NetworkManager::update_client_fog(f32 dt) {
-    if (!m_client_fog.enabled() || !m_local_player.is_valid()) return nullptr;
+    if (!m_client_vision.enabled() || !m_local_player.is_valid()) return nullptr;
     if (m_client_sim_ref) {
-        m_client_fog.update(m_client_world, *m_client_sim_ref);
+        m_client_vision.update(m_client_world, *m_client_sim_ref);
     }
-    return m_client_fog.update_visual(m_local_player, dt);
+    return m_client_vision.update_visual(m_local_player, dt);
 }
 
 // ── Shared ──────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ struct EffectDef {
     f32       gravity     = -200;
     f32       emit_rate   = 0;       // >0: continuous emission (particles/sec), 0: burst only
     f32       spread      = 1.0f;   // 0 = straight up, 1 = full sphere
+    f32       radius      = 0;      // >0: Ring emitter, particles arranged on horizontal circle
     glm::vec4 start_color{1, 0.8f, 0.2f, 1};
     glm::vec4 end_color{1, 0.2f, 0, 0};
     std::string texture;       // texture name: "spark", "blood", "glow", "droplet" (empty = default)
@@ -43,6 +44,7 @@ struct EffectInstance {
     const EffectDef*  def = nullptr;
     glm::vec3         position{0};
     simulation::Unit  attached_unit;       // if valid, follows this unit
+    std::string       attach_point;        // bone name; empty = follow unit center
     f32               elapsed    = 0;
     f32               duration   = -1;     // -1 = permanent until destroyed, >0 = auto-destroy
     bool              alive      = true;
@@ -77,11 +79,13 @@ public:
 
     // Create a persistent effect. Returns handle for later destruction.
     u32 create(const std::string& name, glm::vec3 position);
-    u32 create_on_unit(const std::string& name, simulation::Unit unit, glm::vec3 unit_pos);
+    u32 create_on_unit(const std::string& name, simulation::Unit unit,
+                       glm::vec3 spawn_pos, std::string attach_point = "");
 
     // Fire-and-forget: plays once then auto-destroys.
     void play(const std::string& name, glm::vec3 position);
-    void play_on_unit(const std::string& name, simulation::Unit unit, glm::vec3 unit_pos);
+    void play_on_unit(const std::string& name, simulation::Unit unit,
+                      glm::vec3 spawn_pos, std::string attach_point = "");
 
     // Destroy a persistent effect by handle.
     void destroy(u32 id);
@@ -92,8 +96,9 @@ public:
     void clear();
 
     // Update all live effects (spawn particles, follow units, expire).
-    // unit_pos_fn: callback to get current unit position (avoids depending on World).
-    using UnitPosFn = glm::vec3(*)(simulation::Unit, void* ctx);
+    using UnitPosFn = glm::vec3(*)(simulation::Unit unit,
+                                    std::string_view attach_point,
+                                    void* ctx);
     void update(f32 dt, UnitPosFn get_pos, void* ctx);
 
     // Access live instances for point light collection

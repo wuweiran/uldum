@@ -23,6 +23,12 @@ void system_items(World& world, float dt);
 void system_projectile(World& world, float dt);
 void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& pathfinder);
 void system_death(World& world);
-void system_scale_pulse(World& world, float dt);
+
+// Detection pass for UNIT_STATUS_INVISIBLE. For each unit with numeric
+// attribute "true_sight" > 0, queries enemy invisible units within
+// that radius and ORs the detector's player bit onto their
+// TrueSightVisibility component. Cleared and rebuilt every tick. The
+// renderer consults the resulting mask in is_fog_hidden.
+void system_true_sight(World& world, const SpatialGrid& grid);
 
 } // namespace uldum::simulation

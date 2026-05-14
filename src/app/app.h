@@ -22,6 +22,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 // Forward-declare UI types that App owns via unique_ptr. App's destructor
 // is defined out-of-line in app.cpp, so the header doesn't need complete
@@ -214,6 +215,12 @@ private:
         f32              lifespan = 0.45f;
     };
     TargetPing m_target_ping;
+
+    // Client-side mapping from server-assigned CreateEffect handles to
+    // local EffectManager instance ids. Server's id is the canonical
+    // wire identifier (handles arrive via S_EFFECT_CREATE and need to
+    // resolve back to a local id on S_EFFECT_DESTROY).
+    std::unordered_map<u32, u32> m_effect_id_map;
 };
 
 } // namespace uldum

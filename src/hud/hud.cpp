@@ -22,7 +22,7 @@
 #include "simulation/ability_def.h"
 #include "simulation/simulation.h"
 #include "simulation/type_registry.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 #include "map/terrain_data.h"
 #include "input/selection.h"
 #include "input/input_bindings.h"
@@ -259,7 +259,13 @@ struct Hud::Impl {
         // because the unit's ability list can mutate mid-drag.
         std::string  ability_id;
         f32          range = 0;
-        simulation::AbilityForm form = simulation::AbilityForm::Passive;
+        simulation::AbilityForm form = simulation::AbilityForm::PassiveModifier;
+        // Target-form metadata snapshot — bitmask of `widget_kind::*`
+        // values the cursor accepts (Unit/Destructable/Item) and whether
+        // the cursor falls through to the ground when no widget snaps.
+        // Drives reticle / snap logic during drag.
+        u32          widget_kinds = 0;
+        bool         accept_point = false;
         simulation::IndicatorShape shape = simulation::IndicatorShape::Point;
         f32          area_radius = 0;
         f32          area_width  = 0;   // Line
@@ -281,7 +287,7 @@ struct Hud::Impl {
         // (no slide-off) lifts the item into held mode and clears
         // this state. inventory_targetable is the press-time snapshot
         // of whether the item's first ability supports drag-cast
-        // (form is TargetUnit/TargetPoint AND castable now).
+        // (form is Target AND castable now).
         i32          inventory_slot = -1;
         u32          inventory_item_id = UINT32_MAX;
         std::string  inventory_item_icon;
@@ -1612,18 +1618,18 @@ constexpr f32 FOCUS_LOST_RANGE        = 1200.0f;   // drop if existing focus far
 // queries. Returns true when fog is disabled / terrain isn't ready, so
 // pre-fog or test maps don't accidentally hide everything.
 bool focus_visible(const WorldContext& ctx, glm::vec3 pos) {
-    if (!ctx.fog || !ctx.terrain || !ctx.terrain->is_valid()) return true;
+    if (!ctx.vision || !ctx.terrain || !ctx.terrain->is_valid()) return true;
     f32 ts = ctx.terrain->tile_size;
     if (ts <= 0.0f) return true;
-    if (!ctx.fog->enabled()) return true;
+    if (!ctx.vision->enabled()) return true;
     i32 tx = static_cast<i32>((pos.x - ctx.terrain->origin_x()) / ts);
     i32 ty = static_cast<i32>((pos.y - ctx.terrain->origin_y()) / ts);
     if (tx < 0 || ty < 0 ||
         static_cast<u32>(tx) >= ctx.terrain->tiles_x ||
         static_cast<u32>(ty) >= ctx.terrain->tiles_y) return false;
-    return ctx.fog->is_visible(ctx.local_player,
-                               static_cast<u32>(tx),
-                               static_cast<u32>(ty));
+    return ctx.vision->is_visible(ctx.local_player,
+                                  static_cast<u32>(tx),
+                                  static_cast<u32>(ty));
 }
 } // namespace
 
@@ -2798,7 +2804,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         s.drag_cast.snapped_target = simulation::Unit{};
     }
     if (drag_down &&
-        s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+        s.drag_cast.form == simulation::AbilityForm::Target &&
+        s.drag_cast.widget_kinds != 0 &&
         s.world_ctx->simulation) {
         bool is_command = !s.drag_cast.command_id.empty();
         const simulation::AbilityDef* def = nullptr;
@@ -2938,8 +2945,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         // Inventory release branches:
         //   Pressed + over_slot  → quick tap, fire no-target use.
         //   Pressed + slide-off  → cancel.
-        //   Aiming  + TargetUnit → cancel unless a unit was snapped.
-        //   Aiming  + TargetPoint → fire use-at-target with the drag
+        //   Aiming  + widget-accepting → cancel unless a widget was snapped.
+        //   Aiming  + point-only → fire use-at-target with the drag
         //                          point (no snap needed).
         //   Cancelling           → cancel.
         bool fire_no_target = false;
@@ -2947,9 +2954,10 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         if (s.drag_cast.phase == Phase::Pressed && over_slot) {
             fire_no_target = true;
         } else if (s.drag_cast.phase == Phase::Aiming) {
-            if (s.drag_cast.form == simulation::AbilityForm::TargetUnit) {
+            if (s.drag_cast.widget_kinds != 0) {
                 if (s.drag_cast.snapped_target.is_valid()) fire_at_target = true;
-            } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
+                else if (s.drag_cast.accept_point) fire_at_target = true;
+            } else if (s.drag_cast.accept_point) {
                 fire_at_target = true;
             }
         }
@@ -3019,14 +3027,16 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             }
         }
 
-        if (s.drag_cast.form == simulation::AbilityForm::TargetUnit) {
+        if (s.drag_cast.widget_kinds != 0) {
             if (focus_usable) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
                 commit = true;
             } else if (s.drag_cast.snapped_target.is_valid()) {
                 commit = true;
+            } else if (s.drag_cast.accept_point) {
+                commit = true;   // hybrid form: fall through to ground
             }
-        } else if (s.drag_cast.form == simulation::AbilityForm::TargetPoint) {
+        } else if (s.drag_cast.accept_point) {
             // For AoE casts, drop the indicator on the focus target's
             // position so a tap-and-fire feels like "this enemy gets
             // hit" rather than always landing under the caster.
@@ -3041,13 +3051,15 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             commit = true;
         }
     }
-    // Ability-side: unit-targeted casts cancel if released without
-    // snap (no valid target = nothing to cast on). Command-side:
-    // both Move and Attack always commit — with a snap they go to
-    // Follow / Attack-unit; without one they fall back to the
-    // ground point (Move-to-point / AttackMove).
+    // Ability-side: widget-only casts cancel if released without snap
+    // (no valid target = nothing to cast on). Hybrid (widget + point)
+    // and point-only always commit — falling through to the ground.
+    // Command-side: both Move and Attack always commit — with a snap
+    // they go to Follow / Attack-unit; without one they fall back to
+    // the ground point (Move-to-point / AttackMove).
     if (commit && !is_command &&
-        s.drag_cast.form == simulation::AbilityForm::TargetUnit &&
+        s.drag_cast.form == simulation::AbilityForm::Target &&
+        s.drag_cast.widget_kinds != 0 && !s.drag_cast.accept_point &&
         !s.drag_cast.snapped_target.is_valid()) {
         commit = false;
     }
@@ -3104,7 +3116,9 @@ Hud::AbilityAimState Hud::aim_state() const {
         out.drag_y     = dc.drag_world_y;
         out.drag_z     = dc.drag_world_z;
         out.range      = dc.range;
-        out.is_unit_target = (dc.form == simulation::AbilityForm::TargetUnit);
+        // Widget-snapped this frame? Hybrid forms can switch between
+        // widget and point each frame as the cursor moves.
+        out.is_unit_target = dc.snapped_target.is_valid();
 
         // Shape mirrors the ability's indicator shape. For target_unit
         // forms, an area_radius > 0 still draws a circle around the
@@ -3198,9 +3212,14 @@ Hud::AbilityAimState Hud::aim_state() const {
 
     const auto* def = ctx.abilities->get(m_impl->action_bar_targeting_ability);
     if (!def) return out;
-    bool is_unit  = (def->form == simulation::AbilityForm::TargetUnit);
-    bool is_point = (def->form == simulation::AbilityForm::TargetPoint);
-    if (!is_unit && !is_point) return out;
+    // Target-form ability with at least one of widget snap / point fall-
+    // through enabled. `is_unit` here means the cursor accepts a widget
+    // pick at all (drives reticle logic below); a hybrid ability has
+    // both is_unit and accept_point true.
+    if (def->form != simulation::AbilityForm::Target) return out;
+    bool is_unit  = (def->widget_kinds != 0);
+    bool accept_point = def->accept_point;
+    if (!is_unit && !accept_point) return out;
 
     if (ctx.selection->selected().empty()) return out;
     simulation::Unit caster_unit = ctx.selection->selected().front();
@@ -3651,8 +3670,7 @@ static bool can_afford(const simulation::World& world, u32 unit_id,
 // mana it would never spend anyway.
 static bool is_castable_form(simulation::AbilityForm f) {
     using F = simulation::AbilityForm;
-    return f == F::Instant || f == F::Toggle
-        || f == F::TargetUnit || f == F::TargetPoint;
+    return f == F::Instant || f == F::Target;
 }
 
 // Can the selected unit trigger this slot's ability right now? Combines
@@ -4018,7 +4036,7 @@ static void draw_minimap(Hud& hud, Hud::Impl& s) {
     if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->terrain) return;
     const auto& world = *s.world_ctx->world;
     const auto& td    = *s.world_ctx->terrain;
-    const auto* fog   = s.world_ctx->fog;
+    const auto* vision = s.world_ctx->vision;
 
     f32 inv_w = (td.world_width()  > 0.0f) ? (cfg.rect.w / td.world_width())  : 0.0f;
     f32 inv_h = (td.world_height() > 0.0f) ? (cfg.rect.h / td.world_height()) : 0.0f;
@@ -4034,14 +4052,14 @@ static void draw_minimap(Hud& hud, Hud::Impl& s) {
         if (const auto* hp = world.healths.get(id); hp && hp->current <= 0.0f) continue;
 
         // Fog gate — tile lookup in terrain space.
-        if (fog) {
+        if (vision) {
             i32 tx = static_cast<i32>((tf.position.x - td.origin_x()) / td.tile_size);
             i32 ty = static_cast<i32>((tf.position.y - td.origin_y()) / td.tile_size);
             if (tx >= 0 && ty >= 0 &&
                 static_cast<u32>(tx) < td.tiles_x &&
                 static_cast<u32>(ty) < td.tiles_y) {
-                if (!fog->is_visible(s.world_ctx->local_player,
-                                     static_cast<u32>(tx), static_cast<u32>(ty))) {
+                if (!vision->is_visible(s.world_ctx->local_player,
+                                        static_cast<u32>(tx), static_cast<u32>(ty))) {
                     continue;
                 }
             }
@@ -4554,9 +4572,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 const simulation::AbilityInstance* inst =
                     resolve_slot_ability(static_cast<u32>(bar_slot),
                                          s.action_bar_cfg, *s.world_ctx, def);
-                bool targetable = def &&
-                    (def->form == simulation::AbilityForm::TargetUnit ||
-                     def->form == simulation::AbilityForm::TargetPoint);
+                bool targetable = def && def->form == simulation::AbilityForm::Target;
                 u32 caster_id = s.world_ctx->selection &&
                                 !s.world_ctx->selection->selected().empty()
                                   ? s.world_ctx->selection->selected().front().id
@@ -4584,6 +4600,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         const auto& lvl = def->level_data(inst->level);
                         s.drag_cast.range       = lvl.range;
                         s.drag_cast.form        = def->form;
+                        s.drag_cast.widget_kinds = def->widget_kinds;
+                        s.drag_cast.accept_point = def->accept_point;
                         s.drag_cast.shape       = def->shape;
                         s.drag_cast.area_radius = lvl.area.radius;
                         s.drag_cast.area_width  = lvl.area.width;
@@ -4639,9 +4657,13 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         // Both Move and Attack snap to units on mobile.
                         // Move-on-unit → Follow; Attack-on-unit → Attack
                         // (friendly fire allowed); release on ground
-                        // falls back to the point-target order. Form is
-                        // TargetUnit either way so the snap loop runs.
-                        s.drag_cast.form        = simulation::AbilityForm::TargetUnit;
+                        // falls back to the point-target order. Use the
+                        // hybrid form (widget-accepting + point fall-
+                        // through) so the snap loop runs and release on
+                        // ground commits the point order.
+                        s.drag_cast.form        = simulation::AbilityForm::Target;
+                        s.drag_cast.widget_kinds = simulation::widget_kind::Unit;
+                        s.drag_cast.accept_point = true;
                         s.drag_cast.shape       = simulation::IndicatorShape::Point;
                         s.drag_cast.area_radius = 0;
                         s.drag_cast.area_width  = 0;
@@ -4691,8 +4713,10 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                     // drag_cast snapshot from here on out.
                     std::string first_ability;
                     f32  range = 0.0f;
-                    auto form  = simulation::AbilityForm::Passive;
+                    auto form  = simulation::AbilityForm::PassiveModifier;
                     auto shape = simulation::IndicatorShape::Point;
+                    u32  widget_kinds = 0;
+                    bool accept_point = false;
                     f32  area_radius = 0, area_width = 0, area_angle = 0;
                     bool castable_now = false;
                     if (tdef && !tdef->abilities.empty()) {
@@ -4709,20 +4733,20 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         }
                         if (abil_def && inst) {
                             const auto& lvl = abil_def->level_data(inst->level);
-                            range       = lvl.range;
-                            form        = abil_def->form;
-                            shape       = abil_def->shape;
-                            area_radius = lvl.area.radius;
-                            area_width  = lvl.area.width;
-                            area_angle  = lvl.area.angle;
+                            range        = lvl.range;
+                            form         = abil_def->form;
+                            widget_kinds = abil_def->widget_kinds;
+                            accept_point = abil_def->accept_point;
+                            shape        = abil_def->shape;
+                            area_radius  = lvl.area.radius;
+                            area_width   = lvl.area.width;
+                            area_angle   = lvl.area.angle;
                             castable_now = is_castable_form(abil_def->form) &&
                                 slot_castable_now(*s.world_ctx, carrier_id,
                                                   *inst, *abil_def);
                         }
                     }
-                    bool targetable = castable_now &&
-                        (form == simulation::AbilityForm::TargetUnit ||
-                         form == simulation::AbilityForm::TargetPoint);
+                    bool targetable = castable_now && form == simulation::AbilityForm::Target;
                     auto* tf = s.world_ctx->world->transforms.get(carrier_id);
                     auto* hi = s.world_ctx->world->handle_infos.get(carrier_id);
                     if (tf && hi) {
@@ -4743,6 +4767,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.ability_id  = first_ability;
                         s.drag_cast.range       = range;
                         s.drag_cast.form        = form;
+                        s.drag_cast.widget_kinds = widget_kinds;
+                        s.drag_cast.accept_point = accept_point;
                         s.drag_cast.shape       = shape;
                         s.drag_cast.area_radius = area_radius;
                         s.drag_cast.area_width  = area_width;

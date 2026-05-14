@@ -160,6 +160,20 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
 
     // Hook the world's damage callback so all damage (combat + script) fires on_damage events
     sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target, f32& amount, std::string_view damage_type) {
+        // Save outer damage context — a trigger's action can call
+        // DamageUnit(), which recurses into on_damage and overwrites the
+        // global m_ctx_damage_* fields with the nested event's values.
+        // Without save/restore, when control returns to the outer
+        // fire_event loop and the NEXT trigger's condition runs (e.g.
+        // unveiling strike running after cleave), GetDamageType() reads
+        // the nested event's "cleave" instead of the original "attack",
+        // and the trigger silently misfires.
+        u32 saved_unit          = m_ctx_unit;
+        u32 saved_damage_source = m_ctx_damage_source;
+        u32 saved_damage_target = m_ctx_damage_target;
+        f32 saved_damage_amount = m_ctx_damage_amount;
+        std::string saved_damage_type = m_ctx_damage_type;
+
         set_context_unit(target.id);
         set_context_damage_source(source.id);
         set_context_damage_target(target.id);
@@ -168,6 +182,24 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         fire_event("global_damage", target.id);
         fire_event("unit_damage", target.id);
         amount = get_context_damage_amount();
+
+        m_ctx_unit          = saved_unit;
+        m_ctx_damage_source = saved_damage_source;
+        m_ctx_damage_target = saved_damage_target;
+        m_ctx_damage_amount = saved_damage_amount;
+        m_ctx_damage_type   = std::move(saved_damage_type);
+    };
+
+    // Hook dying callback — runs while HP is at 0 but BEFORE reap.
+    // Handlers can SetUnitHealth back up to save the unit (Reincarnation
+    // / Phoenix Fire / Cheat Death). If any handler leaves HP > 0 the
+    // sim cancels the death entirely; on_death does NOT fire in that
+    // case. Mirror of the death pair below.
+    sim.world().on_dying = [this](simulation::Unit dying, simulation::Unit killer) {
+        set_context_unit(dying.id);
+        set_context_killer(killer.is_valid() ? killer.id : UINT32_MAX);
+        fire_event("global_dying", dying.id);
+        fire_event("unit_dying", dying.id);
     };
 
     // Hook death callback so system_death fires on_death events
@@ -178,18 +210,116 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         fire_event("unit_death", dying.id);
     };
 
-    // Hook ability effect callback — fires on_ability_effect when a cast reaches cast_point
-    sim.world().on_ability_effect = [this](simulation::Unit caster, std::string_view ability_id,
-                                            simulation::Unit target_unit, glm::vec3 target_pos,
-                                            simulation::Item source_item) {
+    // Hook order callback — fires every time a new order survives the
+    // sim's admission checks. std::visit unpacks the order variant to
+    // a string tag + target unit + target point + ability id (for Cast
+    // orders), all surfaced through trigger context accessors:
+    //   GetTriggerUnit()          — the unit getting the order
+    //   GetTriggerOrderType()     — "move" / "attack" / "cast" / ...
+    //   GetOrderTargetUnit()      — target unit handle (nil if none)
+    //   GetOrderTargetX/Y()       — target ground point
+    //   GetTriggerAbilityId()     — for "cast" orders (existing context)
+    sim.world().on_order = [this](simulation::Unit unit, const simulation::Order& order) {
+        std::string type_tag;
+        u32  target_uid = UINT32_MAX;
+        f32  target_x = 0, target_y = 0;
+        std::string ability_id;
+        std::visit([&](const auto& p) {
+            using T = std::decay_t<decltype(p)>;
+            if constexpr (std::is_same_v<T, simulation::orders::Move>) {
+                type_tag = "move";
+                if (p.target_unit.is_valid()) target_uid = p.target_unit.id;
+                target_x = p.target.x; target_y = p.target.y;
+            } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
+                type_tag = "attack_move";
+                target_x = p.target.x; target_y = p.target.y;
+            } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
+                type_tag = "attack";
+                if (p.target.is_valid()) target_uid = p.target.id;
+            } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
+                type_tag = "stop";
+            } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
+                type_tag = "hold";
+            } else if constexpr (std::is_same_v<T, simulation::orders::Patrol>) {
+                type_tag = "patrol";
+                if (!p.waypoints.empty()) {
+                    target_x = p.waypoints.front().x;
+                    target_y = p.waypoints.front().y;
+                }
+            } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
+                type_tag = "cast";
+                ability_id = p.ability_id;
+                if (p.target_unit.is_valid()) target_uid = p.target_unit.id;
+                target_x = p.target_pos.x; target_y = p.target_pos.y;
+            } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
+                type_tag = "train";
+            } else if constexpr (std::is_same_v<T, simulation::orders::Research>) {
+                type_tag = "research";
+            } else if constexpr (std::is_same_v<T, simulation::orders::Build>) {
+                type_tag = "build";
+                target_x = p.pos.x; target_y = p.pos.y;
+            } else if constexpr (std::is_same_v<T, simulation::orders::PickupItem>) {
+                type_tag = "pickup";
+            } else if constexpr (std::is_same_v<T, simulation::orders::DropItem>) {
+                type_tag = "drop";
+                target_x = p.pos.x; target_y = p.pos.y;
+            } else if constexpr (std::is_same_v<T, simulation::orders::SwapInventorySlot>) {
+                type_tag = "swap_inventory_slot";
+            } else if constexpr (std::is_same_v<T, simulation::orders::MoveDirection>) {
+                type_tag = "move_direction";
+                target_x = p.dir.x; target_y = p.dir.y;
+            }
+        }, order.payload);
+
+        set_context_unit(unit.id);
+        set_context_order_type(std::move(type_tag));
+        set_context_order_target_unit(target_uid);
+        set_context_order_target_x(target_x);
+        set_context_order_target_y(target_y);
+        set_context_ability(ability_id);
+        fire_event("global_issued_order", unit.id);
+        fire_event("unit_issued_order", unit.id);
+    };
+
+    // Ability cast-lifecycle event fan-out. All three callbacks share
+    // the same args and produce the same trigger context (caster + ability
+    // + spell target). They fire at distinct moments — channel start,
+    // channel end (natural OR interrupt), and effect resolution. See
+    // World's on_ability_* docs for the ordering vs Foreswing /
+    // Channeling / Backswing.
+    auto fan_out_cast = [this](std::string_view global, std::string_view scoped,
+                               simulation::Unit caster, std::string_view ability_id,
+                               simulation::Unit target_unit, glm::vec3 target_pos,
+                               simulation::Item source_item) {
         set_context_unit(caster.id);
         set_context_ability(std::string(ability_id));
         set_context_spell_target_unit(target_unit.is_valid() ? target_unit.id : UINT32_MAX);
         set_context_spell_target_x(target_pos.x);
         set_context_spell_target_y(target_pos.y);
         set_context_item(source_item);
-        fire_event("global_ability_effect", caster.id, ability_id);
-        fire_event("unit_ability_effect", caster.id, ability_id);
+        fire_event(global, caster.id, ability_id);
+        fire_event(scoped, caster.id, ability_id);
+    };
+
+    sim.world().on_ability_channel = [fan_out_cast](simulation::Unit caster, std::string_view ability_id,
+                                                     simulation::Unit target_unit, glm::vec3 target_pos,
+                                                     simulation::Item source_item) {
+        fan_out_cast("global_ability_channel", "unit_ability_channel",
+                     caster, ability_id, target_unit, target_pos, source_item);
+    };
+
+    sim.world().on_ability_endcast = [fan_out_cast](simulation::Unit caster, std::string_view ability_id,
+                                                     simulation::Unit target_unit, glm::vec3 target_pos,
+                                                     simulation::Item source_item) {
+        fan_out_cast("global_ability_endcast", "unit_ability_endcast",
+                     caster, ability_id, target_unit, target_pos, source_item);
+    };
+
+    sim.world().on_ability_effect = [fan_out_cast](simulation::Unit caster, std::string_view ability_id,
+                                                    simulation::Unit target_unit, glm::vec3 target_pos,
+                                                    simulation::Item source_item) {
+        fan_out_cast("global_ability_effect", "unit_ability_effect",
+                     caster, ability_id, target_unit, target_pos, source_item);
     };
 
     // Item events fired by system_items.
@@ -450,6 +580,61 @@ void ScriptEngine::update(float dt) {
     for (u32 id : dead_trigs) {
         m_triggers.erase(id);
     }
+
+    // Fog-aware effect dispatch — per-tick visibility delta for every
+    // active effect. The `delivered` set is the players currently
+    // rendering it. Vision gain → deliver Create. Vision loss →
+    // deliver Destroy. Effects live until the author calls
+    // DestroyEffect (or the convenience PlayEffect / PlayEffectOnUnit
+    // wrappers do a Create + immediate Destroy).
+    //
+    // In-flight particles already emitted on the client continue to
+    // fade naturally after a Destroy — the particle system owns
+    // them. Re-entering vision while the effect is still alive
+    // re-fires the burst on the client, which is the right thing for
+    // permanent emitters (portals) and harmless for one-shots.
+    if (m_sim && (m_effect_deliver_fn || m_effect_destroy_fn)) {
+        const auto& world = m_sim->world();
+        for (auto& e : m_active_effects) {
+            // For unit-attached effects, track the unit's current
+            // position so late-delivered players spawn the effect at
+            // the unit's now-position.
+            if (e.entity_id != UINT32_MAX) {
+                if (auto* t = world.transforms.get(e.entity_id)) e.position = t->position;
+            }
+            for (u32 p = 0; p < m_player_count; ++p) {
+                const bool visible = effect_visible_to(e, p);
+                const bool was = e.delivered.contains(p);
+                if (visible && !was) {
+                    if (m_effect_deliver_fn) {
+                        m_effect_deliver_fn(p, e.server_id, e.name, e.entity_id,
+                                            e.position, e.attach_point);
+                    }
+                    e.delivered.insert(p);
+                } else if (!visible && was) {
+                    if (m_effect_destroy_fn) m_effect_destroy_fn(p, e.server_id);
+                    e.delivered.erase(p);
+                }
+            }
+        }
+    }
+}
+
+bool ScriptEngine::effect_visible_to(const ActiveEffect& e, u32 player_id) const {
+    if (!m_sim) return true;
+    const auto& world  = m_sim->world();
+    const auto& vision = m_sim->vision();
+    if (e.entity_id != UINT32_MAX) {
+        return vision.is_unit_visible_to(world, *m_sim, e.entity_id,
+                                          simulation::Player{player_id});
+    }
+    const auto* terrain = m_sim->terrain();
+    if (!terrain || !vision.enabled()) return true;
+    auto tile = terrain->world_to_tile(e.position.x, e.position.y);
+    u32 tx = static_cast<u32>(tile.x);
+    u32 ty = static_cast<u32>(tile.y);
+    if (tx >= vision.tiles_x() || ty >= vision.tiles_y()) return false;
+    return vision.is_visible(simulation::Player{player_id}, tx, ty);
 }
 
 // ── Event firing ──────────────────────────────────────────────────────────
@@ -539,6 +724,16 @@ void ScriptEngine::bind_api() {
         simulation::destroy(sim.world(), unit);
     };
 
+    // Transform a unit into a different type in place. Same handle, same
+    // position, same owner. Health / mana carry by percentage. Type-listed
+    // abilities flip available true/false so cooldowns ride through morph
+    // and back; Lua-added abilities, item-granted passives, and applied
+    // buffs are untouched. Returns true on success, false if the type is
+    // unknown or the handle is stale.
+    lua["MorphUnit"] = [&](simulation::Unit unit, const std::string& new_type_id) -> bool {
+        return simulation::morph_unit(sim.world(), unit, new_type_id);
+    };
+
     lua["IsUnitAlive"] = [&](simulation::Unit unit) -> bool {
         return simulation::is_alive(sim.world(), unit);
     };
@@ -586,6 +781,49 @@ void ScriptEngine::bind_api() {
         if (t) t->facing = degrees * 0.0174532925f;  // deg → rad
     };
 
+    // Script-driven animation. SetUnitAnimation replaces whatever the
+    // unit was playing with `clip` (so back-to-back calls overwrite
+    // rather than queue). QueueUnitAnimation appends to the queue,
+    // creating one if none exists. ResetUnitAnimation drops the queue
+    // and lets the engine's per-frame state derivation take back over.
+    //
+    // Death always wins — when the unit's hp hits 0 the renderer
+    // drops the queue and plays the death clip, regardless of what
+    // the map scripted. See AnimQueue (components.h) for the contract.
+    lua["SetUnitAnimation"] = [&](simulation::Unit u, const std::string& clip,
+                                   sol::optional<bool> looping) {
+        auto& w = sim.world();
+        if (!w.validate(u)) return;
+        auto* q = w.anim_queues.get(u.id);
+        if (q) {
+            q->clips.clear();
+            q->clips.push_back(clip);
+            q->looping = looping.value_or(false);
+        } else {
+            simulation::AnimQueue aq;
+            aq.clips.push_back(clip);
+            aq.looping = looping.value_or(false);
+            w.anim_queues.add(u.id, std::move(aq));
+        }
+    };
+
+    lua["QueueUnitAnimation"] = [&](simulation::Unit u, const std::string& clip) {
+        auto& w = sim.world();
+        if (!w.validate(u)) return;
+        auto* q = w.anim_queues.get(u.id);
+        if (q) {
+            q->clips.push_back(clip);
+        } else {
+            simulation::AnimQueue aq;
+            aq.clips.push_back(clip);
+            w.anim_queues.add(u.id, std::move(aq));
+        }
+    };
+
+    lua["ResetUnitAnimation"] = [&](simulation::Unit u) {
+        sim.world().anim_queues.remove(u.id);
+    };
+
     // Health
     lua["GetUnitHealth"] = [&](simulation::Unit u) -> f32 {
         return simulation::get_health(sim.world(), u);
@@ -607,12 +845,16 @@ void ScriptEngine::bind_api() {
 
     lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
         auto* ab = sim.world().attribute_blocks.get(u.id);
-        if (ab) {
-            ab->numeric[name] = value;
-            if (m_unit_update_fn) {
-                auto pkt = network::build_update_attr(u.id, name, value);
-                m_unit_update_fn(u.id, pkt);
-            }
+        if (!ab) return;
+        // Writes to base; the next recalc re-sums passive ability
+        // modifiers on top so a +3 armor aura still adds 3 after the
+        // script writes a new base.
+        ab->base[name] = value;
+        simulation::recalculate_modifiers(sim.world(), u.id);
+        if (m_unit_update_fn) {
+            f32 effective = ab->numeric.count(name) ? ab->numeric.at(name) : value;
+            auto pkt = network::build_update_attr(u.id, name, effective);
+            m_unit_update_fn(u.id, pkt);
         }
     };
 
@@ -621,6 +863,55 @@ void ScriptEngine::bind_api() {
         if (!ab) return "";
         auto it = ab->string_attrs.find(name);
         return it != ab->string_attrs.end() ? it->second : "";
+    };
+
+    // Status flags. The flag arg is a lowercase string ("stunned",
+    // "silenced", "muted", "disarmed", "rooted", "invulnerable",
+    // "magic_immune", "untargetable", "paused"). Unknown strings are
+    // logged and ignored. The bitmask lives on a per-unit StatusFlags
+    // component; sim systems gate per-tick processing on these.
+    auto parse_status_flag = [](std::string_view s) -> u32 {
+        if (s == "stunned")      return simulation::status::Stunned;
+        if (s == "silenced")     return simulation::status::Silenced;
+        if (s == "muted")        return simulation::status::Muted;
+        if (s == "disarmed")     return simulation::status::Disarmed;
+        if (s == "rooted")       return simulation::status::Rooted;
+        if (s == "invulnerable") return simulation::status::Invulnerable;
+        if (s == "magic_immune") return simulation::status::MagicImmune;
+        if (s == "untargetable") return simulation::status::Untargetable;
+        if (s == "unattackable") return simulation::status::Unattackable;
+        if (s == "paused")       return simulation::status::Paused;
+        if (s == "invisible")    return simulation::status::Invisible;
+        return 0;
+    };
+
+    lua["SetUnitStatus"] = [&, parse_status_flag](simulation::Unit unit,
+                                                   const std::string& flag,
+                                                   bool on) {
+        u32 bit = parse_status_flag(flag);
+        if (bit == 0) {
+            log::warn(TAG, "SetUnitStatus: unknown flag '{}'", flag);
+            return;
+        }
+        simulation::set_unit_status(sim.world(), unit, bit, on);
+        if (m_unit_update_fn) {
+            auto pkt = network::build_update_status(unit.id, bit, on);
+            m_unit_update_fn(unit.id, pkt);
+        }
+    };
+
+    lua["GetUnitStatus"] = [&, parse_status_flag](simulation::Unit unit,
+                                                   const std::string& flag) -> bool {
+        u32 bit = parse_status_flag(flag);
+        if (bit == 0) {
+            log::warn(TAG, "GetUnitStatus: unknown flag '{}'", flag);
+            return false;
+        }
+        return simulation::unit_has_status(sim.world(), unit, bit);
+    };
+
+    lua["ClearAllUnitStatus"] = [&](simulation::Unit unit) {
+        simulation::clear_all_unit_status(sim.world(), unit);
     };
 
     // Classification
@@ -677,47 +968,52 @@ void ScriptEngine::bind_api() {
 
     // ── Ability API ───────────────────────────────────────────────────
 
+    // Network sync for these is plumbed at the engine level via
+    // World::on_ability_added / on_ability_removed — fires from every
+    // path (Lua, engine aura broadcast, natural duration expiry) so
+    // clients stay in lockstep regardless of which path drove the change.
     lua["AddAbility"] = [&](simulation::Unit unit, const std::string& ability_id, sol::optional<u32> level) -> bool {
-        u32 lvl = level.value_or(1);
-        bool ok = simulation::add_ability(sim.world(), sim.abilities(), unit, ability_id, lvl);
-        if (ok) {
-            set_context_unit(unit.id); set_context_ability(ability_id);
-            fire_event("global_ability_added", unit.id, ability_id);
-            fire_event("unit_ability_added", unit.id, ability_id);
-            if (m_unit_update_fn) {
-                auto pkt = network::build_update_ability_add(unit.id, ability_id, lvl);
-                m_unit_update_fn(unit.id, pkt);
-            }
-        }
-        return ok;
+        return simulation::add_ability(sim.world(), sim.abilities(), unit, ability_id, level.value_or(1));
     };
 
     lua["RemoveAbility"] = [&](simulation::Unit unit, const std::string& ability_id) -> bool {
-        bool ok = simulation::remove_ability(sim.world(), unit, ability_id);
-        if (ok) {
-            set_context_unit(unit.id); set_context_ability(ability_id);
-            fire_event("global_ability_removed", unit.id, ability_id);
-            fire_event("unit_ability_removed", unit.id, ability_id);
-            if (m_unit_update_fn) {
-                auto pkt = network::build_update_ability_remove(unit.id, ability_id);
-                m_unit_update_fn(unit.id, pkt);
-            }
-        }
-        return ok;
+        return simulation::remove_ability(sim.world(), unit, ability_id);
     };
 
     lua["ApplyPassiveAbility"] = [&](simulation::Unit target, const std::string& ability_id, simulation::Unit source, f32 duration) -> bool {
-        bool ok = simulation::apply_passive_ability(sim.world(), sim.abilities(), target, ability_id, source, duration);
-        if (ok) {
-            set_context_unit(target.id); set_context_ability(ability_id);
-            fire_event("global_ability_added", target.id, ability_id);
-            fire_event("unit_ability_added", target.id, ability_id);
-        }
-        return ok;
+        return simulation::apply_passive_ability(sim.world(), sim.abilities(), target, ability_id, source, duration);
     };
 
     lua["HasAbility"] = [&](simulation::Unit u, const std::string& ability_id) -> bool {
         return simulation::has_ability(sim.world(), u, ability_id);
+    };
+
+    // Mutate a modifier value on every active instance of an ability and
+    // re-run recalculate_modifiers so the effective attribute changes
+    // immediately. Used by Lua-driven tweens (Wind Walk's fade-in, slow
+    // ramp-down, etc.) — the ability owns the modifier state, Lua just
+    // drives the curve. Returns true if any instance was touched.
+    lua["SetAbilityModifier"] = [&](simulation::Unit u, const std::string& ability_id,
+                                     const std::string& key, f32 value) -> bool {
+        auto& w = sim.world();
+        if (!w.validate(u)) return false;
+        auto* aset = w.ability_sets.get(u.id);
+        if (!aset) return false;
+        bool changed = false;
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == ability_id) {
+                a.active_modifiers[key] = value;
+                changed = true;
+            }
+        }
+        if (changed) {
+            simulation::recalculate_modifiers(w, u.id);
+            if (m_unit_update_fn) {
+                auto pkt = network::build_update_ability_modifier(u.id, ability_id, key, value);
+                m_unit_update_fn(u.id, pkt);
+            }
+        }
+        return changed;
     };
 
     lua["GetAbilityLevel"] = [&](simulation::Unit u, const std::string& ability_id) -> u32 {
@@ -726,6 +1022,48 @@ void ScriptEngine::bind_api() {
 
     lua["GetAbilityStackCount"] = [&](simulation::Unit u, const std::string& ability_id) -> u32 {
         return simulation::get_ability_stack_count(sim.world(), u, ability_id);
+    };
+
+    // Read / write the cooldown remaining on a unit's ability (seconds).
+    // Used by morph helpers to preserve cooldowns across the
+    // RemoveAbility / MorphUnit / AddAbility round-trip — read before
+    // removing, write back after re-adding. Returns 0 / no-op when the
+    // unit doesn't have the ability.
+    lua["GetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id) -> f32 {
+        if (!sim.world().validate(u)) return 0.0f;
+        auto* aset = sim.world().ability_sets.get(u.id);
+        if (!aset) return 0.0f;
+        for (const auto& a : aset->abilities) {
+            if (a.ability_id == ability_id) return a.cooldown_remaining;
+        }
+        return 0.0f;
+    };
+
+    lua["SetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id, f32 secs) {
+        if (!sim.world().validate(u)) return;
+        auto* aset = sim.world().ability_sets.get(u.id);
+        if (!aset) return;
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == ability_id) {
+                a.cooldown_remaining = std::max(0.0f, secs);
+                return;
+            }
+        }
+    };
+
+    // List the ids in a unit type's authored `abilities` array. Used
+    // by morph helpers to drive Remove/Add loops without the map
+    // having to duplicate the type's ability list in Lua. Returns an
+    // empty table if the type id is unknown.
+    lua["GetUnitTypeAbilities"] = [&](const std::string& type_id) -> sol::table {
+        sol::table out = lua.create_table();
+        const auto* def = sim.types().get_unit_type(type_id);
+        if (!def) return out;
+        u32 idx = 1;
+        for (const auto& aid : def->abilities) {
+            out[idx++] = aid;
+        }
+        return out;
     };
 
     // ── Damage API ────────────────────────────────────────────────────
@@ -831,60 +1169,98 @@ void ScriptEngine::bind_api() {
                 c.get_or(3, fallback.b), c.get_or(4, fallback.a)};
     };
 
-    lua["DefineEffect"] = [&, read_color](const std::string& name, sol::table def) {
-        if (!m_effects) return;
-        render::EffectDef edef;
-        edef.name      = name;
-        edef.count     = def.get_or("count", 10u);
-        edef.speed     = def.get_or("speed", 100.0f);
-        edef.life      = def.get_or("life", 0.5f);
-        edef.size      = def.get_or("size", 8.0f);
-        edef.gravity   = def.get_or("gravity", -200.0f);
-        edef.emit_rate = def.get_or("emit_rate", 0.0f);
-        if (def["start_color"].valid()) {
-            edef.start_color = read_color(def["start_color"], {1, 1, 1, 1});
-        }
-        if (def["end_color"].valid()) {
-            edef.end_color = read_color(def["end_color"], {1, 1, 1, 0});
-        }
-        m_effects->define(name, edef);
-    };
+    // DefineEffect (runtime effect def from Lua) intentionally
+    // omitted. All effect defs live in `types/effects.json` — loaded
+    // by both host and client at session start — so the registries
+    // stay symmetric and there's no peer-join replay edge case.
 
-    lua["CreateEffect"] = [&](const std::string& name, f32 x, f32 y, f32 z) -> u32 {
-        if (!m_effect_mgr) return 0;
-        return m_effect_mgr->create(name, {x, y, z});
+    // Effect lifecycle. Every effect is created via Create* and lives
+    // until the author calls DestroyEffect — WC3 convention. Burst /
+    // one-shot effects use the `DestroyEffect(CreateEffect(...))`
+    // idiom; DestroyEffect does a late-delivery pass to every player
+    // who can see the effect's position right now BEFORE tearing
+    // down, so the burst still fires correctly. PlayEffect /
+    // PlayEffectOnUnit are kept as convenience wrappers around that
+    // pattern so map code stays terse.
+    lua["CreateEffect"] = [this](const std::string& name, f32 x, f32 y, f32 z) -> u32 {
+        ActiveEffect e;
+        e.server_id = m_next_effect_id++;
+        e.name      = name;
+        e.position  = {x, y, z};
+        e.entity_id = UINT32_MAX;
+        m_active_effects.push_back(std::move(e));
+        return m_active_effects.back().server_id;
     };
 
     lua["CreateEffectOnUnit"] = [this, &sim](const std::string& name, simulation::Unit unit,
                                               sol::optional<std::string> attach_point) -> u32 {
-        if (!m_effect_mgr) return 0;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return 0;
-        glm::vec3 pos = t->position;
-        if (attach_point && m_attach_fn) {
-            pos += m_attach_fn(unit.id, *attach_point) * t->scale;
+        ActiveEffect e;
+        e.server_id    = m_next_effect_id++;
+        e.name         = name;
+        e.position     = t->position;
+        e.entity_id    = unit.id;
+        e.attach_point = attach_point ? *attach_point : std::string{};
+        m_active_effects.push_back(std::move(e));
+        return m_active_effects.back().server_id;
+    };
+
+    auto destroy_effect_impl = [this](u32 id) {
+        for (auto it = m_active_effects.begin(); it != m_active_effects.end(); ++it) {
+            if (it->server_id != id) continue;
+            // Late delivery: any player who can see the spot RIGHT
+            // NOW (e.g. a `DestroyEffect(CreateEffect(...))` burst
+            // called in the same tick the per-tick dispatcher would
+            // have run) gets a Create then immediately a Destroy.
+            // Particles emitted on Create fade naturally; this is the
+            // WC3 idiom and what makes one-shot bursts work.
+            if (m_effect_deliver_fn) {
+                for (u32 p = 0; p < m_player_count; ++p) {
+                    if (it->delivered.contains(p)) continue;
+                    if (effect_visible_to(*it, p)) {
+                        m_effect_deliver_fn(p, it->server_id, it->name,
+                                            it->entity_id, it->position, it->attach_point);
+                        it->delivered.insert(p);
+                    }
+                }
+            }
+            if (m_effect_destroy_fn) {
+                for (u32 p : it->delivered) m_effect_destroy_fn(p, id);
+            }
+            m_active_effects.erase(it);
+            return;
         }
-        return m_effect_mgr->create_on_unit(name, unit, pos);
     };
+    lua["DestroyEffect"] = destroy_effect_impl;
 
-    lua["DestroyEffect"] = [&](u32 id) {
-        if (m_effect_mgr) m_effect_mgr->destroy(id);
+    // Convenience: one-shot semantics via Create + immediate Destroy.
+    // Functionally identical to `DestroyEffect(CreateEffect(...))`.
+    lua["PlayEffect"] = [this, destroy_effect_impl](const std::string& name,
+                                                     f32 x, f32 y, f32 z) {
+        ActiveEffect e;
+        e.server_id = m_next_effect_id++;
+        e.name      = name;
+        e.position  = {x, y, z};
+        e.entity_id = UINT32_MAX;
+        u32 id = e.server_id;
+        m_active_effects.push_back(std::move(e));
+        destroy_effect_impl(id);
     };
-
-    lua["PlayEffect"] = [&](const std::string& name, f32 x, f32 y, f32 z) {
-        if (m_effect_mgr) m_effect_mgr->play(name, {x, y, z});
-    };
-
-    lua["PlayEffectOnUnit"] = [this, &sim](const std::string& name, simulation::Unit unit,
-                                            sol::optional<std::string> attach_point) {
-        if (!m_effect_mgr) return;
+    lua["PlayEffectOnUnit"] = [this, &sim, destroy_effect_impl](const std::string& name,
+                                                                 simulation::Unit unit,
+                                                                 sol::optional<std::string> attach_point) {
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
-        glm::vec3 pos = t->position;
-        if (attach_point && m_attach_fn) {
-            pos += m_attach_fn(unit.id, *attach_point) * t->scale;
-        }
-        m_effect_mgr->play_on_unit(name, unit, pos);
+        ActiveEffect e;
+        e.server_id    = m_next_effect_id++;
+        e.name         = name;
+        e.position     = t->position;
+        e.entity_id    = unit.id;
+        e.attach_point = attach_point ? *attach_point : std::string{};
+        u32 id = e.server_id;
+        m_active_effects.push_back(std::move(e));
+        destroy_effect_impl(id);
     };
     // ── Audio API ──────────────────────────────────────────────────────
 
@@ -972,38 +1348,104 @@ void ScriptEngine::bind_api() {
         m_camera_lock_unit_fn(p.id, unit);
     };
 
-    // ── Fog of War API ────────────────────────────────────────────────────
+    // ── Vision API ────────────────────────────────────────────────────────
+    // Tile-level fog of war queries. Per-unit invisibility is a separate
+    // concern handled by UNIT_STATUS_INVISIBLE and the SetUnitStatus API.
 
-    auto fog_table = lua.create_named_table("FogOfWar");
-
-    fog_table["reveal_all"] = [&sim](u32 player_id) {
-        sim.fog().reveal_all(simulation::Player{player_id});
+    lua["FogEnable"] = [&sim](bool on) {
+        sim.vision().set_enabled(on);
     };
 
-    fog_table["unexplore_all"] = [&sim](u32 player_id) {
-        sim.fog().unexplore_all(simulation::Player{player_id});
+    lua["IsFogEnabled"] = [&sim]() -> bool {
+        return sim.vision().enabled();
     };
 
-    fog_table["is_visible"] = [&sim](u32 player_id, f32 x, f32 y) -> bool {
-        auto& fog = sim.fog();
-        if (!fog.enabled()) return true;
+    auto point_state = [&sim](simulation::Player p, f32 x, f32 y) -> simulation::Visibility {
+        auto& vision = sim.vision();
+        if (!vision.enabled()) return simulation::Visibility::Visible;
         auto& terrain = *sim.terrain();
         auto tile = terrain.world_to_tile(x, y);
-        return fog.is_visible(simulation::Player{player_id},
-                              static_cast<u32>(tile.x), static_cast<u32>(tile.y));
+        return vision.get(p, static_cast<u32>(tile.x), static_cast<u32>(tile.y));
     };
 
-    fog_table["is_explored"] = [&sim](u32 player_id, f32 x, f32 y) -> bool {
-        auto& fog = sim.fog();
-        if (!fog.enabled()) return true;
-        auto& terrain = *sim.terrain();
-        auto tile = terrain.world_to_tile(x, y);
-        return fog.is_explored(simulation::Player{player_id},
-                               static_cast<u32>(tile.x), static_cast<u32>(tile.y));
+    lua["IsPointVisible"] = [point_state](simulation::Player p, f32 x, f32 y) -> bool {
+        return point_state(p, x, y) == simulation::Visibility::Visible;
     };
 
-    fog_table["is_enabled"] = [&sim]() -> bool {
-        return sim.fog().enabled();
+    lua["IsPointFogged"] = [point_state](simulation::Player p, f32 x, f32 y) -> bool {
+        return point_state(p, x, y) == simulation::Visibility::Explored;
+    };
+
+    lua["IsPointMasked"] = [point_state](simulation::Player p, f32 x, f32 y) -> bool {
+        return point_state(p, x, y) == simulation::Visibility::Unexplored;
+    };
+
+    lua["IsPointExplored"] = [point_state](simulation::Player p, f32 x, f32 y) -> bool {
+        return point_state(p, x, y) != simulation::Visibility::Unexplored;
+    };
+
+    auto parse_fog_state = [](std::string_view s) -> simulation::Visibility {
+        if (s == "fogged" || s == "explored") return simulation::Visibility::Explored;
+        if (s == "masked" || s == "unexplored") return simulation::Visibility::Unexplored;
+        return simulation::Visibility::Visible;
+    };
+
+    lua["CreateFogModifierRect"] = [&sim, parse_fog_state](
+            simulation::Player p, const std::string& state,
+            f32 x0, f32 y0, f32 x1, f32 y1) -> u32 {
+        return sim.vision().create_fog_modifier_rect(p, parse_fog_state(state), x0, y0, x1, y1);
+    };
+
+    lua["CreateFogModifierRadius"] = [&sim, parse_fog_state](
+            simulation::Player p, const std::string& state,
+            f32 cx, f32 cy, f32 radius) -> u32 {
+        return sim.vision().create_fog_modifier_radius(p, parse_fog_state(state), cx, cy, radius);
+    };
+
+    lua["DestroyFogModifier"] = [&sim](u32 id) {
+        sim.vision().destroy_fog_modifier(id);
+    };
+
+    lua["SetFogModifierActive"] = [&sim](u32 id, bool active) {
+        sim.vision().set_fog_modifier_active(id, active);
+    };
+
+    lua["IsUnitVisibleToPlayer"] = [&sim](simulation::Unit u, simulation::Player p) -> bool {
+        if (!sim.world().validate(u)) return false;
+        return sim.vision().is_unit_visible_to(sim.world(), sim, u.id, p);
+    };
+
+    lua["IsUnitDetected"] = [&sim](simulation::Unit u, simulation::Player p) -> bool {
+        if (!sim.world().validate(u)) return false;
+        const auto* tv = sim.world().true_sight_vis.get(u.id);
+        return tv && (tv->revealed_to_mask & (1u << p.id));
+    };
+
+    lua["UnitReveal"] = [&sim](simulation::Unit u, simulation::Player p, bool on) {
+        auto& w = sim.world();
+        if (!w.validate(u) || !p.is_valid()) return;
+        u32 bit = 1u << p.id;
+        auto* fv = w.forced_vis.get(u.id);
+        if (on) {
+            if (fv) fv->revealed_to_mask |= bit;
+            else    w.forced_vis.add(u.id, simulation::ForcedVisibility{bit});
+        } else if (fv) {
+            fv->revealed_to_mask &= ~bit;
+            if (fv->revealed_to_mask == 0) w.forced_vis.remove(u.id);
+        }
+    };
+
+    lua["UnitShareVision"] = [&sim](simulation::Unit u, simulation::Player p, bool on) {
+        auto& w = sim.world();
+        if (!w.validate(u) || !p.is_valid()) return;
+        auto* s = w.sights.get(u.id);
+        if (!s) return;
+        auto it = std::find(s->share_to_players.begin(), s->share_to_players.end(), p.id);
+        if (on) {
+            if (it == s->share_to_players.end()) s->share_to_players.push_back(p.id);
+        } else if (it != s->share_to_players.end()) {
+            s->share_to_players.erase(it);
+        }
     };
 
     // ── Environment API ────────────────────────────────────────────────────
@@ -1333,6 +1775,20 @@ void ScriptEngine::bind_trigger_api() {
         }
         return m_ctx_ability;
     };
+
+    // Order-event context — populated by the on_order callback.
+    // GetTriggerOrderType returns one of: "move", "attack_move",
+    // "attack", "stop", "hold", "patrol", "cast", "train", "research",
+    // "build", "pickup", "drop", "swap_inventory_slot",
+    // "move_direction". For "cast" orders, GetTriggerAbilityId returns
+    // the ability id. GetOrderTargetUnit / X / Y are zero / nil when
+    // the order didn't carry that field (e.g. Stop has neither).
+    lua["GetTriggerOrderType"] = [&]() -> std::string { return m_ctx_order_type; };
+    lua["GetOrderTargetUnit"] = [&, unit_or_nil]() -> sol::object {
+        return unit_or_nil(make_unit(sim.world(), m_ctx_order_target_unit));
+    };
+    lua["GetOrderTargetX"] = [&]() -> f32 { return m_ctx_order_target_x; };
+    lua["GetOrderTargetY"] = [&]() -> f32 { return m_ctx_order_target_y; };
     lua["GetDamageSource"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
         warn_wrong_event("GetDamageSource", {"global_damage", "unit_damage"});
         return unit_or_nil(make_unit(sim.world(), m_ctx_damage_source));
@@ -1987,7 +2443,8 @@ void ScriptEngine::bind_hud_api() {
         if (!m_hud || slot_1based == 0) return;
         if (m_sim) {
             if (const auto* def = m_sim->abilities().get(ability_id)) {
-                if (def->form == simulation::AbilityForm::Passive ||
+                if (def->form == simulation::AbilityForm::PassiveModifier ||
+                    def->form == simulation::AbilityForm::PassiveFlag ||
                     def->form == simulation::AbilityForm::Aura) {
                     log::warn("HUD", "ActionBarSetSlot({}, '{}'): ability is passive/aura, nothing will fire",
                               slot_1based, ability_id);

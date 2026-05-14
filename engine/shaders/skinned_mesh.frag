@@ -2,6 +2,13 @@
 
 // Fragment shader for skinned meshes — single diffuse texture per model.
 
+// Push constant: vertex stage writes mvp + model (128 bytes); fragment
+// stage gets a vec4 starting at offset 128, where .x is the visual
+// alpha multiplier (SetUnitAlpha).
+layout(push_constant) uniform PushConstants {
+    layout(offset = 128) vec4 visual;
+} pc;
+
 // Set 0: material textures
 layout(set = 0, binding = 0) uniform sampler2D diffuse_tex;
 
@@ -82,5 +89,5 @@ void main() {
         }
     }
 
-    out_color = vec4(lit, 1.0);
+    out_color = vec4(lit, pc.visual.x);
 }

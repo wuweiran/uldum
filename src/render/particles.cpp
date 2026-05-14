@@ -77,11 +77,14 @@ void ParticleSystem::remove_emitter(u32 id) {
     std::erase_if(m_emitters, [id](const ParticleEmitter& e) { return e.id == id; });
 }
 
-void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity, u32 texture_id, f32 spread) {
+void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity, u32 texture_id, f32 spread, f32 radius) {
     ParticleEmitter e;
     e.position       = position;
-    e.shape          = spread >= 0.9f ? EmitterShape::Sphere : EmitterShape::Point;
+    if (radius > 0)              e.shape = EmitterShape::Ring;
+    else if (spread >= 0.9f)     e.shape = EmitterShape::Sphere;
+    else                         e.shape = EmitterShape::Point;
     e.spread         = spread;
+    e.radius         = radius;
     e.particle_speed = speed;
     e.particle_life  = life;
     e.particle_size  = size;
@@ -111,6 +114,17 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
         glm::vec3 dir;
         if (emitter.shape == EmitterShape::Sphere) {
             dir = random_sphere_dir();
+        } else if (emitter.shape == EmitterShape::Ring) {
+            // Evenly distribute around a horizontal circle, all
+            // particles share the same upward velocity so the ring
+            // rises as a coherent unit.
+            f32 theta = (count > 0)
+                ? (static_cast<f32>(i) / static_cast<f32>(count)) * 6.28318530718f
+                : 0.0f;
+            p.position += glm::vec3{std::cos(theta) * emitter.radius,
+                                    std::sin(theta) * emitter.radius,
+                                    0};
+            dir = glm::vec3{0, 0, 1};
         } else {
             // Point: mostly upward with some spread
             dir = glm::normalize(glm::vec3{

@@ -26,6 +26,7 @@ layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
 layout(location = 2) in vec3 frag_world_pos;
 layout(location = 3) flat in uint frag_material_index;
+layout(location = 4)      in float frag_alpha;
 
 layout(location = 0) out vec4 out_color;
 
@@ -83,5 +84,5 @@ void main() {
         }
     }
 
-    out_color = vec4(lit, 1.0);
+    out_color = vec4(lit, frag_alpha);
 }

@@ -30,7 +30,7 @@ Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 | Attribute system | Single-value modifiers (strength, agility, etc.). All map-defined. Modified by abilities/items/levels |
 | Normal attack | Melee/ranged attack flow: dmg_time (fore-swing), backsw_time (recovery), attack cooldown, projectile launch |
 | Projectile system | Flight, homing, arc, collision detection, impact event |
-| Ability system | ~10 cast flow forms (instant, target_unit, target_point, passive, aura, toggle, channel, etc.). Cooldown, range check, state cost check. Applied abilities (WC3 "buffs") are abilities with duration + auto-remove |
+| Ability system | Four cast-flow forms (passive, aura, instant, target); channel is a per-level flag on any active form. Cooldown, range check, state cost check. Applied abilities (WC3 "buffs") are abilities with duration + auto-remove |
 | Collision / spatial queries | `units_in_range()`, `units_in_rect()`, etc. |
 | Event system | on_damage, on_death, on_cast, on_attack, etc. Map Lua hooks these |
 | Damage event flow | Engine fires `on_damage(source, target, amount, context)`. Map Lua can modify amount (apply its own attack/armor logic). Engine applies final HP change |

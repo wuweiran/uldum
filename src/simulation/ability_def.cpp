@@ -7,13 +7,27 @@ namespace uldum::simulation {
 static constexpr const char* TAG = "AbilityRegistry";
 
 AbilityForm parse_ability_form(const std::string& s) {
-    if (s == "passive")      return AbilityForm::Passive;
-    if (s == "aura")         return AbilityForm::Aura;
-    if (s == "instant")      return AbilityForm::Instant;
-    if (s == "target_unit")  return AbilityForm::TargetUnit;
-    if (s == "target_point") return AbilityForm::TargetPoint;
-    if (s == "toggle")       return AbilityForm::Toggle;
-    return AbilityForm::Passive;
+    if (s == "passive_modifier") return AbilityForm::PassiveModifier;
+    if (s == "passive_flag")     return AbilityForm::PassiveFlag;
+    // Legacy alias — older defs used "passive" for what is now passive_modifier.
+    if (s == "passive")          return AbilityForm::PassiveModifier;
+    if (s == "aura")             return AbilityForm::Aura;
+    if (s == "instant")          return AbilityForm::Instant;
+    if (s == "target")           return AbilityForm::Target;
+    return AbilityForm::PassiveModifier;
+}
+
+static u32 parse_widget_kinds(const nlohmann::json& j) {
+    u32 mask = 0;
+    if (!j.is_array()) return mask;
+    for (const auto& v : j) {
+        if (!v.is_string()) continue;
+        const std::string s = v.get<std::string>();
+        if      (s == "unit")          mask |= widget_kind::Unit;
+        else if (s == "destructable")  mask |= widget_kind::Destructable;
+        else if (s == "item")          mask |= widget_kind::Item;
+    }
+    return mask;
 }
 
 IndicatorShape parse_indicator_shape(const std::string& s) {
@@ -61,6 +75,13 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
         }
     }
 
+    if (j.contains("flags") && j["flags"].is_array()) {
+        for (auto& f : j["flags"]) {
+            if (f.is_string()) lvl.flags.push_back(f.get<std::string>());
+        }
+    }
+
+    lvl.duration      = j.value("duration", -1.0f);
     lvl.aura_radius   = j.value("aura_radius", 0.0f);
     lvl.aura_ability  = j.value("aura_ability", "");
     lvl.channel_time  = j.value("channel_time", 0.0f);
@@ -71,12 +92,6 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
         lvl.area.width  = a.value("width",  0.0f);
         lvl.area.angle  = a.value("angle",  0.0f);
         lvl.has_area    = true;
-    }
-
-    if (j.contains("toggle_cost_per_sec")) {
-        for (auto& [k, v] : j["toggle_cost_per_sec"].items()) {
-            lvl.toggle_cost_per_sec[k] = v.get<f32>();
-        }
     }
 
     lvl.projectile_speed = j.value("projectile_speed", 0.0f);
@@ -97,15 +112,30 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
         def.id        = key;
         def.name      = val.value("name", key);
         def.icon      = val.value("icon", "");
-        def.form      = parse_ability_form(val.value("form", "passive"));
+        const std::string form_str = val.value("form", "passive");
+        def.form      = parse_ability_form(form_str);
         def.shape     = parse_indicator_shape(val.value("shape", "point"));
         def.hotkey    = val.value("hotkey", "");
-        def.stackable = val.value("stackable", false);
-        def.hidden    = val.value("hidden", false);
+        def.stackable      = val.value("stackable", false);
+        def.hidden         = val.value("hidden", false);
+        def.pierces_immune = val.value("pierces_immune", false);
         def.max_level = val.value("max_level", 1u);
 
         if (val.contains("target_filter")) {
             def.target_filter = parse_target_filter(val["target_filter"]);
+        }
+
+        // Target-form metadata. At least one of `widget_kinds` (a
+        // non-empty array of "unit" / "destructable" / "item") or
+        // `accept_point` (true) must be set for the form to do anything
+        // useful; combining them yields the WC3-style hybrid cast.
+        if (def.form == AbilityForm::Target) {
+            if (val.contains("widget_kinds")) {
+                def.widget_kinds = parse_widget_kinds(val["widget_kinds"]);
+            }
+            if (val.contains("accept_point")) {
+                def.accept_point = val["accept_point"].get<bool>();
+            }
         }
 
         if (val.contains("levels")) {

@@ -50,6 +50,7 @@ void EffectRegistry::load_from_json(const std::string& path) {
         def.gravity   = val.value("gravity", -200.0f);
         def.emit_rate = val.value("emit_rate", 0.0f);
         def.spread    = val.value("spread", 1.0f);
+        def.radius    = val.value("radius", 0.0f);
 
         def.texture = val.value("texture", "");
         if (val.contains("start_color")) {
@@ -92,27 +93,29 @@ u32 EffectManager::create(const std::string& name, glm::vec3 position) {
 
     // If burst-only, spawn initial burst
     if (def->count > 0 && def->emit_rate <= 0 && m_particles) {
-        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
+        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread, def->radius);
     }
 
     m_instances.push_back(std::move(inst));
     return m_instances.back().id;
 }
 
-u32 EffectManager::create_on_unit(const std::string& name, simulation::Unit unit, glm::vec3 unit_pos) {
+u32 EffectManager::create_on_unit(const std::string& name, simulation::Unit unit,
+                                   glm::vec3 spawn_pos, std::string attach_point) {
     auto* def = m_registry ? m_registry->get(name) : nullptr;
     if (!def) { log::warn(TAG, "Unknown effect '{}'", name); return 0; }
 
     EffectInstance inst;
     inst.id            = ++m_next_id;
     inst.def           = def;
-    inst.position      = unit_pos;
-    inst.position.z   += 32.0f;
+    inst.position      = spawn_pos;
+    if (attach_point.empty()) inst.position.z += 32.0f;  // waist fallback
     inst.attached_unit = unit;
+    inst.attach_point  = std::move(attach_point);
     inst.duration      = -1;
 
     if (def->count > 0 && def->emit_rate <= 0 && m_particles) {
-        m_particles->burst(inst.position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
+        m_particles->burst(inst.position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread, def->radius);
     }
 
     m_instances.push_back(std::move(inst));
@@ -124,7 +127,7 @@ void EffectManager::play(const std::string& name, glm::vec3 position) {
     if (!def) { log::warn(TAG, "Unknown effect '{}'", name); return; }
 
     if (m_particles) {
-        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
+        m_particles->burst(position, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread, def->radius);
     }
     // No instance needed for fire-and-forget with no continuous emission
     if (def->emit_rate > 0) {
@@ -137,14 +140,15 @@ void EffectManager::play(const std::string& name, glm::vec3 position) {
     }
 }
 
-void EffectManager::play_on_unit(const std::string& name, simulation::Unit unit, glm::vec3 unit_pos) {
+void EffectManager::play_on_unit(const std::string& name, simulation::Unit unit,
+                                  glm::vec3 spawn_pos, std::string attach_point) {
     auto* def = m_registry ? m_registry->get(name) : nullptr;
     if (!def) { log::warn(TAG, "Unknown effect '{}'", name); return; }
 
-    glm::vec3 pos = unit_pos;
-    pos.z += 32.0f;
+    glm::vec3 pos = spawn_pos;
+    if (attach_point.empty()) pos.z += 32.0f;
     if (m_particles) {
-        m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread);
+        m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread, def->radius);
     }
     if (def->emit_rate > 0) {
         EffectInstance inst;
@@ -152,6 +156,7 @@ void EffectManager::play_on_unit(const std::string& name, simulation::Unit unit,
         inst.def           = def;
         inst.position      = pos;
         inst.attached_unit = unit;
+        inst.attach_point  = std::move(attach_point);
         inst.duration      = def->life;
         m_instances.push_back(std::move(inst));
     }
@@ -170,12 +175,11 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
     for (auto& inst : m_instances) {
         if (!inst.alive) continue;
 
-        // Follow attached unit
         if (inst.attached_unit.is_valid() && get_pos) {
-            glm::vec3 pos = get_pos(inst.attached_unit, ctx);
+            glm::vec3 pos = get_pos(inst.attached_unit, inst.attach_point, ctx);
             if (pos.x != 0 || pos.y != 0 || pos.z != 0) {
                 inst.position = pos;
-                inst.position.z += 32.0f;
+                if (inst.attach_point.empty()) inst.position.z += 32.0f;
             }
         }
 
@@ -186,7 +190,9 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
             if (to_spawn > 0) {
                 inst.emit_accumulator -= static_cast<f32>(to_spawn);
                 m_particles->burst(inst.position, to_spawn, inst.def->start_color,
-                                   inst.def->speed, inst.def->life, inst.def->size, inst.def->gravity);
+                                   inst.def->speed, inst.def->life, inst.def->size,
+                                   inst.def->gravity, inst.def->texture_id,
+                                   inst.def->spread, inst.def->radius);
             }
         }
 

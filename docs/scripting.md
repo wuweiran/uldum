@@ -199,8 +199,6 @@ DestroyTrigger(trig)  -- to unregister
 
 | Event | Arguments | Notes |
 |-------|-----------|-------|
-| `on_ability_added` | unit, ability_id, source | Fires for all abilities including buffs |
-| `on_ability_removed` | unit, ability_id | Fires on remove and expiry |
 | `on_ability_cast_filter` | caster, ability_id, target → bool | Return false to block cast |
 | `on_ability_target_filter` | caster, ability_id, target → bool | Return false to reject target |
 | `on_ability_effect` | caster, ability_id, target_or_point | Effect fires (cast point / projectile impact) |

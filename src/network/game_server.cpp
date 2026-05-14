@@ -1,5 +1,5 @@
 #include "network/game_server.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 #include "asset/asset.h"
 #include "map/map.h"
 #include "core/log.h"
@@ -69,7 +69,7 @@ bool GameServer::init_game(map::MapManager& map,
         if (manifest.fog_of_war == "explored") fog_mode = simulation::FogMode::Explored;
         else if (manifest.fog_of_war == "unexplored") fog_mode = simulation::FogMode::Unexplored;
 
-        m_simulation.fog().init(
+        m_simulation.vision().init(
             terrain.tiles_x, terrain.tiles_y, terrain.tile_size,
             static_cast<u32>(manifest.players.size()), fog_mode, &terrain);
 

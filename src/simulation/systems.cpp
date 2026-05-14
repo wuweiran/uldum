@@ -127,6 +127,14 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
+        // Status-flag gates: paused / stunned / rooted all suppress
+        // movement. Combat and cast handle their own gates separately.
+        if (auto* sf = world.status_flags.get(id)) {
+            if (sf->flags & (status::Paused | status::Stunned | status::Rooted)) {
+                continue;
+            }
+        }
+
         // ── MoveDirection short-circuit ──────────────────────────────────
         // Action-preset continuous move. No pathfinding: desired velocity
         // is `dir * speed`; slide axis-aligned on collision. The order is
@@ -550,6 +558,22 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         auto* oq = world.order_queues.get(id);
         if (!transform || !oq) continue;
 
+        // Status-flag gates. Stunned / Paused skip the unit entirely;
+        // Disarmed prevents auto-attack target acquisition AND active
+        // attack swings — the unit can still take orders and cast, it
+        // just can't strike.
+        if (auto* sf = world.status_flags.get(id)) {
+            if (sf->flags & (status::Stunned | status::Paused | status::Disarmed)) {
+                if (sf->flags & status::Disarmed) {
+                    // Drop the current attack target so the unit visibly
+                    // disengages rather than holding a stale aim.
+                    combat.target = Unit{};
+                    combat.attack_state = AttackState::Idle;
+                }
+                continue;
+            }
+        }
+
         // Determine attack target: explicit Attack order, or auto-acquired during AttackMove/idle
         auto* attack_order = oq->current ? std::get_if<orders::Attack>(&oq->current->payload) : nullptr;
         bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
@@ -561,6 +585,24 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             combat.target = Unit{};
             combat.attack_state = AttackState::Idle;
             continue;
+        }
+
+        // Acquire disabled (NoAcquire flag is set by some active buff —
+        // e.g. Wind Walk): drop the auto-acquired target (explicit Attack
+        // orders pass through) and snap any pre-strike state back to
+        // Idle. Backswing / Cooldown finish naturally so an
+        // already-committed swing still lands.
+        bool no_acquire = false;
+        if (auto* sf = world.status_flags.get(id)) {
+            no_acquire = (sf->flags & status::NoAcquire) != 0;
+        }
+        if (no_acquire && !attack_order) {
+            combat.target = Unit{};
+            if (combat.attack_state == AttackState::WindUp ||
+                combat.attack_state == AttackState::TurningToFace ||
+                combat.attack_state == AttackState::MovingToTarget) {
+                combat.attack_state = AttackState::Idle;
+            }
         }
 
         // Get current target: from Attack order, or from combat.target (auto-acquired/fight-back)
@@ -575,6 +617,10 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         //   • invalid handle / dead
         //   • the unit itself (no self-attack, regardless of how the
         //     order got here — A-click on self, Lua misuse, etc.)
+        //   • no longer visible to the attacker (e.g. target Wind-Walked
+        //     mid-fight — same Vision rules as the auto-acquire scan, so
+        //     invisibility, fog, and true-sight all behave consistently
+        //     for "drop target" as well as "pick up new target").
         // Friendly fire is intentionally allowed: A-click on an ally
         // is a force-attack and the engine honors it.
         bool target_valid = target.is_valid() && world.validate(target);
@@ -582,6 +628,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         if (target_valid) {
             auto* target_hp = world.healths.get(target.id);
             if (!target_hp || target_hp->current <= 0) target_valid = false;
+        }
+        if (target_valid) {
+            auto* owner = world.owners.get(id);
+            if (owner && !grid.is_visible_to(world, target.id, owner->player)) {
+                target_valid = false;
+            }
         }
 
         if (!target_valid) {
@@ -618,7 +670,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             // scanning to the unit's own attack range so the unit never picks
             // up a target it would then need to chase.
             f32 acquire_r = is_holding ? combat.range : combat.acquire_range;
-            if (!is_casting && !is_moving && acquire_r > 0 && combat.damage > 0) {
+            if (!no_acquire && !is_casting && !is_moving && acquire_r > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;
@@ -629,6 +681,14 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     Unit best;
                     f32 best_dist = acquire_r + 1;
                     for (auto& e : enemies) {
+                        // Skip targets the engine won't let us hit.
+                        // The spatial filter already excluded
+                        // Untargetable; Invulnerable + Unattackable
+                        // aren't in UnitFilter (they don't affect
+                        // spatial queries) so we check here.
+                        auto* sf = world.status_flags.get(e.id);
+                        if (sf && (sf->flags & (status::Invulnerable |
+                                                status::Unattackable))) continue;
                         auto* et = world.transforms.get(e.id);
                         if (!et) continue;
                         f32 d = glm::length(et->position - transform->position);
@@ -822,18 +882,68 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 
         // Tick durations — remove expired applied abilities
         bool modifiers_changed = false;
-        std::erase_if(aset.abilities, [dt, &modifiers_changed](AbilityInstance& a) {
-            if (a.remaining_duration < 0) return false;  // permanent
-            a.remaining_duration -= dt;
-            if (a.remaining_duration <= 0) {
-                modifiers_changed = true;
-                return true;
-            }
-            return false;
-        });
-
+        // Expired instances release their flag refcounts before erase
+        // so the StatusFlags overlay drops back in lockstep. Permanent
+        // (-1) durations are skipped untouched. We also collect their
+        // ability_ids so the post-pass can fire on_ability_removed —
+        // the host wires that to AbilityRemove broadcasts so clients
+        // drop the buff at the same tick.
+        std::vector<std::vector<std::string>> expired_flag_lists;
+        std::vector<std::string> expired_ids;
+        std::erase_if(aset.abilities,
+            [dt, &modifiers_changed, &expired_flag_lists, &expired_ids](AbilityInstance& a) {
+                if (a.remaining_duration < 0) return false;
+                a.remaining_duration -= dt;
+                if (a.remaining_duration <= 0) {
+                    modifiers_changed = true;
+                    if (!a.active_flags.empty()) {
+                        expired_flag_lists.push_back(std::move(a.active_flags));
+                    }
+                    expired_ids.push_back(std::move(a.ability_id));
+                    return true;
+                }
+                return false;
+            });
+        for (auto& flags : expired_flag_lists) {
+            flag_refcount_delta(world, id, flags, -1);
+        }
         if (modifiers_changed) {
             recalculate_modifiers(world, id);
+        }
+        if (world.on_ability_removed && !expired_ids.empty()) {
+            Unit u;
+            u.id = id;
+            auto* info = world.handle_infos.get(id);
+            u.generation = info ? info->generation : 0;
+            for (auto& aid : expired_ids) {
+                world.on_ability_removed(u, aid);
+            }
+        }
+
+        // Status-flag gates. Cooldown / duration ticking above runs
+        // for ALL units — even paused / stunned ones tick passive
+        // durations down. The cast state machine below is what we
+        // actually freeze.
+        //
+        // Stunned mid-cast: cancel cleanly (matches the "new order"
+        // cancel rule — no cooldown applied, no endcast event since
+        // we never reached it on purpose).
+        if (auto* sf = world.status_flags.get(id)) {
+            if (sf->flags & (status::Stunned | status::Paused | status::Silenced)) {
+                if (aset.cast_state != CastState::None &&
+                    (sf->flags & (status::Stunned | status::Silenced))) {
+                    aset.cast_state = CastState::None;
+                    aset.cast_timer = 0;
+                    aset.casting_id.clear();
+                    aset.cast_target_unit = Unit{};
+                    aset.cast_target_pos  = glm::vec3{0};
+                    aset.cast_source_item = Item{};
+                    if (auto* oq2 = world.order_queues.get(id)) {
+                        oq2->current.reset();
+                    }
+                }
+                continue;
+            }
         }
 
         // ── Cast order processing ────────────────────────────────────────
@@ -857,15 +967,17 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         aset.cast_source_item = cast_order->source_item;
 
                         auto& lvl = def->level_data(inst->level);
-                        bool needs_range = (def->form == AbilityForm::TargetUnit ||
-                                           def->form == AbilityForm::TargetPoint);
+                        bool needs_range = (def->form == AbilityForm::Target);
                         if (needs_range && lvl.range > 0) {
                             aset.cast_state = CastState::MovingToTarget;
-                            // Delegate approach to movement system
+                            // Delegate approach to movement system. A widget
+                            // pick (cast_target_unit valid) approaches the
+                            // widget; otherwise the cast is point-only and
+                            // approaches the ground location.
                             auto* mov = world.movements.get(id);
                             if (mov) {
                                 mov->approach_range = lvl.range;
-                                if (def->form == AbilityForm::TargetUnit) {
+                                if (world.validate(cast_order->target_unit)) {
                                     mov->approach_target = cast_order->target_unit;
                                 } else {
                                     mov->approach_goal = {cast_order->target_pos.x, cast_order->target_pos.y};
@@ -894,9 +1006,11 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 } else {
                     auto& lvl = def->level_data(inst->level);
 
-                    // Resolve target position
+                    // Resolve target position. When the cast snapped to
+                    // a widget, follow that widget; otherwise use the
+                    // authored ground point.
                     glm::vec3 target_pos = aset.cast_target_pos;
-                    if (def->form == AbilityForm::TargetUnit && world.validate(aset.cast_target_unit)) {
+                    if (world.validate(aset.cast_target_unit)) {
                         auto* tt = world.transforms.get(aset.cast_target_unit.id);
                         if (tt) target_pos = tt->position;
                     }
@@ -917,13 +1031,12 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         break;
                     }
                     case CastState::TurningToFace: {
-                        // Instant/Toggle leave target_pos at (0,0,0); a
-                        // TargetUnit cast on self has nowhere to face.
-                        // The dist guard catches a TargetPoint at the
+                        // Instant leaves target_pos at (0,0,0); a
+                        // self-targeted widget cast has nowhere to face.
+                        // The dist guard catches a point cast at the
                         // caster's own feet (avoids atan2(0,0)).
-                        bool is_immediate = (def->form == AbilityForm::Instant ||
-                                             def->form == AbilityForm::Toggle);
-                        bool is_self = (def->form == AbilityForm::TargetUnit &&
+                        bool is_immediate = (def->form == AbilityForm::Instant);
+                        bool is_self = (world.validate(aset.cast_target_unit) &&
                                         aset.cast_target_unit.id == id);
                         if (!is_immediate && !is_self && dist > 0.001f) {
                             f32 desired = std::atan2(to_target.y, to_target.x);
@@ -938,30 +1051,100 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                             }
                             transform->facing = desired;
                         }
-                        aset.cast_state = CastState::CastPoint;
+                        aset.cast_state = CastState::Foreswing;
                         aset.cast_timer = lvl.cast_time;
-                        aset.cast_point_secs = lvl.cast_time;
+                        aset.foreswing_secs      = lvl.cast_time;
+                        aset.channel_secs        = lvl.channel_time;
                         aset.cast_backswing_secs = lvl.backsw_time;
                         break;
                     }
-                    case CastState::CastPoint:
+                    case CastState::Foreswing:
                         aset.cast_timer -= dt;
                         if (aset.cast_timer <= 0) {
-                            // FIRE — ability effect
-                            inst->cooldown_remaining = lvl.cooldown;
-                            if (world.on_ability_effect) {
-                                Unit caster;
-                                caster.id = id;
-                                auto* info = world.handle_infos.get(id);
-                                caster.generation = info ? info->generation : 0;
-                                world.on_ability_effect(caster, aset.casting_id,
-                                                       aset.cast_target_unit, target_pos,
-                                                       aset.cast_source_item);
+                            Unit caster;
+                            caster.id = id;
+                            auto* info = world.handle_infos.get(id);
+                            caster.generation = info ? info->generation : 0;
+
+                            if (lvl.channel_time > 0) {
+                                // Channelled cast: hand off to Channeling.
+                                // Fire CHANNEL (start) here; EFFECT will fire
+                                // at natural channel completion. Cooldown is
+                                // held back to natural channel completion so a
+                                // cancel doesn't put the ability on cooldown.
+                                if (world.on_ability_channel) {
+                                    world.on_ability_channel(caster, aset.casting_id,
+                                                             aset.cast_target_unit, target_pos,
+                                                             aset.cast_source_item);
+                                }
+                                aset.cast_state = CastState::Channeling;
+                                aset.cast_timer = lvl.channel_time;
+                            } else {
+                                // Non-channeled: effect fires now, cooldown
+                                // begins, transition to Backswing.
+                                if (world.on_ability_effect) {
+                                    world.on_ability_effect(caster, aset.casting_id,
+                                                            aset.cast_target_unit, target_pos,
+                                                            aset.cast_source_item);
+                                }
+                                inst->cooldown_remaining = lvl.cooldown;
+                                aset.cast_state = CastState::Backswing;
+                                aset.cast_timer = lvl.backsw_time;
                             }
+                        }
+                        break;
+                    case CastState::Channeling: {
+                        aset.cast_timer -= dt;
+                        // Interrupt edges. Any newly-issued non-cast order
+                        // (move / attack / stop / etc.) replaces oq->current
+                        // when it gets executed — but during a channel we
+                        // hold oq->current=Cast, so the new order sits in
+                        // oq->queued. Treat a non-empty queue as the user's
+                        // signal to break the channel.
+                        bool interrupted = oq && !oq->queued.empty();
+                        Unit caster;
+                        caster.id = id;
+                        auto* info = world.handle_infos.get(id);
+                        caster.generation = info ? info->generation : 0;
+
+                        if (interrupted) {
+                            // ENDCAST fires for both natural completion and
+                            // interruption (matches WC3 SPELL_ENDCAST).
+                            // EFFECT does NOT fire on interrupt — the spell
+                            // never resolved.
+                            if (world.on_ability_endcast) {
+                                world.on_ability_endcast(caster, aset.casting_id,
+                                                         aset.cast_target_unit, target_pos,
+                                                         aset.cast_source_item);
+                            }
+                            // Cancel: no cooldown, no backswing — drop the
+                            // cast cleanly so the next order takes over.
+                            aset.cast_state = CastState::None;
+                            aset.casting_id.clear();
+                            oq->current.reset();
+                            break;
+                        }
+                        if (aset.cast_timer <= 0) {
+                            // Natural completion. ENDCAST fires first, then
+                            // EFFECT (matches WC3: SPELL_ENDCAST followed by
+                            // SPELL_EFFECT). Cooldown begins now, backswing
+                            // follows.
+                            if (world.on_ability_endcast) {
+                                world.on_ability_endcast(caster, aset.casting_id,
+                                                         aset.cast_target_unit, target_pos,
+                                                         aset.cast_source_item);
+                            }
+                            if (world.on_ability_effect) {
+                                world.on_ability_effect(caster, aset.casting_id,
+                                                        aset.cast_target_unit, target_pos,
+                                                        aset.cast_source_item);
+                            }
+                            inst->cooldown_remaining = lvl.cooldown;
                             aset.cast_state = CastState::Backswing;
                             aset.cast_timer = lvl.backsw_time;
                         }
                         break;
+                    }
                     case CastState::Backswing:
                         aset.cast_timer -= dt;
                         if (aset.cast_timer <= 0) {
@@ -1259,7 +1442,7 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.owners.remove(h.id);
     world.movements.remove(h.id);
     world.combats.remove(h.id);
-    world.visions.remove(h.id);
+    world.sights.remove(h.id);
     world.order_queues.remove(h.id);
     world.ability_sets.remove(h.id);
     world.classifications.remove(h.id);
@@ -1276,7 +1459,6 @@ static void remove_all_components_and_free(World& world, Handle h) {
     world.item_infos.remove(h.id);
     world.carriables.remove(h.id);
     world.projectiles.remove(h.id);
-    world.scale_pulses.remove(h.id);
     world.dead_states.remove(h.id);
     world.renderables.remove(h.id);
     world.handles.free(h);
@@ -1364,10 +1546,41 @@ void system_death(World& world) {
         // Units below this HP threshold are considered dead (avoids floating point edge cases)
         static constexpr f32 DEATH_THRESHOLD = 0.05f;
         if (hp.current < DEATH_THRESHOLD && hp.max > 0 && !world.dead_states.has(id)) {
-            hp.current = 0;
             auto* info = world.handle_infos.get(id);
             if (!info) continue;
             if (info->category == Category::Item) continue;
+
+            // EVENT_UNIT_DYING. Fires before HP is pinned to 0 / before
+            // any corpse conversion. Handlers may SetUnitHealth the unit
+            // back up (Reincarnation, Phoenix Fire, Cheat Death). After
+            // the callback we re-read HP — if it's positive, the unit
+            // survived and we skip reaping. Only fires for Units; for
+            // destructables / other widgets we still go straight to
+            // the corpse path. Re-fetch the Health pointer afterwards
+            // because the SparseSet may have shifted on add/remove.
+            if (world.on_dying && info->category == Category::Unit) {
+                Unit dying;
+                dying.id = id;
+                dying.generation = info->generation;
+                // TODO: track actual killer from last damage source
+                world.on_dying(dying, Unit{});
+                auto* hp_after = world.healths.get(id);
+                if (hp_after && hp_after->current >= DEATH_THRESHOLD) {
+                    // Unit was healed during the dying handler — cancel
+                    // the death. Loop continues; the sparse-set index
+                    // may now be stale (the handler could have spawned
+                    // entities), but the bounds check on the next
+                    // iteration handles that.
+                    continue;
+                }
+                // Handler ran but didn't save the unit — pointer might
+                // have shifted if other entities were added; refresh.
+                auto* hp_now = world.healths.get(id);
+                if (!hp_now) continue;
+                hp_now->current = 0;
+            } else {
+                hp.current = 0;
+            }
 
             log::info("Combat", "{} has died (id={})", info->type_id, id);
 
@@ -1397,7 +1610,7 @@ void system_death(World& world) {
             world.combats.remove(id);
             world.order_queues.remove(id);
             world.ability_sets.remove(id);
-            world.visions.remove(id);
+            world.sights.remove(id);
 
             // Drop the runtime pathing block immediately. WC3-style:
             // the moment a building dies, its rubble is walkable —
@@ -1448,12 +1661,6 @@ void system_death(World& world) {
     for (auto h : to_destroy) {
         remove_all_components_and_free(world, h);
     }
-}
-
-// ── Scale pulse system (visual feedback) ──────────────────────────────────
-
-// Scale pulse removed — replaced by skeletal animation (attack, death states).
-void system_scale_pulse(World& /*world*/, float /*dt*/) {
 }
 
 // Returns true if `pos` lies inside any of the region's shapes (rects

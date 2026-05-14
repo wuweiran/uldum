@@ -48,7 +48,7 @@ Handle (u32 id + u32 generation)
 │   │
 │   │   The three Widget subtypes — the core gameplay objects:
 │   │
-│   ├── Unit (Widget + Owner + Movement + Combat + Vision + OrderQueue + AbilitySet)
+│   ├── Unit (Widget + Owner + Movement + Combat + Sight + OrderQueue + AbilitySet)
 │   │   │
 │   │   │   Unit subtypes are NOT separate categories. They are regular
 │   │   │   units with extra components + classification flags:
@@ -209,7 +209,7 @@ Combat {
     Unit       target           // current attack target (runtime state)
 }
 
-Vision {
+Sight {
     f32  sight_range          // vision radius in game units
 }
 
@@ -335,7 +335,7 @@ Attack          { Unit target }
 Stop            { }
 HoldPosition    { }
 Patrol          { std::vector<vec3> waypoints, u32 current_waypoint }
-Cast            { AbilityId ability, Unit target_unit, vec3 target_pos }
+Cast            { AbilityId ability, Unit target_widget, vec3 target_pos }   // either or both, per ability's widget_kinds/accept_point
 Train           { TypeId unit_type }              // buildings only
 Research        { ResearchId research }            // buildings only
 Build           { TypeId building_type, vec3 pos } // workers only
@@ -374,7 +374,7 @@ Heroes additionally get: item-related orders.
 ## 5. Ability System
 
 See [ability-system.md](ability-system.md) for the full ability system design, including:
-- Ability forms (passive, aura, instant, target_unit, target_point, toggle, channel)
+- Ability forms (passive, aura, instant, target; channel is a per-level flag on any active form)
 - AbilityDef (template) vs Ability (runtime instance) terminology
 - Cast flow, state costs, modifier system
 - Aura scanning, applied passives (buffs), duration/stacking
@@ -413,11 +413,11 @@ Active forms require the player (or AI/script) to activate them.
 | Form | Engine handles | Example |
 |------|---------------|---------|
 | **instant** | Cooldown + mana + cast animation → fire effect (no target selection) | Divine Shield, Avatar, Blink |
-| **target_unit** | + range check + target validation + optional projectile | Holy Light, Hex, Storm Bolt |
-| **target_point** | + range check + ground position | Blizzard, Flame Strike |
-| **target_unit_or_point** | Either targeting mode | Chain Lightning, Shockwave |
-| **toggle** | On/off state, may drain mana per second while active | Immolation, Defend |
-| **channel** | Sustained cast, ticks over duration, interrupted by stun/move | Tranquility, Starfall |
+| **target** | + range check + target validation + optional projectile. Targeting shape is driven by two flags on the def: `widget_kinds` (which widget categories the cursor snaps to) and `accept_point` (whether it falls through to ground). | Widget-only: Holy Light. Point-only: Blizzard. Hybrid: Chain Lightning, Shockwave. |
+
+Toggle-style on/off abilities (Immolation, Defend, Permanent Invisibility) aren't a built-in form — author them as plain `instant` abilities whose Lua callback maintains a per-unit "active" flag, applies/revokes the effect, and drives any periodic drain from a Lua timer.
+
+Channel isn't a separate form — any form can be made sustained by setting `channel_time > 0` on its per-level data. See [ability-system.md](ability-system.md) for the channeling lifecycle.
 
 ### Trigger Bindings
 
@@ -436,8 +436,6 @@ on_kill             // this unit kills another unit
 on_death            // this unit dies
 on_ability_cast     // this unit finishes casting an ability
 on_order_received   // this unit receives an order
-on_ability_applied  // an ability is applied to this unit (by another unit/ability)
-on_ability_removed  // an applied ability is removed from this unit
 ```
 
 Example: Critical Strike is a `stat_modifier` (no active component) with an
@@ -454,7 +452,6 @@ Example: Critical Strike is a `stat_modifier` (no active component) with an
 - Applied ability tracking: application, duration, and removal
 - Modifier stacking and recalculation (base + all active ability modifiers = effective)
 - Aura radius scanning (apply/remove aura abilities to nearby units)
-- Toggle state management and per-second mana drain
 - Channel tick timing and interruption on stun/move
 - Automatic revert of all effects when ability is removed from unit
 
@@ -472,7 +469,8 @@ Example: Critical Strike is a `stat_modifier` (no active component) with an
         ]
     },
     "holy_light": {
-        "form": "target_unit",
+        "form": "target",
+        "widget_kinds": ["unit"],
         "target_filter": { "ally": true, "self": true },
         "cooldown": 9,
         "mana_cost": 65,
@@ -540,9 +538,9 @@ ability_handlers["chain_lightning"] = {
 AbilityDef {
     AbilityId       id
     std::string     name
-    AbilityForm     form        // stat_modifier, aura, attack_modifier,
-                                // instant, target_unit, target_point,
-                                // target_unit_or_point, toggle, channel
+    AbilityForm     form        // passive, aura, instant, target
+    u32             widget_kinds // target form: bitmask of unit/destructable/item
+    bool            accept_point // target form: cursor falls through to ground
     f32             cooldown
     f32             mana_cost
     f32             range
@@ -557,11 +555,9 @@ AbilityDef {
 
     // Form-specific config
     f32             aura_radius         // aura form
-    f32             channel_duration    // channel form
-    f32             channel_interval    // channel form
-    f32             toggle_mana_per_sec // toggle form
+    f32             channel_time        // any active form (0 = not a channel)
     BuffId          on_hit_buff         // attack_modifier form
-    ProjectileTypeId projectile         // target_unit/point forms
+    ProjectileTypeId projectile         // target form (any widget_kinds / point)
 }
 
 AbilityLevelData {
@@ -590,8 +586,7 @@ AbilityInstance {
     u32         level               // current level (1-indexed, 0 = not learned)
     f32         cooldown_remaining
     bool        auto_cast           // auto-cast enabled (for applicable forms)
-    bool        toggle_active       // toggle form: currently on?
-    bool        channeling          // channel form: currently casting?
+    bool        channeling          // currently channelling (channel_time > 0)
     f32         channel_remaining   // channel form: time left
 }
 ```
@@ -896,7 +891,7 @@ Systems are functions that iterate over component tuples each simulation tick:
 | `MovementSystem` | Transform, Movement, OrderQueue | Move units toward targets, handle pathfinding |
 | `CombatSystem` | Transform, Combat, OrderQueue | Acquire targets, attack flow (dmg_time fore-swing, backsw_time recovery), spawn projectiles |
 | `AbilitySystem` | AbilitySet, OrderQueue, Transform, Owner | Tick cooldowns, execute cast orders, tick applied ability durations, remove expired, scan aura radii and apply/remove |
-| `VisionSystem` | Transform, Vision, Owner | Update per-player fog of war |
+| `Vision` (subsystem) | Transform, Sight, Owner, AttributeBlock, StatusFlags | Per-player fog of war + true-sight detection |
 | `ProjectileSystem` | Projectile, Transform | Move projectiles, check hit, fire impact event |
 | `HealthSystem` | Health | Apply regen, check death (HP ≤ 0), fire death event |
 | `StateSystem` | StateBlock | Tick regen for all map-defined states (mana, energy, etc.) |
@@ -926,7 +921,7 @@ struct World {
     SparseSet<Owner>                  owners;
     SparseSet<Movement>               movements;
     SparseSet<Combat>                 combats;
-    SparseSet<Vision>                 visions;
+    SparseSet<Sight>                  sights;
     SparseSet<OrderQueue>             order_queues;
     SparseSet<AbilitySet>             ability_sets;
     SparseSet<UnitClassificationComp> classifications;
@@ -935,7 +930,6 @@ struct World {
     SparseSet<Construction>           constructions;
     SparseSet<DestructableComp>       destructables;
     SparseSet<ProjectileComp>         projectiles;
-    SparseSet<ScalePulse>             scale_pulses;
     SparseSet<DeadState>              dead_states;
     SparseSet<Renderable>             renderables;
 
@@ -1019,9 +1013,9 @@ Tile-based, per-player visibility. Configurable per map via `fog_of_war` in the 
 
 Each tile is **Unexplored** (black), **Explored** (terrain visible, dimmed, enemies hidden), or **Visible** (full brightness, enemies shown).
 
-Each simulation tick: all Visible tiles decay to Explored, then vision circles are re-marked from units with Vision components.
+Each simulation tick: all Visible tiles decay to Explored, then vision circles are re-marked from units with `Sight` components. The same pass also computes true-sight reveal masks for invisible units (see [Status Flags → True sight](#true-sight)).
 
-### Vision
+### Sight
 
 Each unit's `sight_range` (in game units) defines a circular vision area. Vision is granted to the owning player and to any allied player with `shared_vision` enabled.
 
@@ -1043,11 +1037,31 @@ A per-frame fog texture (tiles_x * tiles_y, RGBA) is uploaded to the GPU and sam
 
 ### Lua API
 
-- `FogOfWar.reveal_all(player)` — reveal everything for a player
-- `FogOfWar.unexplore_all(player)` — reset to unexplored
-- `FogOfWar.is_visible(player, x, y)` — check visibility at world position
-- `FogOfWar.is_explored(player, x, y)` — check if explored
-- `FogOfWar.is_enabled()` — whether fog is active
+**Global toggle**
+- `FogEnable(on)` — turn fog on/off. `false` reveals the whole map to every player; `true` restores the authored mode.
+- `IsFogEnabled()` — whether fog of war is currently active.
+
+**Point-state predicates** (mutually exclusive at any point)
+- `IsPointVisible(player, x, y)` — currently in vision.
+- `IsPointFogged(player, x, y)` — explored but not currently in vision (dim).
+- `IsPointMasked(player, x, y)` — never seen (black).
+- `IsPointExplored(player, x, y)` — Visible OR Fogged (convenience).
+
+**Fog modifiers** — persistent per-player area overrides
+- `CreateFogModifierRect(player, state, x0, y0, x1, y1)` → handle
+- `CreateFogModifierRadius(player, state, cx, cy, radius)` → handle
+- `DestroyFogModifier(handle)`
+- `SetFogModifierActive(handle, active)`
+
+`state` is `"visible"`, `"fogged"`, or `"masked"`. The modifier runs after the unit-vision pass each tick, so its target state always wins inside its area.
+
+**Unit-state queries**
+- `IsUnitVisibleToPlayer(unit, player)` — full visibility check (owner/ally → reveal → invisibility/true-sight → fog).
+- `IsUnitDetected(unit, player)` — true if `player` has a true-sight detector covering the unit this tick.
+
+**Per-unit overrides**
+- `UnitReveal(unit, player, on)` — force-reveal a unit to a specific player, bypassing fog and invisibility. Persists until cleared. Multiple players reveal independently.
+- `UnitShareVision(unit, player, on)` — add `player` to the unit's vision-share list; the unit's sight circle stamps that player's fog map too. Distinct from `AllianceFlags.shared_vision`, which is per-player-pair.
 
 ## Status Flags
 
@@ -1064,10 +1078,12 @@ enum StatusFlag : u32 {
     Muted         = 1 << 2,   // can't use items
     Disarmed      = 1 << 3,   // can't auto-attack
     Rooted        = 1 << 4,   // can't move (can turn, cast, attack)
-    Invulnerable  = 1 << 5,   // takes no damage
-    MagicImmune   = 1 << 6,   // takes no spell damage; hostile spells can't pick this unit
-    Untargetable  = 1 << 7,   // can't be auto-attack-targeted or click-selected
-    Paused        = 1 << 8,   // sim freezes the unit (cinematics)
+    Invulnerable  = 1 << 5,   // takes no damage; auto-attack skips it (no wasted swings)
+    MagicImmune   = 1 << 6,   // hostile casts rejected at issue (unless ability.pierces_immune)
+    Untargetable  = 1 << 7,   // attacks + casts + click-select all skip it
+    Unattackable  = 1 << 8,   // attacks only — auto-attack and Attack orders skip; casts allowed
+    Paused        = 1 << 9,   // sim freezes the unit (cinematics)
+    Invisible     = 1 << 10,  // renderer culls the unit for non-allied viewers
 }
 ```
 
@@ -1075,17 +1091,37 @@ enum StatusFlag : u32 {
 
 Each flag has a specific point where the sim has to honor it:
 
-- `Stunned` — orders rejected at issue time; current order cancelled; movement / attack / cast systems skip the unit.
-- `Silenced` — cast attempt rejected at `IssueOrder(unit, "cast", ...)`.
-- `Muted` — item-use order rejected.
-- `Disarmed` — auto-attack target acquisition skipped; manual `attack` order rejected.
-- `Rooted` — movement systems hold position; turning and combat continue.
-- `Invulnerable` — `DamageUnit` short-circuits (no HP change, no `on_damage`, no `on_death`).
-- `MagicImmune` — `DamageUnit` short-circuits when `damage_type` is the configured spell type; hostile spell targeting filters this unit out.
-- `Untargetable` — **two-place fix, not just the flag**:
-  1. Auto-attack target-picker excludes flagged units.
-  2. Click-to-select excludes flagged units (cursor passes through).
-- `Paused` — sim systems skip every per-unit update for the entity. HUD still renders.
+- `Stunned` — orders rejected at issue time; movement / combat / cast systems skip the unit; active cast cancels cleanly (no cooldown).
+- `Silenced` — `Cast` orders rejected at issue; active cast cancels.
+- `Muted` — `PickupItem` / `DropItem` / `SwapInventorySlot` orders rejected.
+- `Disarmed` — combat system drops current attack target and skips per-tick auto-acquisition; movement / cast continue.
+- `Rooted` — movement skips the unit; combat and cast continue (turning is in combat, so still works).
+- `Invulnerable` — `deal_damage` short-circuits (no HP change, no `on_damage`, no `on_death`). Auto-attack target acquisition also excludes Invulnerable units so attackers don't waste swings; manual `Attack` orders still go through (Lua's call).
+- `MagicImmune` — `Cast` orders rejected at issue when the caster is hostile to the target, **unless** `AbilityDef.pierces_immune` is true (dispels / purges). AoE casts and friendly casts (heals, buffs) pass through. Damage-side spell filtering is left to the map's `on_damage` hook.
+- `Untargetable` — three sites:
+  1. `Cast` and `Attack` orders rejected at issue.
+  2. Combat auto-acquisition skips (via `UnitFilter.include_untargetable = false`).
+  3. Picker / click-select skips (cursor passes through).
+  AoE scripts that explicitly want to scan Untargetable units flip the filter flag.
+- `Unattackable` — combat auto-acquisition skips; manual `Attack` orders rejected at issue; `Cast` and click-select still work.
+- `Paused` — movement / combat / cast systems skip every per-unit update; cooldowns and applied-passive durations still tick (Pause is an action freeze, not a time freeze). HUD still renders.
+- `Invisible` — per-player visibility cull. The vision subsystem (`Vision::is_unit_visible_to`) hides the unit from any player that is not its owner / ally AND does not have a true-sight detector covering it this tick. Touches three sites:
+  1. **Renderer** — the unit is culled for non-allied viewers.
+  2. **Server snapshot filter** — peers do not receive position / health / status data for invisible units (the cheat-prevention boundary).
+  3. **Target side of combat auto-acquisition** — `UnitFilter.visible_to` rejects invisible enemies, so a guard doesn't latch onto someone wind-walking past it.
+
+  Invisibility is *only* about visibility — it does not by itself stop the invisible unit from auto-acquiring its own targets. Abilities that want the unit to disengage while sneaking (Wind Walk, Shadow Dance) pair `UNIT_STATUS_INVISIBLE` with `EnableUnitAcquire(unit, false)` and restore it on the reveal event. Script-driven `GetUnitsInRange` calls *without* `visible_to` set still see invisible units — invisibility is a *visibility* state, not a hard *targetability* gate. Pair with `UNIT_STATUS_UNTARGETABLE` if you want to also forbid clicks / direct casts on the unit. For the fade transition itself, use the cosmetic primitive `SetUnitAlpha(unit, alpha)` — it is **orthogonal** to this flag so map authors can pick a different visual (color shift, shader variant) without re-plumbing the flag.
+
+### True sight
+
+Detection that pierces invisibility within a radius. Folded into the vision subsystem (`FogOfWar::update`) — not a standalone tick system, since visibility-of-X-to-player-Y is already what fog of war computes.
+
+- **Mechanism**: each tick, after stamping vision tiles, the vision pass scans every unit with numeric attribute `true_sight > 0`. For each detector, spatial-queries enemy units carrying `UNIT_STATUS_INVISIBLE` within `true_sight` radius and ORs the detector's player bit onto the target's transient `TrueSightVisibility` component.
+- **Query**: `is_unit_visible_to(world, sim, entity, player)` consults the mask. If the asking player's bit is set, invisibility no longer hides the unit (fog of war still applies). The **renderer cull and the server-side snapshot filter both call this same method**.
+- **Authoring**: give a detector unit type a base `true_sight` value (e.g. sentry ward → 700). Items, buffs, and passive abilities grant detection via the existing modifier system — `recalculate_modifiers` feeds the effective value back into `numeric["true_sight"]` automatically.
+- **AoE / temporary reveal**: spawn a short-lived detector unit at the cast location (Sentry Ward, Reveal). No new engine primitive needed.
+- **Scope**: reveals invisibility only — NOT fog of war. Sight radius via the `Sight` component is the only thing that lifts fog. Mixing them would surprise authors.
+- **Cost**: rebuilt every tick alongside the vision tile maps. The query is bounded by detector count × invisibles-in-range; negligible for practical scales.
 
 ### HUD
 
@@ -1093,9 +1129,77 @@ Flagged units get a status-icon strip near the HP bar (same place WC3's buff ico
 
 ### Lua API
 
-- `SetUnitStatus(unit, flag, on)` — set/clear a single flag.
+- `SetUnitStatus(unit, flag, on)` — set/clear a single flag. `flag` is a `UNIT_STATUS_*` constant from `constants.lua` (`UNIT_STATUS_STUNNED`, `UNIT_STATUS_SILENCED`, `UNIT_STATUS_MUTED`, `UNIT_STATUS_DISARMED`, `UNIT_STATUS_ROOTED`, `UNIT_STATUS_INVULNERABLE`, `UNIT_STATUS_MAGIC_IMMUNE`, `UNIT_STATUS_UNTARGETABLE`, `UNIT_STATUS_UNATTACKABLE`, `UNIT_STATUS_PAUSED`, `UNIT_STATUS_INVISIBLE`).
 - `GetUnitStatus(unit, flag) → bool` — query.
 - `ClearAllUnitStatus(unit)` — reset every flag.
+
+## Morph (Unit Transformation)
+
+`MorphUnit(unit, new_type_id)` transforms a unit into a different unit type in place — same `Handle` (so every reference / Lua handle / selection / trigger survives), same position / facing / owner. Engine swaps the body; the map manages the ability kit.
+
+### Preserved
+
+- Handle (`id` + `generation`) and `HandleInfo.category` (still Unit).
+- `Transform.position`, `facing`, `prev_position`, `prev_facing`.
+- `Owner.player`.
+- `Inventory` contents (slot count not resized; map handles item drops if it cares).
+- **`AbilitySet`** — engine deliberately doesn't touch it. The map's morph helper handles Remove/Add of type-listed abilities. Lua-added abilities, item-granted passives, and applied buffs from other units survive unchanged.
+
+### Replaced (from new type def)
+
+- `HandleInfo.type_id`
+- `Transform.scale` (new `model_scale`)
+- `Health.max` and `regen_per_sec`; `Health.current` carries by percentage
+- `Selectable.selection_radius` / `selection_height` / `priority`
+- `Movement` (speed, turn_rate, collision_radius, move_type)
+- `Combat` (damage, range, attack_cooldown, swing timings, projectile)
+- `Sight.sight_range`
+- `UnitClassificationComp.flags`
+- `Renderable.model_path`
+- `BuildingComp` added / removed based on whether the new type has the `structure` classification
+
+### Attribute and state rules
+
+**Attributes (numeric + string):**
+
+- Base values replaced wholesale from the new type's `attributes_numeric` / `attributes_string`. Direct Lua mutations (`SetUnitAttribute`) made before morph are lost — re-apply them in the morph helper if they should survive.
+- Modifiers from passive abilities are gone with the old attribute block. After the component swap, `recalculate_modifiers` runs so any passive surviving on the ability set re-applies its modifiers to the fresh block. (Today `recalculate_modifiers` is a stub; the call is plumbed for when the modifier system lands.)
+- Attribute ids only on the old type → gone. Ids only on the new type → start at the new type's declared value.
+
+**States (mana, energy, rage, …):**
+
+- Shared state ids carry by **percentage**. Mana at 60% → mana at 60% of new max if the new type also has mana.
+- Old-only ids → gone. New-only ids → start at 100% of new max.
+- Regen rates come from the new type's per-state config.
+- Round-trip loss: morphing druid (mana 60%) → bear (no mana) → druid resets mana to 100%. State percentages are not remembered across a type boundary. Same WC3 behavior; pin it rather than try to remember dormant snapshots.
+
+### Cleared
+
+- `OrderQueue` (current + queued) — orders may be invalid for the new type.
+- In-flight cast (`cast_state` → `None`, casting_id cleared, cast_target_* cleared).
+- In-flight attack (`Combat.target` cleared, `attack_state` → `Idle`).
+- In-flight movement (waypoint, corridor, approach state).
+
+### Map-side morph helper
+
+Map authors typically wrap `MorphUnit` in a helper that handles abilities + cooldowns. The canonical pattern:
+
+```lua
+function morph_unit_to(u, type_id)
+    local saved = {}
+    for _, aid in ipairs(GetUnitTypeAbilities(GetUnitTypeId(u))) do
+        saved[aid] = GetAbilityCooldown(u, aid)
+        RemoveAbility(u, aid)
+    end
+    MorphUnit(u, type_id)
+    for _, aid in ipairs(GetUnitTypeAbilities(type_id)) do
+        AddAbility(u, aid)
+        if saved[aid] then SetAbilityCooldown(u, aid, saved[aid]) end
+    end
+end
+```
+
+Variants: a Bear Form that wants to keep some druid abilities skips them in the Remove loop. A Polymorph that wipes the target's kit entirely skips the cooldown save. The engine doesn't bake any of those policies.
 
 ### Composition with passive abilities
 

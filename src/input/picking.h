@@ -10,7 +10,7 @@
 
 #include <vector>
 
-namespace uldum::simulation { class FogOfWar; }
+namespace uldum::simulation { class Vision; }
 
 namespace uldum::input {
 
@@ -24,13 +24,14 @@ public:
 
     void set_screen_size(u32 w, u32 h) { m_screen_w = w; m_screen_h = h; }
 
-    // Hook up the local player's fog so pick_unit / pick_target /
-    // pick_item / pick_units_in_box skip entities whose tile is not
-    // currently visible. Set once at session start; pickers without a
-    // fog reference (editor, server-side queries) skip the filter and
-    // act as if everything is visible.
-    void set_fog(const simulation::FogOfWar* fog, simulation::Player local) {
-        m_fog = fog; m_local_player = local;
+    // Hook up the local player's vision subsystem so pick_unit /
+    // pick_target / pick_item / pick_units_in_box skip entities the
+    // player cannot see (fogged tiles + invisible-without-detector).
+    // Set once at session start; pickers without a vision reference
+    // (editor, server-side queries) skip the filter and act as if
+    // everything is visible.
+    void set_vision(const simulation::Vision* vision, simulation::Player local) {
+        m_vision = vision; m_local_player = local;
     }
 
     // Convert screen position to world position on terrain. Returns false if off-terrain.
@@ -60,7 +61,7 @@ private:
     const render::Camera*         m_camera  = nullptr;
     const map::TerrainData*       m_terrain = nullptr;
     const simulation::World*      m_world   = nullptr;
-    const simulation::FogOfWar*   m_fog     = nullptr;
+    const simulation::Vision*     m_vision  = nullptr;
     simulation::Player            m_local_player{};
     u32 m_screen_w = 1;
     u32 m_screen_h = 1;

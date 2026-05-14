@@ -29,10 +29,13 @@ struct World {
     SparseSet<Owner>                owners;
     SparseSet<Movement>             movements;
     SparseSet<Combat>               combats;
-    SparseSet<Vision>               visions;
+    SparseSet<Sight>                sights;
     SparseSet<OrderQueue>           order_queues;
     SparseSet<AbilitySet>           ability_sets;
     SparseSet<UnitClassificationComp> classifications;
+    SparseSet<StatusFlags>          status_flags;
+    SparseSet<TrueSightVisibility>  true_sight_vis;  // transient, rebuilt every tick by system_true_sight
+    SparseSet<ForcedVisibility>     forced_vis;      // persistent, set by UnitReveal
     SparseSet<Inventory>            inventories;
     SparseSet<BuildingComp>        buildings;
     SparseSet<Construction>         constructions;
@@ -42,9 +45,9 @@ struct World {
     SparseSet<ItemInfo>             item_infos;
     SparseSet<Carriable>            carriables;
     SparseSet<ProjectileComp>      projectiles;
-    SparseSet<ScalePulse>          scale_pulses;
     SparseSet<DeadState>           dead_states;
     SparseSet<Renderable>           renderables;
+    SparseSet<AnimQueue>           anim_queues;  // script-driven animation override (Lua writes, renderer advances)
 
     // Regions — Lua-authored zones used to fire enter/leave triggers.
     // Defined out of band (not per-unit), so it lives flat on World
@@ -89,19 +92,67 @@ struct World {
     using DeathCallback = std::function<void(Unit dying, Unit killer)>;
     DeathCallback on_death;
 
-    // Ability effect callback — fired when a cast reaches its cast_point.
-    // The script engine handles the actual effect (damage, heal, etc.).
-    // `source_item` is the item the cast originated from (invalid when
-    // the cast was hotkey / direct).
+    // Order callback — fired by issue_order whenever an order survives
+    // admission checks and is added to the unit's queue (or replaces
+    // its current order). Lets triggers react to commands as they
+    // arrive instead of inferring from state changes. The Order is
+    // passed by const-ref so the script side can std::visit the
+    // variant payload to extract target unit / point / ability id.
+    using OrderCallback = std::function<void(Unit unit, const Order& order)>;
+    OrderCallback on_order;
+
+    // Dying callback — fired when a unit's HP first drops to 0, BEFORE
+    // any reap or corpse-conversion runs. Handlers may heal the unit
+    // back up (SetUnitHealth → Health.current > 0); the engine re-reads
+    // the HP after the callback returns and, if positive, cancels the
+    // death. This is the engine's only chance to intercept death for
+    // Reincarnation / Phoenix Fire / Cheat Death-style mechanics —
+    // on_death fires too late (the entity is already transitioning to
+    // a corpse).
+    using DyingCallback = std::function<void(Unit dying, Unit killer)>;
+    DyingCallback on_dying;
+
+    // Ability cast-lifecycle callbacks. All three share the same
+    // signature (caster, ability id, target unit, target point, source
+    // item — same context that's set at cast start). They fire at
+    // different moments:
+    //
+    //   on_ability_channel  — channel_time > 0: fires the instant the
+    //                         Channeling state begins (right after
+    //                         Foreswing ends). Does NOT fire for non-
+    //                         channeled abilities.
+    //   on_ability_endcast  — channel_time > 0: fires when Channeling
+    //                         ends, both natural completion AND
+    //                         interruption. Mirrors WC3 SPELL_ENDCAST.
+    //   on_ability_effect   — the spell's effect resolves. For non-
+    //                         channeled abilities, fires at Foreswing
+    //                         end. For channeled abilities, fires
+    //                         AFTER on_ability_endcast on natural
+    //                         completion only (interrupted channels
+    //                         never reach effect).
     using AbilityEffectCallback = std::function<void(Unit caster, std::string_view ability_id,
                                                       Unit target_unit, glm::vec3 target_pos,
                                                       Item source_item)>;
+    AbilityEffectCallback on_ability_channel;
+    AbilityEffectCallback on_ability_endcast;
     AbilityEffectCallback on_ability_effect;
 
     // Sound callback — fired when a unit event needs a sound.
     // Parameters: sound path, position. Empty path = no sound.
     using SoundCallback = std::function<void(std::string_view path, glm::vec3 position)>;
     SoundCallback on_sound;
+
+    // Ability lifecycle callbacks — fire from EVERY add / remove path
+    // (add_ability, apply_passive_ability, remove_ability, natural
+    // duration expiry in system_ability). Host wires these to broadcast
+    // AbilityAdd / AbilityRemove updates so clients stay in lockstep
+    // regardless of which engine path drove the change. Refresh
+    // (non-stackable re-add) does NOT fire — the client's instance
+    // already exists and only its duration would change.
+    using AbilityAddedCallback   = std::function<void(Unit unit, std::string_view ability_id, u32 level)>;
+    using AbilityRemovedCallback = std::function<void(Unit unit, std::string_view ability_id)>;
+    AbilityAddedCallback   on_ability_added;
+    AbilityRemovedCallback on_ability_removed;
 
     // Called when a pathing blocker is removed (unblock runtime tiles).
     // Receives the tile rectangle (tx, ty) + (w, h) the blocker had
@@ -132,12 +183,13 @@ struct World {
     void clear_entities() {
         transforms.clear(); handle_infos.clear(); healths.clear();
         state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
-        owners.clear(); movements.clear(); combats.clear(); visions.clear();
+        owners.clear(); movements.clear(); combats.clear(); sights.clear();
         order_queues.clear(); ability_sets.clear(); classifications.clear();
         inventories.clear(); buildings.clear();
         constructions.clear(); destructables.clear(); doodads.clear(); pathing_blockers.clear();
         item_infos.clear(); carriables.clear(); projectiles.clear();
-        scale_pulses.clear(); dead_states.clear(); renderables.clear();
+        dead_states.clear(); renderables.clear();
+        status_flags.clear(); true_sight_vis.clear(); forced_vis.clear(); anim_queues.clear();
         regions.clear(); next_region_id = 0;
         handles = HandleAllocator{};
     }
@@ -156,6 +208,17 @@ void          destroy(World& world, Unit unit);
 void          destroy(World& world, Destructable d);
 void          destroy(World& world, Item item);
 void          destroy(World& world, Doodad d);
+
+// Transform a unit into a different unit type in place — same handle,
+// same position, same owner. Swaps every type-derived component (model,
+// movement, combat, vision, classifications, etc.), re-seeds health and
+// states by percentage carry-over, and rebuilds the ability set with
+// the new type's abilities while *keeping* every existing instance so
+// cooldowns continue to tick (an ability that's not in the new type
+// just gets `available = false`). Cancels in-flight cast / attack /
+// movement. Returns false if the handle is stale or the type id is
+// unknown.
+bool morph_unit(World& world, Unit unit, std::string_view new_type_id);
 
 // ── Unit API ───────────────────────────────────────────────────────────────
 
@@ -180,6 +243,23 @@ u32      get_ability_level(const World& world, Unit unit, std::string_view abili
 
 // Recalculate effective attributes from base + all active modifiers.
 void     recalculate_modifiers(World& world, u32 id);
+
+// Increment / decrement per-flag refcounts on a unit's StatusFlags by
+// `delta` for each named flag. Used by passive_flag ability lifecycle
+// (add / remove / expiry). Names are status:: keys ("invisible",
+// "no_acquire", etc.); unknown names are logged.
+void     flag_refcount_delta(World& world, u32 id,
+                             const std::vector<std::string>& flag_names,
+                             i32 delta);
+
+// Status flag helpers. Read returns false for an invalid handle or
+// when the unit has no StatusFlags component (treated as "no flags").
+// set/clear lazy-add the component on first set; clear-all wipes the
+// bitset but keeps the component. `flag` is a `status::*` bitmask
+// value — single bit, not a combination.
+bool     unit_has_status(const World& world, Unit unit, u32 flag);
+void     set_unit_status(World& world, Unit unit, u32 flag, bool on);
+void     clear_all_unit_status(World& world, Unit unit);
 f32      get_health(const World& world, Unit unit);
 void     set_health(World& world, Unit unit, f32 health);
 glm::vec3 get_position(const World& world, Unit unit);

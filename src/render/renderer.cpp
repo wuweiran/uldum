@@ -24,6 +24,27 @@ namespace uldum::render {
 
 static constexpr const char* TAG = "Render";
 
+// Multiplier applied to a unit's visual_alpha when it carries
+// UNIT_STATUS_INVISIBLE AND is being rendered (which only happens for
+// owner / ally / true-sight viewers — anything that can't see invisible
+// is already culled by Vision::is_unit_visible_to). Gives every
+// invisibility ability a consistent "ghost" appearance to its allies
+// without each map having to declare visual_alpha_percent on every
+// invisibility buff. Map abilities can layer their own
+// visual_alpha_percent modifier on top to dim further or to override
+// with visual_alpha_percent: 0 if they want a different visual treatment.
+static constexpr f32 kInvisibleGhostAlpha = 0.5f;
+
+static f32 effective_visual_alpha(const simulation::World& world, u32 id,
+                                  const simulation::Renderable& renderable) {
+    f32 a = renderable.visual_alpha;
+    auto* sf = world.status_flags.get(id);
+    if (sf && (sf->flags & simulation::status::Invisible)) {
+        a *= kInvisibleGhostAlpha;
+    }
+    return a;
+}
+
 // ── Shader loading helper ──────────────────────────────────────────────────
 
 static VkShaderModule load_shader(VkDevice device, std::string_view path) {
@@ -471,17 +492,20 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
         return (hi && world.types) ? world.types->get_unit_type(hi->type_id) : nullptr;
     };
 
-    // Spell — cast pump in CastPoint or Backswing.
+    // Spell — cast pump in Foreswing / Channeling / Backswing.
     if (auto* aset = world.ability_sets.get(id);
-        aset && (aset->cast_state == CastState::CastPoint ||
+        aset && (aset->cast_state == CastState::Foreswing  ||
+                 aset->cast_state == CastState::Channeling ||
                  aset->cast_state == CastState::Backswing)) {
         auto* type_def = get_type_def();
         f32 cp = type_def ? type_def->cast_pt : 0.5f;
         AttackAnimInfo info;
         info.dmg_point  = cp;
-        info.cast_point = aset->cast_point_secs;
+        info.cast_point = aset->foreswing_secs;
         info.backswing  = aset->cast_backswing_secs;
-        f32 dur = aset->cast_point_secs + aset->cast_backswing_secs;
+        // Channel duration adds straight through; whatever animation the
+        // unit's spell clip plays simply holds while the channel runs.
+        f32 dur = aset->foreswing_secs + aset->channel_secs + aset->cast_backswing_secs;
         return {AnimState::Spell, dur, false, info, true};
     }
 
@@ -840,22 +864,15 @@ void Renderer::upload_fog(VkCommandBuffer cmd) {
 }
 
 bool Renderer::is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const {
-    if (!m_fog_enabled || !m_simulation) return false;
-    const auto& fog = m_simulation->fog();
-    if (!fog.enabled()) return false;
-
-    // Friendly units are always visible
-    const auto* owner = world.owners.get(id);
-    if (owner && owner->player.id == m_local_player_id) return false;
-    if (owner && m_simulation->is_allied(simulation::Player{m_local_player_id}, owner->player)) return false;
-
-    // Check fog state at entity tile
-    auto tile = m_terrain_data
-        ? m_terrain_data->world_to_tile(t.position.x, t.position.y)
-        : glm::ivec2{0, 0};
-    auto vis = fog.get(simulation::Player{m_local_player_id},
-                       static_cast<u32>(tile.x), static_cast<u32>(tile.y));
-    return vis != simulation::Visibility::Visible;
+    // Client-side cull is *defense in depth*. The server-side network
+    // snapshot path is the primary line against cheating — the client
+    // shouldn't even receive data for units it can't see (network.cpp
+    // uses the same is_unit_visible_to). Single source of truth keeps
+    // the two paths in lockstep.
+    (void)t;  // Vision::is_unit_visible_to reads transform itself
+    if (!m_simulation) return false;
+    return !m_simulation->vision().is_unit_visible_to(
+        world, *m_simulation, id, simulation::Player{m_local_player_id});
 }
 
 // ── Descriptor set layouts + pool ─────────────────────────────────────────
@@ -1650,6 +1667,20 @@ bool Renderer::create_mesh_pipeline() {
     cfg.stages[1].module = frag;
     cfg.stages[1].pName  = "main";
 
+    // Alpha blending so InstanceData.alpha (driven by visual_alpha)
+    // actually shows up on screen — opaque instances (alpha=1) end up
+    // identical to the pre-blend pipeline. Re-anchor pAttachments to
+    // *this* cfg's blend_attachment in case NRVO didn't keep the
+    // address stable (same gotcha we hit in the skinned pipeline).
+    cfg.blend_attachment.blendEnable         = VK_TRUE;
+    cfg.blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    cfg.blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cfg.blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
+    cfg.blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cfg.blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    cfg.blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
+    cfg.color_blend.pAttachments             = &cfg.blend_attachment;
+
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     push_range.offset     = 0;
@@ -1747,19 +1778,44 @@ bool Renderer::create_skinned_mesh_pipeline() {
     cfg.stages[1].module = frag;
     cfg.stages[1].pName  = "main";
 
+    // Alpha blending for SetUnitAlpha / ghost-rendering. Opaque units
+    // (alpha=1) end up identical to the previous pipeline; translucent
+    // units blend into the framebuffer. Depth write stays on — fine for
+    // mostly-opaque humanoid silhouettes; switch to dithered alpha if
+    // we ever need clean see-through ghosts.
+    cfg.blend_attachment.blendEnable         = VK_TRUE;
+    cfg.blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    cfg.blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cfg.blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
+    cfg.blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cfg.blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    cfg.blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
+    // make_common_pipeline_state() set color_blend.pAttachments to its
+    // *own* blend_attachment before returning by value. NRVO usually
+    // keeps the addresses identical, but it's not guaranteed — re-
+    // anchor the pointer to *this* cfg's blend_attachment so the alpha
+    // overrides above are guaranteed to land in the pipeline.
+    cfg.color_blend.pAttachments = &cfg.blend_attachment;
+
     // Layout: set 0 = material, set 1 = shadow, set 2 = bones SSBO
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_range.offset     = 0;
-    push_range.size       = 2 * sizeof(glm::mat4);
+    // Push constants: mat4 mvp + mat4 model (vertex), then vec4 visual
+    // (fragment) where visual.x is alpha. Fragment range starts after
+    // the two mat4s; sizes are tracked separately per stage.
+    VkPushConstantRange push_ranges[2]{};
+    push_ranges[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_ranges[0].offset     = 0;
+    push_ranges[0].size       = 2 * sizeof(glm::mat4);
+    push_ranges[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    push_ranges[1].offset     = 2 * sizeof(glm::mat4);
+    push_ranges[1].size       = sizeof(glm::vec4);
 
     VkDescriptorSetLayout layouts[] = {m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout};
     VkPipelineLayoutCreateInfo layout_ci{};
     layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_ci.setLayoutCount         = 3;
     layout_ci.pSetLayouts            = layouts;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
+    layout_ci.pushConstantRangeCount = 2;
+    layout_ci.pPushConstantRanges    = push_ranges;
 
     if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_skinned_mesh_pipeline_layout) != VK_SUCCESS) {
         log::error(TAG, "Failed to create skinned mesh pipeline layout");
@@ -2480,7 +2536,7 @@ glm::vec3 Renderer::get_attachment_point(u32 entity_id, std::string_view bone_na
     auto it = m_anim_instances.find(entity_id);
     if (it == m_anim_instances.end()) return {0, 0, 0};
     glm::vec3 local = render::get_attachment_point(it->second, bone_name);
-    // Convert from glTF Y-up to game Z-up: (X, Y, Z) → (X, -Z, Y)
+    // glTF Y-up → game Z-up
     return {local.x, -local.z, local.y};
 }
 
@@ -2800,7 +2856,7 @@ VkDescriptorSet Renderer::allocate_bone_descriptor(VkBuffer bone_buffer, usize s
 
 // ── Shadow depth pass ─────────────────────────────────────────────────────
 
-void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& world, f32 alpha) {
+void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f32 alpha) {
     if (!m_shadow_pipeline) return;
 
     glm::vec3 light_dir = m_sun_direction;
@@ -2979,7 +3035,7 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, const simulation::World& wo
 
 // ── Draw ───────────────────────────────────────────────────────────────────
 
-void Renderer::draw_shadows(VkCommandBuffer cmd, const simulation::World& world, f32 alpha) {
+void Renderer::draw_shadows(VkCommandBuffer cmd, simulation::World& world, f32 alpha) {
     draw_shadow_pass(cmd, world, alpha);
 }
 
@@ -3098,6 +3154,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         InstanceData inst{};
         inst.model = model;
         inst.material_index = tex_idx;
+        inst.alpha = effective_visual_alpha(world, id, renderable);
         buckets[gi].push_back(inst);
     }
 
@@ -3134,7 +3191,8 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     }
 }
 
-void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::World& world, f32 alpha) {
+void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& world, f32 alpha,
+                    const std::function<void()>& on_after_terrain) {
     if (extent.width == 0 || extent.height == 0) return;
 
     // Collect point lights from active glow particles
@@ -3263,6 +3321,13 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
         vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
     }
 
+    // ── Ground decals (selection rings, focus reticles, ...) ────────────
+    // Run AFTER terrain + water but BEFORE any unit mesh so meshes
+    // composite over them. Without this ordering, alpha-blended units
+    // (Wind Walk fade etc.) depth-occlude the ring underneath their
+    // silhouette even though you can see through the body itself.
+    if (on_after_terrain) on_after_terrain();
+
     // ── Draw entities ────────────────────────────────────────────────────
     if (!m_mesh_pipeline) return;
 
@@ -3336,10 +3401,73 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
                 anim.time = 0;
             }
 
-            auto anim_info = derive_anim_state(world, id, anim);
-            set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
-                           anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
+            // Script-driven animation override (SetUnitAnimation /
+            // QueueUnitAnimation). Death always wins — if the unit is
+            // dying we drop the queue so the death clip plays cleanly.
+            auto* aq = world.anim_queues.get(id);
+            const bool is_dying = world.dead_states.has(id);
+            if (aq && is_dying) {
+                world.anim_queues.remove(id);
+                aq = nullptr;
+                anim.script_controlled = false;
+            }
+            if (aq && !aq->clips.empty()) {
+                if (!anim.script_controlled) {
+                    // Entering script control. Resolve front clip name
+                    // and slot it into state_to_clip[Custom]. The
+                    // existing set_anim_state transition path handles
+                    // the crossfade from whatever was playing before.
+                    i32 idx = find_clip_by_name(*anim.model, aq->clips.front());
+                    if (idx >= 0) {
+                        anim.state_to_clip[static_cast<u8>(AnimState::Custom)] = idx;
+                        anim.script_looping = (aq->clips.size() == 1) && aq->looping;
+                        anim.script_controlled = true;
+                        set_anim_state(anim, AnimState::Custom, 0, /*force_restart=*/true);
+                    } else {
+                        log::warn(TAG, "SetUnitAnimation: clip '{}' not found on model '{}'",
+                                  aq->clips.front(), anim.model->name);
+                        world.anim_queues.remove(id);
+                        aq = nullptr;
+                    }
+                }
+            } else if (anim.script_controlled) {
+                // Queue cleared without an explicit transition — let
+                // derive_anim_state pick a fresh engine state next
+                // (Walk / Idle / etc.) and set_anim_state crossfade
+                // back from Custom.
+                anim.script_controlled = false;
+            }
+
+            if (!anim.script_controlled) {
+                auto anim_info = derive_anim_state(world, id, anim);
+                set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
+                               anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
+            }
             update_animation(anim, frame_dt);
+
+            // Advance the queue if the script-driven clip just finished.
+            if (anim.script_controlled && anim.finished && !anim.script_looping && aq) {
+                aq->clips.pop_front();
+                if (aq->clips.empty()) {
+                    world.anim_queues.remove(id);
+                    // script_controlled flips false on the next frame's
+                    // pass, where derive_anim_state picks Idle/Walk and
+                    // set_anim_state can crossfade out of Custom.
+                } else {
+                    i32 next_idx = find_clip_by_name(*anim.model, aq->clips.front());
+                    if (next_idx >= 0) {
+                        anim.state_to_clip[static_cast<u8>(AnimState::Custom)] = next_idx;
+                        anim.script_looping = (aq->clips.size() == 1) && aq->looping;
+                        anim.time = 0;
+                        anim.finished = false;
+                    } else {
+                        log::warn(TAG, "QueueUnitAnimation: clip '{}' not found",
+                                  aq->clips.front());
+                        world.anim_queues.remove(id);
+                    }
+                }
+            }
+
             evaluate_animation(anim);
         }
     }
@@ -3410,6 +3538,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
             vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(push), &push);
+            glm::vec4 visual{effective_visual_alpha(world, id, renderable), 0.0f, 0.0f, 0.0f};
+            vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               sizeof(push), sizeof(visual), &visual);
 
             VkDeviceSize vb_offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &lm->mesh.vertex_buffer, &vb_offset);
@@ -3493,12 +3624,19 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, const simulation::Wo
             }
         }
 
-        // Update effect instances (follow units, continuous emission, expiry)
-        m_effect_manager.update(frame_dt, [](simulation::Unit u, void* ctx) -> glm::vec3 {
-            auto* w = static_cast<const simulation::World*>(ctx);
-            auto* t = w->transforms.get(u.id);
-            return t ? t->position : glm::vec3{0};
-        }, const_cast<void*>(static_cast<const void*>(&world)));
+        struct EffectCtx { const simulation::World* w; const Renderer* r; };
+        EffectCtx ec{&world, this};
+        m_effect_manager.update(frame_dt,
+            [](simulation::Unit u, std::string_view attach, void* ctx) -> glm::vec3 {
+                auto* c = static_cast<EffectCtx*>(ctx);
+                auto* t = c->w->transforms.get(u.id);
+                if (!t) return {0,0,0};
+                glm::vec3 pos = t->position;
+                if (!attach.empty()) {
+                    pos += c->r->get_attachment_point(u.id, attach) * t->scale;
+                }
+                return pos;
+            }, &ec);
 
         m_particles.update(frame_dt);
         m_particles.upload(cam_right, cam_up);

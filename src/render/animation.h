@@ -16,8 +16,11 @@
 namespace uldum::render {
 
 // Animation states — driven by simulation components.
-// Clip names in glTF must match: "idle", "walk", "attack", "spell", "death"
-enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Birth, Count };
+// Clip names in glTF must match: "idle", "walk", "attack", "spell", "death".
+// `Custom` is reserved for script-driven overrides (SetUnitAnimation in
+// Lua); state_to_clip[Custom] is populated at runtime from the map
+// author's clip name rather than from a fixed glTF naming convention.
+enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Birth, Custom, Count };
 
 // Per-entity animation instance with state machine.
 struct AnimationInstance {
@@ -33,6 +36,15 @@ struct AnimationInstance {
     f32 playback_speed = 1.0f;
     bool looping       = true;
     bool finished      = false;
+
+    // Script-driven animation flags. Set true by the renderer when a
+    // unit has an AnimQueue entry on the World; cleared automatically
+    // when the queue empties (or on death). While script_controlled,
+    // derive_anim_state is bypassed and update_animation plays
+    // state_to_clip[Custom] with `script_looping` instead of the
+    // state-derived loop rule.
+    bool script_controlled = false;
+    bool script_looping    = false;
 
     // Track attack swings to restart animation on each new attack
     u32 attack_swing_id = 0;

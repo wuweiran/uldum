@@ -16,6 +16,11 @@
 #include <shobjidl.h>
 #include <cmath>
 
+// stb_image is in third_party and already linked via uldum_asset.
+// stbi_info() reads only the PNG header — cheap and lets the import
+// dialog prefill the resize fields with the source's dimensions.
+#include <stb_image.h>
+
 // Forward declare the Win32 ImGui WndProc handler
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -921,9 +926,14 @@ void Editor::update_object_preview() {
             m_preview_type_id = m_place_unit_type;
             m_preview_category = ObjectCategory::Unit;
             // Suppress the birth animation so the preview unit doesn't
-            // pop out of the ground every time you switch type.
+            // pop out of the ground every time you switch type. Also
+            // half-alpha so the preview reads as a placement ghost
+            // rather than a real unit (skinned-mesh path only —
+            // static-mesh previews stay opaque until the static
+            // pipeline plumbs alpha through InstanceData).
             if (auto* r = world.renderables.get(m_preview_handle.id)) {
-                r->skip_birth = true;
+                r->skip_birth   = true;
+                r->visual_alpha = 0.5f;
             }
         }
 
@@ -960,6 +970,9 @@ void Editor::update_object_preview() {
             m_preview_type_id           = m_place_destructable_type;
             m_preview_category          = ObjectCategory::Destructable;
             m_preview_variation         = m_place_destructable_var;
+            if (auto* r = world.renderables.get(m_preview_handle.id)) {
+                r->visual_alpha = 0.5f;
+            }
         }
 
         // Move the preview to follow the cursor (cell-snap regardless
@@ -993,6 +1006,9 @@ void Editor::update_object_preview() {
             m_preview_type_id           = m_place_doodad_type;
             m_preview_category          = ObjectCategory::Doodad;
             m_preview_variation         = m_place_doodad_var;
+            if (auto* r = world.renderables.get(m_preview_handle.id)) {
+                r->visual_alpha = 0.5f;
+            }
         }
         if (auto* t = world.transforms.get(m_preview_handle.id)) {
             t->position.x = m_cursor_pos.x;
@@ -2510,6 +2526,21 @@ void Editor::draw_import_dialog() {
                     std::memcpy(m_import_filename.data(), stem.data(), m);
                     m_import_filename[m] = '\0';
                 }
+                // Detect source dimensions (header-only read). Used to
+                // seed the resize fields with a sensible default; if
+                // detection fails the prior values (or 256×256) stay.
+                int sw = 0, sh = 0, comp = 0;
+                if (stbi_info(path.c_str(), &sw, &sh, &comp) && sw > 0 && sh > 0) {
+                    m_import_src_w = sw;
+                    m_import_src_h = sh;
+                    if (!m_import_resize) {
+                        m_import_w = sw;
+                        m_import_h = sh;
+                    }
+                } else {
+                    m_import_src_w = 0;
+                    m_import_src_h = 0;
+                }
             }
         }
         ImGui::SameLine();
@@ -2528,6 +2559,26 @@ void Editor::draw_import_dialog() {
         ImGui::RadioButton("sRGB (color)", &cs, 0); ImGui::SameLine();
         ImGui::RadioButton("Linear (normal/data)", &cs, 1);
         m_import_linear = (cs == 1);
+
+        // Resize: opt-in. basisu's -resample uses a box filter; fine
+        // for downscaling icons / texture atlases. Source dimensions
+        // show as a hint when detected via stbi_info on Browse.
+        ImGui::Checkbox("Resize", &m_import_resize);
+        if (m_import_src_w > 0 && m_import_src_h > 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(source: %d \xC3\x97 %d)", m_import_src_w, m_import_src_h);
+        }
+        if (!m_import_resize) ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(80);
+        ImGui::InputInt("##rw", &m_import_w, 0, 0);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("\xC3\x97");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80);
+        ImGui::InputInt("##rh", &m_import_h, 0, 0);
+        if (m_import_w < 1) m_import_w = 1;
+        if (m_import_h < 1) m_import_h = 1;
+        if (!m_import_resize) ImGui::EndDisabled();
 
         ImGui::Separator();
         bool can_convert = m_map_loaded
@@ -2607,6 +2658,10 @@ void Editor::run_png_import() {
     // flips colorspace handling for data textures.
     std::string args = "-ktx2 -ktx2_no_zstandard -uastc -uastc_level 2 -mipmap";
     if (m_import_linear) args += " -linear";
+    if (m_import_resize && m_import_w > 0 && m_import_h > 0) {
+        args += " -resample " + std::to_string(m_import_w)
+              + " "           + std::to_string(m_import_h);
+    }
     args += " -output_file \"" + dest.string() + "\" \"" + src.string() + "\"";
 
     std::string captured;

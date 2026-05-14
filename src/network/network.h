@@ -2,7 +2,7 @@
 
 #include "network/protocol.h"
 #include "simulation/world.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 #include "simulation/handle_types.h"
 #include "input/command.h"
 
@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace uldum::simulation { class Simulation; class TypeRegistry; }
+namespace uldum::simulation { class Simulation; class TypeRegistry; class AbilityRegistry; }
 namespace uldum::input  { class CommandSystem; }
 namespace uldum::map    { class MapManager; }
 namespace uldum::hud    { class Hud; }
@@ -102,6 +102,14 @@ public:
     // Set the type registry for spawning entities on the client.
     void set_type_registry(const simulation::TypeRegistry* types) { m_client_types = types; }
 
+    // Set the ability registry so the client's S_UPDATE handlers for
+    // AbilityAdd / AbilityRemove can populate modifiers + flags and
+    // run recalculate_modifiers — exactly what the server-side
+    // simulation::add_ability path does.
+    void set_ability_registry(const simulation::AbilityRegistry* abilities) {
+        m_client_abilities = abilities;
+    }
+
     // HUD sync plumbing (16c-v).
     // - On host: set_hud() + set_script() install handlers so client-side
     //   C_NODE_EVENT can fire server-side triggers, and host_hud_sync can
@@ -126,7 +134,7 @@ public:
 
     // Update client fog of war visuals (call per frame). Returns visual grid or nullptr.
     const f32* update_client_fog(f32 dt);
-    simulation::FogOfWar& client_fog() { return m_client_fog; }
+    simulation::Vision& client_vision() { return m_client_vision; }
 
     // Set the map hash for join verification.
     void set_map_hash(u32 hash) { m_map_hash = hash; }
@@ -147,6 +155,16 @@ public:
 
     // Host: broadcast an S_UPDATE to all clients that can see this entity.
     void host_broadcast_update(u32 entity_id, std::span<const u8> update_packet);
+
+    // Host: broadcast an arbitrary packet to every connected peer.
+    // Used for non-entity-scoped sync (free-position PlayEffect, future
+    // global notifications). No visibility filtering.
+    void host_broadcast(std::span<const u8> packet);
+
+    // Host: send to the peer claiming a specific player slot. No-op if
+    // no such peer exists (e.g. the host's own player). Used by the
+    // fog-aware effect dispatcher to push deliveries per-player.
+    void host_send_to_player(u32 player_id, std::span<const u8> packet);
 
     // ── Lobby API ───────────────────────────────────────────────────────
     // Both sides read/write `lobby_state()`; host is authoritative.
@@ -254,6 +272,16 @@ public:
 
     // ── Callbacks ───────────────────────────────────────────────────────
     std::function<void(std::string_view path, glm::vec3 pos)> on_sound;
+    // Effect spawn received from host. `entity_id == UINT32_MAX` =
+    // free-position effect; otherwise attach to the named entity
+    // (`attach_point` may be empty for unit-pivot).
+    std::function<void(std::string_view name, u32 entity_id, glm::vec3 pos,
+                       std::string_view attach_point)> on_effect;
+    // CreateEffect — persistent effect with stable handle.
+    std::function<void(u32 server_id, std::string_view name, u32 entity_id,
+                       glm::vec3 pos, std::string_view attach_point)> on_effect_create;
+    // DestroyEffect — destroy a previously-Create'd instance.
+    std::function<void(u32 server_id)> on_effect_destroy;
     std::function<void(u32 player_id)> on_player_disconnected;  // player lost connection
     std::function<void(u32 player_id)> on_player_dropped;       // timeout expired, player removed
     std::function<void()> on_lobby_state_changed;               // lobby snapshot updated
@@ -341,6 +369,7 @@ private:
     simulation::World m_client_world;
     simulation::Player m_local_player{UINT32_MAX};
     const simulation::TypeRegistry* m_client_types = nullptr;
+    const simulation::AbilityRegistry* m_client_abilities = nullptr;
 
     // HUD sync plumbing — set by App during start_session. Host uses
     // m_script to dispatch C_NODE_EVENT; client uses m_hud to apply
@@ -348,8 +377,9 @@ private:
     hud::Hud*               m_hud    = nullptr;
     script::ScriptEngine*   m_script = nullptr;
 
-    // Fog of war (client computes locally from received entities)
-    simulation::FogOfWar m_client_fog;
+    // Vision (client computes fog locally from received entities; the
+    // server already filtered out anything this client can't see)
+    simulation::Vision m_client_vision;
     const simulation::Simulation* m_client_sim_ref = nullptr;  // for shared vision queries
 
     // Snapshot buffer for interpolation (two most recent)
@@ -370,6 +400,9 @@ private:
     void client_handle_destroy(std::span<const u8> data);
     void client_handle_state(std::span<const u8> data);
     void client_handle_sound(std::span<const u8> data);
+    void client_handle_effect(std::span<const u8> data);
+    void client_handle_effect_create(std::span<const u8> data);
+    void client_handle_effect_destroy(std::span<const u8> data);
     void client_handle_update(std::span<const u8> data);
     void client_apply_interpolation();
 

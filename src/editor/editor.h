@@ -299,9 +299,17 @@ private:
     bool m_import_open        = false;
     bool m_import_linear      = false;  // -linear flag (normal maps / data textures)
     bool m_import_show_result = false;  // raise the result modal next frame
+    bool m_import_resize      = false;  // pass -resample W H to basisu
     std::array<char, 512> m_import_src{};
     std::array<char, 256> m_import_path{};
     std::array<char, 256> m_import_filename{};
+    // Detected source dimensions (0 = not detected yet). Set when the
+    // user picks a file via Browse; used to default the resize fields.
+    i32                   m_import_src_w = 0;
+    i32                   m_import_src_h = 0;
+    // Target dimensions when m_import_resize is true.
+    i32                   m_import_w     = 256;
+    i32                   m_import_h     = 256;
     ImportResult          m_import_result = ImportResult::None;
     std::string           m_import_result_msg;
 

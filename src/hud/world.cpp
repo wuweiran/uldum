@@ -4,7 +4,7 @@
 
 #include "simulation/world.h"
 #include "simulation/components.h"
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 #include "simulation/type_registry.h"
 #include "render/camera.h"
 #include "input/picking.h"
@@ -81,17 +81,17 @@ static bool project_to_screen(const glm::mat4& vp, glm::vec3 world,
 }
 
 // Is the unit at (world_x, world_y) hidden by fog for `player`?
-static bool is_fogged(const simulation::FogOfWar& fog,
+static bool is_fogged(const simulation::Vision& vision,
                       const map::TerrainData& terrain,
                       simulation::Player player,
                       f32 world_x, f32 world_y) {
-    if (!fog.enabled()) return false;
+    if (!vision.enabled()) return false;
     // Terrain is centered; its world_to_tile handles that.
     auto tile = terrain.world_to_tile(world_x, world_y);
     u32 tx = static_cast<u32>(tile.x);
     u32 ty = static_cast<u32>(tile.y);
-    if (tx >= fog.tiles_x() || ty >= fog.tiles_y()) return false;
-    return !fog.is_visible(player, tx, ty);
+    if (tx >= vision.tiles_x() || ty >= vision.tiles_y()) return false;
+    return !vision.is_visible(player, tx, ty);
 }
 
 // Internal implementation — called from hud.cpp's draw_world_overlays
@@ -133,8 +133,8 @@ void draw_entity_bars_impl(Hud& hud,
         // Skip fogged entities. Skip entities that are not units (we only
         // draw bars for units with health/state blocks — the checks below
         // filter non-unit entities naturally via state lookup).
-        if (ctx.fog && terrain && is_fogged(*ctx.fog, *terrain, ctx.local_player,
-                                            tf.position.x, tf.position.y)) continue;
+        if (ctx.vision && terrain && is_fogged(*ctx.vision, *terrain, ctx.local_player,
+                                                tf.position.x, tf.position.y)) continue;
         // Skip dead units — their corpse is still in the world but shouldn't
         // advertise HP/mana bars.
         if (world.dead_states.get(id)) continue;
@@ -226,8 +226,8 @@ void draw_unit_name_label_impl(Hud& hud,
     const auto* hinfo = world.handle_infos.get(hovered.id);
     if (!tf || !hinfo) return;
     if (world.dead_states.get(hovered.id)) return;
-    if (ctx.fog && ctx.terrain &&
-        is_fogged(*ctx.fog, *ctx.terrain, ctx.local_player,
+    if (ctx.vision && ctx.terrain &&
+        is_fogged(*ctx.vision, *ctx.terrain, ctx.local_player,
                   tf->position.x, tf->position.y)) {
         return;
     }

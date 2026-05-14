@@ -15,16 +15,29 @@ namespace uldum::simulation {
 // Ability forms — engine-provided mechanical primitives. Channel is
 // not a form: any form can declare a `channel_time` on its level data
 // to make the cast sustained.
+//
+// "Target" subsumes WC3's TargetUnit / TargetPoint / TargetDestructable /
+// TargetItem split. The single form covers all "cast on a thing in the
+// world" shapes; `widget_kinds` + `accept_point` on AbilityDef pick
+// which kinds the cursor accepts.
 enum class AbilityForm : u8 {
-    Passive,      // always active, modifiers + optional duration
-    Aura,         // scan radius, apply/remove passive to nearby units
-    Instant,      // cast_time → fire → backsw_time
-    TargetUnit,   // + range + target validation + optional projectile
-    TargetPoint,  // + range + ground position
-    Toggle,       // on/off, periodic cost drain
+    PassiveModifier,  // always active, contributes numeric modifiers
+    PassiveFlag,      // always active, applies refcounted status flags
+    Aura,             // scan radius, apply/remove a passive_* buff to nearby units
+    Instant,          // cast_time → fire → backsw_time, no target
+    Target,           // cast on a widget and/or a point — see widget_kinds + accept_point
 };
 
 AbilityForm parse_ability_form(const std::string& s);
+
+// Bitmask values for `AbilityDef::widget_kinds`. A Target-form ability
+// accepts a widget pick when the widget's category bit is set; otherwise
+// the cursor falls through to the ground point (if `accept_point` is on).
+namespace widget_kind {
+    constexpr u32 Unit         = 1u << 0;
+    constexpr u32 Destructable = 1u << 1;
+    constexpr u32 Item         = 1u << 2;
+}
 
 // Visual shape of the cast indicator drawn during targeting / drag-cast
 // — purely a UI concept, simulation does not branch on it. Only meaningful
@@ -71,8 +84,18 @@ struct AbilityLevelDef {
     f32 damage      = 0;
     f32 heal        = 0;
 
-    // Modifiers (passive/applied): attr_name → value
+    // Modifiers (passive_modifier): attr_name (+ optional _flat / _percent
+    // suffix) → value. Keys without a suffix are treated as _flat.
     std::map<std::string, f32> modifiers;
+
+    // Refcounted status flags (passive_flag). Each name maps to a bit in
+    // status:: (see components.h). While the instance is alive, each
+    // flag's refcount is incremented; on remove, decremented.
+    std::vector<std::string> flags;
+
+    // -1 = permanent (default for innate passives). >= 0 = timed; the
+    // instance is auto-removed when remaining_duration hits 0.
+    f32 duration = -1.0f;
 
     // Aura
     f32         aura_radius  = 0;
@@ -90,9 +113,6 @@ struct AbilityLevelDef {
     AbilityArea area;
     bool        has_area = false;
 
-    // Toggle
-    std::map<std::string, f32> toggle_cost_per_sec;
-
     // Projectile
     f32 projectile_speed = 0;
 };
@@ -102,12 +122,29 @@ struct AbilityDef {
     std::string    name;
     std::string    icon;
     std::string    hotkey;              // RTS preset key (e.g., "T"). Empty = no hotkey.
-    AbilityForm    form      = AbilityForm::Passive;
+    AbilityForm    form      = AbilityForm::PassiveModifier;
     IndicatorShape shape     = IndicatorShape::Point;  // UI only; only meaningful for target_point
     bool           stackable = false;
     bool           hidden    = false;   // hidden abilities don't auto-assign to slots
+    // Bypass UNIT_STATUS_MAGIC_IMMUNE on the target. Used by dispels
+    // / purges / hexes that are specifically designed to land on
+    // magic-immune units. Default false. Has no effect on
+    // UNIT_STATUS_UNTARGETABLE — nothing pierces that.
+    bool           pierces_immune = false;
     u32            max_level  = 1;
     TargetFilter   target_filter;
+
+    // Target-form metadata. `widget_kinds` is a bitmask of widget_kind::*
+    // values (Unit / Destructable / Item) the cursor will snap to.
+    // `accept_point` lets the cursor fall through to the ground when no
+    // accepted widget is under it. Three resulting shapes:
+    //   • widget-only:        widget_kinds != 0, accept_point = false
+    //   • point-only:         widget_kinds == 0, accept_point = true
+    //   • hybrid (widget-first, point fallback): widget_kinds != 0,
+    //                                            accept_point = true
+    // Ignored when `form` isn't Target.
+    u32  widget_kinds = 0;
+    bool accept_point = false;
 
     std::vector<AbilityLevelDef> levels;
 

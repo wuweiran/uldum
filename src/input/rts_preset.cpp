@@ -194,35 +194,37 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         if (!still_castable) cancel_targeting();
     }
 
-    // Ability targeting: hotkey was pressed, now left-click to pick target
+    // Ability targeting: hotkey was pressed, now left-click to pick target.
+    // Widget-first: if the ability accepts a widget kind and one is under
+    // the cursor (and passes target_filter), cast on it. Otherwise fall
+    // through to the ground point when accept_point is on. Widget-only
+    // abilities keep the targeting mode armed on a missed click — matches
+    // WC3 "click goes ping" on invalid targets.
     if (m_target_mode == TargetingMode::Ability && input.mouse_left_pressed) {
         if (!sel.empty()) {
             const auto* def = ctx.simulation.abilities().get(m_target_ability_id);
-            if (def) {
-                if (def->form == simulation::AbilityForm::TargetUnit) {
-                    auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-                    // Reject targets that fail the ability's target_filter
-                    // (e.g. clicking an enemy with an ally-only heal). The
-                    // targeting mode stays armed so the player can retry —
-                    // matches the WC3 "click goes ping" behavior on
-                    // invalid targets.
-                    bool target_ok = false;
+            if (def && def->form == simulation::AbilityForm::Target) {
+                simulation::Unit target{};
+                bool target_ok = false;
+                if (def->widget_kinds != 0) {
+                    target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
                     if (target.is_valid()) {
                         auto caster = sel.selected().front();
                         target_ok = ctx.simulation.target_filter_passes(
                             def->target_filter, caster, target);
                     }
-                    if (target_ok) {
-                        GameCommand cmd;
-                        cmd.player = sel.player();
-                        cmd.units  = sel.selected();
-                        cmd.order  = simulation::orders::Cast{m_target_ability_id, target, {}};
-                        cmd.queued = input.key_shift;
-                        ctx.commands.submit(cmd);
-                        cancel_targeting();
-                    }
+                }
+                if (target_ok) {
+                    GameCommand cmd;
+                    cmd.player = sel.player();
+                    cmd.units  = sel.selected();
+                    cmd.order  = simulation::orders::Cast{m_target_ability_id, target, {}};
+                    cmd.queued = input.key_shift;
+                    ctx.commands.submit(cmd);
+                    cancel_targeting();
                     return;
-                } else if (def->form == simulation::AbilityForm::TargetPoint) {
+                }
+                if (def->accept_point) {
                     glm::vec3 world_pos;
                     if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                         GameCommand cmd;
@@ -231,7 +233,13 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                         cmd.order  = simulation::orders::Cast{m_target_ability_id, {}, world_pos};
                         cmd.queued = input.key_shift;
                         ctx.commands.submit(cmd);
+                        cancel_targeting();
+                        return;
                     }
+                }
+                // Widget-only with no valid target → stay in targeting mode.
+                if (def->widget_kinds != 0 && !def->accept_point) {
+                    return;
                 }
             }
         }
@@ -501,16 +509,14 @@ void RtsPreset::dispatch_ability(const InputContext& ctx,
     const auto* def = ctx.simulation.abilities().get(std::string(ability_id));
     if (!def) return;
 
-    if (def->form == simulation::AbilityForm::Instant ||
-        def->form == simulation::AbilityForm::Toggle) {
+    if (def->form == simulation::AbilityForm::Instant) {
         GameCommand cmd;
         cmd.player = sel.player();
         cmd.units  = sel.selected();
         cmd.order  = simulation::orders::Cast{std::string(ability_id), {}, {}};
         cmd.queued = queued_modifier;
         ctx.commands.submit(cmd);
-    } else if (def->form == simulation::AbilityForm::TargetUnit ||
-               def->form == simulation::AbilityForm::TargetPoint) {
+    } else if (def->form == simulation::AbilityForm::Target) {
         set_target_mode(TargetingMode::Ability, ability_id);
     }
     // Passive / Aura / Channel: not directly triggerable from here.

@@ -1,7 +1,8 @@
-#include "simulation/fog_of_war.h"
+#include "simulation/vision.h"
 #include "simulation/world.h"
 #include "simulation/simulation.h"
 #include "simulation/components.h"
+#include "simulation/spatial_query.h"
 #include "map/terrain_data.h"
 
 #include <algorithm>
@@ -23,13 +24,14 @@ static constexpr f32 FADE_SPEED   = 2.0f;   // visible → explored (slower fade
 // 1.5 tiles of falloff gives a smooth circular edge.
 static constexpr f32 FEATHER_TILES = 1.5f;
 
-void FogOfWar::init(u32 tiles_x, u32 tiles_y, f32 tile_size, u32 player_count, FogMode mode,
+void Vision::init(u32 tiles_x, u32 tiles_y, f32 tile_size, u32 player_count, FogMode mode,
                     const map::TerrainData* terrain) {
     m_tiles_x = tiles_x;
     m_tiles_y = tiles_y;
     m_tile_size = tile_size;
     m_player_count = player_count;
     m_mode = mode;
+    m_authored_mode = mode;
     m_terrain = terrain;
 
     if (mode == FogMode::None) {
@@ -54,7 +56,7 @@ void FogOfWar::init(u32 tiles_x, u32 tiles_y, f32 tile_size, u32 player_count, F
     }
 }
 
-void FogOfWar::update(const World& world, const Simulation& sim) {
+void Vision::update(World& world, const Simulation& sim) {
     if (m_mode == FogMode::None) return;
 
     const u32 grid_size = m_tiles_x * m_tiles_y;
@@ -74,9 +76,9 @@ void FogOfWar::update(const World& world, const Simulation& sim) {
     }
 
     // Phase 2: Mark vision circles with feathered edges
-    for (u32 i = 0; i < world.visions.count(); ++i) {
-        u32 id = world.visions.ids()[i];
-        const auto& vision = world.visions.data()[i];
+    for (u32 i = 0; i < world.sights.count(); ++i) {
+        u32 id = world.sights.ids()[i];
+        const auto& sight = world.sights.data()[i];
 
         const auto* owner = world.owners.get(id);
         const auto* transform = world.transforms.get(id);
@@ -93,7 +95,7 @@ void FogOfWar::update(const World& world, const Simulation& sim) {
         f32 oy = m_terrain ? m_terrain->origin_y() : 0.0f;
         f32 cx = (transform->position.x - ox) / m_tile_size;
         f32 cy = (transform->position.y - oy) / m_tile_size;
-        f32 radius = vision.sight_range / m_tile_size;
+        f32 radius = sight.sight_range / m_tile_size;
 
         // Viewer's cliff level (from Movement component or terrain)
         u8 viewer_cliff = 0;
@@ -113,10 +115,96 @@ void FogOfWar::update(const World& world, const Simulation& sim) {
                 mark_vision_circle(p, cx, cy, radius, viewer_cliff);
             }
         }
+
+        // Per-unit vision share (UnitShareVision).
+        for (u32 share_p : sight.share_to_players) {
+            if (share_p == player_id || share_p >= m_player_count) continue;
+            mark_vision_circle(share_p, cx, cy, radius, viewer_cliff);
+        }
+    }
+
+    // Phase 2.5: Fog modifiers — persistent area overrides on top of
+    // the unit-vision pass. Author-controlled cinematic reveal / conceal.
+    for (auto& fm : m_fog_modifiers) {
+        if (fm.active) apply_fog_modifier(fm);
+    }
+
+    // Phase 3: True-sight detection. For every unit with numeric
+    // attribute `true_sight > 0`, find enemy units within that radius
+    // carrying UNIT_STATUS_INVISIBLE and stamp the detector's player
+    // bit onto their TrueSightVisibility component. This is the only
+    // mechanism that lets a non-allied player see through invisibility
+    // — both the renderer cull AND the server snapshot filter read it.
+    auto& tsv = world.true_sight_vis;
+    tsv.clear();
+    const auto& attrs = world.attribute_blocks;
+    const auto& grid_q = sim.spatial_grid();
+    for (u32 i = 0; i < attrs.count(); ++i) {
+        u32 detector_id = attrs.ids()[i];
+        const auto& ab = attrs.data()[i];
+        auto it = ab.numeric.find("true_sight");
+        if (it == ab.numeric.end() || it->second <= 0.0f) continue;
+        if (world.dead_states.has(detector_id)) continue;
+
+        const auto* d_owner = world.owners.get(detector_id);
+        const auto* d_transform = world.transforms.get(detector_id);
+        if (!d_owner || !d_transform) continue;
+        if (d_owner->player.id >= 32) continue;  // mask is u32
+
+        UnitFilter filter;
+        filter.enemy_of  = d_owner->player;
+        filter.alive_only = true;
+        filter.include_untargetable = true;  // wind walk often pairs with untargetable
+        filter.predicate = [&world](Unit u) -> bool {
+            const auto* sf = world.status_flags.get(u.id);
+            return sf && (sf->flags & status::Invisible);
+        };
+
+        auto revealed = grid_q.units_in_range(world, d_transform->position,
+                                              it->second, filter);
+        u32 bit = 1u << d_owner->player.id;
+        for (Unit target : revealed) {
+            auto* existing = tsv.get(target.id);
+            if (existing) existing->revealed_to_mask |= bit;
+            else tsv.add(target.id, TrueSightVisibility{bit});
+        }
     }
 }
 
-void FogOfWar::mark_vision_circle(u32 player_id, f32 cx, f32 cy, f32 radius_tiles, u8 viewer_cliff) {
+bool Vision::is_unit_visible_to(const World& world, const Simulation& sim,
+                                  u32 entity_id, Player player) const {
+    const u32 player_bit = 1u << player.id;
+
+    // Friendly (own / allied) — always visible
+    const auto* owner = world.owners.get(entity_id);
+    if (owner && owner->player.id == player.id) return true;
+    if (owner && sim.is_allied(player, owner->player)) return true;
+
+    // UnitReveal — explicit per-player override, bypasses invisibility + fog
+    const auto* fv = world.forced_vis.get(entity_id);
+    if (fv && (fv->revealed_to_mask & player_bit)) return true;
+
+    // Invisibility — hidden unless this player has a true-sight
+    // detector covering the unit this tick
+    const auto* sf = world.status_flags.get(entity_id);
+    if (sf && (sf->flags & status::Invisible)) {
+        const auto* tv = world.true_sight_vis.get(entity_id);
+        const bool revealed = tv && (tv->revealed_to_mask & player_bit);
+        if (!revealed) return false;
+    }
+
+    // Fog of war (tile state)
+    if (m_mode == FogMode::None) return true;
+    const auto* transform = world.transforms.get(entity_id);
+    if (!transform) return false;
+    if (!m_terrain) return true;
+    auto tile = m_terrain->world_to_tile(transform->position.x,
+                                         transform->position.y);
+    return is_visible(player, static_cast<u32>(tile.x),
+                              static_cast<u32>(tile.y));
+}
+
+void Vision::mark_vision_circle(u32 player_id, f32 cx, f32 cy, f32 radius_tiles, u8 viewer_cliff) {
     // Scan bounding box including feather zone
     f32 outer = radius_tiles + FEATHER_TILES;
     u32 min_x = static_cast<u32>(std::max(0.0f, cx - outer));
@@ -168,7 +256,7 @@ void FogOfWar::mark_vision_circle(u32 player_id, f32 cx, f32 cy, f32 radius_tile
     }
 }
 
-bool FogOfWar::has_cliff_los(u32 x0, u32 y0, u32 x1, u32 y1, u8 viewer_cliff) const {
+bool Vision::has_cliff_los(u32 x0, u32 y0, u32 x1, u32 y1, u8 viewer_cliff) const {
     if (!m_terrain) return true;
 
     // Bresenham line walk from (x0,y0) to (x1,y1)
@@ -234,7 +322,7 @@ bool FogOfWar::has_cliff_los(u32 x0, u32 y0, u32 x1, u32 y1, u8 viewer_cliff) co
     return true;
 }
 
-const f32* FogOfWar::update_visual(Player player, f32 dt) {
+const f32* Vision::update_visual(Player player, f32 dt) {
     if (m_mode == FogMode::None || player.id >= m_player_count) return nullptr;
 
     u32 grid_size = m_tiles_x * m_tiles_y;
@@ -257,43 +345,126 @@ const f32* FogOfWar::update_visual(Player player, f32 dt) {
     return visual;
 }
 
-Visibility FogOfWar::get(Player player, u32 tx, u32 ty) const {
+Visibility Vision::get(Player player, u32 tx, u32 ty) const {
     if (m_mode == FogMode::None) return Visibility::Visible;
     if (player.id >= m_player_count || tx >= m_tiles_x || ty >= m_tiles_y) return Visibility::Unexplored;
     return static_cast<Visibility>(m_grids[index(player.id, tx, ty)]);
 }
 
-bool FogOfWar::is_visible(Player player, u32 tx, u32 ty) const {
+bool Vision::is_visible(Player player, u32 tx, u32 ty) const {
     return get(player, tx, ty) == Visibility::Visible;
 }
 
-bool FogOfWar::is_explored(Player player, u32 tx, u32 ty) const {
+bool Vision::is_explored(Player player, u32 tx, u32 ty) const {
     return get(player, tx, ty) >= Visibility::Explored;
 }
 
-const u8* FogOfWar::grid(Player player) const {
+const u8* Vision::grid(Player player) const {
     if (m_mode == FogMode::None || player.id >= m_player_count) return nullptr;
     return &m_grids[player.id * (m_tiles_x * m_tiles_y)];
 }
 
-void FogOfWar::reveal_all(Player player) {
-    if (m_mode == FogMode::None || player.id >= m_player_count) return;
-    u32 grid_size = m_tiles_x * m_tiles_y;
-    u32 offset = player.id * grid_size;
-    std::fill(m_grids.begin() + offset, m_grids.begin() + offset + grid_size,
-              static_cast<u8>(Visibility::Visible));
-    std::fill(m_targets.begin() + offset, m_targets.begin() + offset + grid_size,
-              BRIGHTNESS_VISIBLE);
+void Vision::set_enabled(bool on) {
+    if (on) {
+        if (m_mode == FogMode::None) {
+            init(m_tiles_x, m_tiles_y, m_tile_size, m_player_count,
+                 m_authored_mode, m_terrain);
+        }
+    } else {
+        m_mode = FogMode::None;
+    }
 }
 
-void FogOfWar::unexplore_all(Player player) {
-    if (m_mode == FogMode::None || player.id >= m_player_count) return;
-    u32 grid_size = m_tiles_x * m_tiles_y;
-    u32 offset = player.id * grid_size;
-    std::fill(m_grids.begin() + offset, m_grids.begin() + offset + grid_size,
-              static_cast<u8>(Visibility::Unexplored));
-    std::fill(m_targets.begin() + offset, m_targets.begin() + offset + grid_size,
-              BRIGHTNESS_UNEXPLORED);
+u32 Vision::create_fog_modifier_rect(Player p, Visibility state,
+                                      f32 x0, f32 y0, f32 x1, f32 y1) {
+    FogModifier fm;
+    fm.id     = ++m_next_modifier_id;
+    fm.player = p;
+    fm.state  = state;
+    fm.shape  = Shape::Rect;
+    fm.x0 = std::min(x0, x1); fm.x1 = std::max(x0, x1);
+    fm.y0 = std::min(y0, y1); fm.y1 = std::max(y0, y1);
+    m_fog_modifiers.push_back(fm);
+    return fm.id;
+}
+
+u32 Vision::create_fog_modifier_radius(Player p, Visibility state,
+                                        f32 cx, f32 cy, f32 radius) {
+    FogModifier fm;
+    fm.id     = ++m_next_modifier_id;
+    fm.player = p;
+    fm.state  = state;
+    fm.shape  = Shape::Radius;
+    fm.cx = cx; fm.cy = cy; fm.radius = radius;
+    m_fog_modifiers.push_back(fm);
+    return fm.id;
+}
+
+void Vision::destroy_fog_modifier(u32 id) {
+    std::erase_if(m_fog_modifiers, [id](const FogModifier& fm) { return fm.id == id; });
+}
+
+void Vision::set_fog_modifier_active(u32 id, bool active) {
+    for (auto& fm : m_fog_modifiers) {
+        if (fm.id == id) { fm.active = active; return; }
+    }
+}
+
+void Vision::apply_fog_modifier(const FogModifier& fm) {
+    if (!m_terrain || m_tile_size <= 0) return;
+    if (fm.player.id >= m_player_count) return;
+
+    f32 ox = m_terrain->origin_x();
+    f32 oy = m_terrain->origin_y();
+    u8* grid = &m_grids[fm.player.id * (m_tiles_x * m_tiles_y)];
+    f32* target = &m_targets[fm.player.id * (m_tiles_x * m_tiles_y)];
+
+    f32 brightness =
+        (fm.state == Visibility::Visible)    ? BRIGHTNESS_VISIBLE :
+        (fm.state == Visibility::Explored)   ? BRIGHTNESS_EXPLORED :
+                                                BRIGHTNESS_UNEXPLORED;
+
+    auto stamp = [&](u32 tx, u32 ty) {
+        u32 idx = ty * m_tiles_x + tx;
+        grid[idx]   = static_cast<u8>(fm.state);
+        target[idx] = brightness;
+    };
+
+    if (fm.shape == Shape::Rect) {
+        i32 min_tx = static_cast<i32>(std::floor((fm.x0 - ox) / m_tile_size));
+        i32 min_ty = static_cast<i32>(std::floor((fm.y0 - oy) / m_tile_size));
+        i32 max_tx = static_cast<i32>(std::ceil ((fm.x1 - ox) / m_tile_size));
+        i32 max_ty = static_cast<i32>(std::ceil ((fm.y1 - oy) / m_tile_size));
+        min_tx = std::max(0, min_tx);
+        min_ty = std::max(0, min_ty);
+        max_tx = std::min<i32>(static_cast<i32>(m_tiles_x) - 1, max_tx);
+        max_ty = std::min<i32>(static_cast<i32>(m_tiles_y) - 1, max_ty);
+        for (i32 ty = min_ty; ty <= max_ty; ++ty) {
+            for (i32 tx = min_tx; tx <= max_tx; ++tx) {
+                stamp(static_cast<u32>(tx), static_cast<u32>(ty));
+            }
+        }
+    } else {
+        f32 cx_tile = (fm.cx - ox) / m_tile_size;
+        f32 cy_tile = (fm.cy - oy) / m_tile_size;
+        f32 r_tile  = fm.radius / m_tile_size;
+        i32 min_tx = std::max(0, static_cast<i32>(std::floor(cx_tile - r_tile)));
+        i32 min_ty = std::max(0, static_cast<i32>(std::floor(cy_tile - r_tile)));
+        i32 max_tx = std::min<i32>(static_cast<i32>(m_tiles_x) - 1,
+                                    static_cast<i32>(std::ceil(cx_tile + r_tile)));
+        i32 max_ty = std::min<i32>(static_cast<i32>(m_tiles_y) - 1,
+                                    static_cast<i32>(std::ceil(cy_tile + r_tile)));
+        f32 r2 = r_tile * r_tile;
+        for (i32 ty = min_ty; ty <= max_ty; ++ty) {
+            for (i32 tx = min_tx; tx <= max_tx; ++tx) {
+                f32 dx = static_cast<f32>(tx) + 0.5f - cx_tile;
+                f32 dy = static_cast<f32>(ty) + 0.5f - cy_tile;
+                if (dx * dx + dy * dy <= r2) {
+                    stamp(static_cast<u32>(tx), static_cast<u32>(ty));
+                }
+            }
+        }
+    }
 }
 
 } // namespace uldum::simulation

@@ -12,6 +12,7 @@
 #include <string_view>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 // Forward declare sol types to avoid including sol2 in the header
 namespace sol { class state; }
@@ -84,6 +85,32 @@ public:
     // Callback fired when a unit's attribute/state/ability changes (for network sync).
     using UnitUpdateFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
     void set_unit_update_fn(UnitUpdateFn fn) { m_unit_update_fn = std::move(fn); }
+
+    // Callback fired for non-entity-scoped broadcasts (free-position
+    // PlayEffect, etc.). Used by the host to push the packet to every
+    // connected peer.
+    using BroadcastFn = std::function<void(const std::vector<u8>& packet)>;
+    void set_broadcast_fn(BroadcastFn fn) { m_broadcast_fn = std::move(fn); }
+
+    // Per-player effect lifecycle hooks. All effects — burst-style and
+    // long-lived — share the same Create/Destroy code path; the
+    // dispatcher runs a visibility delta each tick and fires deliver
+    // when a player gains vision, destroy when they lose vision (and
+    // again at lifetime expiry, fanned out across every player
+    // currently rendering it). The server_id is a stable handle the
+    // host assigned at registration time.
+    using EffectDeliverFn = std::function<void(u32 player_id, u32 server_id,
+                                                std::string_view name,
+                                                u32 entity_id,
+                                                glm::vec3 pos,
+                                                std::string_view attach_point)>;
+    using EffectDestroyFn = std::function<void(u32 player_id, u32 server_id)>;
+    void set_effect_deliver_fn(EffectDeliverFn fn) { m_effect_deliver_fn = std::move(fn); }
+    void set_effect_destroy_fn(EffectDestroyFn fn) { m_effect_destroy_fn = std::move(fn); }
+
+    // Player count for the per-tick visibility scan. Host populates
+    // this after init_alliances; offline / dedicated builds set to 1.
+    void set_player_count(u32 count) { m_player_count = count; }
 
     // Callback fired when Lua calls LoadScene(name). The actual switch
     // (entity teardown, terrain reload, script reload, main() call)
@@ -166,6 +193,10 @@ public:
     void set_context_item(simulation::Item it)   { m_ctx_item = it; }
     void set_context_node_id(std::string id) { m_ctx_node_id = std::move(id); }
     void set_context_region_id(u32 id) { m_ctx_region_id = id; }
+    void set_context_order_type(std::string s) { m_ctx_order_type = std::move(s); }
+    void set_context_order_target_unit(u32 id) { m_ctx_order_target_unit = id; }
+    void set_context_order_target_x(f32 x)     { m_ctx_order_target_x = x; }
+    void set_context_order_target_y(f32 y)     { m_ctx_order_target_y = y; }
 
     // Configure Lua package.path so require() resolves from these directories.
     // Searched in order: scene scripts, shared scripts, engine scripts.
@@ -206,6 +237,33 @@ private:
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
     UnitUpdateFn             m_unit_update_fn;
+    BroadcastFn              m_broadcast_fn;
+    EffectDeliverFn          m_effect_deliver_fn;
+    EffectDestroyFn          m_effect_destroy_fn;
+    u32                      m_player_count = 1;
+
+    // Server-side tracker for active effects. Every effect — burst or
+    // continuous — lives in the same list and follows the same Create
+    // / Destroy lifecycle (WC3 convention: the author always destroys
+    // the handle, even for one-shot bursts via the
+    // `DestroyEffect(CreateEffect(...))` idiom). `delivered` is the
+    // players the effect is currently rendering for — the dispatcher
+    // adds on vision gain, removes on vision loss.
+    struct ActiveEffect {
+        u32         server_id;
+        std::string name;
+        glm::vec3   position;
+        u32         entity_id;     // UINT32_MAX = free-position
+        std::string attach_point;
+        std::unordered_set<u32> delivered;
+    };
+    std::vector<ActiveEffect> m_active_effects;
+    u32                       m_next_effect_id = 1;
+
+    // Visibility check for a single (player, effect) pair. Centralised
+    // so the per-tick dispatcher and DestroyEffect's late-delivery
+    // pass agree on what "visible" means.
+    bool effect_visible_to(const ActiveEffect& e, u32 player_id) const;
     SceneSwitchFn            m_scene_switch_fn;
     CameraSetPositionFn      m_camera_set_position_fn;
     CameraPanFn              m_camera_pan_fn;

@@ -71,8 +71,16 @@ struct StateBlock {
 
 // Map-defined attributes (strength, agility, armor, armor_type, attack_type, etc.).
 // Single values that don't deplete or regenerate.
+//
+// `numeric` is the EFFECTIVE value seen by every reader (combat,
+// scripts, HUD). `base` is the value before passive-ability modifiers
+// are summed in. recalculate_modifiers rebuilds numeric from base +
+// the sum of active_modifiers across the unit's ability set. Lua's
+// SetUnitAttribute writes to base; modifiers from passives stack on
+// top.
 struct AttributeBlock {
-    std::map<std::string, f32>         numeric;   // "armor" → 5.0, "strength" → 22.0
+    std::map<std::string, f32>         base;      // base values (pre-modifier)
+    std::map<std::string, f32>         numeric;   // effective: "armor" → 5.0, "strength" → 22.0
     std::map<std::string, std::string> string_attrs; // "armor_type" → "heavy", "attack_type" → "normal"
 };
 
@@ -147,12 +155,6 @@ struct Combat {
     Unit        target;
 };
 
-// Visual feedback: scale pulse on attack hit, decays back to 1.0
-struct ScalePulse {
-    f32 current_scale = 1.0f;
-    f32 timer         = 0;
-};
-
 // Dead unit state — unit becomes a corpse, then eventually gets cleaned up.
 struct DeadState {
     f32 corpse_timer   = 0;     // time since death
@@ -161,8 +163,14 @@ struct DeadState {
     bool corpse_visible = true;  // false after corpse_duration expires
 };
 
-struct Vision {
+// Per-unit sight radius. The Vision subsystem (see vision.h) stamps
+// fog tiles from each Sight component's range every tick.
+struct Sight {
     f32 sight_range = 1400;
+    // Per-unit vision share. UnitShareVision(unit, otherPlayer, true)
+    // pushes otherPlayer.id here so the unit's sight contributes to
+    // that player's fog map too.
+    std::vector<u32> share_to_players;
 };
 
 struct OrderQueue {
@@ -175,7 +183,6 @@ struct AbilityInstance {
     u32         level              = 1;
     f32         cooldown_remaining = 0;
     bool        auto_cast          = false;
-    bool        toggle_active      = false;
     // Set when this ability was granted to the carrier by an item pickup
     // (give_item_to_unit). The action_bar filters these out so item
     // ability icons don't compete with the unit's intrinsic abilities —
@@ -185,11 +192,26 @@ struct AbilityInstance {
     Unit        source;                      // unit that applied this (null if self/innate)
     f32         remaining_duration = -1.0f;  // -1 = permanent (innate), >= 0 = timed
     f32         tick_timer         = 0;
-    // Active modifiers from this ability's current level
+    // Active modifiers from this ability's current level (passive_modifier)
     std::map<std::string, f32> active_modifiers;
+    // Status flags this instance contributes (passive_flag) — each name is
+    // a key into status::; while the instance lives, each flag's refcount
+    // on the carrier is incremented.
+    std::vector<std::string> active_flags;
 };
 
-enum class CastState : u8 { None, MovingToTarget, TurningToFace, CastPoint, Backswing };
+// Cast state machine. A Cast order steps through these in order:
+//   None → MovingToTarget* → TurningToFace → Foreswing → (Channeling*) → Backswing → None
+// Starred states are skipped when not applicable (no range, no channel_time).
+// The effect fires at Foreswing → next-state transition.
+enum class CastState : u8 {
+    None,
+    MovingToTarget,
+    TurningToFace,
+    Foreswing,    // cast_time wind-up; effect fires when timer hits 0
+    Channeling,   // sustained phase between fire and backswing (channel_time > 0)
+    Backswing,
+};
 
 struct AbilitySet {
     std::vector<AbilityInstance> abilities;
@@ -199,8 +221,9 @@ struct AbilitySet {
     // Cast state machine — active while processing a Cast order
     CastState   cast_state    = CastState::None;
     f32         cast_timer    = 0;
-    f32         cast_point_secs = 0;  // cached for renderer: seconds for wind-up phase
-    f32         cast_backswing_secs = 0; // cached for renderer: seconds for backswing phase
+    f32         foreswing_secs       = 0;  // cached for renderer: cast_time wind-up phase
+    f32         channel_secs         = 0;  // cached for renderer: channel duration (0 = no channel)
+    f32         cast_backswing_secs  = 0;  // cached for renderer: backswing recovery phase
     std::string casting_id;       // ability being cast
     Unit        cast_target_unit;
     glm::vec3   cast_target_pos{0};
@@ -208,6 +231,61 @@ struct AbilitySet {
     // handle is captured here so on_ability_effect can surface it to
     // map Lua. Reset to invalid when cast_state returns to None.
     Item        cast_source_item;
+};
+
+// Engine-built status flags. Transient action gates set by spells /
+// effects / scripts, queried by sim systems each tick. See
+// gameplay-model.md "Status Flags" for the full semantics and
+// per-flag enforcement points.
+//
+// The bit values are part of the engine ABI — order matters.
+namespace status {
+    constexpr u32 Stunned      = 1u << 0;
+    constexpr u32 Silenced     = 1u << 1;
+    constexpr u32 Muted        = 1u << 2;
+    constexpr u32 Disarmed     = 1u << 3;
+    constexpr u32 Rooted       = 1u << 4;
+    constexpr u32 Invulnerable = 1u << 5;
+    constexpr u32 MagicImmune  = 1u << 6;
+    constexpr u32 Untargetable = 1u << 7;
+    constexpr u32 Unattackable = 1u << 8;
+    constexpr u32 Paused       = 1u << 9;
+    constexpr u32 Invisible    = 1u << 10;
+    constexpr u32 NoAcquire    = 1u << 11;  // Block auto-acquire scan; drop current auto-acquired target.
+
+    constexpr u32 Count = 12;  // number of distinct flag bits used above
+}
+
+// Effective `flags` is the OR of two layers:
+//   • manual_bits — set / cleared by direct `set_unit_status` calls
+//     (legacy imperative path; deprecated for ability-domain flags).
+//   • refcounts[bit_index] > 0 — incremented by each passive_flag
+//     AbilityInstance that names this flag, decremented on remove.
+// Two passive_flag instances both granting `silenced` keep silence in
+// effect until both are removed. The `flags` u32 is recomputed by
+// `recompute_effective_flags` whenever either layer changes, so all
+// downstream readers can keep using `sf->flags & status::X`.
+struct StatusFlags {
+    u32 flags        = 0;   // effective view (kept in sync)
+    u32 manual_bits  = 0;   // imperative SetUnitStatus layer
+    std::array<u8, status::Count> refcounts = {};
+};
+
+// Transient per-tick output of system_true_sight. For each unit with
+// UNIT_STATUS_INVISIBLE that sits within range of at least one
+// enemy-owned detector (numeric attribute `true_sight` > 0), bit
+// `detector.player.id` is set. The renderer ORs this with the
+// owner/ally check to decide whether to cull. Component is added only
+// for units that are revealed; absence == fully invisible to enemies.
+struct TrueSightVisibility {
+    u32 revealed_to_mask = 0;
+};
+
+// Manual per-player visibility override set by UnitReveal(unit, player, true).
+// Persists until UnitReveal(unit, player, false). Bypasses invisibility
+// and fog for the asking player but does not affect other players.
+struct ForcedVisibility {
+    u32 revealed_to_mask = 0;
 };
 
 // Map-defined classification flags (e.g., "ground", "air", "hero", "structure").
@@ -305,6 +383,23 @@ struct Renderable {
     std::string model_path;
     bool        visible = true;
     bool        skip_birth = false;  // skip birth animation (entity revealed, not newly created)
+    f32         visual_alpha = 1.0f; // 0..1 multiplier on fragment alpha (SetUnitAlpha)
+};
+
+// Script-driven animation queue. Filled by SetUnitAnimation /
+// QueueUnitAnimation in Lua; consumed by the renderer's draw loop
+// (which advances the front clip each time it finishes, removes the
+// entry when the queue empties, and lets derive_anim_state take over
+// again). While the entry is present, the engine's per-frame
+// re-derivation of AnimState from sim components (combat / movement /
+// cast state) is bypassed — script_controlled is the renderer's
+// internal mirror of "this unit has an AnimQueue right now."
+//
+// Death is special: when the unit dies the entry is force-removed
+// so the death animation plays instead of whatever the map queued.
+struct AnimQueue {
+    std::deque<std::string> clips;        // FIFO of clip names
+    bool                    looping = false;  // last clip in the queue loops
 };
 
 } // namespace uldum::simulation
