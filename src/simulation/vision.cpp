@@ -172,7 +172,8 @@ void Vision::update(World& world, const Simulation& sim) {
 }
 
 bool Vision::is_unit_visible_to(const World& world, const Simulation& sim,
-                                  u32 entity_id, Player player) const {
+                                  u32 entity_id, Player player,
+                                  bool remembered_ok) const {
     const u32 player_bit = 1u << player.id;
 
     // Friendly (own / allied) — always visible
@@ -200,8 +201,10 @@ bool Vision::is_unit_visible_to(const World& world, const Simulation& sim,
     if (!m_terrain) return true;
     auto tile = m_terrain->world_to_tile(transform->position.x,
                                          transform->position.y);
-    return is_visible(player, static_cast<u32>(tile.x),
-                              static_cast<u32>(tile.y));
+    u32 tx = static_cast<u32>(tile.x);
+    u32 ty = static_cast<u32>(tile.y);
+    return remembered_ok ? is_explored(player, tx, ty)
+                         : is_visible(player, tx, ty);
 }
 
 void Vision::mark_vision_circle(u32 player_id, f32 cx, f32 cy, f32 radius_tiles, u8 viewer_cliff) {

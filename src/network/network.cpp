@@ -564,6 +564,15 @@ bool NetworkManager::is_visible_to(u32 entity_id, simulation::Player player) con
         m_simulation->world(), *m_simulation, entity_id, player);
 }
 
+bool NetworkManager::is_visible_or_remembered_to(u32 entity_id, simulation::Player player) const {
+    // Variant used to decide whether a static-category entity (tree,
+    // doodad, building) should be shipped to / kept on the client.
+    // Explored tiles count as visible for these; the client keeps the
+    // last-seen state until the player re-scouts.
+    return m_simulation->vision().is_unit_visible_to(
+        m_simulation->world(), *m_simulation, entity_id, player, /*remembered_ok=*/true);
+}
+
 void NetworkManager::host_broadcast_tick(u32 tick) {
     if (m_mode != Mode::Host || m_peers.empty()) return;
 
@@ -578,14 +587,21 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
     }
 
     for (auto& peer : m_peers) {
-        // Track which entities are visible this tick
+        // Track which entities are "alive in the player's view" this tick.
+        // For static-remembered entities (trees / doodads / structures)
+        // an Explored tile is enough — they stay on the client even when
+        // the live-vision drops, frozen at last-seen state.
         std::unordered_set<u32> visible_now;
         std::vector<EntityState> states;
 
         for (u32 i = 0; i < infos.count(); ++i) {
             u32 id = infos.ids()[i];
 
-            if (!is_visible_to(id, peer.player)) continue;
+            const bool remembered  = simulation::is_static_remembered_entity(world, id);
+            const bool live_vis    = is_visible_to(id, peer.player);
+            const bool keep_in_view = live_vis ||
+                (remembered && is_visible_or_remembered_to(id, peer.player));
+            if (!keep_in_view) continue;
             visible_now.insert(id);
 
             // Send S_SPAWN for newly visible entities
@@ -609,6 +625,12 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
                 m_transport->send(peer.peer_id, msg, true);
                 peer.known_entities.insert(id);
             }
+
+            // Static-remembered entities frozen in fog don't ship S_STATE
+            // updates while the player can't see them live. Skipping the
+            // state record below preserves the last-seen snapshot on the
+            // client (and saves bandwidth).
+            if (remembered && !live_vis) continue;
 
             // Build state record
             const auto* transform = world.transforms.get(id);

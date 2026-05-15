@@ -8,6 +8,18 @@ namespace uldum::simulation {
 
 static constexpr const char* TAG = "Simulation";
 
+bool is_static_remembered_entity(const World& world, u32 entity_id) {
+    const auto* info = world.handle_infos.get(entity_id);
+    if (!info) return false;
+    if (info->category == Category::Destructable) return true;
+    if (info->category == Category::Doodad) return true;
+    if (info->category == Category::Unit) {
+        const auto* cls = world.classifications.get(entity_id);
+        if (cls && has_classification(cls->flags, "structure")) return true;
+    }
+    return false;
+}
+
 bool Simulation::init(asset::AssetManager& /*assets*/) {
     m_world.types     = &m_types;
     m_world.abilities = &m_abilities;

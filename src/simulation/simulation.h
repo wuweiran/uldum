@@ -16,6 +16,12 @@ namespace uldum::map { struct TerrainData; }
 
 namespace uldum::simulation {
 
+// True for entities that persist in fog-of-war Explored tiles (WC3-style:
+// trees, doodads, and structure-classified units stay visible to a player
+// once their tile has been scouted, frozen at last-seen state). Mobile
+// units / projectiles / items return false.
+bool is_static_remembered_entity(const World& world, u32 entity_id);
+
 // Per-pair alliance flags (asymmetric: A→B can differ from B→A)
 struct AllianceFlags {
     bool allied        = false;   // won't auto-attack, friendly AoE won't hit

@@ -151,6 +151,10 @@ private:
 
     // Returns true if an entity should be hidden by fog of war (enemy in non-visible tile).
     bool is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const;
+    // Returns true if a static-remembered entity is being shown from
+    // the player's *memory* (Explored tile) rather than live vision.
+    // Draw paths use this to apply the kFoggedMemoryAlpha dim cue.
+    bool is_in_fog_memory(const simulation::World& world, u32 id) const;
 
     rhi::VulkanRhi* m_rhi = nullptr;
     const map::TerrainData* m_terrain_data = nullptr;

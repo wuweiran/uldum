@@ -60,8 +60,12 @@ public:
     //   2. UNIT_STATUS_INVISIBLE — hidden unless `player` has a
     //      true-sight detector covering the unit this tick
     //   3. fog of war tile state at the unit's position
+    // With `remembered_ok = true`, an Explored tile counts as visible —
+    // used for static-category entities (trees, doodads, structures)
+    // that persist in the player's memory after being scouted.
     bool is_unit_visible_to(const World& world, const Simulation& sim,
-                            u32 entity_id, Player player) const;
+                            u32 entity_id, Player player,
+                            bool remembered_ok = false) const;
 
     // Raw logical grid for the given player (tiles_x * tiles_y u8 values).
     // Returns nullptr if fog is disabled.

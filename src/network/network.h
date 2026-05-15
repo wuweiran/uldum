@@ -364,6 +364,7 @@ private:
     void host_update_disconnected(f32 dt);
     void host_broadcast_pause_state();
     bool is_visible_to(u32 entity_id, simulation::Player player) const;
+    bool is_visible_or_remembered_to(u32 entity_id, simulation::Player player) const;
 
     // ── Client-side ─────────────────────────────────────────────────────
     simulation::World m_client_world;

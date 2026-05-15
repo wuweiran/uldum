@@ -35,6 +35,11 @@ static constexpr const char* TAG = "Render";
 // with visual_alpha_mult: 0 if they want a different visual treatment.
 static constexpr f32 kInvisibleGhostAlpha = 0.5f;
 
+// Multiplier on a static-remembered entity (tree / doodad / building)
+// rendered from the player's *memory* of an Explored tile rather than
+// live vision. Reads as "scouted but no longer lit."
+static constexpr f32 kFoggedMemoryAlpha = 0.6f;
+
 static f32 effective_visual_alpha(const simulation::World& world, u32 id,
                                   const simulation::Renderable& renderable) {
     f32 a = renderable.visual_alpha;
@@ -863,6 +868,17 @@ void Renderer::upload_fog(VkCommandBuffer cmd) {
     m_fog_dirty = false;
 }
 
+bool Renderer::is_in_fog_memory(const simulation::World& world, u32 id) const {
+    if (!m_simulation) return false;
+    if (!simulation::is_static_remembered_entity(world, id)) return false;
+    // Remembered entity is in fog memory iff its tile is Explored
+    // (which the renderer reaches because is_fog_hidden returned false)
+    // but NOT currently visible.
+    return !m_simulation->vision().is_unit_visible_to(
+        world, *m_simulation, id, simulation::Player{m_local_player_id},
+        /*remembered_ok=*/false);
+}
+
 bool Renderer::is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const {
     // Client-side cull is *defense in depth*. The server-side network
     // snapshot path is the primary line against cheating — the client
@@ -871,8 +887,10 @@ bool Renderer::is_fog_hidden(const simulation::World& world, u32 id, const simul
     // the two paths in lockstep.
     (void)t;  // Vision::is_unit_visible_to reads transform itself
     if (!m_simulation) return false;
+    const bool remembered_ok = simulation::is_static_remembered_entity(world, id);
     return !m_simulation->vision().is_unit_visible_to(
-        world, *m_simulation, id, simulation::Player{m_local_player_id});
+        world, *m_simulation, id, simulation::Player{m_local_player_id},
+        remembered_ok);
 }
 
 // ── Descriptor set layouts + pool ─────────────────────────────────────────
@@ -3163,6 +3181,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         inst.model = model;
         inst.material_index = tex_idx;
         inst.alpha = effective_visual_alpha(world, id, renderable);
+        if (is_in_fog_memory(world, id)) inst.alpha *= kFoggedMemoryAlpha;
         buckets[gi].push_back(inst);
     }
 
@@ -3595,7 +3614,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
             struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
             vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
                                0, sizeof(push), &push);
-            glm::vec4 visual{effective_visual_alpha(world, id, renderable), 0.0f, 0.0f, 0.0f};
+            f32 alpha_eff = effective_visual_alpha(world, id, renderable);
+            if (is_in_fog_memory(world, id)) alpha_eff *= kFoggedMemoryAlpha;
+            glm::vec4 visual{alpha_eff, 0.0f, 0.0f, 0.0f};
             vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                sizeof(push), sizeof(visual), &visual);
 

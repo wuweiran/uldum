@@ -404,6 +404,11 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
 void ScriptEngine::shutdown() {
     m_triggers.clear();
     m_timers.clear();
+    // Active effects must be wiped too — they survive into the next
+    // session otherwise and the fog-aware dispatch loop re-delivers
+    // them to the new map's player on its first tick, spawning ghost
+    // particles (e.g. test_map's portal rim glowing on action_test).
+    m_active_effects.clear();
     m_lua.reset();
     m_sim = nullptr;
     m_map = nullptr;
