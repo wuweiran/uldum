@@ -17,9 +17,9 @@
         "form": "passive",
         "max_level": 3,
         "levels": [
-            { "modifiers": { "armor_flat": 1.5 } },
-            { "modifiers": { "armor_flat": 3.0 } },
-            { "modifiers": { "armor_flat": 4.5 } }
+            { "modifiers": { "armor": 1.5 } },
+            { "modifiers": { "armor": 3.0 } },
+            { "modifiers": { "armor": 4.5 } }
         ]
     },
     "item_armor_bonus": {
@@ -27,7 +27,7 @@
         "form": "passive",
         "stackable": true,
         "levels": [
-            { "modifiers": { "armor_flat": 5 } }
+            { "modifiers": { "armor": 5 } }
         ]
     },
     "use_potion_healing": {
@@ -99,6 +99,28 @@
         "levels": [
             { "flags": ["invisible", "no_acquire"],
               "duration": 10.0 }
+        ]
+    },
+    "chain_frost": {
+        "name": "Chain Frost",
+        "icon": "textures/icons/chain_frost.ktx2",
+        "hotkey": "F",
+        "form": "target",
+        "widget_kinds": ["unit"],
+        "max_level": 1,
+        "target_filter": { "enemy": true, "alive": true },
+        "levels": [
+            { "cooldown": 12, "range": 2000, "cast_time": 0.4, "backsw_time": 0.4 }
+        ]
+    },
+    "chain_frost_slow": {
+        "name": "Frost",
+        "form": "passive_modifier",
+        "hidden": true,
+        "max_level": 1,
+        "levels": [
+            { "modifiers": { "move_speed_mult": -0.5 },
+              "duration": 3.0 }
         ]
     }
 }

@@ -1,4 +1,5 @@
 #include "asset/model.h"
+#include "core/log.h"
 
 #include <cgltf.h>
 #include <stb_image.h>
@@ -119,56 +120,45 @@ static void extract_animations(const cgltf_data* data, const NodeToBoneMap& node
             const cgltf_accessor* input  = sampler.input;   // timestamps
             const cgltf_accessor* output = sampler.output;  // values
 
-            // Find or create channel for this bone
-            AnimationChannel* target_channel = nullptr;
-            for (auto& existing : clip.channels) {
-                if (existing.bone_index == it->second) {
-                    target_channel = &existing;
-                    break;
-                }
-            }
-            if (!target_channel) {
-                clip.channels.push_back({});
-                target_channel = &clip.channels.back();
-                target_channel->bone_index = it->second;
+            // One AnimationChannel per cgltf sub-path. T/R/S can have
+            // different keyframe counts (e.g. constant translation =
+            // 2 keys, rotation = 30 keys) and must not share a single
+            // timestamps array.
+            clip.channels.push_back({});
+            AnimationChannel& out_ch = clip.channels.back();
+            out_ch.bone_index = it->second;
+
+            out_ch.timestamps.resize(input->count);
+            for (cgltf_size k = 0; k < input->count; ++k) {
+                cgltf_accessor_read_float(input, k, &out_ch.timestamps[k], 1);
             }
 
-            // Read timestamps (shared across TRS — only read once)
-            if (target_channel->timestamps.empty()) {
-                target_channel->timestamps.resize(input->count);
-                for (cgltf_size k = 0; k < input->count; ++k) {
-                    cgltf_accessor_read_float(input, k, &target_channel->timestamps[k], 1);
-                }
+            if (input->count > 0 && out_ch.timestamps.back() > clip.duration) {
+                clip.duration = out_ch.timestamps.back();
             }
 
-            // Track max duration
-            if (input->count > 0) {
-                float last_time = 0;
-                cgltf_accessor_read_float(input, input->count - 1, &last_time, 1);
-                if (last_time > clip.duration) clip.duration = last_time;
-            }
-
-            // Read keyframe values
             switch (ch.target_path) {
             case cgltf_animation_path_type_translation:
-                target_channel->translations.resize(output->count);
+                out_ch.translations.resize(output->count);
                 for (cgltf_size k = 0; k < output->count; ++k) {
-                    target_channel->translations[k] = read_vec3(output, k);
+                    out_ch.translations[k] = read_vec3(output, k);
                 }
                 break;
             case cgltf_animation_path_type_rotation:
-                target_channel->rotations.resize(output->count);
+                out_ch.rotations.resize(output->count);
                 for (cgltf_size k = 0; k < output->count; ++k) {
-                    target_channel->rotations[k] = read_quat(output, k);
+                    out_ch.rotations[k] = read_quat(output, k);
                 }
                 break;
             case cgltf_animation_path_type_scale:
-                target_channel->scales.resize(output->count);
+                out_ch.scales.resize(output->count);
                 for (cgltf_size k = 0; k < output->count; ++k) {
-                    target_channel->scales[k] = read_vec3(output, k);
+                    out_ch.scales[k] = read_vec3(output, k);
                 }
                 break;
-            default: break;
+            default:
+                clip.channels.pop_back();
+                break;
             }
         }
 
@@ -294,6 +284,9 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
     if (has_skin) {
         extract_skeleton(data->skins[0], model.skeleton, node_to_bone);
         extract_animations(data, node_to_bone, model.animations);
+    } else if (data->animations_count > 0) {
+        log::warn("Asset", "[Anim] '{}' has {} animation(s) but no skin — node-level animations are not extracted; re-author with an Armature + skinned mesh.",
+                  path_str, static_cast<u32>(data->animations_count));
     }
 
     // Extract meshes by walking the node tree (not iterating meshes directly).

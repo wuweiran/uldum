@@ -124,6 +124,11 @@ public:
     // Get attachment point position in model-local space for a unit. Returns {0,0,0} if not found.
     glm::vec3 get_attachment_point(u32 entity_id, std::string_view bone_name) const;
 
+    // Resolve a clip's duration on a model (used by simulation to size
+    // projectile death timers to the actual animation length).
+    // Returns 0 if the model or clip is missing.
+    f32 clip_duration(std::string_view model_path, std::string_view clip_name);
+
 private:
     bool create_descriptor_layouts();
     bool create_mesh_pipeline();

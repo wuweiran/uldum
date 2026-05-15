@@ -366,15 +366,45 @@ struct Carriable {
 };
 
 // ── Projectile Component ───────────────────────────────────────────────────
+//
+// Projectile is an "agent" — it has a handle (lives in world.projectiles
+// + world.handle_infos) but is NOT a widget. No HP, no selection, no
+// orders, no inventory. Carries a payload from a source point to either
+// a homing target (Path::Homing) or a target point (Path::Linear), and
+// fires PROJECTILE_HIT events for hits + PROJECTILE_DESTROYED on every
+// destroy path.
+//
+// `damage` is a first-class field because the engine consumes it for
+// `is_attack` projectiles (auto-attack arrows). Ability projectiles can
+// set / get it too — engine just ignores. Lua-side state beyond damage
+// goes in a side table keyed by the projectile handle.
 
 struct ProjectileComp {
     Unit        source;
-    Unit        target;
-    glm::vec3   target_pos{0.0f};
-    f32         speed     = 0;
-    f32         damage    = 0;
-    std::string source_ability;
-    bool        homing    = false;
+    Unit        target;                  // homing target (invalid for Linear)
+    glm::vec3   target_pos{0.0f};        // linear terminus or fallback for Homing on target loss
+    f32         speed         = 0;
+    f32         damage        = 0;       // engine consumes for is_attack; Lua can set/get for any
+    bool        is_attack     = false;   // engine routes hits through deal_attack_damage
+    f32         hit_radius    = 32.0f;
+    f32         max_distance  = 0;       // Linear only (0 = use lifetime)
+    f32         max_lifetime  = 10.0f;   // safety cap
+    f32         elapsed       = 0;
+    f32         traveled      = 0;
+    bool        emitted       = false;   // false between CreateProjectile and EmitProjectile*
+    enum class Path : u8 { Homing, Linear } path = Path::Homing;
+    glm::vec3   spawn_pos{0.0f};
+    // Linear with pierce: every unit within hit_radius along the path
+    // fires PROJECTILE_HIT. Tracked so we don't hit the same unit twice
+    // on a single flight. Stored as raw ids (generation check on use).
+    std::vector<u32> already_hit;
+    // Dying state — gameplay has ended (PROJECTILE_DESTROYED fired,
+    // triggers cleaned up, no further movement / collision) but the
+    // entity persists briefly so the renderer can play the model's
+    // `death` clip. `death_timer` counts down to 0, then the entity
+    // is silently torn down.
+    bool        dying         = false;
+    f32         death_timer   = 0;
 };
 
 // ── Rendering ──────────────────────────────────────────────────────────────

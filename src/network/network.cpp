@@ -535,9 +535,19 @@ void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
         const auto* owner = world.owners.get(id);
         u8 owner_id = owner ? static_cast<u8>(owner->player.id) : 0;
 
+        // Projectiles don't appear in the type registry — their model
+        // is set per-spawn (auto-attack arrow vs custom glTF). Carry
+        // the renderable's model path inline so the client can render
+        // the correct mesh without a type lookup.
+        std::string_view model_path;
+        if (info.category == simulation::Category::Projectile) {
+            if (auto* r = world.renderables.get(id)) model_path = r->model_path;
+        }
+
         auto msg = build_spawn(id, info.type_id, owner_id,
                                transform->position.x, transform->position.y,
-                               transform->facing);
+                               transform->facing, /*newly_created=*/false,
+                               model_path);
         m_transport->send(peer.peer_id, msg, true);
         peer.known_entities.insert(id);
     }
@@ -588,9 +598,14 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
 
                 bool newly_created = !last_tick.contains(id);
 
+                std::string_view model_path;
+                if (info.category == simulation::Category::Projectile) {
+                    if (auto* r = world.renderables.get(id)) model_path = r->model_path;
+                }
+
                 auto msg = build_spawn(id, info.type_id, owner_id,
                                        transform->position.x, transform->position.y,
-                                       transform->facing, newly_created);
+                                       transform->facing, newly_created, model_path);
                 m_transport->send(peer.peer_id, msg, true);
                 peer.known_entities.insert(id);
             }
@@ -803,6 +818,7 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_EFFECT:          client_handle_effect(data); break;
     case MsgType::S_EFFECT_CREATE:   client_handle_effect_create(data); break;
     case MsgType::S_EFFECT_DESTROY:  client_handle_effect_destroy(data); break;
+    case MsgType::S_PROJECTILE_DYING: client_handle_projectile_dying(data); break;
     case MsgType::S_UPDATE: client_handle_update(data); break;
     case MsgType::S_START:
         m_game_started = true;
@@ -1031,7 +1047,8 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
     auto s = parse_spawn(data);
-    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing, s.newly_created);
+    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
+                        s.newly_created, s.model_path);
 }
 
 void NetworkManager::client_handle_destroy(std::span<const u8> data) {
@@ -1076,6 +1093,22 @@ void NetworkManager::client_handle_effect_create(std::span<const u8> data) {
 void NetworkManager::client_handle_effect_destroy(std::span<const u8> data) {
     u32 id = parse_effect_destroy(data);
     if (on_effect_destroy) on_effect_destroy(id);
+}
+
+void NetworkManager::client_handle_projectile_dying(std::span<const u8> data) {
+    u32 id = parse_projectile_dying(data);
+    auto& world = m_client_world;
+    // Queue the model's "death" clip on the local entity so the
+    // renderer plays it over the dying window. The server will follow
+    // up with S_DESTROY when the entity is actually torn down.
+    simulation::AnimQueue aq;
+    aq.clips.push_back("death");
+    aq.looping = false;
+    if (auto* q = world.anim_queues.get(id)) {
+        *q = std::move(aq);
+    } else if (world.handle_infos.has(id)) {
+        world.anim_queues.add(id, std::move(aq));
+    }
 }
 
 void NetworkManager::client_apply_interpolation() {
@@ -1315,13 +1348,39 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
 
 void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id,
                                           u8 owner, f32 x, f32 y, f32 facing,
-                                          bool newly_created) {
+                                          bool newly_created,
+                                          std::string_view model_path_override) {
     auto& world = m_client_world;
 
     // Skip if already exists
     if (world.handle_infos.has(entity_id)) return;
 
     simulation::Handle h = world.handles.reserve(entity_id);
+
+    // Projectiles take a minimal-components path — no Health, no Combat,
+    // no Movement, no Owner, no Selectable. They render but don't
+    // simulate; the host's authoritative position arrives via S_STATE
+    // and the renderer drives the model + anim through the renderable
+    // + anim_queue path. The model path comes inline from S_SPAWN
+    // since projectiles aren't in the type registry.
+    if (type_id == "projectile") {
+        world.handle_infos.add(entity_id,
+            simulation::HandleInfo{std::string(type_id), simulation::Category::Projectile,
+                                    h.generation});
+        simulation::Transform t;
+        t.position = glm::vec3{x, y, 0};
+        t.prev_position = t.position;
+        t.facing = facing;
+        t.prev_facing = facing;
+        // Mirror create_projectile's scale rule: placeholder mesh is a
+        // tiny stub; glTF projectiles render at their authored size.
+        t.scale = model_path_override.empty() ? 0.3f : 1.0f;
+        world.transforms.add(entity_id, std::move(t));
+        std::string model{model_path_override.empty() ? "projectile" : model_path_override};
+        world.renderables.add(entity_id, simulation::Renderable{std::move(model), true});
+        world.projectiles.add(entity_id, simulation::ProjectileComp{});
+        return;
+    }
 
     // Determine category from type
     simulation::Category cat = simulation::Category::Unit;
@@ -1399,6 +1458,8 @@ void NetworkManager::destroy_client_entity(u32 entity_id) {
     world.selectables.remove(entity_id);
     world.combats.remove(entity_id);
     world.dead_states.remove(entity_id);
+    world.projectiles.remove(entity_id);
+    world.anim_queues.remove(entity_id);
 }
 
 // ── Client fog of war ───────────────────────────────────────────────────

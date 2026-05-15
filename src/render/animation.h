@@ -11,6 +11,7 @@
 #include <vk_mem_alloc.h>
 
 #include <array>
+#include <string>
 #include <vector>
 
 namespace uldum::render {
@@ -45,6 +46,12 @@ struct AnimationInstance {
     // state-derived loop rule.
     bool script_controlled = false;
     bool script_looping    = false;
+    // Name of the clip currently bound to state_to_clip[Custom]. Used to
+    // detect when the AnimQueue's front clip is swapped mid-play (e.g.
+    // a projectile transitioning from "idle" loop to "death") so the
+    // renderer re-resolves the clip index instead of continuing the
+    // stale one.
+    std::string script_clip_name;
 
     // Track attack swings to restart animation on each new attack
     u32 attack_swing_id = 0;

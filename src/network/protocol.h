@@ -62,6 +62,7 @@ enum class MsgType : u8 {
     S_EFFECT        = 0x55,   // (reserved, currently unused — Create/Destroy pair below)
     S_EFFECT_CREATE = 0x57,   // CreateEffect / CreateEffectOnUnit (with handle)
     S_EFFECT_DESTROY = 0x58,  // DestroyEffect (handle)
+    S_PROJECTILE_DYING = 0x59, // projectile entered dying state — play death clip
 
     // Playing — session events
     S_START         = 0x60,   // all players loaded, game begins
@@ -269,9 +270,15 @@ inline std::vector<u8> build_reject(RejectReason reason) {
     return std::move(w.data());
 }
 
+// `model_path` is an explicit render override carried inline — empty
+// for normal entities where the client looks up the model via the
+// type registry; non-empty for entities whose model isn't in a type
+// def (projectiles spawned with a custom glTF, future map decorations
+// with per-instance models, etc.).
 inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
                                     u8 owner, f32 x, f32 y, f32 facing,
-                                    bool newly_created = false) {
+                                    bool newly_created = false,
+                                    std::string_view model_path = {}) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SPAWN));
     w.write_u32(entity_id);
@@ -281,6 +288,7 @@ inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
     w.write_f32(y);
     w.write_f32(facing);
     w.write_bool(newly_created);
+    w.write_string(model_path);
     return std::move(w.data());
 }
 
@@ -410,6 +418,24 @@ inline u32 parse_effect_destroy(std::span<const u8> data) {
     return r.read_u32();
 }
 
+// PROJECTILE_DYING — broadcast when a projectile enters its dying
+// state on the server (gameplay over, death animation about to play).
+// The entity itself is still alive on both sides; this just tells the
+// client to queue the model's "death" clip. The follow-up S_DESTROY
+// arrives ~0.6s later when the server tears the entity down.
+inline std::vector<u8> build_projectile_dying(u32 entity_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_PROJECTILE_DYING));
+    w.write_u32(entity_id);
+    return std::move(w.data());
+}
+
+inline u32 parse_projectile_dying(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    return r.read_u32();
+}
+
 // ── Client-side deserialization helpers ───────────────────────────────────
 
 inline input::GameCommand parse_order(std::span<const u8> data, simulation::Player player) {
@@ -525,19 +551,21 @@ struct SpawnData {
     u8 owner;
     f32 x, y, facing;
     bool newly_created = false;
+    std::string model_path;   // empty = look up via type registry
 };
 
 inline SpawnData parse_spawn(std::span<const u8> data) {
     ByteReader r(data);
     r.read_u8();  // skip MsgType
     SpawnData s;
-    s.entity_id = r.read_u32();
-    s.type_id = r.read_string();
-    s.owner = r.read_u8();
-    s.x = r.read_f32();
-    s.y = r.read_f32();
-    s.facing = r.read_f32();
+    s.entity_id     = r.read_u32();
+    s.type_id       = r.read_string();
+    s.owner         = r.read_u8();
+    s.x             = r.read_f32();
+    s.y             = r.read_f32();
+    s.facing        = r.read_f32();
     s.newly_created = r.read_bool();
+    s.model_path    = r.read_string();
     return s;
 }
 
@@ -943,7 +971,7 @@ inline UpdateData parse_update(std::span<const u8> data) {
         break;
     case UpdateType::AbilityModifier:
         u.key = r.read_string();           // ability_id
-        u.str_value = r.read_string();     // modifier key (e.g. "visual_alpha_percent")
+        u.str_value = r.read_string();     // modifier key (e.g. "visual_alpha_mult")
         u.value = r.read_f32();
         break;
     case UpdateType::Status:

@@ -403,12 +403,14 @@ private:
     void client_handle_effect(std::span<const u8> data);
     void client_handle_effect_create(std::span<const u8> data);
     void client_handle_effect_destroy(std::span<const u8> data);
+    void client_handle_projectile_dying(std::span<const u8> data);
     void client_handle_update(std::span<const u8> data);
     void client_apply_interpolation();
 
     void spawn_client_entity(u32 entity_id, std::string_view type_id,
                              u8 owner, f32 x, f32 y, f32 facing,
-                             bool newly_created);
+                             bool newly_created,
+                             std::string_view model_path_override = {});
     void destroy_client_entity(u32 entity_id);
 };
 

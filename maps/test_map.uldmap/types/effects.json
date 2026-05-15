@@ -1,4 +1,18 @@
 {
+    "frost_aura": {
+        "count": 1, "emit_rate": 18, "speed": 30, "life": 0.8, "size": 14,
+        "gravity": -8, "spread": 0.7,
+        "texture": "glow",
+        "start_color": { "r": 0.55, "g": 0.85, "b": 1.0, "a": 0.85 },
+        "end_color":   { "r": 0.20, "g": 0.45, "b": 0.95, "a": 0.0 }
+    },
+    "frost_hit": {
+        "count": 30, "speed": 240, "life": 0.55, "size": 10,
+        "gravity": -120, "spread": 0.35,
+        "texture": "spark",
+        "start_color": { "r": 0.85, "g": 0.97, "b": 1.0, "a": 1.0 },
+        "end_color":   { "r": 0.20, "g": 0.45, "b": 1.0, "a": 0.0 }
+    },
     "portal_rim": {
         "count": 1, "emit_rate": 14, "speed": 60, "life": 1.4, "size": 9, "gravity": 20,
         "start_color": { "r": 1.0, "g": 0.85, "b": 0.25, "a": 0.9 },

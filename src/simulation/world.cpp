@@ -1044,10 +1044,10 @@ void recalculate_modifiers(World& world, u32 id) {
     auto* attrs = world.attribute_blocks.get(id);
     if (!attrs) return;
 
-    // Effective = (base + sum(*_flat)) * (1 + sum(*_percent) / 100).
-    // Key suffix decides which bucket a contribution lands in; an
-    // unsuffixed key is treated as _flat for backward compatibility
-    // with older defs that wrote bare attribute names.
+    // Effective = (base + sum(bare-key)) * (1 + sum(*_mult)).
+    // Bare keys are additive; only the `_mult` suffix is special.
+    // `_mult` values are unit fractions (-0.5 = -50%, +0.25 = +25%) —
+    // multiple sources sum before the (1 + sum) multiplier applies.
     std::unordered_map<std::string, f32> flat;
     std::unordered_map<std::string, f32> pct;
 
@@ -1059,12 +1059,10 @@ void recalculate_modifiers(World& world, u32 id) {
         for (const auto& inst : aset->abilities) {
             for (const auto& [k, delta] : inst.active_modifiers) {
                 std::string_view kv{k};
-                if (kv.size() > 5 && kv.substr(kv.size() - 5) == "_flat") {
-                    flat[strip_suffix(kv, "_flat")] += delta;
-                } else if (kv.size() > 8 && kv.substr(kv.size() - 8) == "_percent") {
-                    pct[strip_suffix(kv, "_percent")] += delta;
+                if (kv.size() > 5 && kv.substr(kv.size() - 5) == "_mult") {
+                    pct[strip_suffix(kv, "_mult")] += delta;
                 } else {
-                    flat[k] += delta;  // legacy unsuffixed
+                    flat[k] += delta;
                 }
             }
         }
@@ -1075,25 +1073,44 @@ void recalculate_modifiers(World& world, u32 id) {
         attrs->numeric[k] += v;
     }
     for (auto& [k, p] : pct) {
-        attrs->numeric[k] = attrs->numeric[k] * (1.0f + p / 100.0f);
+        attrs->numeric[k] = attrs->numeric[k] * (1.0f + p);
+    }
+
+    // Movement speed. Lives on Movement, not in the attribute block,
+    // so it needs an explicit pass: rebuild from the type def's base
+    // and re-apply move_speed (additive) / move_speed_mult every recalc.
+    if (auto* mov = world.movements.get(id)) {
+        f32 base_speed = 0;
+        if (world.types) {
+            if (auto* info = world.handle_infos.get(id)) {
+                if (auto* def = world.types->get_unit_type(info->type_id)) {
+                    base_speed = def->move_speed;
+                }
+            }
+        }
+        auto fit = flat.find("move_speed");
+        auto pit = pct.find("move_speed");
+        f32 fv = (fit != flat.end()) ? fit->second : 0.0f;
+        f32 pv = (pit != pct.end())  ? pit->second  : 0.0f;
+        mov->speed = std::max(0.0f, (base_speed + fv) * (1.0f + pv));
     }
 
     // Visual attributes (alpha, eventually scale / tint) live on
     // Renderable rather than the attribute block — the renderer reads
     // them every frame without an attribute lookup. Compose them here
     // so abilities, not Lua setters, drive the values. Base is the
-    // multiplicative identity (1.0); buffs declare
-    // `visual_alpha_percent` to subtract from full opacity (e.g. -50
-    // for a half-translucent ghost). Multiple sources sum.
+    // multiplicative identity (1.0); buffs declare `visual_alpha_mult`
+    // as a unit-fraction (e.g. -0.5 for a half-translucent ghost).
+    // Multiple sources sum.
     if (auto* r = world.renderables.get(id)) {
-        f32 alpha_pct_sum = 0.0f;
+        f32 alpha_mult_sum = 0.0f;
         if (auto* aset = world.ability_sets.get(id)) {
             for (const auto& inst : aset->abilities) {
-                auto it = inst.active_modifiers.find("visual_alpha_percent");
-                if (it != inst.active_modifiers.end()) alpha_pct_sum += it->second;
+                auto it = inst.active_modifiers.find("visual_alpha_mult");
+                if (it != inst.active_modifiers.end()) alpha_mult_sum += it->second;
             }
         }
-        r->visual_alpha = std::clamp(1.0f + alpha_pct_sum / 100.0f, 0.0f, 1.0f);
+        r->visual_alpha = std::clamp(1.0f + alpha_mult_sum, 0.0f, 1.0f);
     }
 }
 

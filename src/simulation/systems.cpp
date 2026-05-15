@@ -532,19 +532,82 @@ static void deal_attack_damage(World& world, Unit source, Unit target, f32 amoun
     deal_damage(world, source, target, amount, "attack");
 }
 
-// ── Helper: spawn projectile ──────────────────────────────────────────────
+// ── Helpers: create + emit projectile ────────────────────────────────────
 
-static void spawn_projectile(World& world, Unit source, Unit target, f32 damage, f32 speed) {
+// CreateProjectile: allocate the handle, attach components, but DON'T
+// configure path / speed / target yet — that's the EmitProjectile* step.
+// Between Create and Emit, the projectile sits at the source position
+// and doesn't move or collide; this is the window where Lua sets
+// side-table state, attaches PROJECTILE_HIT / PROJECTILE_DESTROYED
+// triggers, and (for the engine) marks is_attack + damage.
+Unit create_projectile(World& world, Unit source, const std::string& model) {
     auto* src_t = world.transforms.get(source.id);
-    if (!src_t) return;
-
+    if (!src_t) return Unit{};
     Handle h = world.handles.allocate();
-    u32 id = h.id;
+    ProjectileComp proj;
+    proj.source     = source;
+    proj.spawn_pos  = src_t->position;
+    proj.target_pos = src_t->position;
+    // Render scale: placeholder mesh is a tiny stub; glTF projectiles
+    // render at their authored size (model authors enlarge in Blender
+    // rather than relying on an engine-side multiplier).
+    f32 scale = model.empty() ? 0.3f : 1.0f;
+    Transform t;
+    t.position      = src_t->position;
+    t.prev_position = src_t->position;   // prevent first-frame interpolation from world origin
+    t.scale         = scale;
+    world.transforms.add(h.id, std::move(t));
+    world.handle_infos.add(h.id, HandleInfo{"projectile", Category::Projectile, h.generation});
+    world.projectiles.add(h.id, std::move(proj));
+    world.renderables.add(h.id, Renderable{model.empty() ? "projectile" : model, true});
+    // Loop the model's "idle" clip while the projectile is alive. The
+    // renderer's script-controlled-anim path handles the lookup; if the
+    // model has no "idle" clip it logs a warning and falls back to the
+    // bind pose. begin_destroy_projectile overrides this with the
+    // "death" clip when the projectile resolves.
+    AnimQueue aq;
+    aq.clips.push_back("idle");
+    aq.looping = true;
+    world.anim_queues.add(h.id, std::move(aq));
+    Unit u; u.id = h.id; u.generation = h.generation;
+    return u;
+}
 
-    world.transforms.add(id, Transform{src_t->position, 0, 0.3f});
-    world.handle_infos.add(id, HandleInfo{"projectile", Category::Projectile, h.generation});
-    world.projectiles.add(id, ProjectileComp{source, target, {}, speed, damage, "", true});
-    world.renderables.add(id, Renderable{"projectile", true});
+void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed, f32 /*arc_height*/) {
+    auto* p = world.projectiles.get(proj_unit.id);
+    if (!p) return;
+    p->path     = ProjectileComp::Path::Homing;
+    p->target   = target;
+    p->speed    = speed;
+    p->emitted  = true;
+    if (auto* tt = world.transforms.get(target.id)) p->target_pos = tt->position;
+}
+
+void emit_projectile_loc(World& world, Unit proj_unit, glm::vec3 loc, f32 speed,
+                         f32 hit_radius, f32 max_distance) {
+    auto* p = world.projectiles.get(proj_unit.id);
+    if (!p) return;
+    p->path         = ProjectileComp::Path::Linear;
+    p->target       = Unit{};
+    p->target_pos   = loc;
+    p->speed        = speed;
+    p->hit_radius   = hit_radius;
+    p->max_distance = max_distance;
+    p->emitted      = true;
+}
+
+// Back-compat for auto-attack call site below — spawns + emits in one
+// step with is_attack=true. Will be inlined / removed once the combat
+// system uses the full Lua-style API directly.
+static Unit spawn_attack_projectile(World& world, Unit source, Unit target,
+                                     f32 damage, f32 speed) {
+    Unit u = create_projectile(world, source, "");  // default "projectile" mesh
+    if (!u.is_valid()) return u;
+    auto* p = world.projectiles.get(u.id);
+    p->damage    = damage;
+    p->is_attack = true;
+    emit_projectile_target(world, u, target, speed, 0);
+    return u;
 }
 
 // ── Combat system ─────────────────────────────────────────────────────────
@@ -820,7 +883,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 self.generation = world.handle_infos.get(id)->generation;
 
                 if (combat.is_ranged) {
-                    spawn_projectile(world, self, target, combat.damage, combat.projectile_speed);
+                    spawn_attack_projectile(world, self, target, combat.damage, combat.projectile_speed);
                 } else {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
@@ -1369,10 +1432,98 @@ void system_items(World& world, float /*dt*/) {
 }
 
 // ── Projectile system ─────────────────────────────────────────────────────
+//
+// Two paths share the same per-tick loop:
+//   • Homing  — re-aim at target each tick; on proximity, fire hit +
+//               auto-destroy.
+//   • Linear  — fixed velocity toward target_pos; pierce-by-default
+//               (every unit within hit_radius along the path fires
+//               PROJECTILE_HIT once); destroy on max_distance or
+//               lifetime cap.
+//
+// PROJECTILE_HIT fires via world.on_projectile_hit before any engine-
+// side damage handler. PROJECTILE_DESTROYED fires via
+// world.on_projectile_destroyed once per projectile, on every destroy
+// path. The engine's own attack-damage routing (is_attack projectiles)
+// happens AFTER the hit callback so Lua interception lands first.
+
+static void destroy_projectile_entity(World& world, u32 id) {
+    auto* info = world.handle_infos.get(id);
+    if (!info) return;
+    log::info("Projectile", "[Teardown] id={} death_timer expired, removing entity", id);
+    Handle h; h.id = id; h.generation = info->generation;
+    world.transforms.remove(id);
+    world.handle_infos.remove(id);
+    world.projectiles.remove(id);
+    world.renderables.remove(id);
+    world.anim_queues.remove(id);
+    world.handles.free(h);
+}
+
+static Unit make_proj_unit(World& world, u32 id) {
+    Unit u;
+    u.id = id;
+    auto* info = world.handle_infos.get(id);
+    u.generation = info ? info->generation : 0;
+    return u;
+}
+
+// Window the projectile lingers in the Dying state so its death clip
+// can play out before teardown. Generous enough for typical glTF
+// death clips (most well under 1.5 s); for static / non-skinned
+// projectiles this is just the cleanup grace period and unused
+// visually. Long clips (> 1.5 s) get cut short — author should keep
+// the death clip brief or we should plumb the model's actual clip
+// duration in (TODO: render→sim query for clip length on Dying entry).
+static constexpr f32 kProjectileDeathAnimSecs = 1.5f;
+
+// Begin destruction. Fires PROJECTILE_DESTROYED once (gameplay end),
+// queues the "death" clip on the renderer's anim queue, marks the
+// projectile dying, sets the teardown timer. The actual entity removal
+// happens in system_projectile after death_timer drains.
+static void begin_destroy_projectile(World& world, u32 id) {
+    auto* p = world.projectiles.get(id);
+    if (!p || p->dying) return;
+    // Size the linger window to the actual death clip duration so the
+    // projectile vanishes exactly when the animation finishes. Falls
+    // back to the small constant if the renderer hasn't installed the
+    // resolver or the model has no "death" clip.
+    f32 timer = kProjectileDeathAnimSecs;
+    if (world.get_clip_duration) {
+        auto* r = world.renderables.get(id);
+        if (r && !r->model_path.empty()) {
+            f32 dur = world.get_clip_duration(r->model_path, "death");
+            if (dur > 0.0f) timer = dur;
+        }
+    }
+    log::info("Projectile", "[Destroy] id={} entering dying state, death_timer={:.2f}s",
+              id, timer);
+    Unit pu = make_proj_unit(world, id);
+    if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
+    p->dying       = true;
+    p->death_timer = timer;
+    // Queue the "death" clip. If the model has a "death" clip the
+    // renderer plays it; if not, the renderer falls back to the bind
+    // pose / current clip — harmless either way.
+    AnimQueue aq;
+    aq.clips.push_back("death");
+    aq.looping = false;
+    if (auto* q = world.anim_queues.get(id)) {
+        *q = std::move(aq);
+    } else {
+        world.anim_queues.add(id, std::move(aq));
+    }
+}
+
+// Public entry — explicit DestroyProjectile from Lua.
+void destroy_projectile(World& world, Unit proj_unit) {
+    if (!world.validate(proj_unit)) return;
+    if (!world.projectiles.get(proj_unit.id)) return;
+    begin_destroy_projectile(world, proj_unit.id);
+}
 
 void system_projectile(World& world, float dt) {
-    // Collect IDs to destroy after iteration (can't modify sparse set during iteration)
-    std::vector<u32> to_destroy;
+    std::vector<u32> to_teardown;
 
     for (u32 i = 0; i < world.projectiles.count(); ++i) {
         u32 id = world.projectiles.ids()[i];
@@ -1380,53 +1531,106 @@ void system_projectile(World& world, float dt) {
         auto* transform = world.transforms.get(id);
         if (!transform) continue;
 
-        // Get target position
-        glm::vec3 target_pos;
-        if (proj.homing && world.validate(proj.target)) {
-            auto* target_t = world.transforms.get(proj.target.id);
-            if (target_t) {
-                target_pos = target_t->position;
-                target_pos.z += 32.0f;  // aim at center of unit, not feet
-            } else {
-                to_destroy.push_back(id);
-                continue;
-            }
-        } else {
-            target_pos = proj.target_pos;
-        }
-
-        glm::vec3 to_target = target_pos - transform->position;
-        f32 dist = glm::length(to_target);
-
-        if (dist < 32.0f) {
-            // Hit — deal damage
-            if (world.validate(proj.target)) {
-                deal_attack_damage(world, proj.source, proj.target, proj.damage);
-            }
-            to_destroy.push_back(id);
+        // Dying: gameplay has ended; entity persists for the death
+        // animation. Tick the death timer; when it hits zero, queue
+        // the entity for actual teardown.
+        if (proj.dying) {
+            proj.death_timer -= dt;
+            if (proj.death_timer <= 0) to_teardown.push_back(id);
             continue;
         }
 
-        // Move toward target
-        glm::vec3 dir = to_target / dist;
-        f32 step = proj.speed * dt;
-        if (step > dist) step = dist;
-        transform->position += dir * step;
+        // Pre-emit projectiles sit at the source point — no movement,
+        // no collision. Lua is still configuring side state.
+        if (!proj.emitted) continue;
+
+        proj.elapsed += dt;
+        if (proj.elapsed >= proj.max_lifetime) { begin_destroy_projectile(world, id); continue; }
+
+        if (proj.path == ProjectileComp::Path::Homing) {
+            // Re-aim each tick. Target loss → drop on last known position
+            // (the simplest of the on_target_lost options; configurable
+            // variants can be added later).
+            glm::vec3 aim;
+            if (world.validate(proj.target)) {
+                auto* tt = world.transforms.get(proj.target.id);
+                if (tt) { aim = tt->position; aim.z += 32.0f; proj.target_pos = aim; }
+                else    { begin_destroy_projectile(world, id); continue; }
+            } else {
+                aim = proj.target_pos;
+            }
+            glm::vec3 to = aim - transform->position;
+            f32 dist = glm::length(to);
+            if (dist < proj.hit_radius) {
+                Unit pu = make_proj_unit(world, id);
+                if (world.validate(proj.target) && world.on_projectile_hit) {
+                    world.on_projectile_hit(pu, proj.target);
+                }
+                if (proj.is_attack && world.validate(proj.target)) {
+                    deal_attack_damage(world, proj.source, proj.target, proj.damage);
+                }
+                begin_destroy_projectile(world, id);
+                continue;
+            }
+            f32 step = proj.speed * dt;
+            if (step > dist) step = dist;
+            transform->position += (to / dist) * step;
+            // Face direction of travel so the model points along its
+            // path — important for arrows / arms etc.
+            transform->facing = std::atan2(to.y, to.x);
+            proj.traveled += step;
+        } else {
+            // Linear: fly toward target_pos. Pierce — every unit within
+            // hit_radius that we haven't hit yet fires the hit callback.
+            glm::vec3 to = proj.target_pos - transform->position;
+            f32 dist = glm::length(to);
+            glm::vec3 dir = (dist > 1e-3f) ? (to / dist) : glm::vec3{1, 0, 0};
+            f32 step = proj.speed * dt;
+            if (step > dist) step = dist;
+            transform->position += dir * step;
+            transform->facing = std::atan2(dir.y, dir.x);
+            proj.traveled += step;
+
+            // Per-tick scan: any unit within hit_radius that isn't
+            // already in the already_hit list and isn't the source.
+            Unit pu = make_proj_unit(world, id);
+            for (u32 j = 0; j < world.transforms.count(); ++j) {
+                u32 oid = world.transforms.ids()[j];
+                if (oid == id || oid == proj.source.id) continue;
+                auto* info = world.handle_infos.get(oid);
+                if (!info || info->category != Category::Unit) continue;
+                auto* hp = world.healths.get(oid);
+                if (!hp || hp->current <= 0) continue;
+                bool already = false;
+                for (u32 done : proj.already_hit) {
+                    if (done == oid) { already = true; break; }
+                }
+                if (already) continue;
+                const auto& tf = world.transforms.data()[j];
+                glm::vec3 delta = tf.position - transform->position;
+                delta.z = 0;
+                if (glm::length(delta) <= proj.hit_radius) {
+                    Unit hit = make_proj_unit(world, oid);
+                    if (world.on_projectile_hit) world.on_projectile_hit(pu, hit);
+                    if (proj.is_attack) {
+                        deal_attack_damage(world, proj.source, hit, proj.damage);
+                    }
+                    proj.already_hit.push_back(oid);
+                }
+            }
+
+            // Expire on max_distance or on reaching target_pos with no
+            // remaining travel.
+            if ((proj.max_distance > 0 && proj.traveled >= proj.max_distance) ||
+                dist <= 1e-3f) {
+                begin_destroy_projectile(world, id);
+                continue;
+            }
+        }
     }
 
-    // Destroy hit/expired projectiles
-    for (u32 id : to_destroy) {
-        auto* info = world.handle_infos.get(id);
-        if (info) {
-            Handle h;
-            h.id = id;
-            h.generation = info->generation;
-            world.transforms.remove(id);
-            world.handle_infos.remove(id);
-            world.projectiles.remove(id);
-            world.renderables.remove(id);
-            world.handles.free(h);
-        }
+    for (u32 id : to_teardown) {
+        destroy_projectile_entity(world, id);
     }
 }
 

@@ -84,8 +84,9 @@ struct AbilityLevelDef {
     f32 damage      = 0;
     f32 heal        = 0;
 
-    // Modifiers (passive_modifier): attr_name (+ optional _flat / _percent
-    // suffix) → value. Keys without a suffix are treated as _flat.
+    // Modifiers (passive_modifier): bare attr_name → additive value
+    // (e.g. "armor": 5). Suffix `_mult` switches to multiplicative
+    // unit-fraction (e.g. "move_speed_mult": -0.5 = -50% speed).
     std::map<std::string, f32> modifiers;
 
     // Refcounted status flags (passive_flag). Each name maps to a bit in

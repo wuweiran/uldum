@@ -192,6 +192,7 @@ public:
     void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
     void set_context_item(simulation::Item it)   { m_ctx_item = it; }
     void set_context_node_id(std::string id) { m_ctx_node_id = std::move(id); }
+    void set_context_projectile(u32 id) { m_ctx_projectile = id; }
     void set_context_region_id(u32 id) { m_ctx_region_id = id; }
     void set_context_order_type(std::string s) { m_ctx_order_type = std::move(s); }
     void set_context_order_target_unit(u32 id) { m_ctx_order_target_unit = id; }
@@ -319,6 +320,7 @@ private:
     simulation::Item m_ctx_item{};  // for item events / item-sourced casts (GetTriggerItem)
     std::string m_ctx_node_id;   // which HUD node fired the event (button_pressed etc.)
     u32 m_ctx_region_id = UINT32_MAX;  // which region fired region_enter / region_leave
+    u32 m_ctx_projectile = UINT32_MAX;  // projectile entity for PROJECTILE_HIT / PROJECTILE_DESTROYED
 
     bool m_paused        = false;  // PauseGame()/UnpauseGame() — App reads via is_paused()
     bool m_singleplayer  = false;  // IsSinglePlayer() — App sets once at init

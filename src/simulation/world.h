@@ -154,6 +154,24 @@ struct World {
     AbilityAddedCallback   on_ability_added;
     AbilityRemovedCallback on_ability_removed;
 
+    // Projectile event callbacks. `on_projectile_hit` fires per unit
+    // hit (homing: once; linear: once per unit along the path).
+    // `on_projectile_destroyed` fires once on every destroy path
+    // (auto-destroy on homing hit, max_distance expiry, manual
+    // DestroyProjectile, lifetime cap). The hit is always reported
+    // BEFORE the destroyed event when both fire in the same tick.
+    using ProjectileHitCallback       = std::function<void(Unit projectile, Unit hit_unit)>;
+    using ProjectileDestroyedCallback = std::function<void(Unit projectile)>;
+    ProjectileHitCallback       on_projectile_hit;
+    ProjectileDestroyedCallback on_projectile_destroyed;
+
+    // Resolve a clip's duration on a model. Installed by the renderer so
+    // the simulation can size projectile death timers to the actual
+    // animation length. Returns 0 if model or clip is missing; callers
+    // fall back to a small default in that case.
+    using ClipDurationCallback = std::function<f32(std::string_view model_path, std::string_view clip_name)>;
+    ClipDurationCallback get_clip_duration;
+
     // Called when a pathing blocker is removed (unblock runtime tiles).
     // Receives the tile rectangle (tx, ty) + (w, h) the blocker had
     // occupied; the simulation forwards it to Pathfinder::unblock_tiles.
@@ -251,6 +269,17 @@ void     recalculate_modifiers(World& world, u32 id);
 void     flag_refcount_delta(World& world, u32 id,
                              const std::vector<std::string>& flag_names,
                              i32 delta);
+
+// ── Projectile API ────────────────────────────────────────────────────
+// Two-stage: create allocates a handle + idle entity, emit configures
+// path + speed + target and starts the flight. Between create and emit
+// the projectile sits at the source point — Lua uses this window to
+// attach triggers and side-table state.
+Unit create_projectile(World& world, Unit source, const std::string& model);
+void emit_projectile_target(World& world, Unit projectile, Unit target, f32 speed, f32 arc_height);
+void emit_projectile_loc(World& world, Unit projectile, glm::vec3 loc, f32 speed,
+                         f32 hit_radius, f32 max_distance);
+void destroy_projectile(World& world, Unit projectile);
 
 // Status flag helpers. Read returns false for an invalid handle or
 // when the unit has no StatusFlags component (treated as "no flags").

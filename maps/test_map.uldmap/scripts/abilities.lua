@@ -141,7 +141,7 @@ function M.register_wind_walk(opts)
     opts = opts or {}
     local FADE_TIME    = opts.fade_time    or 1.0
     local FADE_STEPS   = 20
-    local GHOST_PCT    = -50    -- target visual_alpha_percent at end of fade
+    local GHOST_PCT    = -0.5   -- target visual_alpha_mult at end of fade (unit fraction)
     local UNVEIL_BONUS = opts.unveil_bonus or 80
 
     local cast_trig = CreateTrigger()
@@ -159,7 +159,7 @@ function M.register_wind_walk(opts)
 
         AddAbility(caster, "windwalk_fading")
 
-        -- Ramp the fading buff's visual_alpha_percent from 0 to
+        -- Ramp the fading buff's visual_alpha_mult from 0 to
         -- GHOST_PCT over FADE_TIME. The ability owns the modifier
         -- state; we just drive the value. recalculate_modifiers fires
         -- on every SetAbilityModifier call, so the alpha tracks live.
@@ -183,7 +183,7 @@ function M.register_wind_walk(opts)
             step = step + 1
             local t = step / FADE_STEPS
             SetAbilityModifier(caster, "windwalk_fading",
-                               "visual_alpha_percent", GHOST_PCT * t)
+                               "visual_alpha_mult", GHOST_PCT * t)
             if step >= FADE_STEPS then
                 DestroyTimer(fade_timer)
                 RemoveAbility(caster, "windwalk_fading")
@@ -271,6 +271,111 @@ function M.register_healing_potion(opts)
             if c <= 0 then RemoveItem(item) end
         end
         Log(string.format("[Potion] %s healed for %d", GetUnitTypeId(caster), amount))
+    end)
+end
+
+-- Chain Frost — DotA Lich's Chain Frost reimplementation. Frost orb
+-- homes from the caster to the chosen enemy, deals magic damage on
+-- impact + applies a 3s slow, and then bounces to the nearest enemy
+-- within JUMP_RANGE that the chain hasn't hit yet. Each bounce is a
+-- fresh CreateProjectile spawned from the just-hit unit's position;
+-- the homing target-emit handles the actual flight. Chain ends when
+-- MAX_JUMPS is exhausted or no more reachable unhit enemies remain.
+--
+-- Multiple casts run independently — projectile_state is keyed by
+-- projectile handle, hit_set is shared across one cast's orbs only.
+function M.register_chain_frost()
+    local JUMP_RANGE       = 600.0
+    local MAX_JUMPS        = 6        -- 1 initial + 5 bounces
+    local DAMAGE_PER_HIT   = 150.0
+    local PROJECTILE_SPEED = 600.0
+    local MODEL            = "models/projectiles/ice.glb"
+
+    -- Per-projectile state. Keyed by handle, cleared via PROJECTILE_DESTROYED.
+    local state = {}
+
+    local function fire_orb(caster, source_unit, target, jumps_left, hit_set)
+        local p = CreateProjectile(source_unit, MODEL)
+        if not p then return end
+        -- Side-tables keyed by .id (number). Unit userdata uses raw
+        -- identity for table keys, so a fresh userdata from
+        -- GetTriggerProjectile() would NOT match the one returned by
+        -- CreateProjectile even when both wrap the same entity.
+        state[p.id] = { caster = caster, hit_set = hit_set, jumps_left = jumps_left }
+
+        local hit = CreateTrigger()
+        TriggerRegisterProjectileEvent(hit, p, EVENT_PROJECTILE_HIT)
+        TriggerAddAction(hit, function()
+            local proj     = GetTriggerProjectile()
+            local hit_unit = GetTriggerUnit()
+            local s = state[proj.id]
+            if not s or not hit_unit then return end
+
+            -- If the homing target died mid-flight, the engine still
+            -- delivers HIT on the corpse. Treat that as a fizzle —
+            -- no damage, no slow, no visual, no bounce.
+            if not IsUnitAlive(hit_unit) then return end
+
+            -- Damage + slow + impact burst on the struck unit.
+            DamageUnit(s.caster, hit_unit, DAMAGE_PER_HIT, "magic")
+            AddAbility(hit_unit, "chain_frost_slow")
+            PlayEffectOnUnit("frost_hit", hit_unit, "overhead")
+            s.hit_set[hit_unit.id] = true
+
+            -- Bounce: short pause first so the impact reads as discrete
+            -- hits instead of a single instantaneous arc. Snapshot
+            -- position + state into the timer's closure so we don't
+            -- depend on the trigger context when the timer fires.
+            local remaining = s.jumps_left - 1
+            if remaining <= 0 then return end
+            local hx       = GetUnitX(hit_unit)
+            local hy       = GetUnitY(hit_unit)
+            local caster   = s.caster
+            local hit_set  = s.hit_set
+            local from     = hit_unit
+            local owner    = GetUnitOwner(caster)
+
+            local wait = CreateTrigger()
+            TriggerRegisterTimerEvent(wait, 0.3, false)
+            TriggerAddAction(wait, function()
+                local nearby = GetUnitsInRange(hx, hy, JUMP_RANGE, {
+                    enemy_of   = owner,
+                    alive_only = true,
+                })
+                local next_target, best = nil, JUMP_RANGE + 1
+                for _, u in ipairs(nearby) do
+                    if not hit_set[u.id] and u ~= from then
+                        local dx = GetUnitX(u) - hx
+                        local dy = GetUnitY(u) - hy
+                        local d = math.sqrt(dx*dx + dy*dy)
+                        if d < best then next_target, best = u, d end
+                    end
+                end
+                if next_target then
+                    fire_orb(caster, from, next_target, remaining, hit_set)
+                end
+            end)
+        end)
+
+        local destroyed = CreateTrigger()
+        TriggerRegisterProjectileEvent(destroyed, p, EVENT_PROJECTILE_DESTROYED)
+        TriggerAddAction(destroyed, function()
+            state[GetTriggerProjectile().id] = nil
+        end)
+
+        EmitProjectileTarget(p, target, PROJECTILE_SPEED, 0)
+    end
+
+    local cast = CreateTrigger()
+    TriggerRegisterEvent(cast, EVENT_GLOBAL_ABILITY_EFFECT)
+    TriggerAddCondition(cast, function()
+        return GetTriggerAbilityId() == "chain_frost"
+    end)
+    TriggerAddAction(cast, function()
+        local caster = GetTriggerUnit()
+        local target = GetSpellTargetUnit()
+        if not caster or not target then return end
+        fire_orb(caster, caster, target, MAX_JUMPS, {})
     end)
 end
 

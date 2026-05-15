@@ -44,6 +44,13 @@ function TriggerRegisterUnitEvent(trig, unit, event_name) end
 --- @param event_name string
 function TriggerRegisterPlayerEvent(trig, player, event_name) end
 
+--- Register an event scoped to a specific projectile. The trigger is
+--- automatically dropped when the projectile is destroyed.
+--- @param trig trigger
+--- @param projectile unit
+--- @param event_name string  EVENT_PROJECTILE_HIT or EVENT_PROJECTILE_DESTROYED
+function TriggerRegisterProjectileEvent(trig, projectile, event_name) end
+
 --- Register a timer event on a trigger.
 --- @param trig trigger
 --- @param interval number   seconds
@@ -442,6 +449,79 @@ function ApplyPassiveAbility(target, ability_id, source, duration) end
 --- @return boolean
 function HasAbility(unit, ability_id) end
 
+--------------------------------------------------------------------------------
+--- Projectiles (agents — handles, not widgets)
+--------------------------------------------------------------------------------
+
+--- Create an idle projectile at `source`'s position. The projectile
+--- exists as an agent handle but doesn't move or collide until
+--- `EmitProjectileTarget` / `EmitProjectileLoc` is called. This
+--- two-stage shape gives you a window to attach
+--- `EVENT_PROJECTILE_HIT` / `EVENT_PROJECTILE_DESTROYED` triggers and
+--- to set Lua-side side-table state keyed by the handle.
+--- @param source unit
+--- @param model string     glTF path (empty falls back to engine "projectile" mesh)
+--- @return unit            projectile handle (or nil)
+function CreateProjectile(source, model) end
+
+--- Launch a homing projectile at `target`. Auto-destroys on impact;
+--- fires PROJECTILE_HIT once with the target as `GetTriggerUnit()`.
+--- @param projectile unit
+--- @param target unit
+--- @param speed number
+--- @param arc_height number?  (reserved; arc rendering pending)
+function EmitProjectileTarget(projectile, target, speed, arc_height) end
+
+--- Launch a linear (skillshot) projectile toward `(x,y,z)`. Fires
+--- PROJECTILE_HIT once for every unit within `hit_radius` along the
+--- path (pierce-by-default). Auto-destroys at `max_distance`. Stops
+--- on first hit only if the trigger handler calls
+--- `DestroyProjectile(GetTriggerProjectile())`.
+--- @param projectile unit
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param speed number
+--- @param hit_radius number
+--- @param max_distance number
+function EmitProjectileLoc(projectile, x, y, z, speed, hit_radius, max_distance) end
+
+--- Manually destroy a projectile. Fires PROJECTILE_DESTROYED.
+--- @param projectile unit
+function DestroyProjectile(projectile) end
+
+--- Read the damage carried by a projectile. The engine consumes this
+--- for auto-attack projectiles; ability projectiles can use it as a
+--- payload slot.
+--- @param projectile unit
+--- @return number
+function GetProjectileDamage(projectile) end
+
+--- Set the damage on a projectile. For `is_attack` projectiles this
+--- changes what the engine deals at hit time — intercept in
+--- PROJECTILE_HIT to apply crit/lifesteal multipliers before the
+--- engine commits damage.
+--- @param projectile unit
+--- @param damage number
+function SetProjectileDamage(projectile, damage) end
+
+--- True when the engine spawned this projectile from an auto-attack.
+--- Filter use: a global PROJECTILE_HIT trigger that only modifies
+--- auto-attack damage without touching ability projectiles.
+--- @param projectile unit
+--- @return boolean
+function IsProjectileNormalAttack(projectile) end
+
+--- Inside a PROJECTILE_HIT or PROJECTILE_DESTROYED handler, returns
+--- the projectile that fired the event. Nil outside those handlers.
+--- @return unit
+function GetTriggerProjectile() end
+
+--- Inside a PROJECTILE_HIT or PROJECTILE_DESTROYED handler, returns
+--- the unit that emitted the projectile (from CreateProjectile).
+--- @return unit
+function GetProjectileSource() end
+
 --- Mutate a modifier value on every active instance of `ability_id`
 --- on the unit and re-run modifier recalculation immediately. The
 --- ability owns the modifier state; Lua just drives the curve. Used
@@ -449,7 +529,7 @@ function HasAbility(unit, ability_id) end
 --- Returns true if any instance was touched.
 --- @param unit unit
 --- @param ability_id string
---- @param key string         modifier key (e.g. "visual_alpha_percent")
+--- @param key string         modifier key (e.g. "visual_alpha_mult")
 --- @param value number
 --- @return boolean
 function SetAbilityModifier(unit, ability_id, key, value) end

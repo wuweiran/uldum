@@ -25,6 +25,12 @@ EVENT_GLOBAL_SELECT          = "global_select"
 EVENT_GLOBAL_GAME_END        = "global_game_end"
 EVENT_GLOBAL_DISCONNECT      = "global_disconnect"
 EVENT_GLOBAL_LEAVE           = "global_leave"
+EVENT_GLOBAL_PROJECTILE_HIT       = "global_projectile_hit"
+EVENT_GLOBAL_PROJECTILE_DESTROYED = "global_projectile_destroyed"
+
+-- Projectile-scoped events (TriggerRegisterProjectileEvent)
+EVENT_PROJECTILE_HIT       = "projectile_hit"
+EVENT_PROJECTILE_DESTROYED = "projectile_destroyed"
 
 -- Unit-scoped events (TriggerRegisterUnitEvent)
 EVENT_UNIT_DAMAGE          = "unit_damage"

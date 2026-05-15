@@ -851,6 +851,12 @@ bool App::start_session() {
                 auto pkt = network::build_update_ability_remove(unit.id, ability_id);
                 m_network.host_broadcast_update(unit.id, pkt);
             };
+        // Renderer-owned hook so the simulation can match projectile
+        // death timers to the actual animation clip duration.
+        m_server.simulation().world().get_clip_duration =
+            [this](std::string_view model_path, std::string_view clip_name) -> f32 {
+                return m_renderer.clip_duration(model_path, clip_name);
+            };
         register_script_camera_callbacks();
         m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {

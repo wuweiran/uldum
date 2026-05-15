@@ -202,6 +202,52 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         fire_event("unit_dying", dying.id);
     };
 
+    // Projectile lifecycle. HIT fires per unit hit (the projectile is
+    // the "trigger entity" and the hit unit is set as the trigger unit,
+    // so trigger registration scopes naturally per-projectile via the
+    // existing unit_id field). DESTROYED fires once on every destroy
+    // path (auto-destroy on homing hit, max_distance, manual). The
+    // engine has already run any is_attack damage routing before HIT
+    // returns — except cleave / on_damage, which run inside
+    // deal_attack_damage. Lua-side intercepts are still effective via
+    // PROJECTILE_HIT firing FIRST in the system loop (see systems.cpp).
+    sim.world().on_projectile_hit = [this](simulation::Unit projectile, simulation::Unit hit_unit) {
+        set_context_projectile(projectile.id);
+        set_context_unit(hit_unit.id);
+        fire_event("global_projectile_hit", projectile.id);
+        fire_event("projectile_hit",        projectile.id);
+        set_context_projectile(UINT32_MAX);
+    };
+    sim.world().on_projectile_destroyed = [this](simulation::Unit projectile) {
+        set_context_projectile(projectile.id);
+        set_context_unit(UINT32_MAX);
+        fire_event("global_projectile_destroyed", projectile.id);
+        fire_event("projectile_destroyed",        projectile.id);
+        // Drop any triggers scoped to this projectile so they don't
+        // haunt a future projectile that reuses the handle id.
+        for (auto& [tid, trig] : m_triggers) {
+            if (!trig.alive) continue;
+            for (auto& eb : trig.events) {
+                if (eb.unit_id == projectile.id &&
+                    (eb.event_name == "projectile_hit" ||
+                     eb.event_name == "projectile_destroyed")) {
+                    trig.alive = false;
+                    break;
+                }
+            }
+        }
+        set_context_projectile(UINT32_MAX);
+        // Broadcast the dying state to clients that can see the
+        // projectile so they queue the death clip on their local
+        // entity. The follow-up S_DESTROY arrives ~0.6s later when the
+        // server tears down — same per-entity visibility filter
+        // applies to both.
+        if (m_unit_update_fn) {
+            auto pkt = network::build_projectile_dying(projectile.id);
+            m_unit_update_fn(projectile.id, pkt);
+        }
+    };
+
     // Hook death callback so system_death fires on_death events
     sim.world().on_death = [this](simulation::Unit dying, simulation::Unit killer) {
         set_context_unit(dying.id);
@@ -986,6 +1032,75 @@ void ScriptEngine::bind_api() {
 
     lua["HasAbility"] = [&](simulation::Unit u, const std::string& ability_id) -> bool {
         return simulation::has_ability(sim.world(), u, ability_id);
+    };
+
+    // ── Projectile API ────────────────────────────────────────────────
+    // Agent (not widget). Lifecycle: CreateProjectile spawns the
+    // entity at the source's position; the projectile is idle until
+    // EmitProjectile{Target,Loc}. Author attaches PROJECTILE_HIT /
+    // PROJECTILE_DESTROYED triggers between create and emit.
+    lua["CreateProjectile"] = [&](simulation::Unit source, const std::string& model) -> sol::object {
+        auto u = simulation::create_projectile(sim.world(), source, model);
+        return u.is_valid() ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
+    };
+    lua["EmitProjectileTarget"] = [&](simulation::Unit proj, simulation::Unit target,
+                                       f32 speed, sol::optional<f32> arc_height) {
+        simulation::emit_projectile_target(sim.world(), proj, target, speed,
+                                            arc_height.value_or(0.0f));
+    };
+    lua["EmitProjectileLoc"] = [&](simulation::Unit proj, f32 x, f32 y, f32 z,
+                                    f32 speed, f32 hit_radius, f32 max_distance) {
+        simulation::emit_projectile_loc(sim.world(), proj, glm::vec3{x, y, z},
+                                         speed, hit_radius, max_distance);
+    };
+    lua["DestroyProjectile"] = [&](simulation::Unit proj) {
+        simulation::destroy_projectile(sim.world(), proj);
+    };
+
+    // Damage payload. is_attack is set by the engine for auto-attack
+    // projectiles and consumed by the built-in hit handler; ability
+    // projectiles can use damage as a free-form field via Set/Get.
+    lua["GetProjectileDamage"] = [&](simulation::Unit proj) -> f32 {
+        auto* p = sim.world().projectiles.get(proj.id);
+        return p ? p->damage : 0.0f;
+    };
+    lua["SetProjectileDamage"] = [&](simulation::Unit proj, f32 damage) {
+        if (auto* p = sim.world().projectiles.get(proj.id)) p->damage = damage;
+    };
+    lua["IsProjectileNormalAttack"] = [&](simulation::Unit proj) -> bool {
+        auto* p = sim.world().projectiles.get(proj.id);
+        return p && p->is_attack;
+    };
+
+    // Trigger-context accessors. Valid inside PROJECTILE_HIT (where
+    // the projectile, source, and hit unit are all set) and
+    // PROJECTILE_DESTROYED (projectile + source; hit unit is nil).
+    lua["GetTriggerProjectile"] = [&, unit_or_nil]() -> sol::object {
+        return unit_or_nil(make_unit(sim.world(), m_ctx_projectile));
+    };
+    lua["GetProjectileSource"] = [&, unit_or_nil]() -> sol::object {
+        auto* p = sim.world().projectiles.get(m_ctx_projectile);
+        return p ? unit_or_nil(p->source) : sol::make_object(*m_lua, sol::nil);
+    };
+
+    // Projectile-scoped trigger registration. Same shape as the
+    // per-unit registration, but exists as its own name so map code
+    // reads as intended (a projectile isn't a unit conceptually even
+    // though it shares the handle type).
+    lua["TriggerRegisterProjectileEvent"] = [&](sol::table t, simulation::Unit proj, sol::object event_obj) {
+        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
+            log::warn(TAG, "TriggerRegisterProjectileEvent: event name is nil or empty");
+            return;
+        }
+        std::string event_name = event_obj.as<std::string>();
+        u32 id = t["_id"].get<u32>();
+        auto it = m_triggers.find(id);
+        if (it != m_triggers.end()) {
+            Trigger::EventBinding eb;
+            eb.event_name = event_name;
+            eb.unit_id    = proj.id;   // reuse unit_id slot — fire_event passes projectile.id here too
+            it->second.events.push_back(std::move(eb));
+        }
     };
 
     // Mutate a modifier value on every active instance of an ability and

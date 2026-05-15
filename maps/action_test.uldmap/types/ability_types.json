@@ -17,9 +17,9 @@
         "form": "passive",
         "max_level": 3,
         "levels": [
-            { "modifiers": { "armor_flat": 1.5 } },
-            { "modifiers": { "armor_flat": 3.0 } },
-            { "modifiers": { "armor_flat": 4.5 } }
+            { "modifiers": { "armor": 1.5 } },
+            { "modifiers": { "armor": 3.0 } },
+            { "modifiers": { "armor": 4.5 } }
         ]
     },
     "item_armor_bonus": {
@@ -27,7 +27,7 @@
         "form": "passive",
         "stackable": true,
         "levels": [
-            { "modifiers": { "armor_flat": 5 } }
+            { "modifiers": { "armor": 5 } }
         ]
     },
     "holy_light": {

@@ -658,15 +658,13 @@ The engine's gameplay surface is thin compared to what map authors hitting WC3 e
 
 ### Phase 21 — Projectile
 
-Today's projectile entity is a transient ballistic mover with no payload — auto-attack arrows resolve by re-reading the caster's current `Combat.damage` at impact, and ability-launched projectiles can't carry per-instance gameplay state. Phase 21 promotes projectiles to a vehicle for ability and attack effects, with state captured at emit-time and a scriptable hit interface.
+Promotes projectiles to first-class agents with a scriptable lifecycle. Unifies auto-attack arrows and ability projectiles under one API.
 
-- Unified system — one projectile shape covers both auto-attack projectiles and ability-launched projectiles. No separate "arrow" vs "spell projectile" types.
-- Emit-time state capture — damage, source identity, source's relevant attributes at launch are snapshotted onto the projectile. A buff that lands on the caster after launch does *not* retroactively modify the in-flight projectile (today's "read damage at impact" behavior is the bug this fixes).
-- Arbitrary data slots — Lua attaches a per-emit table of values; engine carries the table opaquely. Used for "this fireball remembers who lit it on fire" / "this arrow knows what crit roll already happened" / etc.
-- Hit events + Lua data accessors — `EVENT_PROJECTILE_HIT` fires when a projectile resolves on a unit or a point; the registered trigger reads emit-time payload via `GetProjectileData(...)` and friends.
-- Tracking projectiles — homing on a target unit. Re-aims each frame; defines behavior when the target dies / despawns mid-flight (configurable: detonate at last position, ground-explode, fizzle).
-- Free-flight projectiles — direction-controlled. Path is set at emit (line, arc, scripted curve); flies through the world until it hits something or expires by distance / lifetime.
-- Open question — should projectiles be Widgets (have HP, be targetable for Spell Steal / Disjoint / etc.)? WC3 didn't make them Widgets; DotA-style would. Decision deferred until a real map needs it.
+- Two-stage lifecycle (create at source, then emit) with per-projectile triggers.
+- Homing and skillshot paths.
+- Damage as a first-class payload; engine auto-routes auto-attack hits.
+- Death animation window before teardown.
+- MP sync under the standard per-peer visibility filter.
 
 ### Phase 22 — I18n
 

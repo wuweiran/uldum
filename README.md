@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 18 (Enrich scripting) complete. Next: Phase 19 (Editor expansion).
+Phase 21 (Projectile) complete. Next: Phase 22 (I18n).
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
