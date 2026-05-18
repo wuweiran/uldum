@@ -10,7 +10,7 @@ local abilities = require("abilities")
 function main()
     Log("[Scene01] main() called — unit showcase")
 
-    local player1 = GetPlayer(0)
+    local player1 = Player(0)
 
     -- Register standard combat systems (shared)
     combat.register_armor_system()

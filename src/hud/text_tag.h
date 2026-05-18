@@ -37,10 +37,10 @@ struct TextTagCreateInfo {
     f32                lifespan   = 0.0f;           // 0 → permanent
     f32                fadepoint  = 0.0f;           // seconds before end of lifespan to start fade
 
-    // MP ownership (UINT32_MAX = broadcast — every client sees the tag).
-    // Server filters sync messages by owner; each side's Hud also skips
-    // rendering tags whose owner doesn't match its local player.
-    u32                owner_player = UINT32_MAX;
+    // MP target mask (bit N = player N; UINT32_MAX = broadcast). Server
+    // filters sync messages against this; each side's Hud also skips
+    // rendering tags whose bit isn't set for its local player.
+    u32                players_mask = UINT32_MAX;
 };
 
 } // namespace uldum::hud

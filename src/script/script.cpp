@@ -45,6 +45,28 @@ static simulation::Unit make_unit(simulation::World& world, u32 id) {
     return u;
 }
 
+// Parse an `opts.players` field into a u32 bitmask.
+//   nil / absent     → 0xFFFFFFFF (broadcast)
+//   single Player    → 1 << id
+//   list of Players  → OR of bits
+// UINT32_MAX is the canonical "broadcast" sentinel (every bit set).
+static u32 parse_players_mask(sol::object v) {
+    if (!v.valid() || v.is<sol::nil_t>()) return UINT32_MAX;
+    if (v.is<simulation::Player>()) {
+        return 1u << v.as<simulation::Player>().id;
+    }
+    if (v.is<sol::table>()) {
+        u32 m = 0;
+        sol::table t = v.as<sol::table>();
+        for (auto& kv : t) {
+            sol::object val = kv.second;
+            if (val.is<simulation::Player>()) m |= 1u << val.as<simulation::Player>().id;
+        }
+        return m;
+    }
+    return UINT32_MAX;
+}
+
 ScriptEngine::ScriptEngine() = default;
 ScriptEngine::~ScriptEngine() = default;
 
@@ -141,6 +163,8 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         sol::meta_function::equal_to, [](const simulation::Unit& a, const simulation::Unit& b) { return a == b; }
     );
     lua.new_usertype<simulation::Player>("Player",
+        sol::call_constructor, sol::factories(
+            [](u32 slot) { return simulation::Player{slot}; }),
         "id", &simulation::Player::id,
         "is_valid", &simulation::Player::is_valid,
         sol::meta_function::equal_to, [](const simulation::Player& a, const simulation::Player& b) { return a == b; }
@@ -672,6 +696,10 @@ void ScriptEngine::update(float dt) {
 }
 
 bool ScriptEngine::effect_visible_to(const ActiveEffect& e, u32 player_id) const {
+    // Per-player targeting gate. ANDed with fog visibility below — a
+    // player outside the mask never sees the effect regardless of
+    // line-of-sight to its position.
+    if (!(e.target_mask & (1u << player_id))) return false;
     if (!m_sim) return true;
     const auto& world  = m_sim->world();
     const auto& vision = m_sim->vision();
@@ -1236,8 +1264,9 @@ void ScriptEngine::bind_api() {
     };
 
     // ── Player API ────────────────────────────────────────────────────
-
-    lua["GetPlayer"] = [](u32 slot) -> simulation::Player { return simulation::Player{slot}; };
+    //
+    // `Player(slot)` is the constructor — bound on the usertype above
+    // via sol::call_constructor. No free function needed.
 
     // Lobby-assigned name for a player. Humans get the peer's `player_name`
     // from C_JOIN; Computer slots get the manifest placeholder ("Creeps" etc.);
@@ -1278,6 +1307,9 @@ void ScriptEngine::bind_api() {
     lua["RandomFloat"] = [](f32 min, f32 max) -> f32 { return min + static_cast<f32>(std::rand()) / static_cast<f32>(RAND_MAX) * (max - min); };
 
     // ── Effect API ─────────────────────────────────────────────────────
+    // Visual / audio / UI APIs accept an `opts.players` field selecting
+    // which clients receive the create / update / destroy packets. See
+    // parse_players_mask at top of file for the accepted forms.
 
     // Helper: read color from Lua table (supports {r=, g=, b=, a=} or {1, 2, 3, 4})
     auto read_color = [](sol::table c, glm::vec4 fallback) -> glm::vec4 {
@@ -1302,18 +1334,25 @@ void ScriptEngine::bind_api() {
     // down, so the burst still fires correctly. PlayEffect /
     // PlayEffectOnUnit are kept as convenience wrappers around that
     // pattern so map code stays terse.
-    lua["CreateEffect"] = [this](const std::string& name, f32 x, f32 y, f32 z) -> u32 {
+    // `opts` (table, optional): { players = Player | {Player, ...} } for
+    // per-player targeting. Omit for broadcast (default).
+    lua["CreateEffect"] = [this](const std::string& name,
+                                  f32 x, f32 y, f32 z,
+                                  sol::optional<sol::table> opts) -> u32 {
         ActiveEffect e;
         e.server_id = m_next_effect_id++;
         e.name      = name;
         e.position  = {x, y, z};
         e.entity_id = UINT32_MAX;
+        if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         m_active_effects.push_back(std::move(e));
         return m_active_effects.back().server_id;
     };
 
-    lua["CreateEffectOnUnit"] = [this, &sim](const std::string& name, simulation::Unit unit,
-                                              sol::optional<std::string> attach_point) -> u32 {
+    lua["CreateEffectOnUnit"] = [this, &sim](
+            const std::string& name, simulation::Unit unit,
+            sol::optional<std::string> attach_point,
+            sol::optional<sol::table> opts) -> u32 {
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return 0;
         ActiveEffect e;
@@ -1322,6 +1361,7 @@ void ScriptEngine::bind_api() {
         e.position     = t->position;
         e.entity_id    = unit.id;
         e.attach_point = attach_point ? *attach_point : std::string{};
+        if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         m_active_effects.push_back(std::move(e));
         return m_active_effects.back().server_id;
     };
@@ -1356,20 +1396,23 @@ void ScriptEngine::bind_api() {
 
     // Convenience: one-shot semantics via Create + immediate Destroy.
     // Functionally identical to `DestroyEffect(CreateEffect(...))`.
-    lua["PlayEffect"] = [this, destroy_effect_impl](const std::string& name,
-                                                     f32 x, f32 y, f32 z) {
+    lua["PlayEffect"] = [this, destroy_effect_impl](
+            const std::string& name, f32 x, f32 y, f32 z,
+            sol::optional<sol::table> opts) {
         ActiveEffect e;
         e.server_id = m_next_effect_id++;
         e.name      = name;
         e.position  = {x, y, z};
         e.entity_id = UINT32_MAX;
+        if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         u32 id = e.server_id;
         m_active_effects.push_back(std::move(e));
         destroy_effect_impl(id);
     };
-    lua["PlayEffectOnUnit"] = [this, &sim, destroy_effect_impl](const std::string& name,
-                                                                 simulation::Unit unit,
-                                                                 sol::optional<std::string> attach_point) {
+    lua["PlayEffectOnUnit"] = [this, &sim, destroy_effect_impl](
+            const std::string& name, simulation::Unit unit,
+            sol::optional<std::string> attach_point,
+            sol::optional<sol::table> opts) {
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
         ActiveEffect e;
@@ -1378,6 +1421,7 @@ void ScriptEngine::bind_api() {
         e.position     = t->position;
         e.entity_id    = unit.id;
         e.attach_point = attach_point ? *attach_point : std::string{};
+        if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         u32 id = e.server_id;
         m_active_effects.push_back(std::move(e));
         destroy_effect_impl(id);
@@ -1433,7 +1477,7 @@ void ScriptEngine::bind_api() {
 
     // ── Camera API ────────────────────────────────────────────────────────
     // Per-player. Scripts run on the host only, so each command takes
-    // a Player handle (from GetPlayer(N)) so the host knows whose
+    // a Player handle (Player(N)) so the host knows whose
     // screen to drive. Targeting "all players" means looping in Lua.
     // Offline collapses to "apply locally" inside the registered fn.
     //
@@ -2416,7 +2460,7 @@ void ScriptEngine::bind_hud_api() {
     // a template defined in the map's hud.json `nodes` block at the
     // requested placement. Templates define what the node is (type,
     // style, content, children); Lua decides where it goes and who
-    // sees it. `owner` (optional) = GetPlayer(N) → only that player's
+    // sees it. `owner` (optional) = Player(N) → only that player's
     // client sees this node. Omit for a broadcast (all clients).
     // Returns the id string on success, nil on failure.
     lua["CreateNode"] = [this](const std::string& template_id,
@@ -2431,8 +2475,13 @@ void ScriptEngine::bind_hud_api() {
         pl.y      = placement["y"].get_or(0.0f);
         pl.w      = placement["w"].get_or(0.0f);
         pl.h      = placement["h"].get_or(0.0f);
-        if (auto o = placement["owner"]; o.valid()) {
-            pl.owner_player = o.get<simulation::Player>().id;
+        // `players` (Player | {Player, ...}) selects which clients see
+        // this node. Omit for broadcast. `owner` is accepted as a
+        // single-player alias for ergonomic single-recipient calls.
+        if (auto p = placement["players"]; p.valid()) {
+            pl.players_mask = parse_players_mask(p);
+        } else if (auto o = placement["owner"]; o.valid()) {
+            pl.players_mask = 1u << o.get<simulation::Player>().id;
         }
         if (pl.w <= 0.0f || pl.h <= 0.0f) {
             log::warn("HUD", "CreateNode '{}': w/h must be > 0 (got {}, {})",
@@ -2491,9 +2540,13 @@ void ScriptEngine::bind_hud_api() {
         info.lifespan  = args["lifespan"].get_or(0.0f);
         info.fadepoint = args["fadepoint"].get_or(0.0f);
 
-        // owner (optional) — if set, only that player's client sees the tag.
-        if (auto o = args["owner"]; o.valid()) {
-            info.owner_player = o.get<simulation::Player>().id;
+        // `players` (Player | {Player, ...}) selects which clients see
+        // this tag. Omit for broadcast. `owner` is accepted as a
+        // single-player alias for ergonomic single-recipient calls.
+        if (auto p = args["players"]; p.valid()) {
+            info.players_mask = parse_players_mask(p);
+        } else if (auto o = args["owner"]; o.valid()) {
+            info.players_mask = 1u << o.get<simulation::Player>().id;
         }
 
         return pack_id(m_hud->create_text_tag(info));

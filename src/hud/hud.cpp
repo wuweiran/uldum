@@ -402,7 +402,7 @@ struct Hud::Impl {
         f32                age         = 0.0f;
         f32                lifespan    = 0.0f;         // 0 → permanent
         f32                fadepoint   = 0.0f;         // seconds before end of lifespan to fade
-        u32                owner_player = UINT32_MAX;  // broadcast by default
+        u32                players_mask = UINT32_MAX;  // broadcast by default
     };
     std::vector<TextTagEntry> text_tags;
 
@@ -1431,10 +1431,11 @@ static bool remove_node_recursive(Node* parent, std::string_view id) {
 
 bool Hud::remove_node_by_id(std::string_view id) {
     if (!m_impl || !m_impl->root || id.empty()) return false;
-    // Capture owner before the node is freed so we can route the sync to
-    // the right peer; otherwise post-remove we'd have no way to tell.
-    u32 owner = UINT32_MAX;
-    if (auto* n = find_node_by_id(id)) owner = n->owner_player;
+    // Capture the target mask before the node is freed so we can route
+    // the sync to the right peers; otherwise post-remove we'd have no
+    // way to tell.
+    u32 mask = UINT32_MAX;
+    if (auto* n = find_node_by_id(id)) mask = n->players_mask;
     // Clear transient hover / pressed references before we drop the node,
     // else we'd chase a freed pointer next input frame.
     if (m_impl->hover && m_impl->hover->id == id)   m_impl->hover = nullptr;
@@ -1447,7 +1448,7 @@ bool Hud::remove_node_by_id(std::string_view id) {
         reg.erase(std::remove_if(reg.begin(), reg.end(),
                                  [&](const auto& t) { return t.id == id; }),
                   reg.end());
-        emit_sync(*m_impl, uldum::network::build_hud_destroy_node(id), owner);
+        emit_sync(*m_impl, uldum::network::build_hud_destroy_node(id), mask);
     }
     return ok;
 }
@@ -1486,14 +1487,14 @@ bool Hud::instantiate_template(std::string_view id, const Placement& placement) 
     tp.y            = placement.y;
     tp.w            = placement.w;
     tp.h            = placement.h;
-    tp.owner_player = placement.owner_player;
+    tp.players_mask = placement.players_mask;
     bool ok = uldum::hud::instantiate_template(*this, id, ex.width, ex.height, tp);
     if (ok) {
         emit_sync(*m_impl,
                   uldum::network::build_hud_create_node(id, placement.anchor,
                                                          placement.x, placement.y,
                                                          placement.w, placement.h),
-                  placement.owner_player);
+                  placement.players_mask);
     }
     return ok;
 }
@@ -1531,7 +1532,7 @@ static void draw_text_tags(Hud& hud, Hud::Impl& s, const WorldContext& ctx, f32 
     const u32 sw = s.screen_w, sh = s.screen_h;
     for (auto& t : s.text_tags) {
         if (!t.alive || !t.visible || t.text.empty()) continue;
-        if (t.owner_player != UINT32_MAX && t.owner_player != s.local_player) continue;
+        if (!(t.players_mask & (1u << s.local_player))) continue;
 
         // Anchor: attached unit's interpolated position (+ z_offset), or
         // the raw world_pos if unattached.
@@ -1825,7 +1826,7 @@ TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
     t.age        = 0.0f;
     t.lifespan     = info.lifespan;
     t.fadepoint    = info.fadepoint;
-    t.owner_player = info.owner_player;
+    t.players_mask = info.players_mask;
 
     // MP sync: fire-and-forget creation. Clients run the animation
     // locally from identical params (same lifespan / velocity / fadepoint).
@@ -1838,7 +1839,7 @@ TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
                   info.color.rgba,
                   info.velocity_x, info.velocity_y,
                   info.lifespan, info.fadepoint),
-              info.owner_player);
+              info.players_mask);
 
     return TextTagId{ idx, t.generation };
 }
@@ -4967,7 +4968,7 @@ void Hud::set_label_text(std::string_view id, std::string_view text) {
         l->text.assign(text);
         emit_sync(*m_impl,
                   uldum::network::build_hud_set_label_text(id, text),
-                  n->owner_player);
+                  n->players_mask);
     }
 }
 
@@ -4979,7 +4980,7 @@ void Hud::set_bar_fill(std::string_view id, f32 fill) {
         b->fill = fill;
         emit_sync(*m_impl,
                   uldum::network::build_hud_set_bar_fill(id, fill),
-                  n->owner_player);
+                  n->players_mask);
     }
 }
 
@@ -4990,7 +4991,7 @@ void Hud::set_node_visible(std::string_view id, bool visible) {
     n->visible = visible;
     emit_sync(*m_impl,
               uldum::network::build_hud_set_node_visible(id, visible),
-              n->owner_player);
+              n->players_mask);
 }
 
 void Hud::set_image_source(std::string_view id, std::string_view source) {
@@ -5001,7 +5002,7 @@ void Hud::set_image_source(std::string_view id, std::string_view source) {
         im->source.assign(source);
         emit_sync(*m_impl,
                   uldum::network::build_hud_set_image_source(id, source),
-                  n->owner_player);
+                  n->players_mask);
     }
 }
 
@@ -5013,7 +5014,7 @@ void Hud::set_button_enabled(std::string_view id, bool enabled) {
         btn->enabled = enabled;
         emit_sync(*m_impl,
                   uldum::network::build_hud_set_button_enabled(id, enabled),
-                  n->owner_player);
+                  n->players_mask);
     }
 }
 

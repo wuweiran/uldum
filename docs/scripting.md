@@ -354,7 +354,7 @@ GetHeroXP(unit) → int
 ### Player API
 
 ```lua
-GetPlayer(slot) → player
+Player(slot) → player
 GetPlayerName(player) → string
 IsPlayerAlly(player1, player2) → bool
 IsPlayerEnemy(player1, player2) → bool

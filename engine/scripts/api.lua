@@ -635,10 +635,10 @@ function GetHeroXP(unit) end
 -- Player
 --------------------------------------------------------------------------------
 
---- Get a player by slot index (0-based).
+--- Construct a player handle for slot index (0-based).
 --- @param slot number
 --- @return player
-function GetPlayer(slot) end
+function Player(slot) end
 
 --- @param player player
 --- @return string
@@ -763,14 +763,18 @@ function UnitShareVision(unit, player, on) end
 --- @param x number
 --- @param y number
 --- @param z number
---- @return number   effect handle (0 on failure)
-function CreateEffect(name, x, y, z) end
+--- @param opts table?  { players = Player | {Player, ...} } selects which
+---                     clients receive the effect; omit for broadcast.
+--- @return number      effect handle (0 on failure)
+function CreateEffect(name, x, y, z, opts) end
 
 --- Create a persistent effect attached to a unit. Follows the unit. Returns handle.
 --- @param name string
 --- @param unit unit
---- @return number   effect handle (0 on failure)
-function CreateEffectOnUnit(name, unit) end
+--- @param attach_point string?
+--- @param opts table?  { players = ... } as above
+--- @return number      effect handle (0 on failure)
+function CreateEffectOnUnit(name, unit, attach_point, opts) end
 
 --- Destroy a persistent effect by handle.
 --- @param handle number
@@ -781,12 +785,15 @@ function DestroyEffect(handle) end
 --- @param x number
 --- @param y number
 --- @param z number
-function PlayEffect(name, x, y, z) end
+--- @param opts table?  { players = ... } as above
+function PlayEffect(name, x, y, z, opts) end
 
 --- Play a fire-and-forget effect at a unit's position.
 --- @param name string
 --- @param unit unit
-function PlayEffectOnUnit(name, unit) end
+--- @param attach_point string?
+--- @param opts table?  { players = ... } as above
+function PlayEffectOnUnit(name, unit, attach_point, opts) end
 
 --- Engine-defined effects:
 ---   "hit_spark"    — orange sparks on attack hit

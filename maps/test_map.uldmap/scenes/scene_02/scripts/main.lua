@@ -14,16 +14,16 @@ local abilities = require("abilities")
 function main()
     Log("[Scene02] main() called — setting up ability test")
 
-    local player1 = GetPlayer(0)   -- heroes
-    local player2 = GetPlayer(1)   -- creeps
+    local player1 = Player(0)   -- heroes
+    local player2 = Player(1)   -- creeps
 
     -- Wave panel: top-center, visible only to player 0.
-    -- `owner = GetPlayer(0)` marks the node as player-0-owned — the HUD
+    -- `owner = Player(0)` marks the node as player-0-owned — the HUD
     -- render filter hides it from anyone else's screen, and once MP sync
     -- lands, the host only sends these updates to player 0's client.
     CreateNode("wave_panel", {
         anchor = "tc", x = 0, y = 20, w = 280, h = 48,
-        owner  = GetPlayer(0),
+        owner  = Player(0),
     })
 
     -- Find preplaced heroes (world origin = map center)
@@ -203,7 +203,7 @@ function main()
 
     CreateNode("portal_dialog", {
         anchor = "mc", x = 0, y = 0, w = 340, h = 150,
-        owner  = GetPlayer(0),
+        owner  = Player(0),
     })
 
     -- Push every player-0 unit currently inside the portal region out
@@ -269,7 +269,7 @@ function main()
 
         Log("[Scene02] Portal entered — panning camera")
         dialog_open = true   -- block re-entries during the pan window
-        PanCamera(GetPlayer(0), portal_x, portal_y, PORTAL_PAN_DURATION)
+        PanCamera(Player(0), portal_x, portal_y, PORTAL_PAN_DURATION)
 
         CreateTimer(PORTAL_PAN_DURATION, false, function()
             Log("[Scene02] Pan complete — opening dialog")

@@ -165,8 +165,8 @@ Node* parse_node(const nlohmann::json& jn, Node& parent, const Rect& parent_rect
     if (auto v = jn.find("visible"); v != jn.end() && v->is_boolean()) {
         node->visible = v->get<bool>();
     }
-    if (auto ov = jn.find("owner_player"); ov != jn.end() && ov->is_number_unsigned()) {
-        node->owner_player = ov->get<u32>();
+    if (auto ov = jn.find("players_mask"); ov != jn.end() && ov->is_number_unsigned()) {
+        node->players_mask = ov->get<u32>();
     }
 
     if (auto it = jn.find("children"); it != jn.end() && it->is_array()) {
@@ -873,7 +873,7 @@ bool instantiate_template(Hud& hud, std::string_view template_id,
     patched["y"]            = placement.y;
     patched["w"]            = placement.w;
     patched["h"]            = placement.h;
-    patched["owner_player"] = placement.owner_player;
+    patched["players_mask"] = placement.players_mask;
 
     // Same physical→dp conversion as the composite parser above so
     // Lua-supplied placement coords are interpreted in dp, not raw

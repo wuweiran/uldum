@@ -931,7 +931,7 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
             // Server only sent us nodes we should see, so local_player is
             // already the implicit owner; mark broadcast so the render
             // filter accepts it regardless of which slot this client is on.
-            pl.owner_player = UINT32_MAX;
+            pl.players_mask = UINT32_MAX;
             m_hud->instantiate_template(template_id, pl);
         }
         break;
@@ -999,7 +999,7 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         info.velocity_y = r.read_f32();
         info.lifespan   = r.read_f32();
         info.fadepoint  = r.read_f32();
-        info.owner_player = UINT32_MAX;  // server routed here, so it's for us
+        info.players_mask = UINT32_MAX;  // server routed here, so it's for us
         if (m_hud) m_hud->create_text_tag(info);
         break;
     }
@@ -1010,24 +1010,24 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     }
 }
 
-void NetworkManager::host_hud_sync(const std::vector<u8>& packet, u32 owner_player) {
+void NetworkManager::host_hud_sync(const std::vector<u8>& packet, u32 players_mask) {
     if (m_mode != Mode::Host || !m_transport) return;
-    if (owner_player == UINT32_MAX) {
+    if (players_mask == UINT32_MAX) {
         // Broadcast — every connected peer sees it.
         m_transport->broadcast(packet, true);
         return;
     }
-    // Targeted — find the peer whose player matches and send just to them.
-    // Peers whose slot doesn't match never know the node exists.
+    // Targeted — send to each peer whose player bit is set in the mask.
+    // Peers outside the mask never know the node exists.
     for (const auto& p : m_peers) {
-        if (p.player.id == owner_player) {
+        if (players_mask & (1u << p.player.id)) {
             m_transport->send(p.peer_id, packet, true);
-            return;
         }
     }
-    // No peer for that player (they may be disconnected or the host
-    // itself plays the slot). The host's own Hud already applied the
-    // mutation locally at the Lua binding layer, so nothing else to do.
+    // Players in the mask without a peer (disconnected, or the host
+    // itself plays one of them) — the host's own Hud already applied
+    // the mutation locally at the Lua binding layer, so nothing else
+    // to do.
 }
 
 void NetworkManager::send_node_event(std::string_view node_id, NodeEventKind kind) {

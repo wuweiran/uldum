@@ -120,9 +120,9 @@ public:
     void set_script(script::ScriptEngine* scr)  { m_script = scr; }
 
     // Host: route a packet built by Hud's sync_fn to the matching peer(s).
-    // owner_player == UINT32_MAX broadcasts; specific slot id looks up the
-    // PeerInfo with that player and sends to that peer only.
-    void host_hud_sync(const std::vector<u8>& packet, u32 owner_player);
+    // `players_mask` is a bitmask of player ids that should receive the
+    // packet (UINT32_MAX = broadcast).
+    void host_hud_sync(const std::vector<u8>& packet, u32 players_mask);
 
     // Client: report a HUD node event (button press, etc.) to the host.
     void send_node_event(std::string_view node_id, NodeEventKind kind);

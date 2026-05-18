@@ -985,8 +985,7 @@ inline UpdateData parse_update(std::span<const u8> data) {
 // ── HUD sync builders + parsers (16c-v) ──────────────────────────────────
 // One message per atom mutation. Opcodes live in the 0x7X block. Target
 // filtering is transport-level: server picks which peer(s) to send each
-// message to based on the node's `owner_player`. A node without an owner
-// is broadcast.
+// message to based on the node's `players_mask`. UINT32_MAX = broadcast.
 
 inline std::vector<u8> build_hud_create_node(std::string_view template_id,
                                               std::string_view anchor,

@@ -250,7 +250,7 @@ public:
     struct Placement {
         std::string_view anchor = "tl";
         f32 x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
-        u32 owner_player = UINT32_MAX;   // broadcast by default
+        u32 players_mask = UINT32_MAX;   // broadcast by default (every bit set)
     };
     bool instantiate_template(std::string_view id, const Placement& placement);
 
@@ -639,9 +639,10 @@ public:
     // protocol messages and sends them to the appropriate client peer(s).
     // The callback receives:
     //   - an opaque byte packet (ready-to-send)
-    //   - the owning player (UINT32_MAX = broadcast, else target slot)
+    //   - the target player mask (UINT32_MAX = broadcast, else bitmask of
+    //     player ids that should receive the packet)
     // Offline sessions and clients leave this unset; mutations stay local.
-    using SyncFn = std::function<void(const std::vector<u8>& packet, u32 owner_player)>;
+    using SyncFn = std::function<void(const std::vector<u8>& packet, u32 players_mask)>;
     void set_sync_fn(SyncFn fn);
 
     // ── Button event callback (for input → event routing) ─────────────────

@@ -256,6 +256,10 @@ private:
         glm::vec3   position;
         u32         entity_id;     // UINT32_MAX = free-position
         std::string attach_point;
+        // Per-player target mask (bit N = player N). UINT32_MAX = broadcast.
+        // ANDed with fog visibility at dispatch time, so a player outside
+        // the mask never receives the effect even if they could see it.
+        u32         target_mask = UINT32_MAX;
         std::unordered_set<u32> delivered;
     };
     std::vector<ActiveEffect> m_active_effects;

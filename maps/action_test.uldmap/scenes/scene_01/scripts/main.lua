@@ -12,8 +12,8 @@ require("combat")
 function main()
     Log("[Action] Scene setup starting")
 
-    local player0 = GetPlayer(0)   -- hero
-    local player1 = GetPlayer(1)   -- creeps
+    local player0 = Player(0)   -- hero
+    local player1 = Player(1)   -- creeps
 
     register_armor_system()
     register_hit_vfx()

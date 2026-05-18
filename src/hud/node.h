@@ -33,9 +33,10 @@ public:
 
     // MP ownership: which player's HUD this node lives in. UINT32_MAX =
     // broadcast (every connected client sees it). Assigned at creation
-    // from the Lua `owner` field; the host's sync callback filters
-    // network messages by this.
-    u32 owner_player = UINT32_MAX;
+    // from the Lua `players` field; the host's sync callback filters
+    // network messages by this. Bit N = player N; UINT32_MAX = broadcast
+    // (every bit set).
+    u32 players_mask = UINT32_MAX;
 
     virtual ~Node() = default;
 
@@ -79,10 +80,10 @@ public:
             && y >= rect.y && y < rect.y + rect.h;
     }
 
-    // True iff this node is visible to the given local player. Broadcast
-    // (owner == UINT32_MAX) means visible to everyone.
+    // True iff this node is visible to the given local player. UINT32_MAX
+    // = every bit set = visible to everyone.
     bool is_owned_by(u32 player_id) const {
-        return owner_player == UINT32_MAX || owner_player == player_id;
+        return (players_mask & (1u << player_id)) != 0;
     }
 
     // Draw self then children (children on top). Called inside Hud::render().

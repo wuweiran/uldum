@@ -47,9 +47,9 @@ struct TemplatePlacement {
     f32 y = 0.0f;
     f32 w = 0.0f;
     f32 h = 0.0f;
-    // MP ownership: UINT32_MAX = broadcast (all clients). Specific slot
-    // id = only that player's client sees it and gets sync messages.
-    u32 owner_player = UINT32_MAX;
+    // MP target mask: bit N = player N receives sync messages. UINT32_MAX
+    // (every bit set) = broadcast.
+    u32 players_mask = UINT32_MAX;
 };
 
 // Instantiate a node template previously registered from hud.json into
