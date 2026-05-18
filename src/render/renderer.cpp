@@ -3448,12 +3448,6 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
                                           aq->clips.front() != anim.script_clip_name;
                 if (!anim.script_controlled || clip_changed) {
                     i32 idx = find_clip_by_name(*anim.model, aq->clips.front());
-                    f32 clip_dur = (idx >= 0 && idx < (i32)anim.model->animations.size())
-                                    ? anim.model->animations[idx].duration : 0.0f;
-                    size_t num_channels = (idx >= 0 && idx < (i32)anim.model->animations.size())
-                                           ? anim.model->animations[idx].channels.size() : 0;
-                    log::info(TAG, "[AnimQueue] id={} clip='{}' idx={} duration={:.2f}s channels={} (changed={})",
-                              id, aq->clips.front(), idx, clip_dur, num_channels, clip_changed);
                     if (idx >= 0) {
                         anim.state_to_clip[static_cast<u8>(AnimState::Custom)] = idx;
                         anim.script_looping = (aq->clips.size() == 1) && aq->looping;
@@ -3482,20 +3476,6 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
                                anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
             }
             update_animation(anim, frame_dt);
-            // Periodic projectile-anim trace: state, current clip time
-            // vs duration, playback speed, dt. Want to see anim.time
-            // advance roughly proportional to wall-clock dt.
-            if (world.projectiles.has(id)) {
-                static u32 tick = 0;
-                if ((tick++ & 0xF) == 0) {  // every 16 calls
-                    i32 ci = anim.state_to_clip[static_cast<u8>(anim.current_state)];
-                    f32 dur = (ci >= 0 && ci < (i32)anim.model->animations.size())
-                              ? anim.model->animations[ci].duration : 0.0f;
-                    log::info(TAG, "[ProjAnim] id={} state={} clip_idx={} time={:.3f}/{:.3f}s speed={:.2f} dt={:.4f}s finished={}",
-                              id, (int)anim.current_state, ci, anim.time, dur,
-                              anim.playback_speed, frame_dt, anim.finished);
-                }
-            }
 
             // Advance the queue if the script-driven clip just finished.
             if (anim.script_controlled && anim.finished && !anim.script_looping && aq) {
@@ -3537,49 +3517,25 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
             if (!renderable.visible) continue;
 
             auto* lm = get_or_load_model(renderable.model_path);
-            const bool is_proj = world.projectiles.has(id);
-            if (!lm || !lm->is_skinned) {
-                if (is_proj) log::info(TAG, "[ProjSkinned] id={} skipped: model='{}' lm={} skinned={}",
-                                        id, renderable.model_path,
-                                        (void*)lm, lm ? lm->is_skinned : false);
-                continue;
-            }
+            if (!lm || !lm->is_skinned) continue;
 
             const auto* transform = transforms.get(id);
-            if (!transform) {
-                if (is_proj) log::info(TAG, "[ProjSkinned] id={} skipped: no Transform", id);
-                continue;
-            }
+            if (!transform) continue;
 
             // Skip enemies hidden by fog of war
-            if (is_fog_hidden(world, id, *transform)) {
-                if (is_proj) log::info(TAG, "[ProjSkinned] id={} skipped: fog-hidden", id);
-                continue;
-            }
+            if (is_fog_hidden(world, id, *transform)) continue;
 
             // Frustum cull: same bounding-sphere test the static draw
             // batches do. The skinned path was missing this and was
             // re-binding + re-uploading bones for off-screen units.
             f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
             if (!draw_frustum.is_sphere_visible(transform->interp_position(alpha),
-                                                cull_radius)) {
-                if (is_proj) log::info(TAG, "[ProjSkinned] id={} skipped: frustum cull (radius={:.1f})",
-                                        id, cull_radius);
-                continue;
-            }
+                                                cull_radius)) continue;
 
             auto it = m_anim_instances.find(id);
-            if (it == m_anim_instances.end()) {
-                if (is_proj) log::info(TAG, "[ProjSkinned] id={} skipped: no anim_instance", id);
-                continue;
-            }
+            if (it == m_anim_instances.end()) continue;
             auto& anim = it->second;
-            if (!anim.bone_descriptor) {
-                if (is_proj) log::info(TAG, "[ProjSkinned] id={} skipped: anim has no bone_descriptor", id);
-                continue;
-            }
-            if (is_proj) log::info(TAG, "[ProjSkinned] id={} DRAWN scale={}",
-                                    id, transform->scale);
+            if (!anim.bone_descriptor) continue;
 
             // Upload this entity's bone matrices to its own SSBO
             if (!anim.bone_matrices.empty() && anim.bone_mapped) {

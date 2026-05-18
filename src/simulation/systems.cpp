@@ -1450,7 +1450,6 @@ void system_items(World& world, float /*dt*/) {
 static void destroy_projectile_entity(World& world, u32 id) {
     auto* info = world.handle_infos.get(id);
     if (!info) return;
-    log::info("Projectile", "[Teardown] id={} death_timer expired, removing entity", id);
     Handle h; h.id = id; h.generation = info->generation;
     world.transforms.remove(id);
     world.handle_infos.remove(id);
@@ -1496,8 +1495,6 @@ static void begin_destroy_projectile(World& world, u32 id) {
             if (dur > 0.0f) timer = dur;
         }
     }
-    log::info("Projectile", "[Destroy] id={} entering dying state, death_timer={:.2f}s",
-              id, timer);
     Unit pu = make_proj_unit(world, id);
     if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
     p->dying       = true;
