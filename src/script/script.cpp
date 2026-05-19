@@ -257,6 +257,14 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         set_context_damage_type(damage_type);
         fire_event("global_damage", target.id);
         fire_event("unit_damage", target.id);
+        // Auto-attack landing — fires an additional, narrower event so
+        // triggers that only care about attacks (not generic damage)
+        // don't have to filter `damage_type == "attack"` themselves.
+        // GetAttacker() / GetTriggerUnit() return source / target.
+        if (damage_type == "attack") {
+            fire_event("global_attacked", target.id);
+            fire_event("unit_attacked",   target.id);
+        }
         amount = get_context_damage_amount();
 
         m_ctx_unit          = saved_unit;
@@ -899,6 +907,11 @@ void ScriptEngine::bind_api() {
     lua["GetUnitZ"] = [&](simulation::Unit u) -> f32 {
         auto* t = sim.world().transforms.get(u.id); return t ? t->position.z : 0;
     };
+    lua["GetUnitPosition"] = [&](simulation::Unit u) -> std::tuple<f32, f32, f32> {
+        auto* t = sim.world().transforms.get(u.id);
+        if (!t) return {0, 0, 0};
+        return {t->position.x, t->position.y, t->position.z};
+    };
     lua["SetUnitPosition"] = [&](simulation::Unit u, f32 x, f32 y) {
         auto* t = sim.world().transforms.get(u.id);
         if (t) { t->position.x = x; t->position.y = y; t->position.z = ::uldum::map::sample_height(terrain_ref,x, y); }
@@ -996,6 +1009,42 @@ void ScriptEngine::bind_api() {
         return it != ab->string_attrs.end() ? it->second : "";
     };
 
+    lua["SetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name,
+                                         const std::string& value) {
+        auto* ab = sim.world().attribute_blocks.get(u.id);
+        if (!ab) return;
+        ab->string_attrs[name] = value;
+    };
+
+    // Map-defined states (mana, energy, rage, etc.). Per-unit live
+    // values live in `state_blocks`; `unit_type.states` only defines
+    // the schema (max + regen) used to seed each unit on spawn.
+
+    lua["GetUnitState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        auto* sb = sim.world().state_blocks.get(u.id);
+        if (!sb) return 0;
+        auto it = sb->states.find(name);
+        return it != sb->states.end() ? it->second.current : 0;
+    };
+
+    lua["GetUnitMaxState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        auto* sb = sim.world().state_blocks.get(u.id);
+        if (!sb) return 0;
+        auto it = sb->states.find(name);
+        return it != sb->states.end() ? it->second.max : 0;
+    };
+
+    lua["SetUnitState"] = [&](simulation::Unit u, const std::string& name, f32 value) {
+        auto* sb = sim.world().state_blocks.get(u.id);
+        if (!sb) return;
+        auto it = sb->states.find(name);
+        if (it == sb->states.end()) return;
+        f32 v = value;
+        if (v < 0)             v = 0;
+        if (v > it->second.max) v = it->second.max;
+        it->second.current = v;
+    };
+
     // Status flags. The flag arg is a lowercase string ("stunned",
     // "silenced", "muted", "disarmed", "rooted", "invulnerable",
     // "magic_immune", "untargetable", "paused"). Unknown strings are
@@ -1055,6 +1104,21 @@ void ScriptEngine::bind_api() {
     lua["GetUnitOwner"] = [&, player_or_nil](simulation::Unit u) -> sol::object {
         auto* o = sim.world().owners.get(u.id);
         return o ? player_or_nil(o->player) : sol::make_object(*m_lua, sol::nil);
+    };
+
+    // SetUnitOwner — change ownership in place. Vision is re-stamped
+    // from per-unit ownership on the next sim tick (Vision::update
+    // walks every unit each pass), so we don't force a synchronous
+    // restamp here — the new owner gains the unit's sight and the
+    // previous owner loses it within one tick. Note: selection state
+    // is per-client and not touched by this call; a script that
+    // transfers a unit out of a player's control should clear the
+    // selection on that client separately if it matters.
+    lua["SetUnitOwner"] = [&](simulation::Unit u, simulation::Player p) {
+        if (!sim.world().validate(u)) return;
+        auto* o = sim.world().owners.get(u.id);
+        if (!o) return;
+        o->player = p;
     };
 
     // ── Order API ─────────────────────────────────────────────────────
@@ -1220,6 +1284,10 @@ void ScriptEngine::bind_api() {
         return simulation::get_ability_level(sim.world(), u, ability_id);
     };
 
+    lua["SetUnitAbilityLevel"] = [&](simulation::Unit u, const std::string& ability_id, u32 level) {
+        simulation::set_ability_level(sim.world(), sim.abilities(), u, ability_id, level);
+    };
+
     lua["GetAbilityStackCount"] = [&](simulation::Unit u, const std::string& ability_id) -> u32 {
         return simulation::get_ability_stack_count(sim.world(), u, ability_id);
     };
@@ -1248,6 +1316,15 @@ void ScriptEngine::bind_api() {
                 a.cooldown_remaining = std::max(0.0f, secs);
                 return;
             }
+        }
+    };
+
+    lua["ResetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id) {
+        if (!sim.world().validate(u)) return;
+        auto* aset = sim.world().ability_sets.get(u.id);
+        if (!aset) return;
+        for (auto& a : aset->abilities) {
+            if (a.ability_id == ability_id) { a.cooldown_remaining = 0.0f; return; }
         }
     };
 
@@ -1299,15 +1376,33 @@ void ScriptEngine::bind_api() {
 
     // ── Spatial Query API ─────────────────────────────────────────────
 
-    lua["GetUnitsInRange"] = [&](f32 x, f32 y, f32 radius, sol::optional<sol::table> filter_table) -> sol::table {
+    // Shared filter parser for spatial queries. Mirrors the keys
+    // documented on GetUnitsInRange / GetUnitsInRect.
+    auto parse_unit_filter = [](sol::optional<sol::table> filter_table) -> simulation::UnitFilter {
         simulation::UnitFilter filter;
-        if (filter_table) {
-            auto& ft = *filter_table;
-            if (ft["owner"].valid()) filter.owner = ft["owner"].get<simulation::Player>();
-            if (ft["enemy_of"].valid()) filter.enemy_of = ft["enemy_of"].get<simulation::Player>();
-            if (ft["alive_only"].valid()) filter.alive_only = ft["alive_only"].get<bool>();
-        }
+        if (!filter_table) return filter;
+        auto& ft = *filter_table;
+        if (ft["owner"].valid())      filter.owner      = ft["owner"].get<simulation::Player>();
+        if (ft["enemy_of"].valid())   filter.enemy_of   = ft["enemy_of"].get<simulation::Player>();
+        if (ft["alive_only"].valid()) filter.alive_only = ft["alive_only"].get<bool>();
+        return filter;
+    };
+
+    lua["GetUnitsInRange"] = [&, parse_unit_filter](f32 x, f32 y, f32 radius,
+                                                     sol::optional<sol::table> filter_table) -> sol::table {
+        auto filter = parse_unit_filter(filter_table);
         auto units = sim.spatial_grid().units_in_range(sim.world(), {x, y, 0}, radius, filter);
+        sol::table result = m_lua->create_table();
+        for (size_t i = 0; i < units.size(); ++i) {
+            result[i + 1] = units[i];
+        }
+        return result;
+    };
+
+    lua["GetUnitsInRect"] = [&, parse_unit_filter](f32 x, f32 y, f32 width, f32 height,
+                                                    sol::optional<sol::table> filter_table) -> sol::table {
+        auto filter = parse_unit_filter(filter_table);
+        auto units = sim.spatial_grid().units_in_rect(sim.world(), x, y, width, height, filter);
         sol::table result = m_lua->create_table();
         for (size_t i = 0; i < units.size(); ++i) {
             result[i + 1] = units[i];
@@ -1347,12 +1442,36 @@ void ScriptEngine::bind_api() {
 
     lua["GetGameTime"] = [&]() -> f32 { return 0; };
 
+    lua["GetGameSpeed"] = [this]() -> f32 { return m_game_speed; };
+
+    // SetGameSpeed — single-player only. Adjusting tick cadence on one
+    // peer in MP would desync the others, so the MP path is a logged
+    // no-op rather than a hard error (lets shared scripts call it
+    // unconditionally with the same effect in SP vs. MP).
+    lua["SetGameSpeed"] = [this](f32 speed) {
+        if (!m_singleplayer) {
+            log::warn(TAG, "SetGameSpeed({}) ignored — single-player only", speed);
+            return;
+        }
+        if (speed < 0.0f) speed = 0.0f;
+        m_game_speed = speed;
+    };
+
     lua["GetDistanceBetween"] = [&](simulation::Unit u1, simulation::Unit u2) -> f32 {
         auto* t1 = sim.world().transforms.get(u1.id);
         auto* t2 = sim.world().transforms.get(u2.id);
         if (!t1 || !t2) return 0;
         auto d = t1->position - t2->position; d.z = 0;
         return glm::length(d);
+    };
+
+    // Radians from u1 toward u2, measured from +X axis (atan2 convention).
+    lua["GetAngleBetween"] = [&](simulation::Unit u1, simulation::Unit u2) -> f32 {
+        auto* t1 = sim.world().transforms.get(u1.id);
+        auto* t2 = sim.world().transforms.get(u2.id);
+        if (!t1 || !t2) return 0;
+        return std::atan2(t2->position.y - t1->position.y,
+                          t2->position.x - t1->position.x);
     };
 
     lua["RandomInt"] = [](i32 min, i32 max) -> i32 { return min + (std::rand() % (max - min + 1)); };
@@ -2057,6 +2176,14 @@ void ScriptEngine::bind_trigger_api() {
         return unit_or_nil(make_unit(sim.world(), m_ctx_killer));
     };
 
+    // GetAttacker — source of the current attack event. The target is
+    // `GetTriggerUnit()`. Valid inside global_attacked / unit_attacked
+    // actions; warns + returns nil elsewhere.
+    lua["GetAttacker"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+        warn_wrong_event("GetAttacker", {"global_attacked", "unit_attacked"});
+        return unit_or_nil(make_unit(sim.world(), m_ctx_damage_source));
+    };
+
     // Heal context
     lua["GetHealSource"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
         warn_wrong_event("GetHealSource", {"global_heal", "unit_heal"});
@@ -2524,6 +2651,26 @@ void ScriptEngine::bind_hud_api() {
     lua["SetBarFill"]       = [this](const std::string& id, f32 fill)              { if (m_hud) m_hud->set_bar_fill(id, fill); };
     lua["SetImageSource"]   = [this](const std::string& id, const std::string& p)  { if (m_hud) m_hud->set_image_source(id, p); };
     lua["SetButtonEnabled"] = [this](const std::string& id, bool enabled)          { if (m_hud) m_hud->set_button_enabled(id, enabled); };
+
+    // DisplayMessage(loc, duration?, opts?) — push a localized line
+    // into the `composites.display_message` overlay. Player-facing
+    // text always flows through L(), same enforcement as text-tags /
+    // label text: plain strings are warned + dropped. `opts.players`
+    // (Player | {Player, ...}) or `opts.owner` (single Player) filters
+    // which players see the line; omit for broadcast.
+    lua["DisplayMessage"] = [this](sol::object text,
+                                    sol::optional<f32> duration,
+                                    sol::optional<sol::table> opts) {
+        if (!m_hud) return;
+        auto loc = parse_localized_string(text, "DisplayMessage");
+        if (loc.empty()) return;
+        u32 mask = UINT32_MAX;
+        if (opts) {
+            if ((*opts)["players"].valid()) mask = parse_players_mask((*opts)["players"]);
+            else if ((*opts)["owner"].valid()) mask = parse_players_mask((*opts)["owner"]);
+        }
+        m_hud->display_message(std::move(loc), duration.value_or(0.0f), mask);
+    };
 
     // ShowNode / HideNode — short-hand that mirrors ui.md's preferred
     // call form for one-shot toggles (popups, dialogs, alerts). Both

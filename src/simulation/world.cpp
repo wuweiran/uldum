@@ -874,6 +874,36 @@ bool remove_ability(World& world, Unit unit, std::string_view ability_id) {
     return true;
 }
 
+bool set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
+                        std::string_view ability_id, u32 level) {
+    if (!world.validate(unit)) return false;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return false;
+    const auto* def = reg.get(ability_id);
+    if (!def) return false;
+    if (level < 1)                     level = 1;
+    if (level > def->max_level)        level = def->max_level;
+
+    // Operates on the first matching instance — same convention the
+    // rest of the engine uses for stackable abilities (e.g. cooldown
+    // reads). Stack-aware level mutation would need a separate API.
+    for (auto& inst : aset->abilities) {
+        if (inst.ability_id != ability_id) continue;
+        if (inst.level == level) return true;
+
+        // Swap flag refcounts atomically: drop the old level's flag
+        // contributions, install the new level's modifiers + flags,
+        // bump refcounts for what the new level brought in.
+        flag_refcount_delta(world, unit.id, inst.active_flags, -1);
+        inst.level = level;
+        populate_instance_from_def(inst, def, level);
+        flag_refcount_delta(world, unit.id, inst.active_flags, +1);
+        recalculate_modifiers(world, unit.id);
+        return true;
+    }
+    return false;
+}
+
 bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target,
                            std::string_view ability_id, Unit source, f32 duration) {
     if (!world.validate(target)) return false;

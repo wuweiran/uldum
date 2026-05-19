@@ -1020,6 +1020,22 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         if (m_hud) m_hud->create_text_tag(info);
         break;
     }
+    case MsgType::S_HUD_DISPLAY_MESSAGE: {
+        ByteReader r(data);
+        r.read_u8();
+        i18n::LocalizedString loc;
+        loc.key = r.read_string();
+        u8 n = r.read_u8();
+        loc.args.reserve(n);
+        for (u8 i = 0; i < n; ++i) {
+            std::string k = r.read_string();
+            std::string v = r.read_string();
+            loc.args.emplace_back(std::move(k), std::move(v));
+        }
+        f32 duration = r.read_f32();
+        if (m_hud) m_hud->display_message(std::move(loc), duration);
+        break;
+    }
 
     default:
         log::warn(TAG, "Client received unknown message type 0x{:02x}", static_cast<u8>(type));

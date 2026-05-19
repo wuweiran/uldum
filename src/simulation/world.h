@@ -258,6 +258,12 @@ bool     apply_passive_ability(World& world, const AbilityRegistry& reg, Unit ta
 bool     has_ability(const World& world, Unit unit, std::string_view ability_id);
 u32      get_ability_stack_count(const World& world, Unit unit, std::string_view ability_id);
 u32      get_ability_level(const World& world, Unit unit, std::string_view ability_id);
+// Change the level of the first matching ability instance. Re-populates
+// active modifiers / flags from the new level (with flag refcount
+// bookkeeping) and re-runs `recalculate_modifiers`. Returns false when
+// the unit doesn't have the ability.
+bool     set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
+                            std::string_view ability_id, u32 level);
 
 // Recalculate effective attributes from base + all active modifiers.
 void     recalculate_modifiers(World& world, u32 id);

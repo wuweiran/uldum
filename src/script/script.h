@@ -165,6 +165,13 @@ public:
     void set_singleplayer(bool sp) { m_singleplayer = sp; }
     bool is_singleplayer() const   { return m_singleplayer; }
 
+    // Game-speed multiplier consumed by App's tick loop (1.0 = normal,
+    // 2.0 = double, 0 = paused). Single-player only — SetGameSpeed
+    // from Lua warns + no-ops in MP because mutating sim cadence on
+    // one peer would desync the others.
+    f32  game_speed() const { return m_game_speed; }
+    void set_game_speed(f32 v) { m_game_speed = v; }
+
     // Fire a game event — evaluates all triggers registered for this event.
     void fire_event(std::string_view event_name, u32 unit_id = UINT32_MAX,
                     std::string_view ability_id = "", u32 player_id = UINT32_MAX,
@@ -334,6 +341,7 @@ private:
 
     bool m_paused        = false;  // PauseGame()/UnpauseGame() — App reads via is_paused()
     bool m_singleplayer  = false;  // IsSinglePlayer() — App sets once at init
+    f32  m_game_speed    = 1.0f;   // SetGameSpeed — App's tick loop reads via game_speed()
 };
 
 } // namespace uldum::script

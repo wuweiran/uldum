@@ -88,6 +88,31 @@ function GetTriggerPlayer() end
 --- @return string
 function GetTriggerAbilityId() end
 
+--- The HUD node id that fired the current node-event trigger
+--- (e.g. button_pressed). Empty string outside a node-event action.
+--- @return string
+function GetTriggerNode() end
+
+--- The item the current event is about, or nil. Set during item events
+--- (picked_up, dropped) and during ability casts that originated from
+--- an item slot. Hook from EVENT_ABILITY_CAST_FINISHED to drive
+--- consumption / level-up.
+--- @return item?
+function GetTriggerItem() end
+
+--- The region id of the firing region_enter / region_leave action.
+--- Returns UINT32_MAX outside that context.
+--- @return number
+function GetTriggerRegion() end
+
+--- The order type for the current order event. One of: "move",
+--- "attack_move", "attack", "stop", "hold", "patrol", "cast", "train",
+--- "research", "build", "pickup", "drop", "swap_inventory_slot",
+--- "move_direction". For "cast", `GetTriggerAbilityId()` returns the
+--- ability id.
+--- @return string
+function GetTriggerOrderType() end
+
 --- Target unit of a unit-targeted ability.
 --- @return unit
 function GetSpellTargetUnit() end
@@ -128,13 +153,10 @@ function GetDamageType() end
 --- @return unit
 function GetKillingUnit() end
 
---- The attacker in the current attack event.
+--- The attacker in the current EVENT_UNIT_ATTACKED / EVENT_GLOBAL_ATTACKED
+--- event. The target is `GetTriggerUnit()`.
 --- @return unit
 function GetAttacker() end
-
---- The target of the current attack event.
---- @return unit
-function GetAttackTarget() end
 
 --------------------------------------------------------------------------------
 -- Unit Creation & Lifecycle
@@ -335,14 +357,6 @@ function SetUnitOwner(unit, player) end
 --- @return boolean
 function HasClassification(unit, flag) end
 
---- @param unit unit
---- @param flag string
-function AddClassification(unit, flag) end
-
---- @param unit unit
---- @param flag string
-function RemoveClassification(unit, flag) end
-
 --------------------------------------------------------------------------------
 -- Status flags
 --------------------------------------------------------------------------------
@@ -542,19 +556,13 @@ function GetAbilityLevel(unit, ability_id) end
 --- @param unit unit
 --- @param ability_id string
 --- @param level number
-function SetAbilityLevel(unit, ability_id, level) end
+function SetUnitAbilityLevel(unit, ability_id, level) end
 
 --- How many instances of this ability are on the unit (for stackable abilities).
 --- @param unit unit
 --- @param ability_id string
 --- @return number
 function GetAbilityStackCount(unit, ability_id) end
-
---- Reset the duration of an existing passive ability on a unit.
---- @param unit unit
---- @param ability_id string
---- @param duration number?   if omitted, uses the original duration
-function RefreshAbilityDuration(unit, ability_id, duration) end
 
 --- Get the source unit that applied a passive ability.
 --- @param unit unit
@@ -610,26 +618,6 @@ function SetHealAmount(amount) end
 --- @param unit unit
 --- @param killer unit?
 function KillUnit(unit, killer) end
-
---------------------------------------------------------------------------------
--- Hero
---------------------------------------------------------------------------------
-
---- @param unit unit
---- @return number
-function GetHeroLevel(unit) end
-
---- @param unit unit
---- @param level number
-function SetHeroLevel(unit, level) end
-
---- @param unit unit
---- @param xp number
-function AddHeroXP(unit, xp) end
-
---- @param unit unit
---- @return number
-function GetHeroXP(unit) end
 
 --------------------------------------------------------------------------------
 -- Player
@@ -804,6 +792,117 @@ function PlayEffectOnUnit(name, unit, attach_point, opts) end
 ---   "aura_glow"    — continuous blue glow (use with CreateEffectOnUnit)
 
 --------------------------------------------------------------------------------
+-- Audio
+--------------------------------------------------------------------------------
+
+--- Play a positional one-shot sound at a unit's current position.
+--- @param path string   asset path (OGG)
+--- @param unit unit
+function PlaySound(path, unit) end
+
+--- Play a positional one-shot sound at a world point. Z is 0.
+--- @param path string
+--- @param x number
+--- @param y number
+function PlaySoundAtPoint(path, x, y) end
+
+--- Play a non-positional one-shot sound (UI cue, voice line).
+--- @param path string
+function PlaySound2D(path) end
+
+--- Start streaming a music track. Crossfades from the current track.
+--- @param path string
+--- @param fade_in number?   seconds (default 1.0)
+function PlayMusic(path, fade_in) end
+
+--- Stop the current music track.
+--- @param fade_out number?  seconds (default 1.0)
+function StopMusic(fade_out) end
+
+--- Start a looping positional ambient sound at a world point. Returns a
+--- handle for StopAmbientLoop.
+--- @param path string
+--- @param x number
+--- @param y number
+--- @return number   handle (0 on failure)
+function PlayAmbientLoop(path, x, y) end
+
+--- Stop a looping ambient by handle.
+--- @param handle number
+--- @param fade_out number?  seconds (default 0.5)
+function StopAmbientLoop(handle, fade_out) end
+
+--- Set a channel's gain. Channel names: "master" | "sfx" | "music" |
+--- "ambient" | "voice". Volume is linear, 0.0–1.0+ (>1 amplifies).
+--- @param channel string
+--- @param volume number
+function SetVolume(channel, volume) end
+
+--------------------------------------------------------------------------------
+-- Camera
+--------------------------------------------------------------------------------
+-- Per-player. Scripts run on the host only, so each command takes a Player
+-- handle so the host knows whose screen to drive. (X, Y) is the ground
+-- target point — the floor location the camera looks at, matching WC3's
+-- SetCameraPosition / PanCameraTo semantics. Eye position is derived
+-- from current pitch / yaw / zoom so scripts don't redo the math.
+
+--- Snap the player's camera to look at a ground point. No interpolation.
+--- @param player player
+--- @param x number
+--- @param y number
+function SetCameraPosition(player, x, y) end
+
+--- Pan the player's camera to a ground point over `duration` seconds.
+--- @param player player
+--- @param x number
+--- @param y number
+--- @param duration number
+function PanCamera(player, x, y, duration) end
+
+--- Set the player's camera zoom distance.
+--- @param player player
+--- @param zoom number
+function SetCameraZoom(player, zoom) end
+
+--- Shake the player's camera. `intensity` in dp; `duration` in seconds.
+--- @param player player
+--- @param intensity number
+--- @param duration number
+function CameraShake(player, intensity, duration) end
+
+--- Hard-lock the player's camera onto a unit. Pass nil to release.
+--- While locked, the player's WASD / drag / scroll inputs do nothing.
+--- @param player player
+--- @param unit unit?
+function SetCameraLockUnit(player, unit) end
+
+--------------------------------------------------------------------------------
+-- Environment
+--------------------------------------------------------------------------------
+
+--- Override the sun direction (world-space). Useful for cinematic
+--- lighting changes. Vector is normalized internally.
+--- @param x number
+--- @param y number
+--- @param z number
+function SetSunDirection(x, y, z) end
+
+--- Add a point light to the scene. Color is linear RGB in [0, 1]
+--- (engine multiplies by `intensity`). `radius` is the light's falloff
+--- range in world units. There is no `RemovePointLight` yet — lights
+--- live until the session resets.
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param r number
+--- @param g number
+--- @param b number
+--- @param radius number
+--- @param intensity number
+function AddPointLight(x, y, z, r, g, b, radius, intensity) end
+
+--------------------------------------------------------------------------------
 -- Spatial Queries
 --------------------------------------------------------------------------------
 
@@ -824,17 +923,14 @@ function GetUnitsInRange(x, y, radius, filter) end
 --- @return unit[]
 function GetUnitsInRect(x, y, width, height, filter) end
 
---- Find the nearest unit matching a filter.
---- @param x number
---- @param y number
---- @param radius number
---- @param filter table?
---- @return unit?   nil if none found
-function GetNearestUnit(x, y, radius, filter) end
-
 --------------------------------------------------------------------------------
 -- Regions
 --------------------------------------------------------------------------------
+
+--- Create a new empty region. Returns an opaque region handle.
+--- Add geometry with `AddRegionRect` / `AddRegionCircle` before using.
+--- @return region
+function CreateRegion() end
 
 --- Get an authored region from the current scene by its id (the
 --- `id` field in the scene's objects.json `regions[]` array).
@@ -844,21 +940,204 @@ function GetNearestUnit(x, y, radius, filter) end
 --- @return region?
 function GetRegion(id) end
 
+--- Add an axis-aligned rectangle to the region. Corners may be passed
+--- in any order; the region normalises so x0 ≤ x1, y0 ≤ y1.
+--- @param region region
+--- @param x0 number
+--- @param y0 number
+--- @param x1 number
+--- @param y1 number
+function AddRegionRect(region, x0, y0, x1, y1) end
+
+--- Add a circle to the region. Negative radii are clamped to 0.
+--- @param region region
+--- @param cx number
+--- @param cy number
+--- @param radius number
+function AddRegionCircle(region, cx, cy, radius) end
+
+--- Soft-delete a region. Any in-flight enter/leave actions still
+--- complete; the region is fully erased on the next session reset.
+--- @param region region
+function RemoveRegion(region) end
+
 --- @param unit unit
 --- @param region region
 --- @return boolean
 function IsUnitInRegion(unit, region) end
 
 --- @param region region
---- @param filter table?
 --- @return unit[]
-function GetUnitsInRegion(region, filter) end
+function GetUnitsInRegion(region) end
 
 --- Axis-aligned bounding box union over the region's rects and
 --- circles. Returns four zeros if the region has no shapes.
 --- @param region region
 --- @return number, number, number, number   x0, y0, x1, y1
 function GetRegionBounds(region) end
+
+--- Bind a trigger to fire when a unit enters `region`. The trigger's
+--- action can read the entering unit via `GetTriggerUnit()` and the
+--- region via `GetTriggerRegion()`.
+--- @param trig trigger
+--- @param region region
+function TriggerRegisterEnterRegion(trig, region) end
+
+--- Bind a trigger to fire when a unit leaves `region`.
+--- @param trig trigger
+--- @param region region
+function TriggerRegisterLeaveRegion(trig, region) end
+
+--------------------------------------------------------------------------------
+-- Items & Inventory
+--------------------------------------------------------------------------------
+-- Items are a thin collection of abilities. The engine stores two free
+-- integer fields (charges, level) but does not interpret them — map Lua
+-- drives consumption / level-up / merge / drop-on-death.
+
+--- Spawn a free item entity at a world position. Z is sampled from the
+--- terrain. Returns the item handle, or nil if the type id is unknown.
+--- @param type_id string
+--- @param x number
+--- @param y number
+--- @return item?
+function CreateItem(type_id, x, y) end
+
+--- Destroy an item. If the item is carried, its granted abilities are
+--- revoked from the carrier and its inventory slot is cleared first.
+--- @param item item
+function RemoveItem(item) end
+
+--- Put an item into a unit's first free inventory slot. Returns the
+--- slot index that received it, or -1 if the unit has no Inventory
+--- component / no free slot.
+--- @param unit unit
+--- @param item item
+--- @return number
+function GiveItem(unit, item) end
+
+--- Drop the item in `slot` from `unit`'s inventory onto the ground.
+--- Optional `x, y` override the drop point; default is the unit's
+--- current position. Returns true on success.
+--- @param unit unit
+--- @param slot number       0-based
+--- @param x number?
+--- @param y number?
+--- @return boolean
+function UnitDropItemFromSlot(unit, slot, x, y) end
+
+--- Read the item handle in the given inventory slot. Returns nil for
+--- empty slots or invalid slot indices.
+--- @param unit unit
+--- @param slot number   0-based
+--- @return item?
+function UnitGetItemFromSlot(unit, slot) end
+
+--- Number of valid (non-empty) items currently in the unit's inventory.
+--- @param unit unit
+--- @return number
+function UnitItemCount(unit) end
+
+--- Capacity of the unit's inventory (0 if the unit can't hold items).
+--- @param unit unit
+--- @return number
+function UnitInventorySize(unit) end
+
+--- Whether the unit carries at least one item of `type_id`.
+--- @param unit unit
+--- @param type_id string
+--- @return boolean
+function UnitHasItemOfType(unit, type_id) end
+
+--- @param item item
+--- @return string
+function GetItemTypeId(item) end
+
+--- @param item item
+--- @return number
+function GetItemCharges(item) end
+
+--- @param item item
+--- @param n number
+function SetItemCharges(item, n) end
+
+--- @param item item
+--- @return number
+function GetItemLevel(item) end
+
+--- @param item item
+--- @param n number
+function SetItemLevel(item, n) end
+
+--- The unit currently carrying `item`, or nil if it's on the ground.
+--- @param item item
+--- @return unit?
+function GetItemOwner(item) end
+
+--- World position of `item`. Returns the carrier's position when held.
+--- @param item item
+--- @return number, number, number   x, y, z
+function GetItemPosition(item) end
+
+--------------------------------------------------------------------------------
+-- Selection
+--------------------------------------------------------------------------------
+-- The host's view of "what unit ids are currently selected." Wired to
+-- the input preset; mutating it from Lua is visible to the preset on
+-- the next frame.
+
+--- @return number[]   unit ids
+function GetSelectedUnits() end
+
+--- @return number
+function GetSelectedUnitCount() end
+
+--- Replace the selection with a single unit.
+--- @param unit unit
+function SelectUnit(unit) end
+
+--- Action-preset semantic alias for `SelectUnit`. The preset locks
+--- selection to this unit and the HUD action bar reads its abilities.
+--- @param unit unit
+function SetControlledUnit(unit) end
+
+--- Replace the selection with an array of unit ids.
+--- @param unit_ids number[]
+function SelectUnits(unit_ids) end
+
+--- Empty the selection.
+function ClearSelection() end
+
+--- @param unit_id number
+--- @return boolean
+function IsUnitSelected(unit_id) end
+
+--------------------------------------------------------------------------------
+-- Order context (input preset events)
+--------------------------------------------------------------------------------
+-- These read the order currently being dispatched by the local player's
+-- input preset. Distinct from the trigger context (`GetTriggerOrderType`
+-- / `GetOrderTargetUnit` in the trigger-context section): those return
+-- handles, these return raw ids.
+
+--- @return string
+function GetOrderType() end
+
+--- @return number
+function GetOrderTargetX() end
+
+--- @return number
+function GetOrderTargetY() end
+
+--- @return number   unit id (0 if not unit-targeted)
+function GetOrderTargetUnit() end
+
+--- @return number   player id
+function GetOrderPlayer() end
+
+--- True if the order was issued with the shift/queue modifier.
+--- @return boolean
+function IsOrderQueued() end
 
 --------------------------------------------------------------------------------
 -- Timers
@@ -891,10 +1170,21 @@ function GetGameSpeed() end
 --- @param speed number
 function SetGameSpeed(speed) end
 
---- Display a message on screen.
---- @param text string
---- @param duration number?  seconds (default 5)
-function DisplayMessage(text, duration) end
+--- Push a line into the `composites.display_message` overlay (system
+--- messages: "Save point reached", "Defeat the boss within 60s", ...).
+--- Requires LocalizedString — plain strings are warned + dropped.
+--- Newest line sits at the bottom; oldest scrolls off when `max_lines`
+--- is exceeded; each line fades out over its lifespan. If the map
+--- didn't declare the composite, the call is logged to console.
+---
+--- opts fields:
+---   owner    player            single-player target (alias for players={p})
+---   players  player | table    target mask; omit for broadcast
+---
+--- @param text LocalizedString
+--- @param duration number?  seconds (0 / nil = composite's authored default)
+--- @param opts table?
+function DisplayMessage(text, duration, opts) end
 
 --------------------------------------------------------------------------------
 -- I18n
@@ -1034,6 +1324,103 @@ function SetImageSource(id, source) end
 --- @param id string
 --- @param enabled boolean
 function SetButtonEnabled(id, enabled) end
+
+--- Bind a trigger to fire on a node event filtered by node id. `node`
+--- accepts the id string returned by `CreateNode` / `GetNode` (or a
+--- table with a `_id` field for handle-style wrappers). Event names
+--- are node-specific (e.g. "button_pressed" for Button nodes).
+--- @param trig trigger
+--- @param node string
+--- @param event_name string
+function TriggerRegisterNodeEvent(trig, node, event_name) end
+
+--------------------------------------------------------------------------------
+-- HUD: composites (action_bar, minimap, joystick)
+--------------------------------------------------------------------------------
+-- Composites are engine-authored node groups whose layout comes from
+-- hud.json. These calls only toggle visibility / bindings; styling is
+-- not script-driven.
+
+--- Show / hide the action_bar composite (whole bar).
+--- @param visible boolean
+function ActionBarSetVisible(visible) end
+
+--- Show / hide a single action_bar slot. Slot indices are 1-based.
+--- @param slot number
+--- @param visible boolean
+function ActionBarSetSlotVisible(slot, visible) end
+
+--- Bind a specific ability to a slot (action_bar's `binding_mode` must
+--- be "manual" for this to take effect). Passive abilities can be
+--- bound but won't fire when triggered — a log warning surfaces if
+--- the ability is passive / aura.
+--- @param slot number
+--- @param ability_id string
+function ActionBarSetSlot(slot, ability_id) end
+
+--- Remove a manual slot → ability binding. The slot renders empty
+--- afterward (in manual mode).
+--- @param slot number
+function ActionBarClearSlot(slot) end
+
+--- Show / hide the minimap composite.
+--- @param visible boolean
+function MinimapSetVisible(visible) end
+
+--- Show / hide the mobile joystick composite. Inert on desktop maps.
+--- @param visible boolean
+function JoystickSetVisible(visible) end
+
+--------------------------------------------------------------------------------
+-- Game flow & session
+--------------------------------------------------------------------------------
+
+--- Request a scene swap within the currently loaded map. The actual
+--- transition runs between sim ticks, so it's safe to call from inside
+--- trigger actions.
+--- @param scene_name string
+function LoadScene(scene_name) end
+
+--- End the current game and report a winner + optional stats payload
+--- (JSON string). Fires `global_game_end` before exiting.
+--- @param winner_id number
+--- @param stats_json string?   JSON string (default "{}")
+function EndGame(winner_id, stats_json) end
+
+--- Pause / unpause the simulation. Independent of the network's
+--- reconnect-pause; safe during dialogs / cutscenes. Single-player
+--- only — pausing the host's sim in MP would freeze all clients.
+function PauseGame() end
+function UnpauseGame() end
+
+--- @return boolean
+function IsGamePaused() end
+
+--- True when launched offline (no network session). Lets map authors
+--- gate features that don't make sense in MP (script-driven pause,
+--- save-to-file from gameplay).
+--- @return boolean
+function IsSinglePlayer() end
+
+--------------------------------------------------------------------------------
+-- Persistent save data (single-player)
+--------------------------------------------------------------------------------
+-- Key/value store flushed to a per-map JSON file. Supports bool, integer,
+-- float, and string values. Multi-player saves are out of scope for v1.
+
+--- Write a value under `key`. Persists to disk synchronously.
+--- @param key string
+--- @param value boolean | number | string
+function SaveData(key, value) end
+
+--- Read a value under `key`, returning `default_val` (or nil) on miss.
+--- @param key string
+--- @param default_val any?
+--- @return any
+function LoadData(key, default_val) end
+
+--- Wipe the entire save store and flush.
+function ClearSaveData() end
 
 --- Print to engine log (debug).
 --- @param text string

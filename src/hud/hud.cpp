@@ -10,6 +10,7 @@
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
 #include "hud/inventory.h"
+#include "hud/display_message.h"
 #include "hud/layout.h"
 
 #include <nlohmann/json.hpp>
@@ -334,6 +335,11 @@ struct Hud::Impl {
     // layout + click latching only.
     InventoryConfig  inventory_cfg{};
     InventoryRuntime inventory_rt{};
+
+    // Display-message composite. Pushed-into by Lua's DisplayMessage;
+    // lines age out per frame. Inert when no hud.json block.
+    DisplayMessageConfig  display_message_cfg{};
+    DisplayMessageRuntime display_message_rt{};
     i32 inventory_hover_slot   = -1;
     i32 inventory_pressed_slot = -1;
     Hud::InventoryUseFn          inventory_use_fn;
@@ -1346,6 +1352,8 @@ void Hud::reset_session_state() {
     s.joystick_rt        = {};
     s.inventory_cfg      = {};
     s.inventory_rt       = {};
+    s.display_message_cfg = {};
+    s.display_message_rt  = {};
     s.cast_indicator_cfg = {};
     s.world_cfg          = {};
     s.marquee_style      = {};
@@ -2085,6 +2093,70 @@ void Hud::set_inventory_config(const InventoryConfig& cfg) {
 
 void Hud::inventory_set_visible(bool visible) {
     if (m_impl) m_impl->inventory_rt.visible = visible;
+}
+
+// ── Display-message composite ────────────────────────────────────────────
+
+void Hud::set_display_message_config(const DisplayMessageConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->display_message_cfg = cfg;
+    m_impl->display_message_rt  = DisplayMessageRuntime{};
+}
+
+void Hud::display_message_set_visible(bool visible) {
+    if (m_impl) m_impl->display_message_rt.visible = visible;
+}
+
+void Hud::display_message(i18n::LocalizedString text, f32 duration, u32 players_mask) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+    if (!s.display_message_cfg.enabled) {
+        // Graceful degradation: map didn't author the composite. Log
+        // the call so dev can see the message in the console.
+        log::info(TAG, "DisplayMessage (no composite authored): key='{}' duration={}",
+                  text.key, duration);
+        return;
+    }
+    const auto& style = s.display_message_cfg.style;
+    f32 lifespan = (duration > 0.0f) ? duration : style.default_lifespan;
+    if (lifespan <= 0.0f) lifespan = 5.0f;
+
+    DisplayMessageLine line;
+    line.loc          = std::move(text);
+    line.lifespan     = lifespan;
+    line.fadepoint    = style.fadepoint;
+    line.players_mask = players_mask;
+    s.display_message_rt.lines.push_back(std::move(line));
+
+    // Cap simultaneous lines — drop the oldest if we'd exceed max_lines.
+    u32 cap = (style.max_lines > 0) ? style.max_lines : 4;
+    while (s.display_message_rt.lines.size() > cap) {
+        s.display_message_rt.lines.erase(s.display_message_rt.lines.begin());
+    }
+
+    // Host-side fan-out — the network layer routes to matching peers
+    // (or broadcasts when mask == UINT32_MAX). Each client renders the
+    // line in its own active locale.
+    if (s.sync_fn) {
+        auto& back = s.display_message_rt.lines.back();
+        auto pkt = uldum::network::build_hud_display_message(
+            back.loc.key, back.loc.args, lifespan);
+        s.sync_fn(pkt, players_mask);
+    }
+}
+
+void Hud::update_display_messages(f32 dt) {
+    if (!m_impl) return;
+    auto& rt = m_impl->display_message_rt;
+    if (rt.lines.empty()) return;
+    for (auto& l : rt.lines) l.age += dt;
+    // Drop expired lines in-place.
+    rt.lines.erase(
+        std::remove_if(rt.lines.begin(), rt.lines.end(),
+                       [](const DisplayMessageLine& l) {
+                           return l.age >= l.lifespan;
+                       }),
+        rt.lines.end());
 }
 
 void Hud::set_inventory_use_fn(InventoryUseFn fn) {
@@ -4387,6 +4459,56 @@ static void draw_inventory(Hud& hud, Hud::Impl& s) {
     }
 }
 
+// Display-message composite — stacked lines, oldest at top. Each line
+// fades out over its fadepoint window before being removed in
+// `update_display_messages`. Resolves the LocalizedString per-frame
+// against the active locale, so swapping locales mid-session updates
+// already-visible messages too.
+static void draw_display_message(Hud& hud, Hud::Impl& s) {
+    const auto& cfg = s.display_message_cfg;
+    const auto& rt  = s.display_message_rt;
+    if (!cfg.enabled || !rt.visible || rt.lines.empty()) return;
+
+    const auto& style = cfg.style;
+    if ((style.bg.rgba >> 24) != 0) hud.draw_rect(cfg.rect, style.bg);
+
+    f32 line_h = hud.text_line_height_px(style.text_size);
+    f32 ascent = hud.text_ascent_px(style.text_size);
+    f32 cursor_y = cfg.rect.y + 4.0f;
+
+    for (const auto& line : rt.lines) {
+        // Players_mask filter — skip lines this client isn't a target
+        // of. Layout still advances so removing-the-mask doesn't shift
+        // every following line (matches text-tag behavior).
+        if (s.local_player != UINT32_MAX
+            && !(line.players_mask & (1u << s.local_player))) {
+            continue;
+        }
+        std::string text;
+        if (s.locale_manager) text = s.locale_manager->resolve(i18n::Pool::Map, line.loc);
+        else                  text = line.loc.key;
+        if (text.empty()) { cursor_y += line_h; continue; }
+
+        // Per-line alpha — full opacity for `lifespan - fadepoint`
+        // seconds, then linear ramp to zero across the fadepoint.
+        f32 alpha = 1.0f;
+        if (line.fadepoint > 0.0f) {
+            f32 fade_start = line.lifespan - line.fadepoint;
+            if (line.age > fade_start) {
+                alpha = 1.0f - (line.age - fade_start) / line.fadepoint;
+                if (alpha < 0.0f) alpha = 0.0f;
+            }
+        }
+        Color c = style.text_color;
+        u32 base_a = (c.rgba >> 24) & 0xFFu;
+        u32 a = static_cast<u32>(static_cast<f32>(base_a) * alpha);
+        c.rgba = (c.rgba & 0x00FFFFFFu) | (a << 24);
+
+        hud.draw_text(cfg.rect.x + 4.0f, cursor_y + ascent, text, c, style.text_size);
+        cursor_y += line_h;
+    }
+}
+
 static void draw_action_bar(Hud& hud, Hud::Impl& s) {
     const auto& cfg = s.action_bar_cfg;
     if (!cfg.enabled) return;
@@ -4634,6 +4756,7 @@ void Hud::draw_tree() {
     draw_action_bar(*this, *m_impl);
     draw_command_bar(*this, *m_impl);
     draw_inventory(*this, *m_impl);
+    draw_display_message(*this, *m_impl);
     draw_minimap(*this, *m_impl);
     draw_joystick(*this, *m_impl);
     // HUD cursor — desktop only. Mobile has no pointer to swap, so

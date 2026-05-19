@@ -35,6 +35,7 @@ struct JoystickConfig;         // joystick.h
 struct CastIndicatorConfig;    // cast_indicator.h
 struct CastIndicatorStyle;     // cast_indicator.h
 struct InventoryConfig;        // inventory.h
+struct DisplayMessageConfig;   // display_message.h
 
 // Packed RGBA color, 0xAABBGGRR on little-endian hosts. Use rgba() helper
 // to build one; the HUD pipeline expects u8×4 → normalized vec4 with the
@@ -568,6 +569,26 @@ public:
     // the item handle attached so triggers can reach `GetTriggerItem`.
     void set_inventory_config(const InventoryConfig& cfg);
     void inventory_set_visible(bool visible);
+
+    // display_message composite — queued in-game message overlay
+    // (e.g. "Save point reached", "Defeat the boss within 60s"). One
+    // line per Lua `DisplayMessage()` call; the composite fades + drops
+    // each line after its lifespan. Inert when no `composites.display_message`
+    // block is authored in hud.json.
+    void set_display_message_config(const DisplayMessageConfig& cfg);
+    void display_message_set_visible(bool visible);
+    // Push a localized line into the composite. `duration` ≤ 0 uses
+    // the composite's authored `default_lifespan`. `players_mask`
+    // (default = broadcast) filters which players see the line, same
+    // semantics as text-tags / instantiated nodes — pass a bitmask of
+    // player ids. No-op + console log when the composite isn't
+    // enabled. Host-side: emits a sync packet routed to the matching
+    // peers so each client renders the line in its own locale.
+    void display_message(i18n::LocalizedString text, f32 duration = 0.0f,
+                         u32 players_mask = UINT32_MAX);
+    // Per-frame: advance line ages, drop expired lines. Called from
+    // the app loop after `update_text_tags`.
+    void update_display_messages(f32 dt);
 
     // Fired when a click on an active item slot resolves. Args:
     //   item_unit_id   — entity id of the item handle in the slot

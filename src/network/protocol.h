@@ -91,6 +91,7 @@ enum class MsgType : u8 {
     S_HUD_SET_IMAGE_SOURCE    = 0x75,
     S_HUD_SET_BUTTON_ENABLED  = 0x76,
     S_HUD_CREATE_TEXT_TAG     = 0x77,
+    S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
 };
 
 // Event kinds for C_NODE_EVENT. Keep numeric so unknown kinds can be
@@ -1096,6 +1097,26 @@ inline std::vector<u8> build_hud_create_text_tag(
     wr.write_u32(color_rgba);
     wr.write_f32(velocity_x); wr.write_f32(velocity_y);
     wr.write_f32(lifespan); wr.write_f32(fadepoint);
+    return std::move(wr.data());
+}
+
+// Display-message wire format. The text payload is a LocalizedString
+// (key + args); duration is in seconds (≤ 0 → use the composite's
+// authored default_lifespan).
+inline std::vector<u8> build_hud_display_message(
+        std::string_view loc_key,
+        const std::vector<std::pair<std::string, std::string>>& loc_args,
+        f32 duration) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_DISPLAY_MESSAGE));
+    wr.write_string(loc_key);
+    usize n = std::min<usize>(loc_args.size(), 255);
+    wr.write_u8(static_cast<u8>(n));
+    for (usize i = 0; i < n; ++i) {
+        wr.write_string(loc_args[i].first);
+        wr.write_string(loc_args[i].second);
+    }
+    wr.write_f32(duration);
     return std::move(wr.data());
 }
 

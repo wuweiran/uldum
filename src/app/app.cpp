@@ -1489,7 +1489,6 @@ void App::run() {
 
     auto previous_time = std::chrono::high_resolution_clock::now();
     float accumulator = 0.0f;
-    float game_speed = 1.0f;
     u32 tick_counter = 0;
 
     m_state = AppState::Menu;
@@ -1779,7 +1778,7 @@ void App::run() {
                 !m_network.is_scene_switching() &&
                 !m_server.script().is_paused();
             if (should_tick) {
-                float game_dt = TICK_DT * game_speed;
+                float game_dt = TICK_DT * m_server.script().game_speed();
                 accumulator += frame_dt;
                 while (accumulator >= TICK_DT) {
                     auto t0 = std::chrono::steady_clock::now();
@@ -2394,6 +2393,7 @@ void App::run() {
                 // build + render the draw list.
                 {
                     m_hud.update_text_tags(frame_dt);
+                    m_hud.update_display_messages(frame_dt);
                     m_hud.update_focus(frame_dt);
                     m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
                     // World-anchored HUD layer first — entity HP bars,

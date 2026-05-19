@@ -9,6 +9,7 @@
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
 #include "hud/inventory.h"
+#include "hud/display_message.h"
 #include "hud/layout.h"
 #include "asset/asset.h"
 #include "core/log.h"
@@ -623,11 +624,37 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
             log::info(TAG, "inventory: {} slots", cfg.slots.size());
         }
 
+        // display_message — receiving end for Lua's DisplayMessage().
+        if (auto dm = comps->find("display_message"); dm != comps->end() && dm->is_object()) {
+            DisplayMessageConfig cfg;
+            cfg.enabled = true;
+            cfg.placement.anchor = parse_anchor(dm->value("anchor", "tl"));
+            cfg.placement.x      = dm->value("x", 16.0f);
+            cfg.placement.y      = dm->value("y", 16.0f);
+            cfg.placement.w      = dm->value("w", 320.0f);
+            cfg.placement.h      = dm->value("h", 120.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            if (auto v = dm->find("max_lines"); v != dm->end() && v->is_number())
+                cfg.style.max_lines = v->get<u32>();
+            if (auto v = dm->find("text_size"); v != dm->end() && v->is_number())
+                cfg.style.text_size = v->get<f32>();
+            if (auto v = dm->find("default_lifespan"); v != dm->end() && v->is_number())
+                cfg.style.default_lifespan = v->get<f32>();
+            if (auto v = dm->find("fadepoint"); v != dm->end() && v->is_number())
+                cfg.style.fadepoint = v->get<f32>();
+            if (auto v = dm->find("bg");    v != dm->end()) cfg.style.bg         = parse_color(*v);
+            if (auto v = dm->find("color"); v != dm->end()) cfg.style.text_color = parse_color(*v);
+
+            hud.set_display_message_config(cfg);
+            log::info(TAG, "display_message: max_lines={}", cfg.style.max_lines);
+        }
+
         // Skim remaining composite keys so authoring feedback is consistent.
         for (auto it = comps->begin(); it != comps->end(); ++it) {
             const std::string& k = it.key();
             if (k == "action_bar" || k == "minimap" || k == "command_bar" ||
-                k == "joystick"   || k == "inventory") continue;
+                k == "joystick"   || k == "inventory" || k == "display_message") continue;
             // `cast_indicator` was renamed to top-level `targeting` (Phase 4a).
             if (k == "cast_indicator") {
                 log::warn(TAG, "composite 'cast_indicator' is deprecated; "
