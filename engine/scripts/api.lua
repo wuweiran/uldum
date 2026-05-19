@@ -141,7 +141,7 @@ function GetAttackTarget() end
 --------------------------------------------------------------------------------
 
 --- Create a new unit at the given position.
---- @param type_id string   Unit type from map's unit_types.json
+--- @param type_id string   Unit type from map's units.json
 --- @param player player    Owner
 --- @param x number         X position (game coords)
 --- @param y number         Y position (game coords)
@@ -895,6 +895,145 @@ function SetGameSpeed(speed) end
 --- @param text string
 --- @param duration number?  seconds (default 5)
 function DisplayMessage(text, duration) end
+
+--------------------------------------------------------------------------------
+-- I18n
+--------------------------------------------------------------------------------
+
+--- Construct a LocalizedString — an opaque handle that player-facing APIs
+--- (CreateTextTag, SetLabelText, ...) accept in place of a plain string.
+--- The engine ships {key, args} on the network; each client resolves
+--- against its own active locale at render time.
+---
+--- The handle is a plain Lua table `{ __loc = true, key = ..., args = ... }`
+--- with no metamethods — there is no host-local coercion to a string. Pass
+--- it to the engine APIs that consume LocalizedString.
+---
+--- @param key string         dotted lookup key (e.g. "ability.holy_light.tooltip")
+--- @param args table?        named-arg substitutions (e.g. {damage = 150})
+--- @return LocalizedString
+function L(key, args) end
+
+--------------------------------------------------------------------------------
+-- HUD: floating text tags
+--------------------------------------------------------------------------------
+
+--- Create a floating text tag at a world position or attached to a unit.
+--- Returns a handle (0 on failure). The `text` field MUST be a
+--- LocalizedString; pass a plain string and the call is dropped with a
+--- warning.
+---
+--- args fields:
+---   text       LocalizedString   required
+---   pos        {x, y, z}         world point (if no unit)
+---   unit       unit              attach to a unit (overrides pos)
+---   z_offset   number            world-up height above anchor
+---   size       number            text px size (default 14)
+---   color      string            "#RRGGBB" or "#RRGGBBAA"
+---   velocity   {vx, vy}          screen px/sec drift
+---   lifespan   number            seconds; 0 = permanent
+---   fadepoint  number            seconds before end of lifespan to fade
+---   owner      player            single-player target (alias for players={p})
+---   players    player | table    target mask; omit for broadcast
+---
+--- @param args table
+--- @return number  text-tag handle (0 on failure)
+function CreateTextTag(args) end
+
+--- Destroy a text tag by handle.
+--- @param handle number
+function DestroyTextTag(handle) end
+
+--- Replace the text of an existing tag. Requires LocalizedString.
+--- @param handle number
+--- @param text LocalizedString
+function SetTextTagText(handle, text) end
+
+--- Move a tag to a world point.
+--- @param handle number
+--- @param x number
+--- @param y number
+--- @param z number
+function SetTextTagPos(handle, x, y, z) end
+
+--- Attach a tag to a unit (replaces world-position anchor).
+--- @param handle number
+--- @param unit unit
+--- @param z_offset number
+function SetTextTagPosUnit(handle, unit, z_offset) end
+
+--- Update the text color.
+--- @param handle number
+--- @param color string   "#RRGGBB" or "#RRGGBBAA"
+function SetTextTagColor(handle, color) end
+
+--- Update screen-space drift velocity.
+--- @param handle number
+--- @param vx number   px/sec
+--- @param vy number   px/sec
+function SetTextTagVelocity(handle, vx, vy) end
+
+--- Show / hide the tag.
+--- @param handle number
+--- @param visible boolean
+function SetTextTagVisible(handle, visible) end
+
+--------------------------------------------------------------------------------
+-- HUD: nodes (panels, labels, bars, buttons, images) from hud.json templates
+--------------------------------------------------------------------------------
+
+--- Instantiate a node template (registered in hud.json) at a screen-anchored
+--- placement. Returns the template id on success or nil.
+---
+--- placement fields:
+---   anchor     "tl" | "tc" | "tr" | "cl" | "cc" | "cr" | "bl" | "bc" | "br"
+---   x, y, w, h number   anchor-relative offset + size in dp
+---   owner      player   single-player visibility (alias for players={p})
+---   players    player | table   target mask; omit for broadcast
+---
+--- @param template_id string
+--- @param placement table
+--- @return string?
+function CreateNode(template_id, placement) end
+
+--- Remove an instantiated node (and its subtree).
+--- @param id string
+--- @return boolean
+function DestroyNode(id) end
+
+--- Whether a node with this id currently exists in the tree.
+--- @param id string
+--- @return boolean
+function GetNode(id) end
+
+--- Show / hide nodes.
+--- @param id string
+function ShowNode(id) end
+--- @param id string
+function HideNode(id) end
+--- @param id string
+--- @param visible boolean
+function SetNodeVisible(id, visible) end
+
+--- Update a Label node's text. Requires LocalizedString (no plain strings).
+--- @param id string
+--- @param text LocalizedString
+function SetLabelText(id, text) end
+
+--- Update a Bar node's fill fraction [0..1].
+--- @param id string
+--- @param fill number
+function SetBarFill(id, fill) end
+
+--- Update an Image node's texture path.
+--- @param id string
+--- @param source string  asset path (e.g. "textures/icons/foo.ktx2")
+function SetImageSource(id, source) end
+
+--- Enable / disable a Button node (visual + interaction).
+--- @param id string
+--- @param enabled boolean
+function SetButtonEnabled(id, enabled) end
 
 --- Print to engine log (debug).
 --- @param text string

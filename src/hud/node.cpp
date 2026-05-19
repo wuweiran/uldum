@@ -21,6 +21,15 @@ void Label::draw(Hud& hud) const {
     if (!visible || text.empty()) return;
     if (!is_owned_by(hud.local_player())) return;
 
+    // Resolve the localized payload against the active locale. No
+    // resolver wired → fall back to the key literal so missing keys
+    // are visible to authors.
+    auto* lm = hud.locale_manager();
+    std::string rendered = lm
+        ? lm->resolve(i18n::Pool::Map, text)
+        : text.key;
+    if (rendered.empty()) return;
+
     // Baseline: centered vertically within rect. Ascent puts the top of
     // tall glyphs near the top of the rect; line height centers it.
     f32 ascent      = hud.text_ascent_px(px_size);
@@ -29,12 +38,12 @@ void Label::draw(Hud& hud) const {
 
     f32 x_left = rect.x;
     if (align != Align::Left) {
-        f32 w = hud.text_width_px(text, px_size);
+        f32 w = hud.text_width_px(rendered, px_size);
         if (align == Align::Center) x_left = rect.x + (rect.w - w) * 0.5f;
         else                        x_left = rect.x + (rect.w - w);  // Right
     }
 
-    hud.draw_text(x_left, y_baseline, text, color, px_size);
+    hud.draw_text(x_left, y_baseline, rendered, color, px_size);
     Node::draw(hud);
 }
 

@@ -946,9 +946,17 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_HUD_SET_LABEL_TEXT: {
         ByteReader r(data);
         r.read_u8();
-        std::string id   = r.read_string();
-        std::string text = r.read_string();
-        if (m_hud) m_hud->set_label_text(id, text);
+        std::string id = r.read_string();
+        i18n::LocalizedString loc;
+        loc.key = r.read_string();
+        u8 n = r.read_u8();
+        loc.args.reserve(n);
+        for (u8 i = 0; i < n; ++i) {
+            std::string k = r.read_string();
+            std::string v = r.read_string();
+            loc.args.emplace_back(std::move(k), std::move(v));
+        }
+        if (m_hud) m_hud->set_label_text(id, std::move(loc));
         break;
     }
     case MsgType::S_HUD_SET_BAR_FILL: {
@@ -987,7 +995,16 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         ByteReader r(data);
         r.read_u8();
         hud::TextTagCreateInfo info{};
-        info.text       = r.read_string();
+        // See build_hud_create_text_tag for the wire layout: localized
+        // key + args followed by the rest of the tag's physical state.
+        info.text.key = r.read_string();
+        u8 n = r.read_u8();
+        info.text.args.reserve(n);
+        for (u8 i = 0; i < n; ++i) {
+            std::string k = r.read_string();
+            std::string v = r.read_string();
+            info.text.args.emplace_back(std::move(k), std::move(v));
+        }
         info.px_size    = r.read_f32();
         info.pos.x      = r.read_f32();
         info.pos.y      = r.read_f32();

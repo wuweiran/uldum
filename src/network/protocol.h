@@ -11,6 +11,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace uldum::network {
@@ -1005,11 +1007,22 @@ inline std::vector<u8> build_hud_destroy_node(std::string_view node_id) {
     return std::move(wr.data());
 }
 
-inline std::vector<u8> build_hud_set_label_text(std::string_view node_id, std::string_view text) {
+// Label text is a LocalizedString — the host ships {key, args}; each
+// client resolves with its own active locale. Empty key = blank label.
+inline std::vector<u8> build_hud_set_label_text(
+        std::string_view node_id,
+        std::string_view loc_key,
+        const std::vector<std::pair<std::string, std::string>>& loc_args) {
     ByteWriter wr;
     wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_LABEL_TEXT));
     wr.write_string(node_id);
-    wr.write_string(text);
+    wr.write_string(loc_key);
+    usize n = std::min<usize>(loc_args.size(), 255);
+    wr.write_u8(static_cast<u8>(n));
+    for (usize i = 0; i < n; ++i) {
+        wr.write_string(loc_args[i].first);
+        wr.write_string(loc_args[i].second);
+    }
     return std::move(wr.data());
 }
 
@@ -1049,8 +1062,19 @@ inline std::vector<u8> build_hud_set_button_enabled(std::string_view node_id, bo
 // locally on each side from identical starting params (lifespan / velocity
 // / fadepoint); no mid-life sync. Permanent tags (lifespan == 0) are
 // out of scope for MP in v1.
+// Text-tag create wire format. The text payload is a LocalizedString:
+//   - key: string (empty key = nothing to render; the tag still spawns
+//          for animation timing, but draws nothing locally).
+//   - args_count: u8.
+//   - args: count × (name: string, value: string).
+//
+// Each receiving client resolves the key against its own active locale
+// before rendering. There is no literal-text path — player-facing text
+// always flows through L() on the server.
 inline std::vector<u8> build_hud_create_text_tag(
-        std::string_view text, f32 px_size,
+        std::string_view loc_key,
+        const std::vector<std::pair<std::string, std::string>>& loc_args,
+        f32 px_size,
         f32 wx, f32 wy, f32 wz,
         u32 unit_id, f32 z_offset,
         u32 color_rgba,
@@ -1058,7 +1082,13 @@ inline std::vector<u8> build_hud_create_text_tag(
         f32 lifespan, f32 fadepoint) {
     ByteWriter wr;
     wr.write_u8(static_cast<u8>(MsgType::S_HUD_CREATE_TEXT_TAG));
-    wr.write_string(text);
+    wr.write_string(loc_key);
+    usize n = std::min<usize>(loc_args.size(), 255);
+    wr.write_u8(static_cast<u8>(n));
+    for (usize i = 0; i < n; ++i) {
+        wr.write_string(loc_args[i].first);
+        wr.write_string(loc_args[i].second);
+    }
     wr.write_f32(px_size);
     wr.write_f32(wx); wr.write_f32(wy); wr.write_f32(wz);
     wr.write_u32(unit_id);

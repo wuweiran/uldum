@@ -1,6 +1,7 @@
 {
     "devotion_aura": {
         "name": "Devotion Aura",
+        "tooltip": "Gives nearby friendly units a bonus to their armor.",
         "icon": "textures/icons/devotion_aura.ktx2",
         "hotkey": "V",
         "form": "aura",
@@ -32,6 +33,7 @@
     },
     "use_potion_healing": {
         "name": "Use Healing Potion",
+        "tooltip": "Drink the potion to instantly recover hit points.",
         "icon": "textures/icons/potion_healing.ktx2",
         "form": "instant",
         "max_level": 1,
@@ -41,6 +43,7 @@
     },
     "holy_light": {
         "name": "Holy Light",
+        "tooltip": "A holy spell that calls upon the powers of Light to heal a friendly unit or damage an Undead enemy.",
         "icon": "textures/icons/holy_light.ktx2",
         "form": "target",
         "widget_kinds": ["unit"],
@@ -55,6 +58,7 @@
     },
     "consecration": {
         "name": "Consecration",
+        "tooltip": "Calls down a wave of holy energy that damages every enemy in the targeted area.",
         "icon": "textures/icons/consecration.ktx2",
         "hotkey": "C",
         "form": "target",
@@ -73,6 +77,7 @@
     },
     "wind_walk": {
         "name": "Wind Walk",
+        "tooltip": "Vanish from sight for 10 seconds. Acquiring a target or attacking ends the effect early.",
         "icon": "textures/icons/wind_walk.ktx2",
         "hotkey": "W",
         "form": "instant",
@@ -103,6 +108,7 @@
     },
     "chain_frost": {
         "name": "Chain Frost",
+        "tooltip": "Launches a bolt of frost that bounces between nearby enemies, dealing damage and slowing their movement.",
         "icon": "textures/icons/chain_frost.ktx2",
         "hotkey": "F",
         "form": "target",

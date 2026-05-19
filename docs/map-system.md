@@ -75,10 +75,10 @@ my_map.uldmap/
 ├── tileset.json                # ground texture definitions
 │
 ├── types/                      # all gameplay type definitions
-│   ├── unit_types.json
-│   ├── ability_types.json      # all abilities: active, passive, auras, applied (WC3 "buffs")
-│   ├── item_types.json
-│   └── destructable_types.json
+│   ├── units.json
+│   ├── abilities.json      # all abilities: active, passive, auras, applied (WC3 "buffs")
+│   ├── items.json
+│   └── destructables.json
 │
 ├── shared/                     # shared across all scenes
 │   ├── scripts/

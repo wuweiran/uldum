@@ -13,9 +13,9 @@ Subsequent abilities in the list still apply their effects — passive modifiers
 
 This makes the engine's behavior a single rule: read the list, register every ability into the carrier's `ability_set`, mark the first as the slot's "use" target if it's non-passive.
 
-## Schema — `item_types.json`
+## Schema — `items.json`
 
-New file, sibling of `ability_types.json`. Loaded by the same type registry pass.
+New file, sibling of `abilities.json`. Loaded by the same type registry pass.
 
 ```json
 {
@@ -54,7 +54,7 @@ New file, sibling of `ability_types.json`. Loaded by the same type registry pass
 
 ## Inventory
 
-- Per-unit-type slot count via the existing `inventory_size` field in `unit_types.json`. **Default 0** — non-hero unit types have no inventory unless they declare one.
+- Per-unit-type slot count via the existing `inventory_size` field in `units.json`. **Default 0** — non-hero unit types have no inventory unless they declare one.
 - Engine cap: **16 slots**. Loader clamps with a warning if a unit type asks for more.
 - One item entity per slot. **No multi-entity stacking.** Same-type pickups create separate items in separate slots. Maps wanting WC3-style merge implement it in `on_item_picked_up`.
 - All slots are "active" — every ability contributed by an item in any slot is live in the carrier's `ability_set`. No equip / hold distinction.

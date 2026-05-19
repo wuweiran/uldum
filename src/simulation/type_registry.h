@@ -3,6 +3,7 @@
 #include "simulation/handle_types.h"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -112,6 +113,11 @@ struct DoodadTypeDef {
 struct ItemTypeDef {
     std::string              id;
     std::string              display_name;
+    // Player-facing description shown in the inventory-slot tooltip.
+    // Defaults to "" when unauthored — same shape as any optional
+    // numeric field that defaults via `val.value(field, default)` in
+    // the loader.
+    std::string              tooltip;
     std::string              icon_path;       // HUD slot icon (KTX2)
     std::string              model_path;      // ground render model (glTF)
     f32                      model_scale  = 1.0f;
@@ -168,7 +174,22 @@ public:
         m_destructable_types.clear();
         m_doodad_types.clear();
         m_item_types.clear();
+        m_raw_units.clear();
+        m_raw_destructables.clear();
+        m_raw_doodads.clear();
+        m_raw_items.clear();
     }
+
+    // Raw string-field cache populated alongside the structured load.
+    // Backs the i18n raw-fallback chain — when a locale pack misses a
+    // key like `unit.footman.description`, the resolver reads the field
+    // directly from this cache (which mirrors the JSON's string-typed
+    // top-level fields for each entity). Returns nullopt if the entity
+    // id or field isn't present.
+    enum class Category : u8 { Unit, Destructable, Doodad, Item };
+    std::optional<std::string> raw_string_field(Category cat,
+                                                  std::string_view entity_id,
+                                                  std::string_view field) const;
 
 private:
     bool load_unit_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
@@ -176,10 +197,18 @@ private:
     bool load_doodad_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
     bool load_item_types_from_doc(const asset::JsonDocument* doc, std::string_view source);
 
+    using RawFields = std::unordered_map<std::string, std::string>;
+    using RawCache  = std::unordered_map<std::string, RawFields>;
+
     std::unordered_map<std::string, UnitTypeDef>          m_unit_types;
     std::unordered_map<std::string, DestructableTypeDef>  m_destructable_types;
     std::unordered_map<std::string, DoodadTypeDef>        m_doodad_types;
     std::unordered_map<std::string, ItemTypeDef>          m_item_types;
+
+    RawCache m_raw_units;
+    RawCache m_raw_destructables;
+    RawCache m_raw_doodads;
+    RawCache m_raw_items;
 };
 
 } // namespace uldum::simulation

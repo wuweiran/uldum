@@ -7,6 +7,7 @@
 
 #include "core/types.h"
 #include "hud/hud.h"
+#include "i18n/locale.h"
 #include "simulation/handle_types.h"
 
 #include <glm/vec3.hpp>
@@ -25,9 +26,16 @@ struct TextTagId {
 // Single-call construction — matches the Lua-side `CreateTextTag{...}`
 // idiom. Either `pos` (world point) or `unit` (attached) should be set;
 // if both are set, unit attachment wins.
+//
+// Text content is a `LocalizedString` (the L() payload from Lua). The
+// network ships {key, args}; each client resolves against its own
+// active locale at render time. There is no literal-string code path:
+// player-facing text always flows through the locale resolver. For
+// runtime-formatted content (numbers, names) pass them as args to a
+// template key.
 struct TextTagCreateInfo {
-    std::string        text;
-    f32                px_size   = 14.0f;
+    i18n::LocalizedString   text;
+    f32                     px_size   = 14.0f;
     glm::vec3          pos       {0.0f};            // world point (used if unit is invalid)
     simulation::Unit   unit      {};                // attach to a unit; invalid → use pos
     f32                z_offset  = 0.0f;            // world-up height above anchor

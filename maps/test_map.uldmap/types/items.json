@@ -1,6 +1,7 @@
 {
     "potion_healing": {
         "name": "Potion of Healing",
+        "tooltip": "Drink to instantly restore hit points. Limited charges.",
         "icon": "textures/icons/potion_healing.ktx2",
         "model": "models/potion_healing.glb",
         "model_scale": 80.0,
@@ -12,6 +13,7 @@
     },
     "ring_armor": {
         "name": "Ring of Armor",
+        "tooltip": "Worn ring that grants the wearer a permanent armor bonus while held in inventory.",
         "icon": "textures/icons/devotion_aura.ktx2",
         "model": "placeholder",
         "pickup_radius": 96.0,

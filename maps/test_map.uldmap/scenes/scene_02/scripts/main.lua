@@ -42,13 +42,13 @@ function main()
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
     -- Engine-authored abilities (holy_light, consecration) are seeded
-    -- from the paladin's `abilities` list in unit_types.json at create
+    -- from the paladin's `abilities` list in units.json at create
     -- time — no Lua AddAbility needed for them. devotion_aura's effects
     -- are simulated entirely in this script (aura damage tick + buff
     -- VFX), so we keep adding it here so its def is bound to the
     -- caster for the action_bar to render the icon. If a future engine
     -- aura mechanic supplants the script side, this line moves into
-    -- unit_types.json alongside the others.
+    -- units.json alongside the others.
     AddAbility(paladin, "devotion_aura")
     -- Wind Walk on the footman is the proof-of-life for the
     -- invisibility primitive (UNIT_STATUS_INVISIBLE + SetUnitAlpha
@@ -103,7 +103,7 @@ function main()
         wave = wave + 1
         -- Update the wave panel each wave — label shows "Wave N / 20"
         -- and the bar fills proportionally.
-        SetLabelText("wave_label", string.format("Wave %d / %d", wave, TOTAL_WAVES))
+        SetLabelText("wave_label", L("ui.wave_label", { current = wave, total = TOTAL_WAVES }))
         SetBarFill("wave_progress", wave / TOTAL_WAVES)
 
         -- Stop after the final wave; the panel says "/20", the spawner
@@ -163,7 +163,7 @@ function main()
     local portal_r = math.max(px1 - portal_x, py1 - portal_y)
 
     CreateTextTag({
-        text = "[Portal: scene_01]",
+        text = L("ui.portal_label", { scene = "scene_01" }),
         size = 28,
         pos  = { portal_x, portal_y, 200 },  -- raised above ground for legibility
         color = "#FFD600FF",

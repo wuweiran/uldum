@@ -122,10 +122,14 @@ class Label : public Node {
 public:
     enum class Align : u8 { Left, Center, Right };
 
-    std::string text;
-    Color       color     = rgba(255, 255, 255);
-    f32         px_size   = 16.0f;
-    Align       align     = Align::Left;
+    // Localized text payload — resolved per-frame against the local
+    // player's active locale. Static label text in hud.json is parsed
+    // into the `key` field (no args). Lua's SetLabelText updates the
+    // payload via L(...) wrapping.
+    i18n::LocalizedString text;
+    Color                 color    = rgba(255, 255, 255);
+    f32                   px_size  = 16.0f;
+    Align                 align    = Align::Left;
 
     Label() { hit_testable = false; }
     void draw(Hud& hud) const override;

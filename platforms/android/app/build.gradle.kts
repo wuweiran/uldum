@@ -187,18 +187,6 @@ fun resolveGlslc(): File {
     return File("glslc.exe")  // delegate to PATH lookup; ProcessBuilder will surface the error
 }
 
-// Roboto regular: prefer CMake's staged copy if present (no extra path
-// resolution), fall back to the FetchContent download dir. Either path
-// only exists after `scripts\build.ps1` has run cmake configure at least
-// once — that's a one-time prereq, not a per-build one.
-fun resolveDefaultFont(): File? {
-    val staged = projectRoot.resolve("build/staging/engine/fonts/Roboto-Regular.ttf")
-    if (staged.exists()) return staged
-    val fetched = projectRoot.resolve("build/_deps/roboto_font-src/Roboto-Regular.ttf")
-    if (fetched.exists()) return fetched
-    return null
-}
-
 val compileEngineShaders by tasks.registering {
     description = "Compile engine GLSL shaders (.vert/.frag/.comp) to SPIR-V via glslc"
     val shaderSrcDir = engineSrcDir.resolve("shaders")
@@ -258,11 +246,6 @@ val stageDevAssets by tasks.registering {
         if (!engineMapsDir.isDirectory) {
             throw GradleException("Engine maps directory missing: $engineMapsDir")
         }
-        val fontFile = resolveDefaultFont()
-            ?: throw GradleException(
-                "Roboto-Regular.ttf not found under build/_deps/ or build/staging/engine/fonts/. " +
-                "Run scripts\\build.ps1 once so cmake configure resolves the FetchContent dependency."
-            )
 
         devAssetsDir.mkdirs()
         devMapsDir.deleteRecursively()
@@ -273,7 +256,9 @@ val stageDevAssets by tasks.registering {
         //   2. shaders/ overlaid with our own compiled .spv set (the .glsl
         //      sources copied in step 1 are replaced with .spv so the
         //      runtime loader finds compiled binaries).
-        //   3. fonts/Roboto-Regular.ttf from FetchContent / CMake staging.
+        // Fonts are not packed — the engine discovers system fonts at
+        // runtime via Font::init_from_system (Android has Roboto + Noto
+        // CJK + Noto Color Emoji at /system/fonts/).
         gradleEngineStaging.deleteRecursively()
         gradleEngineStaging.mkdirs()
         engineSrcDir.copyRecursively(gradleEngineStaging, overwrite = true)
@@ -281,11 +266,6 @@ val stageDevAssets by tasks.registering {
         stagingShaders.deleteRecursively()
         stagingShaders.mkdirs()
         gradleCompiledShaders.copyRecursively(stagingShaders, overwrite = true)
-        gradleEngineStaging.resolve("fonts").mkdirs()
-        fontFile.copyTo(
-            gradleEngineStaging.resolve("fonts/Roboto-Regular.ttf"),
-            overwrite = true
-        )
 
         // Run uldum_pack. ProcessBuilder instead of Gradle's exec{} — the
         // script-scope exec block was removed from current Gradle Kotlin

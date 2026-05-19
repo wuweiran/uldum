@@ -257,19 +257,10 @@ if(MSVC)
     endforeach()
 endif()
 
-# ── Default UI font (Roboto Regular) ─────────────────────────────────────
-# Bundled into engine.uldpak at build time. Fetched from Google's official
-# `google/fonts` mono-repo, which hosts the canonical Apache-2.0 licensed
-# release of Roboto. Maps can override the UI font via manifest.json later.
-message(STATUS "Fetching Roboto font...")
-FetchContent_Declare(roboto_font
-    URL https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf
-    DOWNLOAD_NO_EXTRACT TRUE
-)
-FetchContent_Populate(roboto_font)
-# Expose the fetched .ttf path so src/app/CMakeLists.txt can copy it into
-# the engine staging dir (alongside compiled shaders) before packing.
-set(ULDUM_DEFAULT_FONT_TTF ${roboto_font_SOURCE_DIR}/Roboto-Regular.ttf CACHE INTERNAL "")
+# The engine ships no fonts. `Font::init_from_system` discovers the
+# platform's curated chain at runtime (Windows: Segoe UI + msyh + emoji;
+# macOS: Helvetica + PingFang + Apple Color Emoji; Android: Roboto +
+# NotoSansCJK + NotoColorEmoji; Linux: DejaVu / Noto via common paths).
 
 # Restore the caller's BUILD_SHARED_LIBS setting.
 set(BUILD_SHARED_LIBS ${_ULDUM_SAVED_BUILD_SHARED_LIBS} CACHE BOOL "" FORCE)

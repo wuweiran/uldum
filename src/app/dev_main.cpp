@@ -14,6 +14,8 @@ static uldum::LaunchArgs parse_args(int argc, char* argv[]) {
             args.map_path   = argv[++i];
             args.net_mode   = uldum::network::Mode::Offline;
             args.auto_start = true;
+        } else if (std::strcmp(argv[i], "--locale") == 0 && i + 1 < argc) {
+            args.locale = argv[++i];
         }
     }
     return args;

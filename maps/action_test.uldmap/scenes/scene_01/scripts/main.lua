@@ -32,7 +32,7 @@ function main()
     end
 
     -- Engine-authored abilities (holy_light, consecration) are seeded
-    -- onto the paladin from unit_types.json — no Lua AddAbility needed.
+    -- onto the paladin from units.json — no Lua AddAbility needed.
 
     -- Holy Light is `instant` in this map: no target pick, heals the
     -- caster. The sim handles cooldown + mana cost via the ability

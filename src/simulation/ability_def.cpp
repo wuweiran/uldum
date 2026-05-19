@@ -111,6 +111,7 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
         AbilityDef def;
         def.id        = key;
         def.name      = val.value("name", key);
+        def.tooltip   = val.value("tooltip", "");
         def.icon      = val.value("icon", "");
         const std::string form_str = val.value("form", "passive");
         def.form      = parse_ability_form(form_str);
@@ -152,6 +153,13 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
         log::trace(TAG, "Registered ability '{}' (form={}, levels={})",
                    def.id, val.value("form", "passive"), def.levels.size());
         m_defs[key] = std::move(def);
+
+        // Cache string-typed top-level fields for i18n raw fallback.
+        RawFields raw;
+        for (auto& [field, fv] : val.items()) {
+            if (fv.is_string()) raw.emplace(field, fv.get<std::string>());
+        }
+        m_raw[key] = std::move(raw);
     }
 
     log::info(TAG, "Loaded {} ability defs from '{}'", m_defs.size(), source);
@@ -161,6 +169,33 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
 const AbilityDef* AbilityRegistry::get(std::string_view id) const {
     auto it = m_defs.find(std::string(id));
     return it != m_defs.end() ? &it->second : nullptr;
+}
+
+std::optional<std::string> AbilityRegistry::raw_string_field(std::string_view ability_id,
+                                                               std::string_view field) const {
+    auto dit = m_defs.find(std::string(ability_id));
+    if (dit == m_defs.end()) return std::nullopt;
+    const AbilityDef& def = dit->second;
+
+    // Schema-defined string fields. Returning the struct value gives
+    // unauthored fields their natural default ("" for std::string) —
+    // a missing JSON property reads back as an empty value, not as
+    // "absent key". Numeric optional fields already get this for free
+    // via `val.value(field, default)` in the loader; this brings
+    // strings into line.
+    if (field == "name")    return def.name;
+    if (field == "tooltip") return def.tooltip;
+    if (field == "icon")    return def.icon;
+    if (field == "hotkey")  return def.hotkey;
+
+    // Map-authored extension fields not in the schema fall through to
+    // the raw JSON cache. Returns nullopt when the field isn't present —
+    // caller (i18n raw fallback) takes that as "no value at all".
+    auto rit = m_raw.find(std::string(ability_id));
+    if (rit == m_raw.end()) return std::nullopt;
+    auto fit = rit->second.find(std::string(field));
+    if (fit == rit->second.end()) return std::nullopt;
+    return fit->second;
 }
 
 } // namespace uldum::simulation

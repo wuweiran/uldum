@@ -284,7 +284,7 @@ In host mode, the simulation waits for all expected players (from manifest) befo
 - **Right click enemy** — attack order
 - **A + left click** — attack-move (ground) or force-attack (unit)
 - **S** — stop, **H** — hold position
-- Ability hotkeys come from the map's `ability_types.json` `"hotkey"` field — the action_bar surfaces them automatically
+- Ability hotkeys come from the map's `abilities.json` `"hotkey"` field — the action_bar surfaces them automatically
 - **Ctrl+0-9** — assign control group, **0-9** — recall
 - **F1-F3** — select hero 1-3
 - **Arrow keys** — pan camera

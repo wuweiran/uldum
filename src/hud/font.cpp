@@ -10,6 +10,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <utility>
+
+#if defined(_WIN32)
+// `GetWindowsDirectoryA` to resolve %WINDIR% reliably without tripping
+// MSVC's std::getenv deprecation warning. Defined in <windows.h>.
+// WIN32_LEAN_AND_MEAN is already set globally by CMake.
+#include <windows.h>
+#endif
 
 namespace uldum::hud {
 
@@ -29,22 +39,27 @@ static inline u8 to_u8(float f) {
 Font::Font() = default;
 Font::~Font() { shutdown(); }
 
-bool Font::init(rhi::VulkanRhi& rhi,
-                std::string_view ttf_path,
-                VkDescriptorSetLayout desc_layout,
-                VkSampler sampler) {
-    m_rhi = &rhi;
+// Read an entire file from the filesystem into a string buffer. Used for
+// system-font paths (`C:/Windows/Fonts/…`, `/System/Library/Fonts/…`)
+// that AssetManager doesn't have mounted.
+static std::string read_os_file(std::string_view filesystem_path) {
+    std::ifstream f(std::string(filesystem_path), std::ios::binary);
+    if (!f.is_open()) return {};
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return std::move(ss).str();
+}
 
-    // Read the .ttf into memory (msdfgen's loadFontData keeps a reference,
-    // so we hold the bytes alive in m_ttf_bytes for the Font's lifetime).
-    auto* mgr = asset::AssetManager::instance();
-    if (!mgr) { log::error(TAG, "AssetManager not initialized"); return false; }
-    auto bytes = mgr->read_file_bytes(ttf_path);
-    if (bytes.empty()) {
-        log::warn(TAG, "font file missing: '{}'; text rendering disabled", ttf_path);
-        return false;
-    }
-    m_ttf_bytes.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+// Initialize the primary face from a byte buffer + create the atlas.
+// Shared between asset-path and OS-path init paths so the FreeType /
+// msdfgen plumbing lives in one place.
+bool Font::init_primary_from_bytes(rhi::VulkanRhi& rhi,
+                                     std::string bytes,
+                                     std::string_view origin,
+                                     VkDescriptorSetLayout desc_layout,
+                                     VkSampler sampler) {
+    m_rhi = &rhi;
+    m_ttf_bytes = std::move(bytes);
 
     auto* ft = msdfgen::initializeFreetype();
     if (!ft) { log::error(TAG, "msdfgen FreeType init failed"); return false; }
@@ -54,9 +69,10 @@ bool Font::init(rhi::VulkanRhi& rhi,
                     reinterpret_cast<const msdfgen::byte*>(m_ttf_bytes.data()),
                     static_cast<int>(m_ttf_bytes.size()));
     if (!font) {
-        log::error(TAG, "msdfgen loadFontData failed for '{}'", ttf_path);
+        log::error(TAG, "msdfgen loadFontData failed for '{}'", origin);
         msdfgen::deinitializeFreetype(ft);
         m_ft = nullptr;
+        m_ttf_bytes.clear();
         return false;
     }
     m_font = font;
@@ -74,12 +90,171 @@ bool Font::init(rhi::VulkanRhi& rhi,
         return false;
     }
 
-    log::info(TAG, "font '{}' loaded (em={:.2f}, ascent={:.2f}, line_h={:.2f})",
-              ttf_path, m_em_size, m_ascent, m_line_height);
+    log::info(TAG, "primary font '{}' loaded (em={:.2f}, ascent={:.2f}, line_h={:.2f})",
+              origin, m_em_size, m_ascent, m_line_height);
+    return true;
+}
+
+bool Font::init_from_system(rhi::VulkanRhi& rhi,
+                              VkDescriptorSetLayout desc_layout,
+                              VkSampler sampler) {
+    // Per-platform list of well-known font paths. First entry that loads
+    // becomes the primary; the rest are added as fallbacks consulted
+    // per-codepoint. The chain aims to cover all common scripts using
+    // fonts the OS ships by default.
+    //
+    // Limitation: hardcoded paths can break on unusual installs (a
+    // missing optional font, a non-default install location). The
+    // "proper" answer is OS font-matching APIs (DirectWrite,
+    // CoreText, fontconfig); those are a real integration project
+    // and deferred.
+    std::vector<std::string> paths;
+#if defined(_WIN32)
+    // Windows fonts live under %WINDIR%\Fonts. WINDIR is set on every
+    // Windows install — typically `C:\Windows` but can be on any drive
+    // (`D:\Windows`, `E:\WINNT`, etc.). GetWindowsDirectoryA is the
+    // canonical Win32 lookup; falls back to a sensible default if the
+    // call ever fails (which it doesn't on a normal Windows process).
+    std::string fonts_dir;
+    {
+        char buf[MAX_PATH];
+        UINT n = GetWindowsDirectoryA(buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            fonts_dir = std::string(buf, n) + "/Fonts/";
+        } else {
+            fonts_dir = "C:/Windows/Fonts/";
+        }
+    }
+    paths = {
+        // Primary: Segoe UI covers Latin / Cyrillic / Greek / Arabic /
+        // Hebrew / Vietnamese on Windows 7+.
+        fonts_dir + "segoeui.ttf",
+        // CJK — Simplified, Traditional, Japanese, Korean. Multiple
+        // entries because no single Windows font covers everything;
+        // first-with-glyph wins per codepoint.
+        fonts_dir + "msyh.ttc",        // Microsoft YaHei (CJK Simplified)
+        fonts_dir + "simsun.ttc",      // SimSun (CJK Simplified, legacy)
+        fonts_dir + "msjh.ttc",        // Microsoft JhengHei (CJK Traditional)
+        fonts_dir + "YuGothR.ttc",     // Yu Gothic (Japanese)
+        fonts_dir + "malgun.ttf",      // Malgun Gothic (Korean)
+        // Indic + Southeast Asian scripts.
+        fonts_dir + "Nirmala.ttf",     // Devanagari, Tamil, Telugu, Bengali, ...
+        fonts_dir + "Leelawui.ttf",    // Thai, Lao
+        // Emoji (color).
+        fonts_dir + "seguiemj.ttf",
+    };
+#elif defined(__APPLE__)
+    paths = {
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/PingFang.ttc",        // CJK Simplified/Traditional
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",// CJK Simplified
+        "/System/Library/Fonts/HiraginoSans.ttc",    // Japanese (varies by macOS)
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",// Korean
+        "/System/Library/Fonts/Devanagari MT.ttc",   // Devanagari
+        "/System/Library/Fonts/ThonburiUI.ttc",      // Thai
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+    };
+#elif defined(__ANDROID__)
+    paths = {
+        "/system/fonts/Roboto-Regular.ttf",
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/NotoSansDevanagari-Regular.ttf",
+        "/system/fonts/NotoSansThai-Regular.ttf",
+        "/system/fonts/NotoColorEmoji.ttf",
+    };
+#elif defined(__linux__)
+    // Linux: distros vary too much for a tight list. Try the common
+    // Debian/Ubuntu/Fedora/Arch paths for DejaVu + Noto.
+    paths = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    };
+#else
+    // Unknown platform — no system paths.
+#endif
+
+    for (const auto& p : paths) {
+        std::string bytes = read_os_file(p);
+        if (bytes.empty()) continue;
+        if (!m_font) {
+            // First successful load → primary.
+            if (!init_primary_from_bytes(rhi, std::move(bytes), p,
+                                          desc_layout, sampler)) {
+                // Couldn't make this one work (parse fail / atlas alloc
+                // fail). Skip and try the next path as primary.
+                continue;
+            }
+        } else {
+            load_fallback_from_bytes(std::move(bytes), p);
+        }
+    }
+
+    if (!m_font) {
+        log::error(TAG, "init_from_system: no usable system font found; "
+                        "text rendering disabled. Provide a game-supplied "
+                        "fallback via Font::load_fallback_os_path.");
+        return false;
+    }
+    return true;
+}
+
+bool Font::load_fallback(std::string_view ttf_path) {
+    if (!m_ft) {
+        log::warn(TAG, "load_fallback called before primary font init — ignored");
+        return false;
+    }
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr) { log::warn(TAG, "AssetManager not initialized for fallback"); return false; }
+    auto bytes = mgr->read_file_bytes(ttf_path);
+    if (bytes.empty()) {
+        // Quiet — fallback fonts are optional; absence is not an error.
+        return false;
+    }
+    std::string buf(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return load_fallback_from_bytes(std::move(buf), ttf_path);
+}
+
+bool Font::load_fallback_os_path(std::string_view filesystem_path) {
+    if (!m_ft) {
+        log::warn(TAG, "load_fallback_os_path called before primary font init — ignored");
+        return false;
+    }
+    std::string buf = read_os_file(filesystem_path);
+    if (buf.empty()) return false;  // quiet — optional
+    return load_fallback_from_bytes(std::move(buf), filesystem_path);
+}
+
+bool Font::load_fallback_from_bytes(std::string bytes, std::string_view origin) {
+    Fallback fb;
+    fb.ttf_bytes = std::move(bytes);
+
+    auto* ft = static_cast<msdfgen::FreetypeHandle*>(m_ft);
+    auto* font = msdfgen::loadFontData(ft,
+                    reinterpret_cast<const msdfgen::byte*>(fb.ttf_bytes.data()),
+                    static_cast<int>(fb.ttf_bytes.size()));
+    if (!font) {
+        log::warn(TAG, "msdfgen loadFontData failed for fallback '{}'", origin);
+        return false;
+    }
+    fb.handle = font;
+    m_fallbacks.push_back(std::move(fb));
+    log::info(TAG, "loaded fallback font '{}' (fallback #{})", origin, m_fallbacks.size());
     return true;
 }
 
 void Font::shutdown() {
+    for (auto& fb : m_fallbacks) {
+        if (fb.handle) msdfgen::destroyFont(static_cast<msdfgen::FontHandle*>(fb.handle));
+    }
+    m_fallbacks.clear();
     if (m_font) { msdfgen::destroyFont(static_cast<msdfgen::FontHandle*>(m_font)); m_font = nullptr; }
     if (m_ft)   { msdfgen::deinitializeFreetype(static_cast<msdfgen::FreetypeHandle*>(m_ft)); m_ft = nullptr; }
     m_ttf_bytes.clear();
@@ -267,12 +442,37 @@ bool Font::upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y) {
 }
 
 bool Font::rasterize_glyph(u32 codepoint, Glyph& out) {
-    if (!m_font) return false;
+    // Walk the chain: primary first, then each registered fallback.
+    // First face with a glyph for `codepoint` wins. Whitespace glyphs (no
+    // outline) count as "present" — they have an advance and stop the
+    // walk; we don't want to keep searching past a primary's space.
+    if (m_font && rasterize_glyph_from(m_font, codepoint, out)) return true;
+    for (auto& fb : m_fallbacks) {
+        if (rasterize_glyph_from(fb.handle, codepoint, out)) return true;
+    }
+    return false;
+}
 
-    auto* font = static_cast<msdfgen::FontHandle*>(m_font);
+bool Font::rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out) {
+    if (!font_handle) return false;
+
+    auto* font = static_cast<msdfgen::FontHandle*>(font_handle);
+
+    // Check the codepoint actually exists in this face BEFORE asking
+    // msdfgen for a glyph. `msdfgen::loadGlyph` silently loads .notdef
+    // (the tofu box) when a codepoint is missing from the font and
+    // returns *true* — which would prevent the fallback chain from ever
+    // walking past the primary. `getGlyphIndex` returns false when the
+    // FT_Get_Char_Index lookup yields 0, which is the correct signal.
+    msdfgen::GlyphIndex glyph_idx;
+    if (!msdfgen::getGlyphIndex(glyph_idx, font,
+                                  static_cast<msdfgen::unicode_t>(codepoint))) {
+        return false;
+    }
+
     double advance = 0.0;
     msdfgen::Shape shape;
-    if (!msdfgen::loadGlyph(shape, font, static_cast<msdfgen::unicode_t>(codepoint),
+    if (!msdfgen::loadGlyph(shape, font, glyph_idx,
                             msdfgen::FONT_SCALING_EM_NORMALIZED, &advance)) {
         return false;
     }

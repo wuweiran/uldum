@@ -1,0 +1,28 @@
+{
+    "combat": {
+        "damage_number": "-{amount}",
+        "unveil_hit":    "{amount}!"
+    },
+    "ui": {
+        "wave_label":          "Wave {current} / {total}",
+        "wave_label_init":     "Wave 0 / 20",
+        "portal_label":        "[Portal: {scene}]",
+        "portal_dialog_title": "Travel to Scene 01?",
+        "portal_dialog_body":  "You've reached the portal. Switch scenes?",
+        "button_yes":          "Yes",
+        "button_cancel":       "Cancel",
+
+        "command.move.name":          "Move",
+        "command.move.tooltip":       "Order the unit to move to a target point, ignoring enemies on the way.",
+        "command.stop.name":          "Stop",
+        "command.stop.tooltip":       "Cancel the unit's current orders.",
+        "command.hold_position.name": "Hold Position",
+        "command.hold_position.tooltip": "Order the unit to remain in place and attack only enemies that come into range.",
+        "command.attack.name":        "Attack",
+        "command.attack.tooltip":     "Order the unit to attack a target, or to attack-move toward a point and engage any enemies encountered.",
+        "command.attack_move.name":   "Attack-Move",
+        "command.attack_move.tooltip": "Move toward a point, attacking any enemies encountered along the way.",
+        "command.patrol.name":        "Patrol",
+        "command.patrol.tooltip":     "Order the unit to patrol between its current location and a target point."
+    }
+}

@@ -357,6 +357,20 @@ struct Hud::Impl {
     // AbilityIndicators calls in the app each frame.
     CastIndicatorConfig cast_indicator_cfg{};
 
+    // Hover / long-press tooltip for action_bar, inventory, command_bar.
+    // One tooltip at a time — whichever slot the pointer is dwelling on
+    // wins. Reset whenever the dwelling target changes; pops up after a
+    // platform-dependent delay (400 ms hover on desktop; 500 ms stationary
+    // press on mobile, AoV-style).
+    struct TooltipState {
+        enum class Source : u8 { None, ActionBar, Inventory, CommandBar };
+        Source source = Source::None;
+        i32    slot_index = -1;
+        std::chrono::steady_clock::time_point activate_at{};
+        bool   visible = false;
+    };
+    TooltipState tooltip{};
+
     // Rising-edge tracking for hidden-ability hotkeys (abilities
     // authored with `hidden: true` that don't live in any bar slot
     // but are still keyboard-triggerable).
@@ -372,6 +386,12 @@ struct Hud::Impl {
     // Local player slot (UINT32_MAX = dedicated server, never used to render).
     u32 local_player = UINT32_MAX;
 
+    // Client-side i18n resolver. Set by App. Used at render time to
+    // resolve LocalizedString payloads on text tags / labels in the
+    // local player's locale. Null = no localization, renders the
+    // literal `text` field instead.
+    i18n::LocaleManager* locale_manager = nullptr;
+
     // hud.json's `"preset"` value — drives preset-specific HUD behavior
     // (e.g. focus_target auto-acquire only runs for `"action"`).
     std::string preset;
@@ -386,10 +406,10 @@ struct Hud::Impl {
     // handle validation. Destroyed tags leave alive=false and bump
     // generation; create_text_tag reuses the first dead slot it finds.
     struct TextTagEntry {
-        bool               alive       = false;
-        u32                generation  = 0;
-        std::string        text;
-        f32                px_size     = 14.0f;
+        bool                  alive       = false;
+        u32                   generation  = 0;
+        i18n::LocalizedString text;                       // resolved per-render with active locale
+        f32                   px_size     = 14.0f;
         Color              color       = rgba(255, 255, 255);
         bool               visible     = true;
         glm::vec3          world_pos   {0.0f};
@@ -963,8 +983,12 @@ bool Hud::init(rhi::VulkanRhi& rhi) {
     // the HUD still draws solid widgets. We don't fail init() because a
     // missing font shouldn't bring down the whole engine.
     m_impl->font = std::make_unique<Font>();
-    m_impl->font->init(rhi, "engine/fonts/Roboto-Regular.ttf",
-                       m_impl->desc_layout, m_impl->sampler);
+    // Build the platform's system-font chain: primary (Latin / Cyrillic
+    // / Greek / Arabic) + CJK fallback + emoji fallback. The engine ships
+    // no fonts of its own — text quality matches what the OS provides.
+    // Game projects can layer their own font on top via load_fallback
+    // later (deferred).
+    m_impl->font->init_from_system(rhi, m_impl->desc_layout, m_impl->sampler);
 
     log::info(TAG, "HUD initialized");
     return true;
@@ -1257,6 +1281,7 @@ void Hud::reset_scene_state() {
     s.inventory_pressed_slot     = -1;
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
+    s.tooltip                    = Impl::TooltipState{};
 
     // Edge-tracking for ability hotkeys — stale entries would mis-fire
     // on the new scene's first frame.
@@ -1295,6 +1320,7 @@ void Hud::reset_session_state() {
     s.inventory_pressed_slot     = -1;
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
+    s.tooltip                    = Impl::TooltipState{};
 
     // Drop the cross-map icon / texture cache so a same-named texture
     // in the next map (e.g. two maps both shipping
@@ -1534,6 +1560,14 @@ static void draw_text_tags(Hud& hud, Hud::Impl& s, const WorldContext& ctx, f32 
         if (!t.alive || !t.visible || t.text.empty()) continue;
         if (!(t.players_mask & (1u << s.local_player))) continue;
 
+        // Resolve the localized payload against the client's active
+        // locale. No resolver wired → render the key literal as a
+        // visible fallback.
+        std::string rendered = s.locale_manager
+            ? s.locale_manager->resolve(i18n::Pool::Map, t.text)
+            : t.text.key;
+        if (rendered.empty()) continue;
+
         // Anchor: attached unit's interpolated position (+ z_offset), or
         // the raw world_pos if unattached.
         glm::vec3 world_anchor{0.0f};
@@ -1570,12 +1604,12 @@ static void draw_text_tags(Hud& hud, Hud::Impl& s, const WorldContext& ctx, f32 
 
         // Measure + draw centered horizontally; baseline positioned so text
         // is centered vertically around the projected point.
-        f32 text_w    = hud.text_width_px(t.text, t.px_size);
+        f32 text_w    = hud.text_width_px(rendered, t.px_size);
         f32 line_h    = hud.text_line_height_px(t.px_size);
         f32 ascent    = hud.text_ascent_px(t.px_size);
         f32 x_left    = cx - text_w * 0.5f;
         f32 y_baseline = cy + ascent - line_h * 0.5f;
-        hud.draw_text(x_left, y_baseline, t.text, final_color, t.px_size);
+        hud.draw_text(x_left, y_baseline, rendered, final_color, t.px_size);
     }
 }
 
@@ -1587,6 +1621,15 @@ void Hud::set_world_overlay_config(const WorldOverlayConfig& cfg) {
 void Hud::set_world_context(const WorldContext* ctx) {
     if (!m_impl) return;
     m_impl->world_ctx = ctx;
+}
+
+void Hud::set_locale_manager(i18n::LocaleManager* mgr) {
+    if (!m_impl) return;
+    m_impl->locale_manager = mgr;
+}
+
+i18n::LocaleManager* Hud::locale_manager() const {
+    return m_impl ? m_impl->locale_manager : nullptr;
 }
 
 void Hud::draw_world_overlays(f32 alpha) {
@@ -1833,7 +1876,8 @@ TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
     // No mid-life setters are synced in v1 — setters apply locally only.
     emit_sync(*m_impl,
               uldum::network::build_hud_create_text_tag(
-                  info.text, info.px_size,
+                  info.text.key, info.text.args,
+                  info.px_size,
                   info.pos.x, info.pos.y, info.pos.z,
                   info.unit.id, info.z_offset,
                   info.color.rgba,
@@ -1872,9 +1916,9 @@ static Hud::Impl::TextTagEntry* lookup_tag(Hud::Impl& s, TextTagId id) {
     return &t;
 }
 
-void Hud::set_text_tag_text(TextTagId id, std::string_view text) {
+void Hud::set_text_tag_text(TextTagId id, i18n::LocalizedString text) {
     if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) t->text.assign(text);
+    if (auto* t = lookup_tag(*m_impl, id)) t->text = std::move(text);
 }
 void Hud::set_text_tag_pos(TextTagId id, f32 x, f32 y, f32 z) {
     if (!m_impl) return;
@@ -4371,6 +4415,219 @@ static void draw_action_bar(Hud& hud, Hud::Impl& s) {
     draw_action_bar_cancel_zone(hud, s);
 }
 
+// ── Tooltip ──────────────────────────────────────────────────────────────
+// Returns {name_key, body_key} for the currently-dwelled slot. Keys route
+// through the i18n raw-fallback chain — `ability.<id>.name` /
+// `.tooltip`, `item.<id>.name` / `.tooltip`, `ui.command.<id>.name` /
+// `.tooltip`. Maps localize them via `<map>/strings/<locale>/*.json`;
+// ability + item names already fall back to `display_name` / `name` in
+// the type def, so even un-localized maps show readable names. Bodies
+// without a JSON or locale entry render as the key literal so authors
+// can see what's missing.
+static void tooltip_keys(const Hud::Impl& s,
+                         i18n::LocalizedString& out_name,
+                         i18n::LocalizedString& out_body) {
+    out_name.clear();
+    out_body.clear();
+    switch (s.tooltip.source) {
+        case Hud::Impl::TooltipState::Source::ActionBar: {
+            if (!s.world_ctx) return;
+            const simulation::AbilityDef* def = nullptr;
+            resolve_slot_ability(static_cast<u32>(s.tooltip.slot_index),
+                                 s.action_bar_cfg, *s.world_ctx, def);
+            if (!def) return;
+            out_name.key = "ability." + def->id + ".name";
+            out_body.key = "ability." + def->id + ".tooltip";
+            break;
+        }
+        case Hud::Impl::TooltipState::Source::Inventory: {
+            const simulation::Inventory* inv = inventory_resolve_selected(s);
+            simulation::Item item;
+            const simulation::ItemInfo*    info = nullptr;
+            const simulation::ItemTypeDef* def  = nullptr;
+            if (!inventory_resolve_slot(s, inv,
+                                        static_cast<u32>(s.tooltip.slot_index),
+                                        item, info, def)) return;
+            if (!def) return;
+            out_name.key = "item." + def->id + ".name";
+            out_body.key = "item." + def->id + ".tooltip";
+            break;
+        }
+        case Hud::Impl::TooltipState::Source::CommandBar: {
+            const auto& slots = s.command_bar_cfg.slots;
+            u32 idx = static_cast<u32>(s.tooltip.slot_index);
+            if (idx >= slots.size()) return;
+            const std::string& cmd = slots[idx].command;
+            if (cmd.empty()) return;
+            out_name.key = "ui.command." + cmd + ".name";
+            out_body.key = "ui.command." + cmd + ".tooltip";
+            break;
+        }
+        default: break;
+    }
+}
+
+// Greedy word-wrap. Splits on ASCII spaces and explicit '\n'. Words wider
+// than `max_w` are broken between codepoints. UTF-8 multibyte sequences
+// are walked as units so we never split mid-codepoint. Sufficient for the
+// short, prose-like ability / item tooltips authors write; languages
+// without spaces (CJK) end up on one line unless authored with line
+// breaks, which is acceptable for v1.
+static std::vector<std::string> tooltip_wrap(const Hud& hud,
+                                             const std::string& text,
+                                             f32 px_size, f32 max_w) {
+    std::vector<std::string> out;
+    if (text.empty()) return out;
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t line_end = text.find('\n', i);
+        std::string segment = (line_end == std::string::npos)
+                                ? text.substr(i)
+                                : text.substr(i, line_end - i);
+        i = (line_end == std::string::npos) ? text.size() : (line_end + 1);
+
+        // Wrap this segment.
+        std::string current;
+        size_t k = 0;
+        while (k < segment.size()) {
+            // Read one word (run of non-space) into `word`.
+            size_t ws = k;
+            while (ws < segment.size() && segment[ws] == ' ') ++ws;
+            std::string spaces = segment.substr(k, ws - k);
+            size_t we = ws;
+            while (we < segment.size() && segment[we] != ' ') ++we;
+            std::string word = segment.substr(ws, we - ws);
+            k = we;
+
+            std::string candidate = current + spaces + word;
+            f32 cw = hud.text_width_px(candidate, px_size);
+            if (cw <= max_w || current.empty()) {
+                current = std::move(candidate);
+            } else {
+                out.push_back(std::move(current));
+                current = word;     // spaces drop at line break
+            }
+            // If `current` itself is wider than max_w (a single very
+            // long word, or CJK with no spaces), break by codepoints.
+            if (hud.text_width_px(current, px_size) > max_w) {
+                std::string acc;
+                size_t cp = 0;
+                while (cp < current.size()) {
+                    unsigned char c = static_cast<unsigned char>(current[cp]);
+                    size_t n = 1;
+                    if      ((c & 0x80) == 0x00) n = 1;
+                    else if ((c & 0xE0) == 0xC0) n = 2;
+                    else if ((c & 0xF0) == 0xE0) n = 3;
+                    else if ((c & 0xF8) == 0xF0) n = 4;
+                    if (cp + n > current.size()) n = current.size() - cp;
+                    std::string trial = acc + current.substr(cp, n);
+                    if (hud.text_width_px(trial, px_size) > max_w && !acc.empty()) {
+                        out.push_back(std::move(acc));
+                        acc.clear();
+                    }
+                    acc += current.substr(cp, n);
+                    cp  += n;
+                }
+                current = std::move(acc);
+            }
+        }
+        out.push_back(std::move(current));
+    }
+    return out;
+}
+
+static void draw_tooltip(Hud& hud, Hud::Impl& s) {
+    using TT = Hud::Impl::TooltipState;
+    if (s.tooltip.source == TT::Source::None) return;
+    auto now = std::chrono::steady_clock::now();
+    if (now < s.tooltip.activate_at) return;
+    s.tooltip.visible = true;
+
+    // Anchor rect.
+    Rect anchor{};
+    bool have_anchor = false;
+    u32 idx = static_cast<u32>(s.tooltip.slot_index);
+    if (s.tooltip.source == TT::Source::ActionBar
+        && idx < s.action_bar_cfg.slots.size()) {
+        anchor = s.action_bar_cfg.slots[idx].rect;
+        have_anchor = true;
+    } else if (s.tooltip.source == TT::Source::Inventory
+               && idx < s.inventory_cfg.slots.size()) {
+        anchor = s.inventory_cfg.slots[idx].rect;
+        have_anchor = true;
+    } else if (s.tooltip.source == TT::Source::CommandBar
+               && idx < s.command_bar_cfg.slots.size()) {
+        anchor = s.command_bar_cfg.slots[idx].rect;
+        have_anchor = true;
+    }
+    if (!have_anchor) return;
+
+    auto resolve = [&](const i18n::LocalizedString& l) -> std::string {
+        if (l.empty()) return {};
+        if (!s.locale_manager) return l.key;
+        return s.locale_manager->resolve(i18n::Pool::Map, l);
+    };
+    i18n::LocalizedString name_loc, body_loc;
+    tooltip_keys(s, name_loc, body_loc);
+
+    constexpr f32 PAD     = 8.0f;
+    constexpr f32 GAP     = 4.0f;
+    constexpr f32 MAX_W   = 280.0f;
+    constexpr f32 NAME_PX = 15.0f;
+    constexpr f32 BODY_PX = 12.0f;
+
+    // Flatten the tooltip into a uniform line list. Empty resolutions
+    // (e.g. unauthored body) contribute zero entries, so the layout
+    // math below has no special cases — drawing happens iff there's
+    // anything to draw.
+    struct Line { std::string text; f32 px; Color color; };
+    std::vector<Line> lines;
+    if (auto t = resolve(name_loc); !t.empty()) {
+        lines.push_back({ std::move(t), NAME_PX, rgba(255, 230, 150, 255) });
+    }
+    for (auto& wrapped : tooltip_wrap(hud, resolve(body_loc), BODY_PX, MAX_W - PAD * 2.0f)) {
+        lines.push_back({ std::move(wrapped), BODY_PX, rgba(220, 220, 220, 255) });
+    }
+    if (lines.empty()) return;
+
+    // Walk lines once to size the panel. Vertical GAP appears wherever
+    // adjacent lines use a different size — natural visual break
+    // between the name (NAME_PX) and the first body line (BODY_PX).
+    f32 content_w = 0.0f;
+    f32 panel_h   = PAD * 2.0f;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i > 0 && lines[i - 1].px != lines[i].px) panel_h += GAP;
+        panel_h   += hud.text_line_height_px(lines[i].px);
+        content_w  = std::max(content_w, hud.text_width_px(lines[i].text, lines[i].px));
+    }
+    f32 panel_w = std::min(MAX_W, content_w + PAD * 2.0f);
+
+    // Position. Above slot by default; flip below if it would clip
+    // the top edge. Clamp horizontally so the panel stays on-screen.
+    f32 px = anchor.x + anchor.w * 0.5f - panel_w * 0.5f;
+    f32 py = anchor.y - panel_h - 8.0f;
+    if (py < 4.0f) py = anchor.y + anchor.h + 8.0f;
+    f32 sw = static_cast<f32>(s.screen_w);
+    if (px < 4.0f) px = 4.0f;
+    if (px + panel_w > sw - 4.0f) px = sw - 4.0f - panel_w;
+
+    Color bg     = rgba(20, 22, 30, 235);
+    Color border = rgba(255, 255, 255, 90);
+    hud.draw_rect({ px, py, panel_w, panel_h }, bg);
+    hud.draw_rect({ px, py, panel_w, 1.0f }, border);
+    hud.draw_rect({ px, py + panel_h - 1.0f, panel_w, 1.0f }, border);
+    hud.draw_rect({ px, py, 1.0f, panel_h }, border);
+    hud.draw_rect({ px + panel_w - 1.0f, py, 1.0f, panel_h }, border);
+
+    f32 cursor_y = py + PAD;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i > 0 && lines[i - 1].px != lines[i].px) cursor_y += GAP;
+        f32 baseline = cursor_y + hud.text_ascent_px(lines[i].px);
+        hud.draw_text(px + PAD, baseline, lines[i].text, lines[i].color, lines[i].px);
+        cursor_y += hud.text_line_height_px(lines[i].px);
+    }
+}
+
 void Hud::draw_tree() {
     if (!m_impl || !m_impl->frame_open || !m_impl->root) return;
     m_impl->root->draw(*this);
@@ -4422,6 +4679,14 @@ void Hud::draw_tree() {
         Rect r{ cx - kHeldIconSize * 0.5f, cy - kHeldIconSize * 0.5f,
                 kHeldIconSize, kHeldIconSize };
         draw_image(r, m_impl->held_item_icon, rgba(255, 255, 255, 220));
+    }
+
+    // Tooltip — drawn last so it overlays everything except the held-item
+    // icon (which the user is actively dragging and must stay legible).
+    // Skipped when an item is held; the lift gesture already replaces
+    // hover semantics.
+    if (m_impl->held_item_slot < 0) {
+        draw_tooltip(*this, *m_impl);
     }
 }
 
@@ -4514,6 +4779,29 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             s.inventory_cfg.slots[inv_slot].hovered = true;
         }
         s.inventory_hover_slot = inv_slot;
+    }
+
+    // Tooltip arming. The pointer dwelling on a slot for `delay_ms`
+    // pops the tooltip; any change (different slot / left every slot)
+    // resets the timer. Desktop uses 250ms — snappy hover. Mobile uses
+    // 500ms — AoV-like long-press (handle_pointer is called every frame
+    // with the last known position, so dwelling means stationary press;
+    // sliding past the slot edges fails the hit-test and naturally
+    // clears the timer).
+    Impl::TooltipState::Source kind = Impl::TooltipState::Source::None;
+    i32 kind_idx = -1;
+    if      (bar_slot >= 0) { kind = Impl::TooltipState::Source::ActionBar;  kind_idx = bar_slot; }
+    else if (cmd_slot >= 0) { kind = Impl::TooltipState::Source::CommandBar; kind_idx = cmd_slot; }
+    else if (inv_slot >= 0) { kind = Impl::TooltipState::Source::Inventory;  kind_idx = inv_slot; }
+    if (kind != s.tooltip.source || kind_idx != s.tooltip.slot_index) {
+        s.tooltip.source     = kind;
+        s.tooltip.slot_index = kind_idx;
+        s.tooltip.visible    = false;
+        if (kind != Impl::TooltipState::Source::None) {
+            int delay_ms = s.is_mobile ? 500 : 250;
+            s.tooltip.activate_at = std::chrono::steady_clock::now()
+                                  + std::chrono::milliseconds(delay_ms);
+        }
     }
 
     Node* under = nullptr;
@@ -4960,15 +5248,15 @@ static void emit_sync(Hud::Impl& s, const std::vector<u8>& pkt, u32 owner) {
     if (s.sync_fn) s.sync_fn(pkt, owner);
 }
 
-void Hud::set_label_text(std::string_view id, std::string_view text) {
+void Hud::set_label_text(std::string_view id, i18n::LocalizedString text) {
     if (!m_impl) return;
     auto* n = find_node_by_id(id);
     if (!n) return;
     if (auto* l = dynamic_cast<hud::Label*>(n)) {
-        l->text.assign(text);
         emit_sync(*m_impl,
-                  uldum::network::build_hud_set_label_text(id, text),
+                  uldum::network::build_hud_set_label_text(id, text.key, text.args),
                   n->players_mask);
+        l->text = std::move(text);
     }
 }
 

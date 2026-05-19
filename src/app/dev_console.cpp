@@ -222,6 +222,10 @@ static void get_safe_viewport(const platform::Platform* platform,
     if (out_size.y < 0) out_size.y = 0;
 }
 
+void DevConsole::set_active_locale(std::string code) {
+    m_locale_input = std::move(code);
+}
+
 void DevConsole::rescan_map_list() {
     m_maps.clear();
     if (!m_platform) return;
@@ -427,6 +431,34 @@ void DevConsole::draw_menu_screen() {
     {
         ImGui::TextUnformatted("Session");
         ImGui::Separator();
+
+        // Locale picker — pre-session. Hardcoded list of common BCP 47
+        // codes so authors can verify localization without a registry
+        // file. Game builds wire their own picker UI from settings.Store.
+        // Codes-only (no display names) because ImGui's built-in font is
+        // Latin-only — "中文" would render as missing-glyph boxes.
+        {
+            static const char* kLocaleOptions[] = {
+                "en", "zh-CN",
+            };
+            const char* preview = m_locale_input.empty() ? "en" : m_locale_input.c_str();
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##locale", preview)) {
+                for (const char* code : kLocaleOptions) {
+                    bool is_active = (m_locale_input == code);
+                    if (ImGui::Selectable(code, is_active)) {
+                        m_locale_input        = code;
+                        m_pending.type        = ActionType::SetLocale;
+                        m_pending.locale_code = code;
+                    }
+                    if (is_active) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TextDisabled("Locale");
+            ImGui::Dummy(ImVec2(0, 4 * s));
+            ImGui::Separator();
+        }
 
         ImGui::BeginDisabled(selected_path == nullptr);
         if (ImGui::Button("Offline", btn)) {

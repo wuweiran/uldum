@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "i18n/locale.h"
 #include "simulation/handle_types.h"  // simulation::Unit
 
 #include <glm/vec3.hpp>
@@ -16,6 +17,7 @@ typedef struct VkCommandBuffer_T* VkCommandBuffer;
 
 namespace uldum::rhi      { class VulkanRhi; }
 namespace uldum::platform { struct InputState; }
+namespace uldum::i18n     { class LocaleManager; }
 
 namespace uldum::hud {
 
@@ -227,7 +229,7 @@ public:
     // sync_fn is installed (host mode), it also emits a protocol message
     // tagged with the node's owner so the network layer can route it.
     // Silent no-op on unknown id or wrong node type.
-    void set_label_text(std::string_view id, std::string_view text);
+    void set_label_text(std::string_view id, i18n::LocalizedString text);
     void set_bar_fill(std::string_view id, f32 fill);
     void set_node_visible(std::string_view id, bool visible);
     void set_image_source(std::string_view id, std::string_view source);
@@ -275,6 +277,13 @@ public:
     // frame and emits quads into the same batcher as screen UI.
     void set_world_overlay_config(const WorldOverlayConfig& cfg);
     void set_world_context(const WorldContext* ctx);
+
+    // LocaleManager for client-side i18n string resolution. The HUD reads
+    // this on text-tag / label render to substitute localized keys with
+    // the active locale's strings. Optional — without it, localized
+    // payloads render as the literal key.
+    void set_locale_manager(i18n::LocaleManager* mgr);
+    i18n::LocaleManager* locale_manager() const;
     // `alpha` is the sub-tick interpolation factor (0..1) — passed through
     // to the projection so world-anchored overlays follow smoothly-moving
     // units, matching how `Renderer::draw` interpolates the units themselves.
@@ -311,7 +320,7 @@ public:
     void      destroy_text_tag(TextTagId id);
     bool      text_tag_alive(TextTagId id) const;
 
-    void set_text_tag_text    (TextTagId id, std::string_view text);
+    void set_text_tag_text    (TextTagId id, i18n::LocalizedString text);
     void set_text_tag_pos     (TextTagId id, f32 x, f32 y, f32 z);
     void set_text_tag_pos_unit(TextTagId id, u32 unit_id, f32 z_offset);
     void set_text_tag_color   (TextTagId id, Color color);

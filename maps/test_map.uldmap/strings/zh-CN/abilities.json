@@ -1,0 +1,26 @@
+{
+    "devotion_aura": {
+        "name":    "虔诚光环",
+        "tooltip": "为附近的友军单位提供护甲加成。"
+    },
+    "use_potion_healing": {
+        "name":    "使用治疗药水",
+        "tooltip": "饮下药水,立即恢复生命值。"
+    },
+    "holy_light": {
+        "name":    "圣光术",
+        "tooltip": "呼唤圣光的力量,治疗友军单位,或对亡灵敌人造成伤害。"
+    },
+    "consecration": {
+        "name":    "圣礼术",
+        "tooltip": "降下一道圣能波,对目标区域内的所有敌人造成伤害。"
+    },
+    "wind_walk": {
+        "name":    "风行术",
+        "tooltip": "隐身 10 秒。锁定目标或发动攻击会提前结束效果。"
+    },
+    "chain_frost": {
+        "name":    "霜冻新星",
+        "tooltip": "射出一道霜冻波,在附近敌人之间弹射,造成伤害并减速。"
+    }
+}

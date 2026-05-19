@@ -16,6 +16,7 @@
 #include "app/dev_console.h"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <limits>
@@ -176,6 +177,7 @@ bool App::init(const LaunchArgs& args) {
         log::error(TAG, "HUD init failed");
         return false;
     }
+    m_hud.set_locale_manager(&m_i18n);
     // Authored HUD units are dp (1 dp = 1/160 inch). Platform reports
     // physical-pixels-per-dp — on Windows derived from the monitor
     // DPI, on Android from AConfiguration density. Setting once at
@@ -316,6 +318,85 @@ bool App::init(const LaunchArgs& args) {
     // this load nothing would render until the first state change.
     m_shell->load_document("shell/main_menu.rml");
 #endif
+
+    // I18n: active locale comes from CLI (`--locale`) → settings store →
+    // default "en". The engine ships no locale registry; game projects own
+    // the list of supported locales (via their own locales.json + a
+    // load_locale_registry call). Map pool loads later in start_session
+    // once a map root is known.
+
+    // Settings-driven locale switch. Changes outside a session apply
+    // immediately and reload the shell pack; changes during a session are
+    // logged + ignored (locale is fixed for the session duration).
+    m_settings.subscribe("i18n.locale", [this](const settings::Value& v) {
+        const std::string* code = std::get_if<std::string>(&v);
+        if (!code || code->empty()) return;
+        if (m_session_active) {
+            log::warn(TAG, "Locale change to '{}' deferred — session in progress", *code);
+            return;
+        }
+        m_i18n.set_active(*code);
+    });
+    // Apply CLI flag (highest priority), else stay on default "en".
+    if (!m_args.locale.empty()) {
+        m_settings.set("i18n.locale", m_args.locale);
+    } else {
+        m_settings.set("i18n.locale", std::string(m_i18n.active()));
+    }
+#ifdef ULDUM_DEV_UI
+    if (m_dev_console) m_dev_console->set_active_locale(std::string(m_i18n.active()));
+#endif
+    // Shell pool stays empty in engine builds — game projects load their
+    // own shell strings from <project>/strings/<locale>/shell.json when
+    // that wiring lands (game build only).
+
+    // Raw fallback: when a map-pool entity-key lookup misses every locale
+    // pack, fall through to the corresponding string field in
+    // `types/<entity>.json`. Maps that don't localize at all get correct
+    // names + tooltips automatically; partial translations fall through
+    // per-key. The callback routes by the key's prefix to the right
+    // registry — both TypeRegistry (unit / item / destructable / doodad)
+    // and AbilityRegistry expose a `raw_string_field` for this.
+    m_i18n.set_raw_fallback_fn([this](std::string_view key) -> std::optional<std::string> {
+        // Engine-bound conventions translate the lookup-key suffix to the
+        // raw JSON field name when they differ (only "name" for units,
+        // items, destructables, doodads — all use "display_name" in JSON;
+        // abilities use "name" directly).
+        auto dot1 = key.find('.');
+        if (dot1 == std::string_view::npos) return std::nullopt;
+        auto rest = key.substr(dot1 + 1);
+        auto dot2 = rest.find('.');
+        if (dot2 == std::string_view::npos) return std::nullopt;
+        std::string_view prefix    = key.substr(0, dot1);
+        std::string_view entity_id = rest.substr(0, dot2);
+        std::string_view field     = rest.substr(dot2 + 1);
+
+        auto& types     = m_server.simulation().types();
+        auto& abilities = m_server.simulation().abilities();
+        using Cat = simulation::TypeRegistry::Category;
+
+        if (prefix == "ability") {
+            return abilities.raw_string_field(entity_id, field);
+        }
+        // Unit/Item/Destructable/Doodad: the lookup key uses "name" but
+        // the raw JSON field is "display_name" for units, destructables,
+        // doodads; items accept either (loader takes "name" or
+        // "display_name"). Try the conventional remap first, fall back
+        // to the literal field name.
+        Cat cat;
+        if      (prefix == "unit")         cat = Cat::Unit;
+        else if (prefix == "item")         cat = Cat::Item;
+        else if (prefix == "destructable") cat = Cat::Destructable;
+        else if (prefix == "doodad")       cat = Cat::Doodad;
+        else return std::nullopt;
+
+        if (field == "name") {
+            if (auto v = types.raw_string_field(cat, entity_id, "display_name")) return v;
+            if (auto v = types.raw_string_field(cat, entity_id, "name"))         return v;
+            return std::nullopt;
+        }
+        return types.raw_string_field(cat, entity_id, field);
+    });
 
     log::info(TAG, "=== Engine subsystems initialized ===");
     return true;
@@ -730,6 +811,7 @@ bool App::start_session() {
         // Connect server Lua → HUD + → NetworkManager (for C_NODE_EVENT
         // handling). Both must be set before init_game runs the map's Lua.
         m_server.script().set_hud(&m_hud);
+        m_server.script().set_locale_manager(&m_i18n);
         m_network.set_script(&m_server.script());
 
         // Surface the launch mode to Lua before main() runs so scripts
@@ -1032,6 +1114,10 @@ bool App::start_session() {
         m_hud.set_world_context(&m_hud_world_ctx);
     }
 
+    // I18n: load the map's strings pool. AssetManager's mount of the map
+    // package gave us `<map>/strings/<locale>/*.json` paths.
+    m_i18n.load_map(m_asset, "strings");
+
     m_session_active = true;
     log::info(TAG, "=== Session started ===");
     return true;
@@ -1086,6 +1172,9 @@ void App::end_session() {
     // barrier in progress) is meaningless after the session ends.
     m_pending_scene_switch.clear();
     m_pending_scene_switch_finalize.clear();
+
+    // I18n: drop the map's strings pool. Shell pool persists.
+    m_i18n.unload_map();
 
     m_session_active = false;
     m_lobby_active   = false;
@@ -1542,6 +1631,10 @@ void App::run() {
                 m_state = AppState::Menu;
             } else if (action.type == A::Quit) {
                 m_wants_quit = true;
+            } else if (action.type == A::SetLocale && !action.locale_code.empty()) {
+                // Push into settings; subscriber routes to LocaleManager
+                // (and refuses mid-session changes).
+                m_settings.set("i18n.locale", action.locale_code);
             }
         }
 #endif

@@ -23,6 +23,7 @@ namespace uldum::render { class EffectRegistry; class EffectManager; class Rende
 namespace uldum::audio { class AudioEngine; }
 namespace uldum::input { class SelectionState; class CommandSystem; }
 namespace uldum::hud   { class Hud; }
+namespace uldum::i18n  { class LocaleManager; }
 
 namespace uldum::script {
 
@@ -77,6 +78,10 @@ public:
               render::Renderer* renderer = nullptr);
 
     void set_attach_point_fn(AttachPointFn fn) { m_attach_fn = std::move(fn); }
+
+    // Locale resolver for the L(key, args) Lua helper. Optional — if unset,
+    // L() returns a handle that resolves to the literal key string.
+    void set_locale_manager(i18n::LocaleManager* mgr) { m_i18n = mgr; }
 
     // Callback fired when Lua calls EndGame(winner, stats_json).
     using EndGameFn = std::function<void(u32 winner_id, std::string_view stats_json)>;
@@ -235,6 +240,7 @@ private:
     render::EffectManager*   m_effect_mgr = nullptr;
     audio::AudioEngine*      m_audio      = nullptr;
     render::Renderer*        m_renderer   = nullptr;
+    i18n::LocaleManager*     m_i18n       = nullptr;
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
     UnitUpdateFn             m_unit_update_fn;

@@ -667,8 +667,8 @@ for the map package structure.
 
 ### Unit Type Example (Regular Unit)
 
-Types live in per-category files (`unit_types.json`, `destructable_types.json`,
-`item_types.json`); the loader routes by filename. Unit subtypes are determined
+Types live in per-category files (`units.json`, `destructables.json`,
+`items.json`); the loader routes by filename. Unit subtypes are determined
 by classification flags and presence of extra blocks (`"hero"`, `"building"`).
 
 ```json
@@ -778,9 +778,9 @@ Movement speed is 0 (immobile).
 ```
 
 **Note on `pathing_footprint` units.** Building footprints
-(`unit_types.json` with a footprint) are authored in **terrain tiles**
+(`units.json` with a footprint) are authored in **terrain tiles**
 (128 game units each). Destructable footprints
-(`destructable_types.json`) are authored in **pathing cells** (32 game
+(`destructables.json`) are authored in **pathing cells** (32 game
 units = ¼ tile). This mirrors WC3's split between tile-aligned
 buildings and finer-grained doodads, and lets a tree block a 2×2-cell
 patch instead of a whole tile. Internally both end up on the same

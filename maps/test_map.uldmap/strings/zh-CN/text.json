@@ -1,0 +1,28 @@
+{
+    "combat": {
+        "damage_number": "-{amount}",
+        "unveil_hit":    "{amount}！"
+    },
+    "ui": {
+        "wave_label":          "第 {current} 波 / 共 {total} 波",
+        "wave_label_init":     "第 0 波 / 共 20 波",
+        "portal_label":        "[传送门：{scene}]",
+        "portal_dialog_title": "前往场景 01？",
+        "portal_dialog_body":  "你已到达传送门,是否切换场景？",
+        "button_yes":          "是",
+        "button_cancel":       "取消",
+
+        "command.move.name":          "移动",
+        "command.move.tooltip":       "命令单位移动到目标地点,沿途忽略敌人。",
+        "command.stop.name":          "停止",
+        "command.stop.tooltip":       "取消单位当前的命令。",
+        "command.hold_position.name": "原地待命",
+        "command.hold_position.tooltip": "命令单位原地不动,仅攻击进入射程的敌人。",
+        "command.attack.name":        "攻击",
+        "command.attack.tooltip":     "命令单位攻击目标,或前往目标地点并交战途中遇到的敌人。",
+        "command.attack_move.name":   "强攻",
+        "command.attack_move.tooltip": "前往目标地点,主动攻击沿途遇到的所有敌人。",
+        "command.patrol.name":        "巡逻",
+        "command.patrol.tooltip":     "命令单位在当前位置与目标地点之间往返巡逻。"
+    }
+}

@@ -3,6 +3,7 @@
 #include "core/types.h"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -121,6 +122,12 @@ struct AbilityLevelDef {
 struct AbilityDef {
     std::string    id;
     std::string    name;
+    // Player-facing description shown in tooltips. Default "" when
+    // the JSON didn't author one — same shape as any optional numeric
+    // field that defaults via `val.value(field, default)` in the
+    // loader. Localized overrides live in
+    // `strings/<locale>/abilities.json["<id>"]["tooltip"]`.
+    std::string    tooltip;
     std::string    icon;
     std::string    hotkey;              // RTS preset key (e.g., "T"). Empty = no hotkey.
     AbilityForm    form      = AbilityForm::PassiveModifier;
@@ -169,11 +176,19 @@ public:
 
     // Drop every registered ability. Mirrors TypeRegistry::clear so
     // session shutdown leaves a fresh registry for the next map.
-    void clear() { m_defs.clear(); }
+    void clear() { m_defs.clear(); m_raw.clear(); }
+
+    // Raw string-field lookup for i18n raw-fallback. Returns nullopt if
+    // the ability id or field isn't present.
+    std::optional<std::string> raw_string_field(std::string_view ability_id,
+                                                  std::string_view field) const;
 
 private:
     bool load_from_doc(const asset::JsonDocument* doc, std::string_view source);
     std::unordered_map<std::string, AbilityDef> m_defs;
+
+    using RawFields = std::unordered_map<std::string, std::string>;
+    std::unordered_map<std::string, RawFields> m_raw;
 };
 
 } // namespace uldum::simulation

@@ -131,7 +131,7 @@ end
 -- damage on the struck target and immediately ends invisibility.
 --
 -- All state-toggling is driven by two passive_flag buffs declared in
--- ability_types.json:
+-- abilities.json:
 --   * windwalk_fading     — no_acquire, 1s
 --   * windwalk_invisible  — invisible + no_acquire, 10s
 -- The Lua side only owns the alpha tween (cosmetic, not yet a modifier)
@@ -234,7 +234,7 @@ function M.register_wind_walk(opts)
         RemoveAbility(src, "windwalk_invisible")
         local total = math.floor(GetDamageAmount() + 0.5)
         CreateTextTag{
-            text      = string.format("%d!", total),
+            text      = L("combat.unveil_hit", { amount = total }),
             unit      = target,
             z_offset  = 140.0,
             size      = 20,

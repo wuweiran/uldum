@@ -51,7 +51,7 @@ function register_damage_text()
         local target = GetDamageTarget()
         if not target then return end
         CreateTextTag{
-            text      = string.format("-%d", math.floor(GetDamageAmount() + 0.5)),
+            text      = L("combat.damage_number", { amount = math.floor(GetDamageAmount() + 0.5) }),
             unit      = target,
             z_offset  = 120.0,
             size      = 12,

@@ -50,14 +50,33 @@ public:
     Font(const Font&) = delete;
     Font& operator=(const Font&) = delete;
 
-    // Load a .ttf / .otf from the asset system. `desc_layout` + `sampler`
-    // are HUD-owned and used to bind the atlas into the text pipeline's
-    // set 0 / binding 0. Fails silently if the font file is missing — the
-    // Font remains in an inert state and get_glyph() returns nullptr.
-    bool init(rhi::VulkanRhi& rhi,
-              std::string_view ttf_path,
-              VkDescriptorSetLayout desc_layout,
-              VkSampler sampler);
+    // Initialize from a platform-curated chain of system font paths.
+    // Walks a hardcoded list of well-known OS font locations (Windows:
+    // Segoe UI + msyh + emoji; macOS: Helvetica + PingFang + Apple Color
+    // Emoji; Android: Roboto + NotoSansCJK + NotoColorEmoji; Linux:
+    // DejaVu / Noto family in standard paths). First successful load
+    // becomes the primary; subsequent successes are fallbacks consulted
+    // per-codepoint.
+    //
+    // `desc_layout` + `sampler` are HUD-owned and used to bind the atlas
+    // into the text pipeline's set 0 / binding 0. Returns false only if
+    // no system font loaded at all — Windows / macOS / Android always
+    // succeed; minimal Linux installs may fail and need a game-supplied
+    // fallback via load_fallback / load_fallback_os_path.
+    bool init_from_system(rhi::VulkanRhi& rhi,
+                          VkDescriptorSetLayout desc_layout,
+                          VkSampler sampler);
+
+    // Add an extra fallback face after `init_from_system`. Optional
+    // entry point for game-supplied fonts (consistency across platforms,
+    // brand identity). Missing file = no-op.
+    //
+    // `load_fallback` reads via AssetManager (engine.uldpak / mounted
+    // map). `load_fallback_os_path` reads directly from the host
+    // filesystem.
+    bool load_fallback(std::string_view ttf_path);
+    bool load_fallback_os_path(std::string_view filesystem_path);
+
     void shutdown();
 
     // Returns metrics for `codepoint`, rasterizing the glyph into the atlas
@@ -84,15 +103,31 @@ public:
 private:
     bool create_atlas(VkDescriptorSetLayout desc_layout, VkSampler sampler);
     bool rasterize_glyph(u32 codepoint, Glyph& out);
+    bool rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out);
     bool upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y);
+    bool load_fallback_from_bytes(std::string bytes, std::string_view origin);
+    bool init_primary_from_bytes(rhi::VulkanRhi& rhi,
+                                  std::string bytes,
+                                  std::string_view origin,
+                                  VkDescriptorSetLayout desc_layout,
+                                  VkSampler sampler);
 
     rhi::VulkanRhi* m_rhi = nullptr;
 
     // msdfgen handles — declared as void* to keep msdfgen includes out of
     // this header. Cast back in font.cpp.
     void* m_ft   = nullptr;   // msdfgen::FreetypeHandle*
-    void* m_font = nullptr;   // msdfgen::FontHandle*
-    std::string m_ttf_bytes;  // font data kept alive for FT_Face lifetime
+    void* m_font = nullptr;   // msdfgen::FontHandle* — primary face
+    std::string m_ttf_bytes;  // primary font data kept alive for FT_Face lifetime
+
+    // Fallback chain — consulted per-codepoint when the primary face has
+    // no glyph for it. Each entry owns its FontHandle + the underlying
+    // byte buffer (msdfgen keeps a pointer into it).
+    struct Fallback {
+        void*       handle = nullptr;   // msdfgen::FontHandle*
+        std::string ttf_bytes;
+    };
+    std::vector<Fallback> m_fallbacks;
 
     u32 m_em_pixels = 32;     // authored rasterization size (MSDF cell em)
     i32 m_msdf_padding = 4;   // pixels of distance-field padding per side

@@ -198,8 +198,8 @@ my_map.uldmap/
 ├── textures/           # Map-specific KTX2 textures
 ├── audio/              # Map-specific OGG sounds
 └── overrides/
-    ├── unit_types.json     # Override/add unit types
-    └── ability_types.json  # Override/add abilities
+    ├── units.json     # Override/add unit types
+    └── abilities.json  # Override/add abilities
 ```
 
 ### Engine Assets
@@ -358,7 +358,7 @@ Maps are self-contained gameplay packages. The engine provides mechanics; maps p
 - **Scene system**: multiple terrains per map, transitions via Lua API
 - **Tileset**: map-defined ground texture set
 - **Map loading/unloading**: full lifecycle with cleanup
-- **Test map**: move current test data (unit_types.json, destructable_types.json, item_types.json, test units) into a proper `.uldmap` package. Engine init creates no gameplay content — map system handles everything
+- **Test map**: move current test data (units.json, destructables.json, items.json, test units) into a proper `.uldmap` package. Engine init creates no gameplay content — map system handles everything
 
 ### Phase 7 — Gameplay Systems
 
@@ -618,7 +618,7 @@ Custom retained-mode UI stack, separate from RmlUi. Available in both dev and ga
 
 First gameplay primitive beyond combat / abilities. Engine stays policy-light: an item is a typed entity bundling icon + model + a list of abilities granted to the carrier, plus two free integer fields (`charges`, `level`) the engine renders but never interprets. WC3-style consumption / merge / drop-on-death live in map Lua, on top of `EVENT_ITEM_*` events that expose `GetTriggerItem()`. Full design in [docs/items.md](items.md).
 
-- Item type schema (`item_types.json`); kind derived from `abilities[0].form`.
+- Item type schema (`items.json`); kind derived from `abilities[0].form`.
 - `Inventory` component + `Item` entity; smart right-click `PickUp` order; `Drop` from Lua / HUD.
 - `inventory` HUD composite — slot row, icon, charges (bottom-right) and level (top-left) badges shown only when > 0.
 - Lua bindings: `CreateItem`, `RemoveItem`, `GiveItem`, `UnitDropItemFromSlot`, `GetItem{Charges,Level,TypeId}`, `SetItem{Charges,Level}`, `GetTriggerItem`, item events.
@@ -671,7 +671,7 @@ Promotes projectiles to first-class agents with a scriptable lifecycle. Unifies 
 Full internationalization across rendering, content, and UI. Today the engine is English-default; complex scripts need shaping work and map authors have no way to localize strings.
 
 - Glyph rendering — CJK and other complex scripts via HarfBuzz integration in the HUD text stack. Font fallback chain (Latin → CJK face for codepoints outside the primary font).
-- Map content i18n — translatable strings in unit type defs, ability defs, dialogs, text tags, scene scripts. Maps ship per-locale string tables (`strings/en.json`, `strings/zh.json`, …) and reference entries by key; engine resolves at load time based on player locale.
+- Map content i18n — translatable strings in unit type defs, ability defs, dialogs, text tags, scene scripts. Maps ship per-locale string tables (`strings/en/xxx.json`, `strings/zh/xxx.json`, …) and reference entries by key; engine resolves at load time based on player locale.
 - Shell + HUD i18n — RmlUi and HUD authors reference string keys rather than literal text; engine looks up against the active locale.
 - RTL shaping — Hebrew / Arabic visual ordering. Same HarfBuzz integration covers it.
 

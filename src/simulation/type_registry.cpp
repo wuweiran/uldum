@@ -185,6 +185,14 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         log::trace(TAG, "Registered unit type '{}' (hp={}, speed={}, dmg={})",
                    def.id, def.max_health, def.move_speed, def.damage);
         m_unit_types[key] = std::move(def);
+
+        // Cache string-typed top-level fields for i18n raw fallback.
+        // Localized packs override; this is the default-language source.
+        RawFields raw;
+        for (auto& [field, fv] : val.items()) {
+            if (fv.is_string()) raw.emplace(field, fv.get<std::string>());
+        }
+        m_raw_units[key] = std::move(raw);
     }
 
     log::info(TAG, "Loaded {} unit types from '{}'", m_unit_types.size(), source);
@@ -229,6 +237,12 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
         def.collision_radius = val.value("collision_radius", 0.0f);
 
         m_destructable_types[key] = std::move(def);
+
+        RawFields raw;
+        for (auto& [field, fv] : val.items()) {
+            if (fv.is_string()) raw.emplace(field, fv.get<std::string>());
+        }
+        m_raw_destructables[key] = std::move(raw);
     }
 
     log::info(TAG, "Loaded {} destructable types from '{}'", m_destructable_types.size(), source);
@@ -240,6 +254,7 @@ bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std:
         ItemTypeDef def;
         def.id              = key;
         def.display_name    = val.value("name", val.value("display_name", key));
+        def.tooltip         = val.value("tooltip", "");
         def.icon_path       = val.value("icon", "");
         def.model_path      = val.value("model", "");
         def.model_scale     = val.value("model_scale", 1.0f);
@@ -258,6 +273,12 @@ bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std:
         }
 
         m_item_types[key] = std::move(def);
+
+        RawFields raw;
+        for (auto& [field, fv] : val.items()) {
+            if (fv.is_string()) raw.emplace(field, fv.get<std::string>());
+        }
+        m_raw_items[key] = std::move(raw);
     }
 
     log::info(TAG, "Loaded {} item types from '{}'", m_item_types.size(), source);
@@ -280,9 +301,41 @@ bool TypeRegistry::load_doodad_types_from_doc(const asset::JsonDocument* doc, st
         def.model_scale = val.value("model_scale", 1.0f);
 
         m_doodad_types[key] = std::move(def);
+
+        RawFields raw;
+        for (auto& [field, fv] : val.items()) {
+            if (fv.is_string()) raw.emplace(field, fv.get<std::string>());
+        }
+        m_raw_doodads[key] = std::move(raw);
     }
     log::info(TAG, "Loaded {} doodad types from '{}'", m_doodad_types.size(), source);
     return true;
+}
+
+std::optional<std::string> TypeRegistry::raw_string_field(Category cat,
+                                                            std::string_view entity_id,
+                                                            std::string_view field) const {
+    // Items have a `tooltip` schema field that defaults to "" when
+    // unauthored. Returning the struct value gives the property the
+    // same "missing JSON property = empty value, not absent key"
+    // semantic as optional numeric fields elsewhere in the loader.
+    if (cat == Category::Item && field == "tooltip") {
+        auto it = m_item_types.find(std::string(entity_id));
+        if (it == m_item_types.end()) return std::nullopt;
+        return it->second.tooltip;
+    }
+    const RawCache* cache = nullptr;
+    switch (cat) {
+        case Category::Unit:         cache = &m_raw_units; break;
+        case Category::Destructable: cache = &m_raw_destructables; break;
+        case Category::Doodad:       cache = &m_raw_doodads; break;
+        case Category::Item:         cache = &m_raw_items; break;
+    }
+    auto eit = cache->find(std::string(entity_id));
+    if (eit == cache->end()) return std::nullopt;
+    auto fit = eit->second.find(std::string(field));
+    if (fit == eit->second.end()) return std::nullopt;
+    return fit->second;
 }
 
 // ── Lookups ───────────────────────────────────────────────────────────────

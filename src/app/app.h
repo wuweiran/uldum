@@ -8,6 +8,7 @@
 #include "render/world_overlays.h"
 #include "audio/audio.h"
 #include "core/settings.h"
+#include "i18n/locale.h"
 #include "network/game_server.h"
 #include "network/network.h"
 #include "network/lobby.h"
@@ -52,6 +53,9 @@ struct LaunchArgs {
     // True when CLI flags (`--map`) asked to skip the menu and start a
     // session directly. Menu → Lobby → Loading → Playing runs without UI.
     bool auto_start = false;
+    // BCP 47 locale code (e.g. "en", "zh-CN"). Empty = use default "en".
+    // Set via `--locale <code>` CLI arg.
+    std::string locale;
 };
 
 class App {
@@ -171,6 +175,7 @@ private:
     render::WorldOverlays    m_world_overlays;
     audio::AudioEngine       m_audio;
     settings::Store          m_settings;
+    i18n::LocaleManager      m_i18n;
     hud::Hud                 m_hud;
     hud::WorldContext        m_hud_world_ctx;
 

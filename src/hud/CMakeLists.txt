@@ -14,6 +14,7 @@ target_include_directories(uldum_hud PUBLIC ${ULDUM_SRC})
 target_link_libraries(uldum_hud
     PUBLIC
         uldum_core
+        uldum_i18n
         nlohmann_json::nlohmann_json
     PRIVATE
         uldum_rhi

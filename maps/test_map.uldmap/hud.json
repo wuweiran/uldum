@@ -154,7 +154,7 @@
           "type":   "label",
           "anchor": "tl",
           "x": 10, "y": 6, "w": 260, "h": 20,
-          "text":   "Wave 0 / 20",
+          "text":   "ui.wave_label_init",
           "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
         },
         {
@@ -180,7 +180,7 @@
           "type":   "label",
           "anchor": "tl",
           "x": 10, "y": 14, "w": 320, "h": 24,
-          "text":   "Travel to Scene 01?",
+          "text":   "ui.portal_dialog_title",
           "style":  { "color": "#FFD600FF", "size": 18, "align": "center" }
         },
         {
@@ -188,7 +188,7 @@
           "type":   "label",
           "anchor": "tl",
           "x": 10, "y": 48, "w": 320, "h": 40,
-          "text":   "You've reached the portal. Switch scenes?",
+          "text":   "ui.portal_dialog_body",
           "style":  { "color": "#FFFFFFFF", "size": 14, "align": "center" }
         },
         {
@@ -206,7 +206,7 @@
               "type":   "label",
               "anchor": "tl",
               "x": 0, "y": 0, "w": 100, "h": 36,
-              "text":   "Yes",
+              "text":   "ui.button_yes",
               "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
             }
           ]
@@ -226,7 +226,7 @@
               "type":   "label",
               "anchor": "tl",
               "x": 0, "y": 0, "w": 100, "h": 36,
-              "text":   "Cancel",
+              "text":   "ui.button_cancel",
               "style":  { "color": "#FFFFFFFF", "size": 16, "align": "center" }
             }
           ]

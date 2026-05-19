@@ -48,6 +48,7 @@ public:
         ClaimSlot, ReleaseSlot,
         StartGame, LeaveLobby,
         EndSession, Quit,
+        SetLocale,
     };
     struct Action {
         ActionType  type = ActionType::None;
@@ -56,7 +57,13 @@ public:
         u16         port = 7777;
         // Lobby-edit payload (used by Claim/Release).
         u32         slot = 0;
+        // SetLocale payload — BCP 47 code (e.g. "en", "zh-CN").
+        std::string locale_code;
     };
+
+    // Seed the locale input with the current value so the field
+    // reflects what's active (initial CLI / settings value).
+    void set_active_locale(std::string code);
 
     bool init(rhi::VulkanRhi& rhi, platform::Platform& platform);
     void shutdown();
@@ -111,6 +118,12 @@ private:
     // Multiplayer input fields.
     std::string m_connect_address = "127.0.0.1";
     i32         m_port = 7777;
+
+    // Locale text-input buffer. Seeded by set_active_locale(); the user
+    // types any BCP 47 code (`en`, `zh-CN`, `ja`, ...) and presses Enter
+    // to apply. Plain text input avoids the need for an engine-shipped
+    // locale registry.
+    std::string m_locale_input;
 
     // Pending action (drained by poll_action).
     Action m_pending;

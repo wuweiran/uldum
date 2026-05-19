@@ -100,7 +100,12 @@ Node* build_atom(const nlohmann::json& jn, Node& parent, const Rect& rect) {
     if (type == "label") {
         auto& n = parent.add_child<Label>();
         n.rect = rect;
-        n.text = jn.value("text", "");
+        // Static text in hud.json is a localization key. Engine resolves
+        // it against the active locale at render time (shell pool for
+        // app-layer labels, map pool for in-game labels). Authors who
+        // don't want translation still write a key here; the default
+        // locale's pack supplies the literal string.
+        n.text.key = jn.value("text", "");
         if (auto it = jn.find("style"); it != jn.end() && it->is_object()) {
             if (auto v = it->find("color"); v != it->end()) n.color = parse_color(*v);
             if (auto v = it->find("size");  v != it->end() && v->is_number()) n.px_size = v->get<f32>();

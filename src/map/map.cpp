@@ -297,10 +297,10 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
 
     // Load using the handle directly — need a different approach since load_*_types
     // takes a path. We'll load via absolute path support.
-    std::string unit_path = types_dir + "unit_types.json";
-    std::string dest_path = types_dir + "destructable_types.json";
-    std::string item_path = types_dir + "item_types.json";
-    std::string dood_path = types_dir + "doodad_types.json";
+    std::string unit_path = types_dir + "units.json";
+    std::string dest_path = types_dir + "destructables.json";
+    std::string item_path = types_dir + "items.json";
+    std::string dood_path = types_dir + "doodads.json";
 
     types.load_unit_types_absolute(assets, unit_path);
     types.load_destructable_types_absolute(assets, dest_path);
@@ -308,7 +308,7 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
     types.load_doodad_types_absolute(assets, dood_path);  // ok if file doesn't exist
 
     // Load ability definitions
-    std::string ability_path = types_dir + "ability_types.json";
+    std::string ability_path = types_dir + "abilities.json";
     sim.abilities().load(assets, ability_path);  // ok if file doesn't exist
 
     log::info(TAG, "Types loaded — {} units, {} destructables, {} doodads, {} items",

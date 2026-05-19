@@ -12,6 +12,7 @@
 #include "render/effect.h"
 #include "render/renderer.h"
 #include "audio/audio.h"
+#include "i18n/locale.h"
 #include "network/protocol.h"
 #include "hud/hud.h"
 #include "hud/node.h"
@@ -43,6 +44,57 @@ static simulation::Unit make_unit(simulation::World& world, u32 id) {
     auto* info = world.handle_infos.get(id);
     u.generation = info ? info->generation : 0;
     return u;
+}
+
+// Extract a LocalizedString payload from a Lua arg. Player-facing APIs
+// (CreateTextTag, SetLabelText, ...) require this — they accept only
+// the L() handle, never a plain string. Passing a plain string is a
+// usage error: the function logs a warning identifying the call site
+// and leaves the payload empty (caller skips the operation).
+static i18n::LocalizedString parse_localized_string(sol::object o,
+                                                       std::string_view call_site) {
+    i18n::LocalizedString out;
+    if (!o.valid() || o.is<sol::nil_t>()) return out;
+    if (o.is<std::string>()) {
+        log::warn("Lua", "{}: plain string passed where LocalizedString required "
+                          "— wrap with L(\"key\", args). Got: '{}'",
+                  call_site, o.as<std::string>());
+        return out;
+    }
+    if (!o.is<sol::table>()) {
+        log::warn("Lua", "{}: text argument is not a LocalizedString", call_site);
+        return out;
+    }
+    sol::table t = o.as<sol::table>();
+    sol::object marker = t["__loc"];
+    if (!(marker.valid() && marker.is<bool>() && marker.as<bool>())) {
+        log::warn("Lua", "{}: table is not a LocalizedString (missing __loc marker)",
+                  call_site);
+        return out;
+    }
+    out.key = t["key"].get_or(std::string{});
+    sol::object args_obj = t["args"];
+    if (!args_obj.valid() || !args_obj.is<sol::table>()) return out;
+    sol::table args_t = args_obj.as<sol::table>();
+    for (auto& kv : args_t) {
+        if (!kv.first.is<std::string>()) continue;
+        std::string k = kv.first.as<std::string>();
+        sol::object v = kv.second;
+        std::string vs;
+        if      (v.is<std::string>()) vs = v.as<std::string>();
+        else if (v.is<bool>())        vs = v.as<bool>() ? "true" : "false";
+        else if (v.is<i64>())         vs = std::to_string(v.as<i64>());
+        else if (v.is<f64>()) {
+            f64 n = v.as<f64>();
+            if (n == static_cast<f64>(static_cast<i64>(n)))
+                vs = std::to_string(static_cast<i64>(n));
+            else
+                vs = std::to_string(n);
+        }
+        else continue;
+        out.args.emplace_back(std::move(k), std::move(vs));
+    }
+    return out;
 }
 
 // Parse an `opts.players` field into a u32 bitmask.
@@ -1306,6 +1358,32 @@ void ScriptEngine::bind_api() {
     lua["RandomInt"] = [](i32 min, i32 max) -> i32 { return min + (std::rand() % (max - min + 1)); };
     lua["RandomFloat"] = [](f32 min, f32 max) -> f32 { return min + static_cast<f32>(std::rand()) / static_cast<f32>(RAND_MAX) * (max - min); };
 
+    // ── I18n API ──────────────────────────────────────────────────────
+    //
+    // L(key, args) returns a LocalizedString handle — a plain Lua table
+    // { __loc = true, key, args }. Resolution is *intentionally not*
+    // exposed Lua-side: there's no __tostring / __concat metamethod, no
+    // way to coerce the handle to a string from Lua. The handle is a
+    // passive data carrier consumed by player-facing engine APIs
+    // (CreateTextTag, SetLabelText, ...) which serialize it as
+    // {key, args} on the network so each client resolves with its OWN
+    // locale.
+    //
+    // Why no host-side resolve helper: in MP the server's locale is
+    // irrelevant — only client locales matter. Letting Lua coerce a
+    // handle to a string on the server would silently bake in the
+    // server's locale and ship a literal string to every client,
+    // breaking per-player localization. Authors who think they need a
+    // pre-resolved string almost always want to pass the handle to an
+    // API instead.
+    lua["L"] = [this](std::string key, sol::optional<sol::table> args) -> sol::table {
+        sol::table t = (*m_lua).create_table();
+        t["__loc"] = true;
+        t["key"]   = std::move(key);
+        if (args) t["args"] = *args;
+        return t;
+    };
+
     // ── Effect API ─────────────────────────────────────────────────────
     // Visual / audio / UI APIs accept an `opts.players` field selecting
     // which clients receive the create / update / destroy packets. See
@@ -2439,7 +2517,10 @@ void ScriptEngine::bind_hud_api() {
     // State setters route through Hud's by-id API so both local mutation
     // and MP sync emission happen in one call.
     lua["SetNodeVisible"]   = [this](const std::string& id, bool visible)          { if (m_hud) m_hud->set_node_visible(id, visible); };
-    lua["SetLabelText"]     = [this](const std::string& id, const std::string& t)  { if (m_hud) m_hud->set_label_text(id, t); };
+    lua["SetLabelText"]     = [this](const std::string& id, sol::object t)         {
+        if (!m_hud) return;
+        m_hud->set_label_text(id, parse_localized_string(t, "SetLabelText"));
+    };
     lua["SetBarFill"]       = [this](const std::string& id, f32 fill)              { if (m_hud) m_hud->set_bar_fill(id, fill); };
     lua["SetImageSource"]   = [this](const std::string& id, const std::string& p)  { if (m_hud) m_hud->set_image_source(id, p); };
     lua["SetButtonEnabled"] = [this](const std::string& id, bool enabled)          { if (m_hud) m_hud->set_button_enabled(id, enabled); };
@@ -2516,10 +2597,10 @@ void ScriptEngine::bind_hud_api() {
     lua["CreateTextTag"] = [this, parse_color, pack_id](sol::table args) -> u64 {
         if (!m_hud) return 0;
         hud::TextTagCreateInfo info{};
-        // `proxy.get_or(default)` avoids ambiguity with sol2's template
-        // overloads; type is deduced from the default value.
-        info.text      = args["text"].get_or(std::string{});
-        info.px_size   = args["size"].get_or(14.0f);
+        // `text` must be a LocalizedString — wrap with L("key", args).
+        // Plain string is rejected with a warn-log.
+        info.text     = parse_localized_string(args["text"], "CreateTextTag");
+        info.px_size  = args["size"].get_or(14.0f);
 
         // Position: either `pos = { x, y, z }` world point or `unit = U`.
         if (args["unit"].valid()) {
@@ -2557,9 +2638,10 @@ void ScriptEngine::bind_hud_api() {
         m_hud->destroy_text_tag(unpack_id(h));
     };
 
-    lua["SetTextTagText"] = [this, unpack_id](u64 h, const std::string& text) {
+    lua["SetTextTagText"] = [this, unpack_id](u64 h, sol::object text) {
         if (!m_hud) return;
-        m_hud->set_text_tag_text(unpack_id(h), text);
+        auto loc = parse_localized_string(text, "SetTextTagText");
+        m_hud->set_text_tag_text(unpack_id(h), std::move(loc));
     };
     lua["SetTextTagPos"] = [this, unpack_id](u64 h, f32 x, f32 y, f32 z) {
         if (!m_hud) return;

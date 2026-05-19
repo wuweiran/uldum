@@ -4,6 +4,7 @@ set(ULDUM_ENGINE_LIBS
     uldum_platform
     uldum_rhi
     uldum_asset
+    uldum_i18n
     uldum_render
     uldum_audio
     uldum_script
@@ -129,9 +130,6 @@ elseif(ULDUM_GAME_PROJECT_DIR)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${ULDUM_ROOT}/engine
             ${ULDUM_ENGINE_STAGING}
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${ULDUM_DEFAULT_FONT_TTF}
-            ${ULDUM_ENGINE_STAGING}/fonts/Roboto-Regular.ttf
         COMMAND $<TARGET_FILE:uldum_pack> pack
             ${ULDUM_ENGINE_STAGING}
             ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine.uldpak
@@ -218,9 +216,6 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${ULDUM_ROOT}/engine
             ${ULDUM_ENGINE_STAGING}
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${ULDUM_DEFAULT_FONT_TTF}
-            ${ULDUM_ENGINE_STAGING}/fonts/Roboto-Regular.ttf
         COMMAND $<TARGET_FILE:uldum_pack> pack
             ${ULDUM_ENGINE_STAGING}
             ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine.uldpak
@@ -237,6 +232,7 @@ else()
     set(ULDUM_SERVER_LIBS
         uldum_core
         uldum_asset
+        uldum_i18n
         uldum_simulation
         uldum_script
         uldum_network
