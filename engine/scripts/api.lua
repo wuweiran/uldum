@@ -851,10 +851,11 @@ function SetVolume(channel, volume) end
 -- (matches WC3 World Editor convention).
 
 --- Look up a named CameraSetup authored in the current scene's
---- objects.json `cameras[]`. Returns nil if no setup with that id
---- exists. The handle is read-only — its fields (id, target_x,
---- target_y, target_z, distance, pitch, yaw) can be inspected but not
---- mutated. Use CameraSetupApply to apply.
+--- `placements.bin` (cameras section). Returns nil if no setup with
+--- that id exists. The handle is read-only — its fields (id,
+--- target_x, target_y, target_z, distance, pitch, yaw) can be
+--- inspected but not mutated. Use CameraSetupApply to apply.
+--- Note: ids are capped at 255 bytes on disk.
 --- @param id string
 --- @return CameraSetup?
 function GetCameraSetup(id) end
@@ -937,9 +938,10 @@ function GetUnitsInRect(x, y, width, height, filter) end
 function CreateRegion() end
 
 --- Get an authored region from the current scene by its id (the
---- `id` field in the scene's objects.json `regions[]` array).
+--- `id` field in the scene's `placements.bin` regions section).
 --- Returns nil if no region with that id exists. The handle is
 --- interchangeable with one returned by `CreateRegion`.
+--- Note: ids are capped at 255 bytes on disk.
 --- @param id string
 --- @return region?
 function GetRegion(id) end

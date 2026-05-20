@@ -1,5 +1,6 @@
 add_library(uldum_map STATIC
     map.cpp
+    placements_bin.cpp
     terrain_data.cpp
 )
 

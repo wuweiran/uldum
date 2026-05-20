@@ -380,11 +380,12 @@ bool App::init(const LaunchArgs& args) {
         if (prefix == "ability") {
             return abilities.raw_string_field(entity_id, field);
         }
-        // Unit/Item/Destructable/Doodad: the lookup key uses "name" but
-        // the raw JSON field is "display_name" for units, destructables,
-        // doodads; items accept either (loader takes "name" or
-        // "display_name"). Try the conventional remap first, fall back
-        // to the literal field name.
+        // Unit / Item: lookup key uses "name" but the raw JSON field
+        // is "display_name" for units, and items accept either (loader
+        // takes "name" or "display_name"). Try the conventional remap
+        // first, fall back to the literal field name. Destructables /
+        // doodads have no player-facing name today — the remap costs
+        // nothing if the field is absent.
         Cat cat;
         if      (prefix == "unit")         cat = Cat::Unit;
         else if (prefix == "item")         cat = Cat::Item;

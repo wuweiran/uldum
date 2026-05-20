@@ -90,7 +90,6 @@ struct UnitTypeDef {
 
 struct DestructableTypeDef {
     std::string              id;
-    std::string              display_name;
     std::vector<std::string> models;        // one entry per visual variation; length = variation count
     f32                      model_scale = 1.0f;            // uniform render scale
     f32                      max_health = 50;
@@ -105,7 +104,6 @@ struct DestructableTypeDef {
 // Only the model + variation + scale; loader is intentionally minimal.
 struct DoodadTypeDef {
     std::string              id;
-    std::string              display_name;
     std::vector<std::string> models;
     f32                      model_scale = 1.0f;
 };

@@ -6,6 +6,10 @@ cmake-build-*/
 # Shippable artifacts produced by scripts/build_game.ps1 and build_android_game.ps1
 dist/
 
+# Scratch logs from interactive build / smoke-test commands. Tools
+# (and the agent) write here instead of polluting the repo root.
+logs/
+
 # IDE
 .vs/
 .vscode/

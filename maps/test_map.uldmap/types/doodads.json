@@ -1,7 +1,6 @@
 {
-    "rock_small": {
-        "display_name": "Small Rock",
-        "models": ["models/doodads/stone_smallA.glb", "models/doodads/stone_smallB.glb"],
+    "rock2": {
+        "models": ["models/doodads/Rock2_A.glb", "models/doodads/Rock2_B.glb"],
         "model_scale": 50
     }
 }

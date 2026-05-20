@@ -203,7 +203,6 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
     for (auto& [key, val] : doc->data.items()) {
         DestructableTypeDef def;
         def.id = key;
-        def.display_name = val.value("display_name", key);
         if (val.contains("models") && val["models"].is_array()) {
             for (auto& m : val["models"]) {
                 if (m.is_string()) def.models.push_back(m.get<std::string>());
@@ -289,7 +288,6 @@ bool TypeRegistry::load_doodad_types_from_doc(const asset::JsonDocument* doc, st
     for (auto& [key, val] : doc->data.items()) {
         DoodadTypeDef def;
         def.id           = key;
-        def.display_name = val.value("display_name", key);
         if (val.contains("models") && val["models"].is_array()) {
             for (auto& m : val["models"]) {
                 if (m.is_string()) def.models.push_back(m.get<std::string>());
