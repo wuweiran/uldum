@@ -91,9 +91,10 @@ public:
     using UnitUpdateFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
     void set_unit_update_fn(UnitUpdateFn fn) { m_unit_update_fn = std::move(fn); }
 
-    // Callback fired for non-entity-scoped broadcasts (free-position
-    // PlayEffect, etc.). Used by the host to push the packet to every
-    // connected peer.
+    // Non-entity-scoped broadcast — audio cues, sun direction,
+    // free-position PlayEffect, future global notifications. Server-
+    // side only; clients never set this. Offline: callback is empty;
+    // bindings still apply locally on the host.
     using BroadcastFn = std::function<void(const std::vector<u8>& packet)>;
     void set_broadcast_fn(BroadcastFn fn) { m_broadcast_fn = std::move(fn); }
 

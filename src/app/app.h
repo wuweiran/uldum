@@ -125,6 +125,12 @@ private:
     // quit (window close); this covers in-app quit requests.
     bool m_wants_quit = false;
 
+    // Client-side ambient-loop handle map. The host assigns the loop
+    // an AudioEngine handle when it starts, and that id is what ships
+    // on the wire. Each client maps host_id → its own AudioEngine
+    // handle so the matching S_AMBIENT_STOP stops the right loop.
+    std::unordered_map<u32, u32> m_client_ambient_handles;
+
     // Lua-driven scene-switch request. Set from `LoadScene(name)` via
     // ScriptEngine's SceneSwitchFn callback; processed once per frame
     // before the tick loop, then cleared. Empty = no request pending.

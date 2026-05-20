@@ -272,6 +272,18 @@ public:
 
     // ── Callbacks ───────────────────────────────────────────────────────
     std::function<void(std::string_view path, glm::vec3 pos)> on_sound;
+    // Script-initiated audio (Lua's PlaySound2D / PlayMusic / StopMusic /
+    // PlayAmbientLoop / StopAmbientLoop). Each fires the matching
+    // engine call on the client's AudioEngine. Ambient start/stop pass
+    // the host-assigned handle; the App-level wiring maintains the
+    // host_id → client_audio_id map.
+    std::function<void(std::string_view path)>                                                 on_sound_2d;
+    std::function<void(std::string_view path, f32 fade_in)>                                    on_music_play;
+    std::function<void(f32 fade_out)>                                                          on_music_stop;
+    std::function<void(u32 host_handle, std::string_view path, f32 x, f32 y)>                  on_ambient_start;
+    std::function<void(u32 host_handle, f32 fade_out)>                                         on_ambient_stop;
+    // Environment.
+    std::function<void(f32 x, f32 y, f32 z)>                                                   on_set_sun_direction;
     // Effect spawn received from host. `entity_id == UINT32_MAX` =
     // free-position effect; otherwise attach to the named entity
     // (`attach_point` may be empty for unit-pivot).

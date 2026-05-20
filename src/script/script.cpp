@@ -1014,6 +1014,10 @@ void ScriptEngine::bind_api() {
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
         ab->string_attrs[name] = value;
+        if (m_unit_update_fn) {
+            auto pkt = network::build_update_str_attr(u.id, name, value);
+            m_unit_update_fn(u.id, pkt);
+        }
     };
 
     // Map-defined states (mana, energy, rage, etc.). Per-unit live
@@ -1043,6 +1047,10 @@ void ScriptEngine::bind_api() {
         if (v < 0)             v = 0;
         if (v > it->second.max) v = it->second.max;
         it->second.current = v;
+        if (m_unit_update_fn) {
+            auto pkt = network::build_update_state(u.id, name, v, it->second.max);
+            m_unit_update_fn(u.id, pkt);
+        }
     };
 
     // Status flags. The flag arg is a lowercase string ("stunned",
@@ -1065,21 +1073,14 @@ void ScriptEngine::bind_api() {
         return 0;
     };
 
-    lua["SetUnitStatus"] = [&, parse_status_flag](simulation::Unit unit,
-                                                   const std::string& flag,
-                                                   bool on) {
-        u32 bit = parse_status_flag(flag);
-        if (bit == 0) {
-            log::warn(TAG, "SetUnitStatus: unknown flag '{}'", flag);
-            return;
-        }
-        simulation::set_unit_status(sim.world(), unit, bit, on);
-        if (m_unit_update_fn) {
-            auto pkt = network::build_update_status(unit.id, bit, on);
-            m_unit_update_fn(unit.id, pkt);
-        }
-    };
-
+    // Status flags are READ-ONLY from Lua. Mutation flows exclusively
+    // through the ability system: author a `passive_flag` ability whose
+    // level grants the desired flag, apply it via `ApplyPassiveAbility`
+    // (with duration) or `AddAbility` (innate), and remove via
+    // `RemoveAbility`. Dispel = the map's own Lua iterates the buff
+    // ids it wants to strip and calls RemoveAbility on each. The
+    // engine never exposes a generic "clear all status" — authors
+    // know their buff catalog.
     lua["GetUnitStatus"] = [&, parse_status_flag](simulation::Unit unit,
                                                    const std::string& flag) -> bool {
         u32 bit = parse_status_flag(flag);
@@ -1088,10 +1089,6 @@ void ScriptEngine::bind_api() {
             return false;
         }
         return simulation::unit_has_status(sim.world(), unit, bit);
-    };
-
-    lua["ClearAllUnitStatus"] = [&](simulation::Unit unit) {
-        simulation::clear_all_unit_status(sim.world(), unit);
     };
 
     // Classification
@@ -1119,6 +1116,10 @@ void ScriptEngine::bind_api() {
         auto* o = sim.world().owners.get(u.id);
         if (!o) return;
         o->player = p;
+        if (m_unit_update_fn) {
+            auto pkt = network::build_update_owner(u.id, static_cast<u8>(p.id));
+            m_unit_update_fn(u.id, pkt);
+        }
     };
 
     // ── Order API ─────────────────────────────────────────────────────
@@ -1311,11 +1312,17 @@ void ScriptEngine::bind_api() {
         if (!sim.world().validate(u)) return;
         auto* aset = sim.world().ability_sets.get(u.id);
         if (!aset) return;
+        f32 clamped = std::max(0.0f, secs);
+        bool changed = false;
         for (auto& a : aset->abilities) {
             if (a.ability_id == ability_id) {
-                a.cooldown_remaining = std::max(0.0f, secs);
-                return;
+                a.cooldown_remaining = clamped;
+                changed = true;
             }
+        }
+        if (changed && m_unit_update_fn) {
+            auto pkt = network::build_update_cooldown(u.id, ability_id, clamped);
+            m_unit_update_fn(u.id, pkt);
         }
     };
 
@@ -1323,8 +1330,13 @@ void ScriptEngine::bind_api() {
         if (!sim.world().validate(u)) return;
         auto* aset = sim.world().ability_sets.get(u.id);
         if (!aset) return;
+        bool changed = false;
         for (auto& a : aset->abilities) {
-            if (a.ability_id == ability_id) { a.cooldown_remaining = 0.0f; return; }
+            if (a.ability_id == ability_id) { a.cooldown_remaining = 0.0f; changed = true; }
+        }
+        if (changed && m_unit_update_fn) {
+            auto pkt = network::build_update_cooldown(u.id, ability_id, 0.0f);
+            m_unit_update_fn(u.id, pkt);
         }
     };
 
@@ -1625,43 +1637,60 @@ void ScriptEngine::bind_api() {
     };
     // ── Audio API ──────────────────────────────────────────────────────
 
+    // Each playback API: play on the host's mixer (host may also be a
+    // player) AND broadcast to peers so every client hears the cue in
+    // its own audio engine. Wire format docs: see protocol.h.
     lua["PlaySound"] = [this](std::string_view path, simulation::Unit unit) {
-        if (!m_audio) return;
         auto& sim = *m_sim;
         auto* t = sim.world().transforms.get(unit.id);
-        if (t) m_audio->play_sfx(path, t->position);
+        if (!t) return;
+        if (m_audio)        m_audio->play_sfx(path, t->position);
+        if (m_broadcast_fn) m_broadcast_fn(network::build_sound(path, t->position));
     };
 
     lua["PlaySoundAtPoint"] = [this](std::string_view path, f32 x, f32 y) {
-        if (!m_audio) return;
-        m_audio->play_sfx(path, {x, y, 0});
+        if (m_audio)        m_audio->play_sfx(path, {x, y, 0});
+        if (m_broadcast_fn) m_broadcast_fn(network::build_sound(path, {x, y, 0}));
     };
 
     lua["PlaySound2D"] = [this](std::string_view path) {
-        if (!m_audio) return;
-        m_audio->play_sfx_2d(path);
+        if (m_audio)        m_audio->play_sfx_2d(path);
+        if (m_broadcast_fn) m_broadcast_fn(network::build_sound_2d(path));
     };
 
     lua["PlayMusic"] = [this](std::string_view path, sol::optional<f32> fade_in) {
-        if (!m_audio) return;
-        m_audio->play_music(path, fade_in.value_or(1.0f));
+        f32 fi = fade_in.value_or(1.0f);
+        if (m_audio)        m_audio->play_music(path, fi);
+        if (m_broadcast_fn) m_broadcast_fn(network::build_music_play(path, fi));
     };
 
     lua["StopMusic"] = [this](sol::optional<f32> fade_out) {
-        if (!m_audio) return;
-        m_audio->stop_music(fade_out.value_or(1.0f));
+        f32 fo = fade_out.value_or(1.0f);
+        if (m_audio)        m_audio->stop_music(fo);
+        if (m_broadcast_fn) m_broadcast_fn(network::build_music_stop(fo));
     };
 
+    // Ambient loop handle is host-assigned. The host's AudioEngine id
+    // ships in the start/stop packets; each client maintains a local
+    // host_id → client_audio_id map to route the matching stop call.
     lua["PlayAmbientLoop"] = [this](std::string_view path, f32 x, f32 y) -> u32 {
         if (!m_audio) return 0;
-        return m_audio->play_ambient(path, {x, y, 0}).id;
+        u32 handle = m_audio->play_ambient(path, {x, y, 0}).id;
+        if (m_broadcast_fn) m_broadcast_fn(network::build_ambient_start(handle, path, x, y));
+        return handle;
     };
 
     lua["StopAmbientLoop"] = [this](u32 handle_id, sol::optional<f32> fade_out) {
-        if (!m_audio) return;
-        m_audio->stop_ambient({handle_id}, fade_out.value_or(0.5f));
+        f32 fo = fade_out.value_or(0.5f);
+        if (m_audio)        m_audio->stop_ambient({handle_id}, fo);
+        if (m_broadcast_fn) m_broadcast_fn(network::build_ambient_stop(handle_id, fo));
     };
 
+    // SetVolume stays host-local: channel gain is a per-player setting
+    // (user audio preferences). A scripted volume tween on the host
+    // shouldn't override remote players' mixer state. If a future
+    // feature needs cinematic music ducking on every client, add a
+    // separate "scene volume" path with explicit broadcast.
     lua["SetVolume"] = [this](std::string_view channel, f32 volume) {
         if (!m_audio) return;
         audio::Channel ch = audio::Channel::Master;
@@ -1711,7 +1740,8 @@ void ScriptEngine::bind_api() {
 
     // ── Vision API ────────────────────────────────────────────────────────
     // Tile-level fog of war queries. Per-unit invisibility is a separate
-    // concern handled by UNIT_STATUS_INVISIBLE and the SetUnitStatus API.
+    // concern handled by UNIT_STATUS_INVISIBLE applied via a
+    // passive_flag ability (see GetUnitStatus comment above).
 
     lua["FogEnable"] = [&sim](bool on) {
         sim.vision().set_enabled(on);
@@ -1812,17 +1842,19 @@ void ScriptEngine::bind_api() {
     // ── Environment API ────────────────────────────────────────────────────
 
     lua["SetSunDirection"] = [this](f32 x, f32 y, f32 z) {
-        if (!m_renderer) return;
-        map::EnvironmentConfig env;
-        env.sun_direction = glm::normalize(glm::vec3{x, y, z});
-        // Preserve existing settings, just update sun direction
-        // (full env config update — simple approach)
-        m_renderer->set_environment(env);
-    };
-
-    lua["AddPointLight"] = [this](f32 x, f32 y, f32 z, f32 r, f32 g, f32 b, f32 radius, f32 intensity) {
-        if (!m_renderer) return;
-        m_renderer->add_point_light({x, y, z}, {r, g, b}, radius, intensity);
+        if (m_renderer) {
+            map::EnvironmentConfig env;
+            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+            // Preserve existing settings, just update sun direction
+            // (full env config update — simple approach)
+            m_renderer->set_environment(env);
+        }
+        // Mirror to clients so a script-driven cinematic lighting
+        // change (sunset, dawn, eclipse) reaches every peer's
+        // renderer, not just the host's.
+        if (m_broadcast_fn) {
+            m_broadcast_fn(network::build_set_sun_direction(x, y, z));
+        }
     };
 
     // ── Session API ───────────────────────────────────────────────────────
@@ -1931,9 +1963,21 @@ void ScriptEngine::bind_api() {
         return info ? info->type_id : std::string{};
     };
     lua["GetItemCharges"] = [&](simulation::Item item) -> i32 { return simulation::get_charges(sim.world(), item); };
-    lua["SetItemCharges"] = [&](simulation::Item item, i32 n) { simulation::set_charges(sim.world(), item, n); };
+    lua["SetItemCharges"] = [&](simulation::Item item, i32 n) {
+        simulation::set_charges(sim.world(), item, n);
+        if (m_unit_update_fn) {
+            auto pkt = network::build_update_item_charges(item.id, n);
+            m_unit_update_fn(item.id, pkt);
+        }
+    };
     lua["GetItemLevel"]   = [&](simulation::Item item) -> i32 { return simulation::get_level(sim.world(), item); };
-    lua["SetItemLevel"]   = [&](simulation::Item item, i32 n) { simulation::set_level(sim.world(), item, n); };
+    lua["SetItemLevel"]   = [&](simulation::Item item, i32 n) {
+        simulation::set_level(sim.world(), item, n);
+        if (m_unit_update_fn) {
+            auto pkt = network::build_update_item_level(item.id, n);
+            m_unit_update_fn(item.id, pkt);
+        }
+    };
     lua["GetItemOwner"]   = [&, unit_or_nil](simulation::Item item) -> sol::object {
         return unit_or_nil(simulation::get_item_owner(sim.world(), item));
     };

@@ -837,6 +837,49 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_DESTROY: client_handle_destroy(data); break;
     case MsgType::S_STATE:   client_handle_state(data); break;
     case MsgType::S_SOUND:           client_handle_sound(data); break;
+    case MsgType::S_SOUND_PLAY_2D: {
+        ByteReader r(data); r.read_u8();
+        std::string path = r.read_string();
+        if (on_sound_2d) on_sound_2d(path);
+        break;
+    }
+    case MsgType::S_MUSIC_PLAY: {
+        ByteReader r(data); r.read_u8();
+        std::string path = r.read_string();
+        f32 fade_in = r.read_f32();
+        if (on_music_play) on_music_play(path, fade_in);
+        break;
+    }
+    case MsgType::S_MUSIC_STOP: {
+        ByteReader r(data); r.read_u8();
+        f32 fade_out = r.read_f32();
+        if (on_music_stop) on_music_stop(fade_out);
+        break;
+    }
+    case MsgType::S_AMBIENT_START: {
+        ByteReader r(data); r.read_u8();
+        u32 handle = r.read_u32();
+        std::string path = r.read_string();
+        f32 x = r.read_f32();
+        f32 y = r.read_f32();
+        if (on_ambient_start) on_ambient_start(handle, path, x, y);
+        break;
+    }
+    case MsgType::S_AMBIENT_STOP: {
+        ByteReader r(data); r.read_u8();
+        u32 handle = r.read_u32();
+        f32 fade_out = r.read_f32();
+        if (on_ambient_stop) on_ambient_stop(handle, fade_out);
+        break;
+    }
+    case MsgType::S_SET_SUN_DIRECTION: {
+        ByteReader r(data); r.read_u8();
+        f32 x = r.read_f32();
+        f32 y = r.read_f32();
+        f32 z = r.read_f32();
+        if (on_set_sun_direction) on_set_sun_direction(x, y, z);
+        break;
+    }
     case MsgType::S_EFFECT:          client_handle_effect(data); break;
     case MsgType::S_EFFECT_CREATE:   client_handle_effect_create(data); break;
     case MsgType::S_EFFECT_DESTROY:  client_handle_effect_destroy(data); break;
@@ -1396,6 +1439,36 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
         auto* info = world.handle_infos.get(u.entity_id);
         unit.generation = info ? info->generation : 0;
         simulation::set_unit_status(world, unit, u.uint_value, u.bool_value);
+        break;
+    }
+    case UpdateType::Cooldown: {
+        // Apply the cooldown to every instance of `ability_id` on the
+        // unit — matches the server's SetAbilityCooldown / Reset
+        // semantics (which iterate all matching instances).
+        auto* aset = world.ability_sets.get(u.entity_id);
+        if (aset) {
+            for (auto& a : aset->abilities) {
+                if (a.ability_id == u.key) {
+                    a.cooldown_remaining = std::max(0.0f, u.value);
+                }
+            }
+        }
+        break;
+    }
+    case UpdateType::ItemCharges: {
+        simulation::Item item;
+        item.id = u.entity_id;
+        auto* info = world.handle_infos.get(u.entity_id);
+        item.generation = info ? info->generation : 0;
+        simulation::set_charges(world, item, static_cast<i32>(u.uint_value));
+        break;
+    }
+    case UpdateType::ItemLevel: {
+        simulation::Item item;
+        item.id = u.entity_id;
+        auto* info = world.handle_infos.get(u.entity_id);
+        item.generation = info ? info->generation : 0;
+        simulation::set_level(world, item, static_cast<i32>(u.uint_value));
         break;
     }
     }

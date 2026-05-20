@@ -361,30 +361,27 @@ function HasClassification(unit, flag) end
 -- Status flags
 --------------------------------------------------------------------------------
 
---- Set or clear a status flag on a unit. Use the `UNIT_STATUS_*`
---- constants from constants.lua (`UNIT_STATUS_STUNNED`,
+--- Read a status flag on a unit. Returns false when the unit has no
+--- StatusFlags component (treated as "no flags set"). Pass a
+--- `UNIT_STATUS_*` constant for `flag` (`UNIT_STATUS_STUNNED`,
 --- `UNIT_STATUS_SILENCED`, `UNIT_STATUS_MUTED`, `UNIT_STATUS_DISARMED`,
 --- `UNIT_STATUS_ROOTED`, `UNIT_STATUS_INVULNERABLE`,
 --- `UNIT_STATUS_MAGIC_IMMUNE`, `UNIT_STATUS_UNTARGETABLE`,
 --- `UNIT_STATUS_UNATTACKABLE`, `UNIT_STATUS_PAUSED`,
 --- `UNIT_STATUS_INVISIBLE`). See gameplay-model.md `## Status Flags`
 --- for the per-flag enforcement semantics.
---- @param unit unit
---- @param flag string  -- a UNIT_STATUS_* constant
---- @param on boolean
-function SetUnitStatus(unit, flag, on) end
-
---- Read a status flag on a unit. Returns false when the unit has no
---- StatusFlags component (treated as "no flags set"). Pass a
---- `UNIT_STATUS_*` constant for `flag`.
+---
+--- **Status mutation is ability-driven.** To apply a status flag,
+--- author a `passive_flag` ability whose level grants the flag (e.g.
+--- `{ flags = ["stunned"] }`) and call `ApplyPassiveAbility` (timed)
+--- or `AddAbility` (innate). Remove via `RemoveAbility`. Dispel
+--- ("purify") is the map's own Lua iterating the buff ids it wants
+--- to strip and calling RemoveAbility on each — the engine doesn't
+--- expose a generic "clear all status".
 --- @param unit unit
 --- @param flag string  -- a UNIT_STATUS_* constant
 --- @return boolean
 function GetUnitStatus(unit, flag) end
-
---- Clear every status flag on a unit (resets the bitset to 0).
---- @param unit unit
-function ClearAllUnitStatus(unit) end
 
 --------------------------------------------------------------------------------
 -- Visuals
@@ -887,20 +884,6 @@ function SetCameraLockUnit(player, unit) end
 --- @param y number
 --- @param z number
 function SetSunDirection(x, y, z) end
-
---- Add a point light to the scene. Color is linear RGB in [0, 1]
---- (engine multiplies by `intensity`). `radius` is the light's falloff
---- range in world units. There is no `RemovePointLight` yet — lights
---- live until the session resets.
---- @param x number
---- @param y number
---- @param z number
---- @param r number
---- @param g number
---- @param b number
---- @param radius number
---- @param intensity number
-function AddPointLight(x, y, z, r, g, b, radius, intensity) end
 
 --------------------------------------------------------------------------------
 -- Spatial Queries

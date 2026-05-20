@@ -92,6 +92,19 @@ enum class MsgType : u8 {
     S_HUD_SET_BUTTON_ENABLED  = 0x76,
     S_HUD_CREATE_TEXT_TAG     = 0x77,
     S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
+
+    // Playing — audio (script-initiated). Sim sound effects from the
+    // combat / ability systems use S_SOUND directly; these mirror the
+    // Lua-level audio API surface so script-driven cues reach all
+    // clients (UI sounds, music start/stop, ambient loops, …).
+    S_SOUND_PLAY_2D    = 0x80,
+    S_MUSIC_PLAY       = 0x81,
+    S_MUSIC_STOP       = 0x82,
+    S_AMBIENT_START    = 0x83,
+    S_AMBIENT_STOP     = 0x84,
+
+    // Playing — environment.
+    S_SET_SUN_DIRECTION = 0x90,
 };
 
 // Event kinds for C_NODE_EVENT. Keep numeric so unknown kinds can be
@@ -335,6 +348,63 @@ inline std::vector<u8> build_sound(std::string_view path, glm::vec3 pos) {
     w.write_u8(static_cast<u8>(MsgType::S_SOUND));
     w.write_string(path);
     w.write_vec3(pos);
+    return std::move(w.data());
+}
+
+// Non-positional one-shot SFX (UI cues, voice lines) — no world pos
+// because the sound doesn't attenuate by distance.
+inline std::vector<u8> build_sound_2d(std::string_view path) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_SOUND_PLAY_2D));
+    w.write_string(path);
+    return std::move(w.data());
+}
+
+// Music stream control. PLAY crossfades from the current track at the
+// authored `fade_in` (default 1.0s on the server). STOP fades the
+// current track out at `fade_out` (default 1.0s).
+inline std::vector<u8> build_music_play(std::string_view path, f32 fade_in) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_MUSIC_PLAY));
+    w.write_string(path);
+    w.write_f32(fade_in);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_music_stop(f32 fade_out) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_MUSIC_STOP));
+    w.write_f32(fade_out);
+    return std::move(w.data());
+}
+
+// Looping positional ambient. `handle` is host-assigned and used by
+// the matching STOP. Clients keep their own handle → audio-engine
+// id map so the same handle stops the right loop on every peer.
+inline std::vector<u8> build_ambient_start(u32 handle, std::string_view path, f32 x, f32 y) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_AMBIENT_START));
+    w.write_u32(handle);
+    w.write_string(path);
+    w.write_f32(x);
+    w.write_f32(y);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_ambient_stop(u32 handle, f32 fade_out) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_AMBIENT_STOP));
+    w.write_u32(handle);
+    w.write_f32(fade_out);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_set_sun_direction(f32 x, f32 y, f32 z) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_SET_SUN_DIRECTION));
+    w.write_f32(x);
+    w.write_f32(y);
+    w.write_f32(z);
     return std::move(w.data());
 }
 
@@ -843,6 +913,9 @@ enum class UpdateType : u8 {
     Owner          = 5,   // ownership changed
     AbilityModifier = 6,  // SetAbilityModifier(unit, ability, key, value)
     Status         = 7,   // SetUnitStatus(unit, flag, on) — manual_bits layer
+    Cooldown       = 8,   // SetAbilityCooldown / ResetAbilityCooldown
+    ItemCharges    = 9,   // SetItemCharges(item, n)
+    ItemLevel      = 10,  // SetItemLevel(item, n)
 };
 
 inline std::vector<u8> build_update_attr(u32 entity_id, std::string_view key, f32 value) {
@@ -931,6 +1004,42 @@ inline std::vector<u8> build_update_owner(u32 entity_id, u8 new_owner) {
     return std::move(w.data());
 }
 
+// Ability cooldown on a unit. `ability_id` keys the instance; multiple
+// stackable instances all receive the same cooldown (matches the
+// server's SetAbilityCooldown semantics).
+inline std::vector<u8> build_update_cooldown(u32 entity_id,
+                                              std::string_view ability_id, f32 secs) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::Cooldown));
+    w.write_string(ability_id);
+    w.write_f32(secs);
+    return std::move(w.data());
+}
+
+// Item-entity scalar mutations. `entity_id` is the item's entity id,
+// not the carrier's — items are first-class entities in this engine.
+// Values are reinterpret-cast to u32 on the wire; clients decode back
+// to i32. Charges/level are small magnitudes — int32 has plenty of room.
+inline std::vector<u8> build_update_item_charges(u32 item_entity_id, i32 charges) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(item_entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::ItemCharges));
+    w.write_u32(static_cast<u32>(charges));
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_update_item_level(u32 item_entity_id, i32 level) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(item_entity_id);
+    w.write_u8(static_cast<u8>(UpdateType::ItemLevel));
+    w.write_u32(static_cast<u32>(level));
+    return std::move(w.data());
+}
+
 struct UpdateData {
     u32 entity_id;
     UpdateType type;
@@ -980,6 +1089,14 @@ inline UpdateData parse_update(std::span<const u8> data) {
     case UpdateType::Status:
         u.uint_value = r.read_u32();       // flag bit value
         u.bool_value = r.read_bool();
+        break;
+    case UpdateType::Cooldown:
+        u.key = r.read_string();           // ability_id
+        u.value = r.read_f32();            // remaining seconds
+        break;
+    case UpdateType::ItemCharges:
+    case UpdateType::ItemLevel:
+        u.uint_value = r.read_u32();       // value (reinterpret cast on read)
         break;
     }
     return u;

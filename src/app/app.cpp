@@ -973,6 +973,34 @@ bool App::start_session() {
         m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
         };
+        // Script-initiated audio mirrors the Lua API surface 1:1.
+        m_network.on_sound_2d = [this](std::string_view path) {
+            m_audio.play_sfx_2d(path);
+        };
+        m_network.on_music_play = [this](std::string_view path, f32 fade_in) {
+            m_audio.play_music(path, fade_in);
+        };
+        m_network.on_music_stop = [this](f32 fade_out) {
+            m_audio.stop_music(fade_out);
+        };
+        // Ambient loops are host-handle-keyed. We map the host's
+        // handle to the local AudioEngine handle returned by our own
+        // play_ambient call, then look up on stop.
+        m_network.on_ambient_start = [this](u32 host_handle, std::string_view path, f32 x, f32 y) {
+            auto h = m_audio.play_ambient(path, {x, y, 0});
+            m_client_ambient_handles[host_handle] = h.id;
+        };
+        m_network.on_ambient_stop = [this](u32 host_handle, f32 fade_out) {
+            auto it = m_client_ambient_handles.find(host_handle);
+            if (it == m_client_ambient_handles.end()) return;
+            m_audio.stop_ambient({it->second}, fade_out);
+            m_client_ambient_handles.erase(it);
+        };
+        m_network.on_set_sun_direction = [this](f32 x, f32 y, f32 z) {
+            map::EnvironmentConfig env;
+            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+            m_renderer.set_environment(env);
+        };
         // Effect spawn from host. UINT32_MAX entity_id = free-position
         // effect; otherwise attach to the named entity (using the
         // local client's transform for live tracking).
