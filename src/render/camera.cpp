@@ -41,6 +41,7 @@ void Camera::update(const platform::InputState& input, f32 dt) {
         move = glm::normalize(move) * m_move_speed * dt;
         m_target.x += move.x;
         m_target.y += move.y;
+        clamp_target_xy_to_bounds();
         m_dirty = true;
     }
 
@@ -60,13 +61,29 @@ void Camera::pan(f32 dx, f32 dy) {
     glm::vec3 delta = -right * dx * scale + forward * dy * scale;
     m_target.x += delta.x;
     m_target.y += delta.y;
+    clamp_target_xy_to_bounds();
     m_dirty = true;
 }
 
 void Camera::translate(f32 dx, f32 dy) {
     m_target.x += dx;
     m_target.y += dy;
+    clamp_target_xy_to_bounds();
     m_dirty = true;
+}
+
+void Camera::set_target_xy(f32 x, f32 y) {
+    m_target.x = x;
+    m_target.y = y;
+    clamp_target_xy_to_bounds();
+    m_dirty = true;
+}
+
+void Camera::clamp_target_xy_to_bounds() {
+    if (m_target.x < m_bounds_min.x) m_target.x = m_bounds_min.x;
+    if (m_target.x > m_bounds_max.x) m_target.x = m_bounds_max.x;
+    if (m_target.y < m_bounds_min.y) m_target.y = m_bounds_min.y;
+    if (m_target.y > m_bounds_max.y) m_target.y = m_bounds_max.y;
 }
 
 void Camera::zoom(f32 scroll_delta) {

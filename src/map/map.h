@@ -5,6 +5,7 @@
 #include <glm/vec3.hpp>
 #include <nlohmann/json.hpp>
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -172,6 +173,15 @@ struct CameraSetup {
     f32 yaw_deg   = 0.0f;          // 0 = looking +Y
 };
 
+// Camera-bounds rect (WC3 analog of war3map.w3i's camera bounds).
+// Authored per-scene in scene.json. When present, gameplay xy-pan
+// gestures (WASD, drag, edge scroll, minimap click, hero-follow) clamp
+// the target inside the rect; CameraSetup applies bypass it so
+// cinematic shots can frame points outside the playable area.
+struct CameraBounds {
+    f32 min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+};
+
 struct SceneData {
     TerrainData                     terrain;
     std::vector<PlacedUnit>         units;
@@ -180,6 +190,7 @@ struct SceneData {
     std::vector<PlacedDoodad>       doodads;
     std::vector<Region>             regions;
     std::vector<CameraSetup>        cameras;
+    std::optional<CameraBounds>     camera_bounds;
 };
 
 class MapManager {
@@ -277,6 +288,9 @@ private:
     // creation, so safe to call in MP scene-switch teardown before
     // the barrier closes.
     bool load_scene_metadata(std::string_view scene_name, asset::AssetManager& assets);
+    // Optional `scene.json` per-scene config (camera bounds, future
+    // ambient/environment overrides). Absent file is a no-op.
+    void load_scene_config(std::string_view scene_name, asset::AssetManager& assets);
     bool load_placements(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
 
     bool                  m_loaded = false;

@@ -344,11 +344,37 @@ bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& as
     if (!load_scene_metadata(scene_name, assets)) {
         log::warn(TAG, "Scene '{}': no metadata loaded", scene_name);
     }
+    load_scene_config(scene_name, assets);
     if (!load_placements(scene_name, assets, sim)) {
         log::warn(TAG, "Scene '{}': no placements loaded", scene_name);
     }
 
     return true;
+}
+
+void MapManager::load_scene_config(std::string_view scene_name, asset::AssetManager& assets) {
+    std::string scene_dir = m_map_root + "/scenes/" + std::string(scene_name);
+    std::string path = scene_dir + "/scene.json";
+    auto handle = assets.load_config_absolute(path);
+    auto* doc = assets.get(handle);
+    if (!doc) {
+        log::info(TAG, "Scene '{}': no scene.json (camera bounds unset)", scene_name);
+        return;
+    }
+    auto& j = doc->data;
+    if (j.contains("camera_bounds")) {
+        const auto& cb = j["camera_bounds"];
+        CameraBounds b;
+        b.min_x = cb.value("min_x", 0.0f);
+        b.min_y = cb.value("min_y", 0.0f);
+        b.max_x = cb.value("max_x", 0.0f);
+        b.max_y = cb.value("max_y", 0.0f);
+        if (b.max_x < b.min_x) std::swap(b.min_x, b.max_x);
+        if (b.max_y < b.min_y) std::swap(b.min_y, b.max_y);
+        m_scene.camera_bounds = b;
+        log::info(TAG, "Scene '{}': camera bounds [{}, {}] .. [{}, {}]",
+                  scene_name, b.min_x, b.min_y, b.max_x, b.max_y);
+    }
 }
 
 // Load the scene's authored placement data into `m_scene`. Tries the

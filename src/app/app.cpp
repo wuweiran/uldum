@@ -538,6 +538,11 @@ bool App::start_session() {
             glm::radians(cam.pitch_deg),
             glm::radians(cam.yaw_deg));
     }
+    if (const auto& b = m_map.scene().camera_bounds) {
+        m_renderer.camera().set_bounds({b->min_x, b->min_y}, {b->max_x, b->max_y});
+    } else {
+        m_renderer.camera().clear_bounds();
+    }
 
     // HUD setup — runs on EVERY flavor (host, offline, client). Client
     // needs hud.json loaded for its own entity-bar config + name-label
@@ -1362,6 +1367,11 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
             cam.distance,
             glm::radians(cam.pitch_deg),
             glm::radians(cam.yaw_deg));
+    }
+    if (const auto& b = m_map.scene().camera_bounds) {
+        m_renderer.camera().set_bounds({b->min_x, b->min_y}, {b->max_x, b->max_y});
+    } else {
+        m_renderer.camera().clear_bounds();
     }
     // Drop any in-flight pan / shake / lock from the previous scene.
     // Lock targets (entity ids) belong to the old world and won't

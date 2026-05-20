@@ -4,7 +4,10 @@
 #include "platform/platform.h"
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+
+#include <limits>
 
 namespace uldum::render {
 
@@ -48,14 +51,34 @@ public:
 
     // Per-axis live setters used by scripted-camera commands. Pitch /
     // yaw / unaffected fields stay put.
+    //
+    // Clamping convention (mirrors WC3): xy ground-plane gestures
+    // (`set_target_xy`, `pan`, `translate`, WASD in `update`) honor the
+    // configured bounds; the full-vec3 `set_target` and whole-pose
+    // `set_pose` bypass the clamp so scripts and cinematic CameraSetup
+    // applies can target points outside the playable area.
     void set_target(glm::vec3 t) { m_target = t; m_dirty = true; }
-    void set_target_xy(f32 x, f32 y) { m_target.x = x; m_target.y = y; m_dirty = true; }
+    void set_target_xy(f32 x, f32 y);
     void set_distance(f32 d) {
         m_distance = (d < kMinDistance) ? kMinDistance : d;
         m_dirty = true;
     }
     void set_pitch_rad(f32 p) { m_pitch_rad = p; m_dirty = true; }
     void set_yaw_rad(f32 y)   { m_yaw_rad   = y; m_dirty = true; }
+
+    // Bounds for clamped xy gestures. Default = unbounded. Scene load
+    // calls `set_bounds` with the scene's authored camera-bounds rect.
+    void set_bounds(glm::vec2 min_xy, glm::vec2 max_xy) {
+        m_bounds_min = min_xy;
+        m_bounds_max = max_xy;
+    }
+    void clear_bounds() {
+        constexpr f32 inf = std::numeric_limits<f32>::infinity();
+        m_bounds_min = { -inf, -inf };
+        m_bounds_max = {  inf,  inf };
+    }
+    glm::vec2 bounds_min() const { return m_bounds_min; }
+    glm::vec2 bounds_max() const { return m_bounds_max; }
 
     glm::mat4 view_matrix() const;
     glm::mat4 projection_matrix() const;
@@ -80,6 +103,7 @@ public:
 
 private:
     void recalculate();
+    void clamp_target_xy_to_bounds();
 
     // Game coordinates: X=right, Y=forward, Z=up. Defaults reproduce
     // WC3's built-in game camera: target on the ground at world origin,
@@ -91,6 +115,11 @@ private:
     f32 m_yaw_rad   = 0.0f;     // 0 = looking +Y
 
     static constexpr f32 kMinDistance = 128.0f;
+
+    glm::vec2 m_bounds_min{ -std::numeric_limits<f32>::infinity(),
+                            -std::numeric_limits<f32>::infinity() };
+    glm::vec2 m_bounds_max{  std::numeric_limits<f32>::infinity(),
+                             std::numeric_limits<f32>::infinity() };
 
     f32 m_move_speed   = 1280.0f;   // target-pan speed (units / sec)
     f32 m_zoom_speed   = 640.0f;    // Q/E distance step (units / sec)
