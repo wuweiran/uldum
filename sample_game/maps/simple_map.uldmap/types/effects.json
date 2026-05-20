@@ -1,0 +1,14 @@
+{
+    "goal_burst": {
+        "count": 40, "speed": 220, "life": 0.8, "size": 14, "gravity": -100, "spread": 0.25,
+        "texture": "glow",
+        "start_color": { "r": 1.0, "g": 0.85, "b": 0.35, "a": 1.0 },
+        "end_color":   { "r": 1.0, "g": 0.55, "b": 0.10, "a": 0.0 }
+    },
+    "footstep_dust": {
+        "count": 6, "speed": 40, "life": 0.4, "size": 8, "gravity": 30, "spread": 0.6,
+        "texture": "glow",
+        "start_color": { "r": 0.85, "g": 0.80, "b": 0.70, "a": 0.6 },
+        "end_color":   { "r": 0.85, "g": 0.80, "b": 0.70, "a": 0.0 }
+    }
+}

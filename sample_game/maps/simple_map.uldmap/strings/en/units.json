@@ -1,0 +1,6 @@
+{
+    "paladin": {
+        "name":    "Paladin",
+        "tooltip": "A holy warrior. Walks east in the demo until he reaches the goal point."
+    }
+}

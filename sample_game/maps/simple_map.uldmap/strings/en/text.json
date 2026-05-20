@@ -1,0 +1,6 @@
+{
+    "demo": {
+        "intro":   "Walking east — reach the marker.",
+        "reached": "Reached goal in {elapsed}s"
+    }
+}

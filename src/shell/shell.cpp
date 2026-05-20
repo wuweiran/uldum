@@ -8,9 +8,74 @@
 #include <RmlUi/Core/EventListener.h>
 #include <vulkan/vulkan.h>
 
+#if defined(_WIN32)
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <windows.h>
+#endif
+
+#include <filesystem>
+#include <string>
+#include <vector>
+
 namespace uldum::shell {
 
 static constexpr const char* TAG = "UI";
+
+// Platform-specific list of well-known system font paths — used as
+// fallback faces under the game's primary shell font so codepoints
+// outside the primary's coverage (CJK, emoji, Arabic, …) still render.
+// Mirrors HUD's `collect_system_font_paths` in src/hud/font.cpp; kept
+// duplicated rather than extracted to avoid a shell → hud dep just for
+// a constant list.
+static std::vector<std::string> collect_system_font_paths() {
+    std::vector<std::string> paths;
+#if defined(_WIN32)
+    std::string fonts_dir;
+    {
+        char buf[MAX_PATH];
+        UINT n = GetWindowsDirectoryA(buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) fonts_dir = std::string(buf, n) + "/Fonts/";
+        else                        fonts_dir = "C:/Windows/Fonts/";
+    }
+    paths = {
+        fonts_dir + "msyh.ttc",        // CJK Simplified — Microsoft YaHei
+        fonts_dir + "msjh.ttc",        // CJK Traditional — Microsoft JhengHei
+        fonts_dir + "YuGothR.ttc",     // Japanese — Yu Gothic
+        fonts_dir + "malgun.ttf",      // Korean — Malgun Gothic
+        fonts_dir + "Nirmala.ttf",     // Indic
+        fonts_dir + "Leelawui.ttf",    // Thai / Lao
+        fonts_dir + "seguiemj.ttf",    // Emoji
+    };
+#elif defined(__APPLE__)
+    paths = {
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/HiraginoSans.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/System/Library/Fonts/Devanagari MT.ttc",
+        "/System/Library/Fonts/ThonburiUI.ttc",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+    };
+#elif defined(__ANDROID__)
+    paths = {
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/NotoSansDevanagari-Regular.ttf",
+        "/system/fonts/NotoSansThai-Regular.ttf",
+        "/system/fonts/NotoColorEmoji.ttf",
+    };
+#elif defined(__linux__)
+    paths = {
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    };
+#endif
+    return paths;
+}
 
 // RmlUi event listener that dispatches element clicks to a C++ std::function.
 // Attached to every loaded document — RmlUi bubbles events up to the root.
@@ -82,6 +147,27 @@ bool Shell::init(rhi::VulkanRhi& rhi, u32 window_w, u32 window_h) {
     //      without a hard error.
     if (!Rml::LoadFontFace("shell/fonts/lato-regular.ttf")) {
         log::warn(TAG, "Shell UI font failed to load (text won't render)");
+    }
+
+    // Layer system fonts underneath as fallback faces — same idea as
+    // the HUD's font chain. Each call registers the file as a fallback
+    // (not the primary), so RmlUi consults it only when the game's
+    // primary face has no glyph for the requested codepoint. CJK,
+    // emoji, Arabic, etc. all render this way even though the project
+    // only ships a Latin-coverage font. Missing files (e.g. on a
+    // minimal Linux install) silently skip.
+    for (const auto& p : collect_system_font_paths()) {
+        // RmlUi reads via the registered FileInterface; our impl
+        // (file_interface.cpp) falls through to a plain std::ifstream
+        // on miss, so absolute OS paths like "C:/Windows/Fonts/..."
+        // resolve correctly. Skip files that aren't present — some
+        // entries in the chain are optional Windows fonts (Nirmala
+        // for Indic) that aren't installed on every machine. Without
+        // the pre-check RmlUi logs ERROR on every miss; we want
+        // missing-fallback to be quiet.
+        std::error_code ec;
+        if (!std::filesystem::exists(p, ec)) continue;
+        Rml::LoadFontFace(p, /*fallback_face=*/true);
     }
 
     impl.context = Rml::CreateContext("main",

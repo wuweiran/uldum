@@ -4,6 +4,9 @@
 -- Orders the paladin to walk east. When he reaches the goal region, the
 -- session ends with the elapsed wall-clock time; the Shell UI picks that
 -- up via the Results screen.
+--
+-- Doubles as a tiny showcase: localized DisplayMessage at intro + goal,
+-- a particle burst from types/effects.json when the goal lands.
 --------------------------------------------------------------------------------
 
 -- Centered coords: world (0, 0) is map center. 32×32 tile map extends
@@ -31,7 +34,7 @@ function main()
 
     -- Start walking east.
     IssueOrder(paladin, "move", destination_x, destination_y)
-    Log(string.format("[Scene01] Ordered paladin to (%d, %d)", destination_x, destination_y))
+    DisplayMessage(L("demo.intro"))
 
     -- Poll 10×/s: accumulate elapsed time, check proximity to goal.
     -- GetGameTime is currently a stub (returns 0), so we count ticks
@@ -47,7 +50,9 @@ function main()
 
         if dist < reach_radius then
             done = true
-            Log(string.format("[Scene01] Reached goal in %.1fs", elapsed))
+            local elapsed_str = string.format("%.1f", elapsed)
+            DisplayMessage(L("demo.reached", { elapsed = elapsed_str }))
+            PlayEffect("goal_burst", destination_x, destination_y, 32)
             EndGame(0, string.format('{"elapsed": %.2f}', elapsed))
         end
     end)

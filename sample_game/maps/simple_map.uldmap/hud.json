@@ -1,0 +1,18 @@
+{
+    "preset": "rts",
+
+    "composites": {
+        "display_message": {
+            "anchor": "tc", "x": -160, "y": 24, "w": 320, "h": 96,
+            "text_size": 16,
+            "color": "#FFE9B0FF",
+            "max_lines": 3,
+            "default_lifespan": 4.0,
+            "fadepoint": 0.8
+        },
+
+        "minimap": {
+            "anchor": "br", "x": -176, "y": -176, "w": 160, "h": 160
+        }
+    }
+}
