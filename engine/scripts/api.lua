@@ -167,7 +167,7 @@ function GetAttacker() end
 --- @param player player    Owner
 --- @param x number         X position (game coords)
 --- @param y number         Y position (game coords)
---- @param facing number?   Facing in radians (default 0, facing +Y)
+--- @param facing number?   Facing in degrees (default 0, facing +Y)
 --- @return unit
 function CreateUnit(type_id, player, x, y, facing) end
 
@@ -270,11 +270,11 @@ function GetUnitPosition(unit) end
 function SetUnitPosition(unit, x, y) end
 
 --- @param unit unit
---- @return number   radians, 0 = facing +Y
+--- @return number   degrees, 0 = facing +Y
 function GetUnitFacing(unit) end
 
 --- @param unit unit
---- @param facing number   radians
+--- @param facing number   degrees, 0 = facing +Y
 function SetUnitFacing(unit, facing) end
 
 --------------------------------------------------------------------------------
@@ -836,43 +836,64 @@ function StopAmbientLoop(handle, fade_out) end
 function SetVolume(channel, volume) end
 
 --------------------------------------------------------------------------------
--- Camera
+-- Camera (WC3-aligned)
 --------------------------------------------------------------------------------
--- Per-player. Scripts run on the host only, so each command takes a Player
--- handle so the host knows whose screen to drive. (X, Y) is the ground
--- target point — the floor location the camera looks at, matching WC3's
--- SetCameraPosition / PanCameraTo semantics. Eye position is derived
--- from current pitch / yaw / zoom so scripts don't redo the math.
+-- Target-based pose: a `CameraSetup` is (target_x, target_y, target_z) +
+-- distance + pitch + yaw (degrees on the Lua surface). The eye position
+-- is derived as `target - distance * forward_dir`.
+--
+-- Each call takes a `players` arg that accepts:
+--   nil               → all players (broadcast)
+--   Player handle     → just that player
+--   {Player, ...}     → a list
+--
+-- Distance is the eye-to-target world distance. Pitch / yaw are degrees
+-- (matches WC3 World Editor convention).
 
---- Snap the player's camera to look at a ground point. No interpolation.
---- @param player player
+--- Look up a named CameraSetup authored in the current scene's
+--- objects.json `cameras[]`. Returns nil if no setup with that id
+--- exists. The handle is read-only — its fields (id, target_x,
+--- target_y, target_z, distance, pitch, yaw) can be inspected but not
+--- mutated. Use CameraSetupApply to apply.
+--- @param id string
+--- @return CameraSetup?
+function GetCameraSetup(id) end
+
+--- Apply a whole CameraSetup. `duration` ≤ 0 / nil snaps every axis;
+--- > 0 interpolates target, distance, pitch, yaw together.
+--- @param setup CameraSetup
+--- @param players player | table | nil
+--- @param duration number?
+function CameraSetupApply(setup, players, duration) end
+
+--- Pan the look-at point. Other axes (distance, pitch, yaw) stay put.
+--- `duration` ≤ 0 / nil snaps; > 0 tweens.
+--- @param players player | table | nil
 --- @param x number
 --- @param y number
-function SetCameraPosition(player, x, y) end
+--- @param z number
+--- @param duration number?
+function CameraSetTargetPosition(players, x, y, z, duration) end
 
---- Pan the player's camera to a ground point over `duration` seconds.
---- @param player player
---- @param x number
---- @param y number
---- @param duration number
-function PanCamera(player, x, y, duration) end
+--- Adjust eye-to-target distance ("zoom").
+--- @param players player | table | nil
+--- @param distance number
+--- @param duration number?
+function CameraSetSourceDistance(players, distance, duration) end
 
---- Set the player's camera zoom distance.
---- @param player player
---- @param zoom number
-function SetCameraZoom(player, zoom) end
-
---- Shake the player's camera. `intensity` in dp; `duration` in seconds.
---- @param player player
---- @param intensity number
---- @param duration number
-function CameraShake(player, intensity, duration) end
-
---- Hard-lock the player's camera onto a unit. Pass nil to release.
---- While locked, the player's WASD / drag / scroll inputs do nothing.
---- @param player player
+--- Hard-lock target to a unit — the look-at XY follows the unit each
+--- frame. Pass nil to release. While locked, the player's WASD pan
+--- does nothing; the camera tracks the unit until released.
+--- @param players player | table | nil
 --- @param unit unit?
-function SetCameraLockUnit(player, unit) end
+function CameraSetTargetController(players, unit) end
+
+--- Trauma-decay shake. Re-calling mid-shake takes the max intensity
+--- and the longer remaining window. `intensity` in world units.
+--- @param players player | table | nil
+--- @param intensity number
+--- @param duration number   seconds
+function CameraShake(players, intensity, duration) end
 
 --------------------------------------------------------------------------------
 -- Environment

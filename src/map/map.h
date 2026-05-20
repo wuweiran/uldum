@@ -158,9 +158,18 @@ struct Region {
     std::vector<RegionCircle> circles;
 };
 
-struct CameraDef {
+// WC3-style camera setup. Target-based: stores what the camera looks AT
+// (target xyz), how far the eye sits along the eye-ray (`distance`),
+// and the eye angles (`pitch_deg`, `yaw_deg`). The eye position is
+// derived at render time as `target - distance * forward_dir`. Authors
+// always read these fields in degrees; the renderer converts to radians
+// at the render boundary.
+struct CameraSetup {
     std::string id;
-    f32 x = 0, y = 0, z = 0, pitch = 0, yaw = 0;
+    f32 target_x = 0, target_y = 0, target_z = 0;
+    f32 distance  = 1650.0f;       // WC3 default eye-to-target distance
+    f32 pitch_deg = -56.0f;        // WC3 angle-of-attack 304°
+    f32 yaw_deg   = 0.0f;          // 0 = looking +Y
 };
 
 struct SceneData {
@@ -170,7 +179,7 @@ struct SceneData {
     std::vector<PlacedItem>         items;
     std::vector<PlacedDoodad>       doodads;
     std::vector<Region>             regions;
-    std::vector<CameraDef>          cameras;
+    std::vector<CameraSetup>        cameras;
 };
 
 class MapManager {

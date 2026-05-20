@@ -151,14 +151,17 @@ private:
     // the VM and clears prior callbacks).
     void register_script_camera_callbacks();
 
-    // Route a per-player camera command. Apply locally if the target
-    // is the host's own slot or we're offline; otherwise forward to
-    // the remote peer via NetworkManager.
-    void route_camera_set_position(u32 player_id, f32 x, f32 y);
-    void route_camera_pan(u32 player_id, f32 x, f32 y, f32 duration);
-    void route_camera_zoom(u32 player_id, f32 z);
-    void route_camera_shake(u32 player_id, f32 intensity, f32 duration);
-    void route_camera_lock_unit(u32 player_id, simulation::Unit unit);
+    // Route a camera command to every player in `players_mask`. For
+    // each set bit: apply locally if it's the host's own slot, else
+    // send the corresponding S_CAMERA_* packet to that peer.
+    void route_camera_apply_setup(u32 players_mask,
+                                   f32 tx, f32 ty, f32 tz, f32 distance,
+                                   f32 pitch_rad, f32 yaw_rad, f32 duration);
+    void route_camera_set_target_position(u32 players_mask,
+                                           f32 x, f32 y, f32 z, f32 duration);
+    void route_camera_set_source_distance(u32 players_mask, f32 distance, f32 duration);
+    void route_camera_shake(u32 players_mask, f32 intensity, f32 duration);
+    void route_camera_set_target_controller(u32 players_mask, simulation::Unit unit);
 
 #ifdef ULDUM_SHELL_UI
     // Most recent end-of-session elapsed time (seconds) pulled out of the

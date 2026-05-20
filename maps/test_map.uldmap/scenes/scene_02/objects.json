@@ -14,6 +14,7 @@
         }
     ],
     "cameras": [
-        { "id": "default", "x": 0.0, "y": -923.0, "z": 1370.0, "pitch": -0.977, "yaw": 0.0 }
+        { "id": "default", "target_x": 0.0, "target_y": 0.0, "target_z": 0.0,
+          "distance": 1652.0, "pitch": -56.0, "yaw": 0.0 }
     ]
 }

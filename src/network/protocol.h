@@ -73,14 +73,17 @@ enum class MsgType : u8 {
     S_SCENE_SWITCH  = 0x63,   // host requests a scene swap; clients tear down
                               // local state and ack via C_LOAD_DONE
 
-    // Playing — scripted-camera commands. Each is targeted at a single
-    // recipient; the host sends per-player. Lua scripts produce these
-    // via SetCameraPosition / PanCamera / etc.
-    S_CAMERA_SET_POSITION = 0x64,  // x: f32, y: f32
-    S_CAMERA_PAN          = 0x65,  // x: f32, y: f32, duration: f32
-    S_CAMERA_ZOOM         = 0x66,  // z: f32
-    S_CAMERA_SHAKE        = 0x67,  // intensity: f32, duration: f32
-    S_CAMERA_LOCK_UNIT    = 0x68,  // entity_id: u32 (UINT32_MAX = unlock)
+    // Playing — scripted-camera commands. WC3-style target-based pose
+    // (target xyz + distance + pitch + yaw). Each is targeted at a
+    // single recipient; the host sends per-player. Lua scripts produce
+    // these via CameraSetupApply / CameraSetTargetPosition / etc.
+    // Pitch / yaw on the wire are radians (matches Camera's internal
+    // storage); Lua's degree values are converted at the host.
+    S_CAMERA_APPLY_SETUP            = 0x64,  // target xyz, distance, pitch_rad, yaw_rad, duration: 7 × f32
+    S_CAMERA_SET_TARGET_POSITION    = 0x65,  // x, y, z, duration: 4 × f32
+    S_CAMERA_SET_SOURCE_DISTANCE    = 0x66,  // distance, duration: 2 × f32
+    S_CAMERA_SHAKE                  = 0x67,  // intensity, duration: 2 × f32
+    S_CAMERA_SET_TARGET_CONTROLLER  = 0x68,  // entity_id: u32 (UINT32_MAX = unlock)
 
     // Playing — HUD sync
     S_HUD_CREATE_NODE         = 0x70, // template instantiation + placement
@@ -796,27 +799,35 @@ inline std::string parse_scene_switch(std::span<const u8> data) {
 // player. Recipient is implied by the transport peer the host sent
 // to, so the message itself doesn't carry a player id.
 
-inline std::vector<u8> build_camera_set_position(f32 x, f32 y) {
+// Full CameraSetup application — every axis tweens at once over
+// `duration` seconds (snap if 0). Pitch/yaw in radians on the wire.
+inline std::vector<u8> build_camera_apply_setup(f32 tx, f32 ty, f32 tz,
+                                                  f32 distance,
+                                                  f32 pitch_rad, f32 yaw_rad,
+                                                  f32 duration) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_POSITION));
-    w.write_f32(x);
-    w.write_f32(y);
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_camera_pan(f32 x, f32 y, f32 duration) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_PAN));
-    w.write_f32(x);
-    w.write_f32(y);
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_APPLY_SETUP));
+    w.write_f32(tx); w.write_f32(ty); w.write_f32(tz);
+    w.write_f32(distance);
+    w.write_f32(pitch_rad);
+    w.write_f32(yaw_rad);
     w.write_f32(duration);
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_camera_zoom(f32 z) {
+inline std::vector<u8> build_camera_set_target_position(f32 x, f32 y, f32 z, f32 duration) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_ZOOM));
-    w.write_f32(z);
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_TARGET_POSITION));
+    w.write_f32(x); w.write_f32(y); w.write_f32(z);
+    w.write_f32(duration);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_set_source_distance(f32 distance, f32 duration) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_SOURCE_DISTANCE));
+    w.write_f32(distance);
+    w.write_f32(duration);
     return std::move(w.data());
 }
 
@@ -828,9 +839,9 @@ inline std::vector<u8> build_camera_shake(f32 intensity, f32 duration) {
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_camera_lock_unit(u32 entity_id) {
+inline std::vector<u8> build_camera_set_target_controller(u32 entity_id) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_LOCK_UNIT));
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_TARGET_CONTROLLER));
     w.write_u32(entity_id);
     return std::move(w.data());
 }

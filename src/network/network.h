@@ -232,24 +232,34 @@ public:
     // host's local slot the caller has already applied locally and we
     // skip; otherwise we send to the matching peer's transport id.
     // Returns false if the player id has no matching peer (logged).
-    bool host_send_camera_set_position(u32 player_id, f32 x, f32 y);
-    bool host_send_camera_pan(u32 player_id, f32 x, f32 y, f32 duration);
-    bool host_send_camera_zoom(u32 player_id, f32 z);
+    // WC3-style camera commands. Each takes a single player; App routes
+    // a `players_mask` by iterating set bits and calling these per peer
+    // (host's own slot applies locally instead).
+    bool host_send_camera_apply_setup(u32 player_id,
+                                       f32 tx, f32 ty, f32 tz, f32 distance,
+                                       f32 pitch_rad, f32 yaw_rad, f32 duration);
+    bool host_send_camera_set_target_position(u32 player_id,
+                                                f32 x, f32 y, f32 z, f32 duration);
+    bool host_send_camera_set_source_distance(u32 player_id,
+                                                f32 distance, f32 duration);
     bool host_send_camera_shake(u32 player_id, f32 intensity, f32 duration);
-    bool host_send_camera_lock_unit(u32 player_id, u32 entity_id);
+    bool host_send_camera_set_target_controller(u32 player_id, u32 entity_id);
 
     // Client: registered by App to apply incoming camera commands to
     // the local CameraController.
-    using CameraSetPositionRecvFn = std::function<void(f32 x, f32 y)>;
-    using CameraPanRecvFn         = std::function<void(f32 x, f32 y, f32 duration)>;
-    using CameraZoomRecvFn        = std::function<void(f32 z)>;
-    using CameraShakeRecvFn       = std::function<void(f32 intensity, f32 duration)>;
-    using CameraLockUnitRecvFn    = std::function<void(u32 entity_id)>;
-    void set_camera_set_position_recv_fn(CameraSetPositionRecvFn fn) { m_camera_set_position_recv_fn = std::move(fn); }
-    void set_camera_pan_recv_fn         (CameraPanRecvFn fn)         { m_camera_pan_recv_fn          = std::move(fn); }
-    void set_camera_zoom_recv_fn        (CameraZoomRecvFn fn)        { m_camera_zoom_recv_fn         = std::move(fn); }
-    void set_camera_shake_recv_fn       (CameraShakeRecvFn fn)       { m_camera_shake_recv_fn        = std::move(fn); }
-    void set_camera_lock_unit_recv_fn   (CameraLockUnitRecvFn fn)    { m_camera_lock_unit_recv_fn    = std::move(fn); }
+    using CameraApplySetupRecvFn         = std::function<void(f32 tx, f32 ty, f32 tz,
+                                                               f32 distance,
+                                                               f32 pitch_rad, f32 yaw_rad,
+                                                               f32 duration)>;
+    using CameraSetTargetPositionRecvFn  = std::function<void(f32 x, f32 y, f32 z, f32 duration)>;
+    using CameraSetSourceDistanceRecvFn  = std::function<void(f32 distance, f32 duration)>;
+    using CameraShakeRecvFn              = std::function<void(f32 intensity, f32 duration)>;
+    using CameraSetTargetControllerRecvFn = std::function<void(u32 entity_id)>;
+    void set_camera_apply_setup_recv_fn        (CameraApplySetupRecvFn fn)        { m_camera_apply_setup_recv_fn         = std::move(fn); }
+    void set_camera_set_target_position_recv_fn(CameraSetTargetPositionRecvFn fn) { m_camera_set_target_position_recv_fn = std::move(fn); }
+    void set_camera_set_source_distance_recv_fn(CameraSetSourceDistanceRecvFn fn) { m_camera_set_source_distance_recv_fn = std::move(fn); }
+    void set_camera_shake_recv_fn              (CameraShakeRecvFn fn)             { m_camera_shake_recv_fn               = std::move(fn); }
+    void set_camera_set_target_controller_recv_fn(CameraSetTargetControllerRecvFn fn) { m_camera_set_target_controller_recv_fn = std::move(fn); }
 
     // Client: this client has finished loading — tell the host. No-op on
     // the host (host tracks self-loaded via mark_self_loaded).
@@ -363,11 +373,11 @@ private:
     SceneSwitchRecvFn m_scene_switch_recv_fn;
 
     // Client: scripted-camera apply callbacks.
-    CameraSetPositionRecvFn m_camera_set_position_recv_fn;
-    CameraPanRecvFn         m_camera_pan_recv_fn;
-    CameraZoomRecvFn        m_camera_zoom_recv_fn;
-    CameraShakeRecvFn       m_camera_shake_recv_fn;
-    CameraLockUnitRecvFn    m_camera_lock_unit_recv_fn;
+    CameraApplySetupRecvFn          m_camera_apply_setup_recv_fn;
+    CameraSetTargetPositionRecvFn   m_camera_set_target_position_recv_fn;
+    CameraSetSourceDistanceRecvFn   m_camera_set_source_distance_recv_fn;
+    CameraShakeRecvFn               m_camera_shake_recv_fn;
+    CameraSetTargetControllerRecvFn m_camera_set_target_controller_recv_fn;
 
     void host_on_connect(u32 peer_id);
     void host_on_disconnect(u32 peer_id);

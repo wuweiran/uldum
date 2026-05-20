@@ -398,7 +398,7 @@ bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetMa
     if (j.contains("cameras")) {
         std::unordered_set<std::string> seen_ids;
         for (auto& c : j["cameras"]) {
-            CameraDef cam;
+            CameraSetup cam;
             cam.id    = c.value("id", "");
             if (cam.id.empty()) {
                 log::warn(TAG, "Scene '{}': camera with empty id, skipping", scene_name);
@@ -408,11 +408,12 @@ bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetMa
                 log::warn(TAG, "Scene '{}': duplicate camera id '{}', skipping", scene_name, cam.id);
                 continue;
             }
-            cam.x     = c.value("x", 0.0f);
-            cam.y     = c.value("y", 0.0f);
-            cam.z     = c.value("z", 0.0f);
-            cam.pitch = c.value("pitch", 0.0f);
-            cam.yaw   = c.value("yaw", 0.0f);
+            cam.target_x  = c.value("target_x", 0.0f);
+            cam.target_y  = c.value("target_y", 0.0f);
+            cam.target_z  = c.value("target_z", 0.0f);
+            cam.distance  = c.value("distance",  1650.0f);
+            cam.pitch_deg = c.value("pitch",     -56.0f);
+            cam.yaw_deg   = c.value("yaw",         0.0f);
             m_scene.cameras.push_back(std::move(cam));
         }
     }
@@ -716,12 +717,13 @@ bool MapManager::save_objects(const simulation::World& world, std::string_view s
     doc["cameras"] = nlohmann::json::array();
     for (const auto& c : m_scene.cameras) {
         nlohmann::json j;
-        j["id"]    = c.id;
-        j["x"]     = c.x;
-        j["y"]     = c.y;
-        j["z"]     = c.z;
-        j["pitch"] = c.pitch;
-        j["yaw"]   = c.yaw;
+        j["id"]       = c.id;
+        j["target_x"] = c.target_x;
+        j["target_y"] = c.target_y;
+        j["target_z"] = c.target_z;
+        j["distance"] = c.distance;
+        j["pitch"]    = c.pitch_deg;
+        j["yaw"]      = c.yaw_deg;
         doc["cameras"].push_back(std::move(j));
     }
 

@@ -841,9 +841,12 @@ void ScriptEngine::bind_api() {
 
     // ── Unit API ──────────────────────────────────────────────────────
 
-    lua["CreateUnit"] = [&](const std::string& type_id, simulation::Player owner, f32 x, f32 y, sol::optional<f32> facing) -> sol::object {
+    lua["CreateUnit"] = [&](const std::string& type_id, simulation::Player owner, f32 x, f32 y, sol::optional<f32> facing_deg) -> sol::object {
         auto& world = sim.world();
-        auto unit = simulation::create_unit(world, type_id, owner, x, y, facing.value_or(0));
+        // Lua surface uses degrees (matches Set/GetUnitFacing); convert
+        // to radians for the internal transform.
+        f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
+        auto unit = simulation::create_unit(world, type_id, owner, x, y, facing_rad);
         if (unit.is_valid()) {
             auto* t = world.transforms.get(unit.id);
             if (t) t->position.z = ::uldum::map::sample_height(terrain_ref,x, y);
@@ -1701,41 +1704,80 @@ void ScriptEngine::bind_api() {
         m_audio->set_volume(ch, volume);
     };
 
-    // ── Camera API ────────────────────────────────────────────────────────
-    // Per-player. Scripts run on the host only, so each command takes
-    // a Player handle (Player(N)) so the host knows whose
-    // screen to drive. Targeting "all players" means looping in Lua.
-    // Offline collapses to "apply locally" inside the registered fn.
+    // ── Camera API (WC3-aligned) ──────────────────────────────────────────
+    // Target-based pose (`CameraSetup` = target xyz + distance + pitch +
+    // yaw, degrees on the Lua surface). Per-player routing via a
+    // `players` arg parsed by parse_players_mask — accepts nil (all),
+    // a single Player, or a {Player, ...} table.
     //
-    // Position arguments below (SetCameraPosition / PanCamera) are
-    // GROUND TARGET XY — the point on the world floor the camera
-    // should look at, matching WC3's SetCameraPosition / PanCameraTo
-    // semantics. Eye position is derived from current pitch / yaw /
-    // height so scripts don't redo the math when zoom changes.
-    //
-    // SetCameraLockUnit is a hard lock — while active, the targeted
-    // player's WASD / drag / scroll inputs do nothing until the
-    // script unlocks (`SetCameraLockUnit(player, nil)`).
+    // Setup objects are looked up by id from objects.json's cameras[]
+    // via GetCameraSetup. Authors recall them in cinematics; live
+    // adjustments use the per-axis setters below.
 
-    lua["SetCameraPosition"] = [this](simulation::Player p, f32 x, f32 y) {
-        if (m_camera_set_position_fn) m_camera_set_position_fn(p.id, x, y);
+    lua.new_usertype<map::CameraSetup>("CameraSetup",
+        "id",        sol::readonly(&map::CameraSetup::id),
+        "target_x",  sol::readonly(&map::CameraSetup::target_x),
+        "target_y",  sol::readonly(&map::CameraSetup::target_y),
+        "target_z",  sol::readonly(&map::CameraSetup::target_z),
+        "distance",  sol::readonly(&map::CameraSetup::distance),
+        "pitch",     sol::readonly(&map::CameraSetup::pitch_deg),
+        "yaw",       sol::readonly(&map::CameraSetup::yaw_deg)
+    );
+
+    lua["GetCameraSetup"] = [this](const std::string& id) -> sol::object {
+        if (!m_map) return sol::make_object(*m_lua, sol::nil);
+        for (const auto& cam : m_map->scene().cameras) {
+            if (cam.id == id) return sol::make_object(*m_lua, cam);
+        }
+        return sol::make_object(*m_lua, sol::nil);
     };
-    lua["PanCamera"] = [this](simulation::Player p, f32 x, f32 y, f32 duration) {
-        if (m_camera_pan_fn) m_camera_pan_fn(p.id, x, y, duration);
+
+    constexpr f32 kDegToRad = 0.0174532925f;
+
+    lua["CameraSetupApply"] = [this, kDegToRad](const map::CameraSetup& setup,
+                                                  sol::object players,
+                                                  sol::optional<f32> duration) {
+        if (!m_camera_apply_setup_fn) return;
+        u32 mask = parse_players_mask(players);
+        m_camera_apply_setup_fn(mask,
+            setup.target_x, setup.target_y, setup.target_z,
+            setup.distance,
+            setup.pitch_deg * kDegToRad,
+            setup.yaw_deg   * kDegToRad,
+            duration.value_or(0.0f));
     };
-    lua["SetCameraZoom"] = [this](simulation::Player p, f32 z) {
-        if (m_camera_zoom_fn) m_camera_zoom_fn(p.id, z);
+
+    lua["CameraSetTargetPosition"] = [this](sol::object players,
+                                              f32 x, f32 y, f32 z,
+                                              sol::optional<f32> duration) {
+        if (!m_camera_set_target_position_fn) return;
+        u32 mask = parse_players_mask(players);
+        m_camera_set_target_position_fn(mask, x, y, z, duration.value_or(0.0f));
     };
-    lua["CameraShake"] = [this](simulation::Player p, f32 intensity, f32 duration) {
-        if (m_camera_shake_fn) m_camera_shake_fn(p.id, intensity, duration);
+
+    lua["CameraSetSourceDistance"] = [this](sol::object players,
+                                              f32 distance,
+                                              sol::optional<f32> duration) {
+        if (!m_camera_set_source_distance_fn) return;
+        u32 mask = parse_players_mask(players);
+        m_camera_set_source_distance_fn(mask, distance, duration.value_or(0.0f));
     };
-    // unit is optional — pass nil to release the lock.
-    lua["SetCameraLockUnit"] = [this](simulation::Player p, sol::optional<simulation::Unit> u) {
-        if (!m_camera_lock_unit_fn) return;
-        // Default-constructed Unit has id = UINT32_MAX, which the
-        // controller treats as "unlock".
+
+    lua["CameraShake"] = [this](sol::object players, f32 intensity, f32 duration) {
+        if (!m_camera_shake_fn) return;
+        u32 mask = parse_players_mask(players);
+        m_camera_shake_fn(mask, intensity, duration);
+    };
+
+    // Lock target to a unit. Pass nil to release the lock; the
+    // default-constructed Unit has id = UINT32_MAX which the controller
+    // reads as "unlock".
+    lua["CameraSetTargetController"] = [this](sol::object players,
+                                                sol::optional<simulation::Unit> u) {
+        if (!m_camera_set_target_controller_fn) return;
+        u32 mask = parse_players_mask(players);
         simulation::Unit unit = u.value_or(simulation::Unit{});
-        m_camera_lock_unit_fn(p.id, unit);
+        m_camera_set_target_controller_fn(mask, unit);
     };
 
     // ── Vision API ────────────────────────────────────────────────────────

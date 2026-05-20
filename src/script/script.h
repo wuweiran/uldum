@@ -127,20 +127,30 @@ public:
 
     // Per-player scripted-camera routing. App installs these; the
     // implementation decides whether to apply locally (own player or
-    // offline) or send across the wire (remote peers). Lua APIs:
-    // SetCameraPosition(player, x, y), PanCamera(player, x, y, dur),
-    // SetCameraZoom(player, z), CameraShake(player, intensity, dur),
-    // SetCameraLockUnit(player, unit).
-    using CameraSetPositionFn = std::function<void(u32 player_id, f32 x, f32 y)>;
-    using CameraPanFn         = std::function<void(u32 player_id, f32 x, f32 y, f32 duration)>;
-    using CameraZoomFn        = std::function<void(u32 player_id, f32 z)>;
-    using CameraShakeFn       = std::function<void(u32 player_id, f32 intensity, f32 duration)>;
-    using CameraLockUnitFn    = std::function<void(u32 player_id, simulation::Unit unit)>;
-    void set_camera_set_position_fn(CameraSetPositionFn fn) { m_camera_set_position_fn = std::move(fn); }
-    void set_camera_pan_fn         (CameraPanFn fn)         { m_camera_pan_fn          = std::move(fn); }
-    void set_camera_zoom_fn        (CameraZoomFn fn)        { m_camera_zoom_fn         = std::move(fn); }
-    void set_camera_shake_fn       (CameraShakeFn fn)       { m_camera_shake_fn        = std::move(fn); }
-    void set_camera_lock_unit_fn   (CameraLockUnitFn fn)    { m_camera_lock_unit_fn    = std::move(fn); }
+    // WC3-style camera. App routes the `players_mask` (parsed from
+    // Lua's `players` arg via parse_players_mask) per set bit. Pitch/
+    // yaw are radians on the C++ side; Lua converts from degrees.
+    // Lua surface: GetCameraSetup, CameraSetupApply,
+    // CameraSetTargetPosition, CameraSetSourceDistance,
+    // CameraSetTargetController, CameraShake.
+    using CameraApplySetupFn         = std::function<void(u32 players_mask,
+                                                           f32 tx, f32 ty, f32 tz,
+                                                           f32 distance,
+                                                           f32 pitch_rad, f32 yaw_rad,
+                                                           f32 duration)>;
+    using CameraSetTargetPositionFn  = std::function<void(u32 players_mask,
+                                                           f32 x, f32 y, f32 z, f32 duration)>;
+    using CameraSetSourceDistanceFn  = std::function<void(u32 players_mask,
+                                                           f32 distance, f32 duration)>;
+    using CameraShakeFn              = std::function<void(u32 players_mask,
+                                                           f32 intensity, f32 duration)>;
+    using CameraSetTargetControllerFn = std::function<void(u32 players_mask,
+                                                            simulation::Unit unit)>;
+    void set_camera_apply_setup_fn        (CameraApplySetupFn fn)         { m_camera_apply_setup_fn          = std::move(fn); }
+    void set_camera_set_target_position_fn(CameraSetTargetPositionFn fn)  { m_camera_set_target_position_fn  = std::move(fn); }
+    void set_camera_set_source_distance_fn(CameraSetSourceDistanceFn fn)  { m_camera_set_source_distance_fn  = std::move(fn); }
+    void set_camera_shake_fn              (CameraShakeFn fn)              { m_camera_shake_fn                = std::move(fn); }
+    void set_camera_set_target_controller_fn(CameraSetTargetControllerFn fn) { m_camera_set_target_controller_fn = std::move(fn); }
 
 
     // Connect input systems (call after input is initialized, before scripts run).
@@ -284,11 +294,11 @@ private:
     // pass agree on what "visible" means.
     bool effect_visible_to(const ActiveEffect& e, u32 player_id) const;
     SceneSwitchFn            m_scene_switch_fn;
-    CameraSetPositionFn      m_camera_set_position_fn;
-    CameraPanFn              m_camera_pan_fn;
-    CameraZoomFn             m_camera_zoom_fn;
-    CameraShakeFn            m_camera_shake_fn;
-    CameraLockUnitFn         m_camera_lock_unit_fn;
+    CameraApplySetupFn          m_camera_apply_setup_fn;
+    CameraSetTargetPositionFn   m_camera_set_target_position_fn;
+    CameraSetSourceDistanceFn   m_camera_set_source_distance_fn;
+    CameraShakeFn               m_camera_shake_fn;
+    CameraSetTargetControllerFn m_camera_set_target_controller_fn;
 
     // Input (set via set_input)
     input::SelectionState*   m_selection = nullptr;

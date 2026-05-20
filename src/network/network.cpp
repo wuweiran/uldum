@@ -206,34 +206,40 @@ u32 peer_id_for_player(const Peers& peers, u32 player_id) {
 }
 } // namespace
 
-bool NetworkManager::host_send_camera_set_position(u32 player_id, f32 x, f32 y) {
+bool NetworkManager::host_send_camera_apply_setup(u32 player_id,
+        f32 tx, f32 ty, f32 tz, f32 distance,
+        f32 pitch_rad, f32 yaw_rad, f32 duration) {
     if (m_mode != Mode::Host || !m_transport) return false;
     u32 peer = peer_id_for_player(m_peers, player_id);
     if (peer == UINT32_MAX) return false;
-    auto msg = build_camera_set_position(x, y);
+    auto msg = build_camera_apply_setup(tx, ty, tz, distance,
+                                          pitch_rad, yaw_rad, duration);
     m_transport->send(peer, msg, true);
     return true;
 }
 
-bool NetworkManager::host_send_camera_pan(u32 player_id, f32 x, f32 y, f32 duration) {
+bool NetworkManager::host_send_camera_set_target_position(u32 player_id,
+        f32 x, f32 y, f32 z, f32 duration) {
     if (m_mode != Mode::Host || !m_transport) return false;
     u32 peer = peer_id_for_player(m_peers, player_id);
     if (peer == UINT32_MAX) return false;
-    auto msg = build_camera_pan(x, y, duration);
+    auto msg = build_camera_set_target_position(x, y, z, duration);
     m_transport->send(peer, msg, true);
     return true;
 }
 
-bool NetworkManager::host_send_camera_zoom(u32 player_id, f32 z) {
+bool NetworkManager::host_send_camera_set_source_distance(u32 player_id,
+        f32 distance, f32 duration) {
     if (m_mode != Mode::Host || !m_transport) return false;
     u32 peer = peer_id_for_player(m_peers, player_id);
     if (peer == UINT32_MAX) return false;
-    auto msg = build_camera_zoom(z);
+    auto msg = build_camera_set_source_distance(distance, duration);
     m_transport->send(peer, msg, true);
     return true;
 }
 
-bool NetworkManager::host_send_camera_shake(u32 player_id, f32 intensity, f32 duration) {
+bool NetworkManager::host_send_camera_shake(u32 player_id,
+        f32 intensity, f32 duration) {
     if (m_mode != Mode::Host || !m_transport) return false;
     u32 peer = peer_id_for_player(m_peers, player_id);
     if (peer == UINT32_MAX) return false;
@@ -242,11 +248,12 @@ bool NetworkManager::host_send_camera_shake(u32 player_id, f32 intensity, f32 du
     return true;
 }
 
-bool NetworkManager::host_send_camera_lock_unit(u32 player_id, u32 entity_id) {
+bool NetworkManager::host_send_camera_set_target_controller(u32 player_id,
+        u32 entity_id) {
     if (m_mode != Mode::Host || !m_transport) return false;
     u32 peer = peer_id_for_player(m_peers, player_id);
     if (peer == UINT32_MAX) return false;
-    auto msg = build_camera_lock_unit(entity_id);
+    auto msg = build_camera_set_target_controller(entity_id);
     m_transport->send(peer, msg, true);
     return true;
 }
@@ -925,22 +932,26 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         break;
     }
 
-    case MsgType::S_CAMERA_SET_POSITION: {
+    case MsgType::S_CAMERA_APPLY_SETUP: {
         ByteReader r(data); r.read_u8();
-        f32 x = r.read_f32(), y = r.read_f32();
-        if (m_camera_set_position_recv_fn) m_camera_set_position_recv_fn(x, y);
+        f32 tx = r.read_f32(), ty = r.read_f32(), tz = r.read_f32();
+        f32 distance = r.read_f32();
+        f32 pitch_rad = r.read_f32(), yaw_rad = r.read_f32();
+        f32 duration = r.read_f32();
+        if (m_camera_apply_setup_recv_fn)
+            m_camera_apply_setup_recv_fn(tx, ty, tz, distance, pitch_rad, yaw_rad, duration);
         break;
     }
-    case MsgType::S_CAMERA_PAN: {
+    case MsgType::S_CAMERA_SET_TARGET_POSITION: {
         ByteReader r(data); r.read_u8();
-        f32 x = r.read_f32(), y = r.read_f32(), dur = r.read_f32();
-        if (m_camera_pan_recv_fn) m_camera_pan_recv_fn(x, y, dur);
+        f32 x = r.read_f32(), y = r.read_f32(), z = r.read_f32(), dur = r.read_f32();
+        if (m_camera_set_target_position_recv_fn) m_camera_set_target_position_recv_fn(x, y, z, dur);
         break;
     }
-    case MsgType::S_CAMERA_ZOOM: {
+    case MsgType::S_CAMERA_SET_SOURCE_DISTANCE: {
         ByteReader r(data); r.read_u8();
-        f32 z = r.read_f32();
-        if (m_camera_zoom_recv_fn) m_camera_zoom_recv_fn(z);
+        f32 distance = r.read_f32(), dur = r.read_f32();
+        if (m_camera_set_source_distance_recv_fn) m_camera_set_source_distance_recv_fn(distance, dur);
         break;
     }
     case MsgType::S_CAMERA_SHAKE: {
@@ -949,10 +960,10 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         if (m_camera_shake_recv_fn) m_camera_shake_recv_fn(intensity, dur);
         break;
     }
-    case MsgType::S_CAMERA_LOCK_UNIT: {
+    case MsgType::S_CAMERA_SET_TARGET_CONTROLLER: {
         ByteReader r(data); r.read_u8();
         u32 entity_id = r.read_u32();
-        if (m_camera_lock_unit_recv_fn) m_camera_lock_unit_recv_fn(entity_id);
+        if (m_camera_set_target_controller_recv_fn) m_camera_set_target_controller_recv_fn(entity_id);
         break;
     }
 

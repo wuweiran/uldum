@@ -2879,7 +2879,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // reach the edge of a 600-range cast in roughly one comfortable
     // arc. Tunable later via hud.json or settings.
     constexpr f32 SENS = 6.0f;
-    f32 yaw = s.world_ctx->camera->yaw();
+    f32 yaw = s.world_ctx->camera->yaw_rad();
     f32 cyaw = std::cos(yaw), syaw = std::sin(yaw);
     glm::vec3 right{cyaw, syaw, 0.0f};
     glm::vec3 forward{-syaw, cyaw, 0.0f};

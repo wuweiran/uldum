@@ -16,6 +16,8 @@
 #include "app/dev_console.h"
 #endif
 
+#include <glm/trigonometric.hpp>   // glm::radians
+
 #include <algorithm>
 #include <chrono>
 #include <functional>
@@ -529,7 +531,11 @@ bool App::start_session() {
     }
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
-        m_renderer.camera().set_pose({cam.x, cam.y, cam.z}, cam.pitch, cam.yaw);
+        m_renderer.camera().set_pose(
+            {cam.target_x, cam.target_y, cam.target_z},
+            cam.distance,
+            glm::radians(cam.pitch_deg),
+            glm::radians(cam.yaw_deg));
     }
 
     // HUD setup — runs on EVERY flavor (host, offline, client). Client
@@ -763,20 +769,9 @@ bool App::start_session() {
     // at the clicked world coord. Preserves the current pitch/yaw so
     // the player's view angle stays consistent across jumps.
     m_hud.set_minimap_jump_fn([this](f32 wx, f32 wy) {
-        auto& cam = m_renderer.camera();
-        glm::vec3 pos = cam.position();
-        glm::vec3 fwd = cam.forward_dir();
-        if (fwd.z >= -0.001f) {
-            // Camera looking at or above the horizon — fall back to a
-            // direct XY snap without preserving the offset.
-            cam.set_pose({ wx, wy, pos.z }, cam.pitch(), cam.yaw());
-            return;
-        }
-        f32 t = -pos.z / fwd.z;
-        glm::vec3 focus  = pos + t * fwd;
-        glm::vec3 offset = pos - focus;
-        cam.set_pose({ wx + offset.x, wy + offset.y, pos.z },
-                     cam.pitch(), cam.yaw());
+        // Target-based camera: minimap-click snaps the look-at point
+        // to the clicked ground location. Distance / pitch / yaw stay.
+        m_renderer.camera().set_target_xy(wx, wy);
     });
 
     // Input wiring that the map's Lua may touch from main() — command
@@ -1056,19 +1051,24 @@ bool App::start_session() {
         });
         // Scripted-camera apply. The host has already chosen this
         // client as the recipient; just hand off to the controller.
-        m_network.set_camera_set_position_recv_fn([this](f32 x, f32 y) {
-            m_camera_controller.set_position(x, y);
-        });
-        m_network.set_camera_pan_recv_fn([this](f32 x, f32 y, f32 d) {
-            m_camera_controller.pan(x, y, d);
-        });
-        m_network.set_camera_zoom_recv_fn([this](f32 z) {
-            m_camera_controller.set_zoom(z);
-        });
+        m_network.set_camera_apply_setup_recv_fn(
+            [this](f32 tx, f32 ty, f32 tz, f32 distance,
+                   f32 pitch_rad, f32 yaw_rad, f32 duration) {
+                m_camera_controller.apply_setup({tx, ty, tz}, distance,
+                                                  pitch_rad, yaw_rad, duration);
+            });
+        m_network.set_camera_set_target_position_recv_fn(
+            [this](f32 x, f32 y, f32 z, f32 d) {
+                m_camera_controller.set_target_position(x, y, z, d);
+            });
+        m_network.set_camera_set_source_distance_recv_fn(
+            [this](f32 distance, f32 d) {
+                m_camera_controller.set_source_distance(distance, d);
+            });
         m_network.set_camera_shake_recv_fn([this](f32 i, f32 d) {
             m_camera_controller.shake(i, d);
         });
-        m_network.set_camera_lock_unit_recv_fn([this](u32 entity_id) {
+        m_network.set_camera_set_target_controller_recv_fn([this](u32 entity_id) {
             if (entity_id == UINT32_MAX) {
                 m_camera_controller.unlock_unit();
             } else {
@@ -1224,70 +1224,97 @@ void App::end_session() {
 // local player slot, lobby, hud.json composites.
 //
 // ── Scripted-camera routing ───────────────────────────────────────────────
+//
+// Each route function takes a `players_mask` (bitmask of player ids).
+// For each bit set: apply locally if it matches the host's own slot,
+// otherwise send the matching S_CAMERA_* packet to that peer. Offline
+// collapses to "apply locally for whatever bit is set" (typically the
+// host's own slot).
 
-void App::route_camera_set_position(u32 player_id, f32 x, f32 y) {
-    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
-        m_camera_controller.set_position(x, y);
+void App::route_camera_apply_setup(u32 players_mask,
+                                    f32 tx, f32 ty, f32 tz, f32 distance,
+                                    f32 pitch_rad, f32 yaw_rad, f32 duration) {
+    if (players_mask & (1u << m_args.local_slot)) {
+        m_camera_controller.apply_setup({tx, ty, tz}, distance, pitch_rad, yaw_rad, duration);
     }
-    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
-        if (!m_network.host_send_camera_set_position(player_id, x, y)) {
-            log::warn(TAG, "SetCameraPosition: no peer for player {}", player_id);
-        }
+    if (m_args.net_mode != network::Mode::Host) return;
+    for (u32 p = 0; p < 32; ++p) {
+        if (p == m_args.local_slot) continue;
+        if (!(players_mask & (1u << p))) continue;
+        m_network.host_send_camera_apply_setup(p, tx, ty, tz, distance,
+                                                pitch_rad, yaw_rad, duration);
     }
 }
 
-void App::route_camera_pan(u32 player_id, f32 x, f32 y, f32 duration) {
-    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
-        m_camera_controller.pan(x, y, duration);
+void App::route_camera_set_target_position(u32 players_mask,
+                                            f32 x, f32 y, f32 z, f32 duration) {
+    if (players_mask & (1u << m_args.local_slot)) {
+        m_camera_controller.set_target_position(x, y, z, duration);
     }
-    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
-        if (!m_network.host_send_camera_pan(player_id, x, y, duration)) {
-            log::warn(TAG, "PanCamera: no peer for player {}", player_id);
-        }
-    }
-}
-
-void App::route_camera_zoom(u32 player_id, f32 z) {
-    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
-        m_camera_controller.set_zoom(z);
-    }
-    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
-        if (!m_network.host_send_camera_zoom(player_id, z)) {
-            log::warn(TAG, "SetCameraZoom: no peer for player {}", player_id);
-        }
+    if (m_args.net_mode != network::Mode::Host) return;
+    for (u32 p = 0; p < 32; ++p) {
+        if (p == m_args.local_slot) continue;
+        if (!(players_mask & (1u << p))) continue;
+        m_network.host_send_camera_set_target_position(p, x, y, z, duration);
     }
 }
 
-void App::route_camera_shake(u32 player_id, f32 intensity, f32 duration) {
-    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+void App::route_camera_set_source_distance(u32 players_mask,
+                                            f32 distance, f32 duration) {
+    if (players_mask & (1u << m_args.local_slot)) {
+        m_camera_controller.set_source_distance(distance, duration);
+    }
+    if (m_args.net_mode != network::Mode::Host) return;
+    for (u32 p = 0; p < 32; ++p) {
+        if (p == m_args.local_slot) continue;
+        if (!(players_mask & (1u << p))) continue;
+        m_network.host_send_camera_set_source_distance(p, distance, duration);
+    }
+}
+
+void App::route_camera_shake(u32 players_mask, f32 intensity, f32 duration) {
+    if (players_mask & (1u << m_args.local_slot)) {
         m_camera_controller.shake(intensity, duration);
     }
-    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
-        if (!m_network.host_send_camera_shake(player_id, intensity, duration)) {
-            log::warn(TAG, "CameraShake: no peer for player {}", player_id);
-        }
+    if (m_args.net_mode != network::Mode::Host) return;
+    for (u32 p = 0; p < 32; ++p) {
+        if (p == m_args.local_slot) continue;
+        if (!(players_mask & (1u << p))) continue;
+        m_network.host_send_camera_shake(p, intensity, duration);
     }
 }
 
-void App::route_camera_lock_unit(u32 player_id, simulation::Unit unit) {
-    if (m_args.net_mode == network::Mode::Offline || player_id == m_args.local_slot) {
+void App::route_camera_set_target_controller(u32 players_mask, simulation::Unit unit) {
+    if (players_mask & (1u << m_args.local_slot)) {
         if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
         else                       m_camera_controller.lock_unit(unit);
     }
-    if (m_args.net_mode == network::Mode::Host && player_id != m_args.local_slot) {
-        if (!m_network.host_send_camera_lock_unit(player_id, unit.id)) {
-            log::warn(TAG, "SetCameraLockUnit: no peer for player {}", player_id);
-        }
+    if (m_args.net_mode != network::Mode::Host) return;
+    for (u32 p = 0; p < 32; ++p) {
+        if (p == m_args.local_slot) continue;
+        if (!(players_mask & (1u << p))) continue;
+        m_network.host_send_camera_set_target_controller(p, unit.id);
     }
 }
 
 void App::register_script_camera_callbacks() {
     auto& script = m_server.script();
-    script.set_camera_set_position_fn([this](u32 p, f32 x, f32 y) { route_camera_set_position(p, x, y); });
-    script.set_camera_pan_fn         ([this](u32 p, f32 x, f32 y, f32 d) { route_camera_pan(p, x, y, d); });
-    script.set_camera_zoom_fn        ([this](u32 p, f32 z) { route_camera_zoom(p, z); });
-    script.set_camera_shake_fn       ([this](u32 p, f32 i, f32 d) { route_camera_shake(p, i, d); });
-    script.set_camera_lock_unit_fn   ([this](u32 p, simulation::Unit u) { route_camera_lock_unit(p, u); });
+    script.set_camera_apply_setup_fn([this](u32 mask, f32 tx, f32 ty, f32 tz,
+                                            f32 d, f32 pr, f32 yr, f32 dur) {
+        route_camera_apply_setup(mask, tx, ty, tz, d, pr, yr, dur);
+    });
+    script.set_camera_set_target_position_fn([this](u32 mask, f32 x, f32 y, f32 z, f32 dur) {
+        route_camera_set_target_position(mask, x, y, z, dur);
+    });
+    script.set_camera_set_source_distance_fn([this](u32 mask, f32 dist, f32 dur) {
+        route_camera_set_source_distance(mask, dist, dur);
+    });
+    script.set_camera_shake_fn([this](u32 mask, f32 i, f32 dur) {
+        route_camera_shake(mask, i, dur);
+    });
+    script.set_camera_set_target_controller_fn([this](u32 mask, simulation::Unit u) {
+        route_camera_set_target_controller(mask, u);
+    });
 }
 
 // Local teardown — runs on host AND clients when entering a new scene.
@@ -1329,7 +1356,11 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
     // Re-pose camera from the new scene's authored start camera.
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
-        m_renderer.camera().set_pose({cam.x, cam.y, cam.z}, cam.pitch, cam.yaw);
+        m_renderer.camera().set_pose(
+            {cam.target_x, cam.target_y, cam.target_z},
+            cam.distance,
+            glm::radians(cam.pitch_deg),
+            glm::radians(cam.yaw_deg));
     }
     // Drop any in-flight pan / shake / lock from the previous scene.
     // Lock targets (entity ids) belong to the old world and won't
