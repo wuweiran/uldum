@@ -686,20 +686,47 @@ Make `uldum_server` a clean, game-agnostic, headless binary that builds and runs
 
 ## 16. Deferred / Future Work
 
-Topics scoped out of current phases — revisit when the time comes.
+Two tiers by whether they block shipping a real production game; grouped by domain inside each tier.
 
-- **Multi-session orchestration** — host machine runs many game sessions, one process per session (industry standard for crash isolation). Needs a "master" service: spawns / reaps `uldum_server` processes on demand, tracks active sessions, handles client lobby browse + create requests. Real master needs auth, persistence, monitoring, rate limiting — large enough to be its own phase. Production deployments slot this in via Agones on Kubernetes; smaller deployments would ship a custom `uldum_master.exe`.
-- **Map script validation** — WC3 refuses to load maps with broken JASS; we should refuse to load maps with broken Lua. Two-gate design: (1) cheap in-process `luaL_loadbuffer` pass at map load catches syntax errors with file+line; (2) deeper static check via lua-language-server CLI wired into `uldum_pack` — honors the LuaCATS `--- @param` annotations already in `engine/scripts/api.lua` to catch undefined globals, wrong-arity calls, and type mismatches at pack time. Catches regressions like the `PanCamera`→`CameraSetTargetPosition` rename leaving stale call sites that only blow up when a player walks into a portal six months later.
-- **LAN game discovery** — WC3-style auto-populated list of local hosts via UDP broadcast, so clients don't have to type an IP.
-- **OpenGL ES RHI** — alternative backend for Android devices / emulators where Vulkan is unavailable, buggy, or poorly supported (e.g. Mesa-emulated paths).
-- **Binary `objects.json`** — current JSON serialization is human-readable and editor-friendly but bloats on large maps and slows load. Switch the in-package representation to FlatBuffers (same family as `terrain.bin`) once map sizes / load times warrant it. Editor's source-folder mode keeps JSON for hand-editing; packed `.uldmap` ships binary.
+### Production blockers
+
+**Networking & deployment**
+
+- **Transport robustness** — ENet plain UDP is dropped by a large fraction of real networks (corporate firewalls, mobile carriers, restricted Wi-Fi). Need TCP / WebSocket fallback, on-wire encryption, auth on join, reconnect-after-blip. Mobile especially.
+- **Multi-session orchestration** — "master" service that spawns / reaps `uldum_server` processes per session (process-per-session for crash isolation), runs lobby browse / create, applies rate limits. Production deploys via Agones on Kubernetes; smaller ones ship a custom `uldum_master.exe`.
+- **Identity / accounts** — anonymous + registered users, OAuth (Apple / Google sign-in is non-negotiable on mobile), session tokens. Intertwined with the master.
+- **Update & patching pipeline** — client/server version negotiation, asset CDN, delta updates for mobile. Today everything ships as one binary + uldpak.
+- **Observability** — crash reports, server metrics, player telemetry. Ship v1.0 blind without it.
+
+**Platform reach**
+
+- **OpenGL ES RHI** — only ~50% of Android phones support Vulkan 1.3, and the unsupported half overlaps heavily with the casual / paid-app audience. Alternative RHI backend keeps that half playable.
+- **iOS client** — currently Windows + Android. Needs Metal RHI backend (or MoltenVK shim) and an iOS platform layer to mirror `android_platform.cpp`.
+
+**Game integration hooks**
+
+- **Persistence hooks** — every game built on Uldum will have its own profile / save / unlock schema; the engine doesn't ship a generic save format. What the engine *does* owe games: a Lua API surface for read / write, a server-side hook at session boundary, and a per-player storage interface the master can back with cloud DB or file.
+
+### Quality & convenience (non-blocking)
+
+**Networking**
+
+- **LAN game discovery** — WC3-style UDP broadcast so local clients don't have to type an IP.
+
+**Tooling & authoring**
+
+- **Map script validation** — Tier 1: in-process `luaL_loadbuffer` syntax check at map load. Tier 2: lua-language-server CLI wired into `uldum_pack`, honoring the LuaCATS annotations already in `api.lua` to catch undefined globals + type mismatches (the kind of regression `PanCamera`→`CameraSetTargetPosition` left behind).
+- **Binary `objects.json`** — switch packed in-uldmap representation to FlatBuffers (matches `terrain.bin`) when map size / load time warrants. Source-folder editor mode keeps JSON.
+- **UI designer tool** — authors edit RML / RCSS directly until then.
 - Controller / gamepad input.
+
+**Rendering quality**
+
+- **PBR material model** — replace per-shader Lambert + ad-hoc specular with a shared metallic/roughness BRDF. Required for glTF `pbrMetallicRoughness` to render as authored. Triggered by the first imported metallic-roughness asset.
+- **Color-space correctness** — audit sRGB vs linear bindings + the framebuffer chain. Albedo sRGB-sampled, normal/mask linear, render linear, sRGB-convert once on present.
+- **HDR + tonemap** — float color target, ACES / Khronos PBR Neutral on present. Without it, emissives clip and bright-sun + dark-shadow can't both be exposed.
+- **Tangent space (MikkTSpace)** — add `tangent: vec4` to vertex format; read glTF `TANGENT` when present, generate via MikkTSpace otherwise. Triggered by the first model with a hand-authored normal map.
+- **Shadow cascades** — replace the fixed world-space shadow box with view-frustum cascades for uniform shadow resolution regardless of map size.
+- **Triplanar terrain sampling** — sample three projections blended by `abs(normal)` weights to fix cliff-wall stretching; skip the extra two samples when `abs(normal.z) > 0.95` so only slopes pay 3×.
+- **Rendering audit pass** — sweep for other "works because nothing's stressed it" shortcuts: ambient uniform, post-process pipeline, SSAO, anisotropic filtering, HUD/world gamma mismatch. Promote individual findings out as they bite.
 - Rich custom shader decorators (game-project art concern).
-- UI designer tool — authors edit RML / RCSS directly.
-- **Tangent space (MikkTSpace)** — terrain shader builds tangents on the fly (`cross((0,1,0), N)`); fine for tileable detail textures, wrong for any painted / baked normal map. Add `tangent: vec4` to the model vertex format, read glTF `TANGENT` when present, generate via MikkTSpace otherwise. Triggered by the first imported model with a hand-authored normal map.
-- **Color-space correctness** — audit every texture binding (sRGB vs linear) and the framebuffer chain. Albedo sRGB-sampled, normal/mask textures linear, render in linear, sRGB-convert once on present.
-- **PBR material model** — move from per-shader Lambert + ad-hoc specular to one shared metallic/roughness BRDF (Cook-Torrance). Required for glTF `pbrMetallicRoughness` materials to render as authored. Triggered by the first imported asset with a metallic-roughness texture.
-- **HDR + tonemap** — render to a floating-point color target, tonemap (ACES / Khronos PBR Neutral) on present. Without it, emissives clip, bright sun + dark shadow can't both be exposed, and bloom/sky-atmospherics have nothing to operate on.
-- **Shadow cascades** — replace the fixed world-space shadow box (`scene_center` / `scene_radius` in `renderer.cpp`) with view-frustum-derived cascaded shadow maps so shadow resolution is uniform regardless of map size.
-- **Triplanar terrain sampling** — terrain currently samples by `(world.x, world.y)` regardless of surface orientation, so vertical cliff walls stretch the same texel column over their full height. Sample three projections (XY/YZ/XZ) blended by `abs(normal)` weights; skip the extra two samples when `abs(normal.z) > 0.95` so only slopes pay the 3× cost. Right fix for the cliff-stretching complaint when we get to it.
-- **Rendering audit pass** — sweep the renderer for other "works because nothing's stressed it" shortcuts (hardcoded ambient uniform, no post-process pipeline, no SSAO, no anisotropic filtering, HUD/world gamma mismatch). Promote individual findings out of Deferred when something hits them.
