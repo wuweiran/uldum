@@ -1373,10 +1373,6 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
     sim.sync_pathing_blockers();
     sim.spatial_grid().update(sim.world());
 
-    // Renderer terrain mesh — without this the GPU still draws the
-    // previous scene's heightmap. Wait for the device first so we
-    // don't destroy old buffers that are still in flight.
-    vkDeviceWaitIdle(m_rhi.device());
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(&m_map.terrain());
     }

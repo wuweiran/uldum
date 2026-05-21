@@ -683,6 +683,9 @@ void Renderer::add_point_light(glm::vec3 position, glm::vec3 color, f32 radius, 
 
 void Renderer::set_terrain(const map::TerrainData* terrain) {
     VmaAllocator alloc = m_rhi->allocator();
+    // The terrain mesh is bound by every frame's draw cmds; the previous
+    // frame may still be in flight when callers swap or clear terrain.
+    vkDeviceWaitIdle(m_rhi->device());
     destroy_terrain_mesh(alloc, m_terrain);
 
     if (!terrain) {
