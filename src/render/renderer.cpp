@@ -172,43 +172,44 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
                   MEGA_MAX_VERTICES, MEGA_MAX_INDICES);
     }
 
-    // Instance SSBO for static mesh instancing (Phase 14b: InstanceData with material_index)
-    {
-        VkBufferCreateInfo buf_ci{};
-        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(InstanceData);
-        buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    // Instance SSBO + indirect buffer, one of each per frame-in-flight.
+    for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+        {
+            VkBufferCreateInfo buf_ci{};
+            buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(InstanceData);
+            buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
-        VmaAllocationCreateInfo alloc_ci{};
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationCreateInfo alloc_ci{};
+            alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+            alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-        VmaAllocationInfo alloc_info{};
-        vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
-                        &m_instance_buffer, &m_instance_alloc, &alloc_info);
-        m_instance_mapped = alloc_info.pMappedData;
+            VmaAllocationInfo alloc_info{};
+            vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
+                            &m_instance_buffer[f], &m_instance_alloc[f], &alloc_info);
+            m_instance_mapped[f] = alloc_info.pMappedData;
 
-        m_instance_desc_set = allocate_bone_descriptor(m_instance_buffer,
-                                                        MAX_STATIC_INSTANCES * sizeof(InstanceData));
-    }
+            m_instance_desc_set[f] = allocate_bone_descriptor(m_instance_buffer[f],
+                                                              MAX_STATIC_INSTANCES * sizeof(InstanceData));
+        }
 
-    // Indirect draw command buffer
-    {
-        VkBufferCreateInfo buf_ci{};
-        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(VkDrawIndexedIndirectCommand);
-        buf_ci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        {
+            VkBufferCreateInfo buf_ci{};
+            buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(VkDrawIndexedIndirectCommand);
+            buf_ci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
-        VmaAllocationCreateInfo alloc_ci{};
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationCreateInfo alloc_ci{};
+            alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+            alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-        VmaAllocationInfo alloc_info{};
-        vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
-                        &m_indirect_buffer, &m_indirect_alloc, &alloc_info);
-        m_indirect_mapped = alloc_info.pMappedData;
+            VmaAllocationInfo alloc_info{};
+            vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
+                            &m_indirect_buffer[f], &m_indirect_alloc[f], &alloc_info);
+            m_indirect_mapped[f] = alloc_info.pMappedData;
+        }
     }
 
     // Create a placeholder box mesh for entities without a real model.
@@ -326,8 +327,15 @@ void Renderer::shutdown() {
     m_mesh_cache.clear();
 
     // Destroy instance/indirect/mega buffers
-    if (m_instance_buffer) vmaDestroyBuffer(alloc, m_instance_buffer, m_instance_alloc);
-    if (m_indirect_buffer) vmaDestroyBuffer(alloc, m_indirect_buffer, m_indirect_alloc);
+    for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+        if (m_instance_buffer[f]) vmaDestroyBuffer(alloc, m_instance_buffer[f], m_instance_alloc[f]);
+        if (m_indirect_buffer[f]) vmaDestroyBuffer(alloc, m_indirect_buffer[f], m_indirect_alloc[f]);
+        m_instance_buffer[f] = VK_NULL_HANDLE;
+        m_indirect_buffer[f] = VK_NULL_HANDLE;
+        m_instance_mapped[f] = nullptr;
+        m_indirect_mapped[f] = nullptr;
+        m_instance_desc_set[f] = VK_NULL_HANDLE;
+    }
     if (m_mega_vb) vmaDestroyBuffer(alloc, m_mega_vb, m_mega_vb_alloc);
     if (m_mega_ib) vmaDestroyBuffer(alloc, m_mega_ib, m_mega_ib_alloc);
 
@@ -3032,12 +3040,13 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &m_mega_vb, &offset);
         vkCmdBindIndexBuffer(cmd, m_mega_ib, 0, VK_INDEX_TYPE_UINT32);
+        const u32 fi = m_rhi->frame_index();
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_shadow_pipeline_layout, 0, 1, &m_instance_desc_set, 0, nullptr);
+                                m_shadow_pipeline_layout, 0, 1, &m_instance_desc_set[fi], 0, nullptr);
 
         // Multi-draw indirect for all static mesh shadows
         u32 draw_count = static_cast<u32>(m_draw_groups.size());
-        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, 0, draw_count,
+        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer[fi], 0, draw_count,
                                  sizeof(VkDrawIndexedIndirectCommand));
     }
 
@@ -3198,15 +3207,15 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
     m_static_instance_count = static_cast<u32>(instances.size());
 
-    // Upload instance data to GPU
-    if (m_static_instance_count > 0 && m_instance_mapped) {
+    const u32 fi = m_rhi->frame_index();
+
+    if (m_static_instance_count > 0 && m_instance_mapped[fi]) {
         u32 upload_count = std::min(m_static_instance_count, MAX_STATIC_INSTANCES);
-        std::memcpy(m_instance_mapped, instances.data(), upload_count * sizeof(InstanceData));
+        std::memcpy(m_instance_mapped[fi], instances.data(), upload_count * sizeof(InstanceData));
     }
 
-    // Build indirect commands and upload
-    if (!m_draw_groups.empty() && m_indirect_mapped) {
-        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(m_indirect_mapped);
+    if (!m_draw_groups.empty() && m_indirect_mapped[fi]) {
+        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(m_indirect_mapped[fi]);
         for (u32 i = 0; i < m_draw_groups.size(); ++i) {
             auto& dg = m_draw_groups[i];
             cmds[i].indexCount    = dg.index_count;
@@ -3599,13 +3608,14 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         vkCmdBindIndexBuffer(cmd, m_mega_ib, 0, VK_INDEX_TYPE_UINT32);
 
         // Bind all descriptor sets once: bindless textures + shadow + instance SSBO
-        VkDescriptorSet sets[] = {m_bindless_set, m_shadow_desc_set, m_instance_desc_set};
+        const u32 fi = m_rhi->frame_index();
+        VkDescriptorSet sets[] = {m_bindless_set, m_shadow_desc_set, m_instance_desc_set[fi]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 m_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
 
         // Multi-draw indirect: one command per unique mesh geometry
         u32 draw_count = static_cast<u32>(m_draw_groups.size());
-        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer, 0, draw_count,
+        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer[fi], 0, draw_count,
                                  sizeof(VkDrawIndexedIndirectCommand));
     }
 

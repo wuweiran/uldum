@@ -12,6 +12,8 @@
 #include "core/handle.h"
 #include "asset/model.h"
 
+#include "rhi/vulkan/vulkan_rhi.h"
+
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <glm/mat4x4.hpp>
@@ -20,8 +22,6 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-
-namespace uldum::rhi { class VulkanRhi; }
 namespace uldum::simulation { struct World; struct Transform; class Simulation; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentConfig; }
@@ -297,16 +297,17 @@ private:
     bool create_bindless_resources();
     u32  register_bindless_texture(const GpuTexture& tex);
 
-    // Per-frame instance SSBO (InstanceData for all static-mesh entities)
-    VkBuffer        m_instance_buffer   = VK_NULL_HANDLE;
-    VmaAllocation   m_instance_alloc    = VK_NULL_HANDLE;
-    void*           m_instance_mapped   = nullptr;
-    VkDescriptorSet m_instance_desc_set = VK_NULL_HANDLE;
+    // Ring-buffered by frame_index() — CPU writes frame N+1 while the GPU
+    // reads frame N. Without this, layout shifts on entity culling alias
+    // one mesh's instance slot onto another's.
+    VkBuffer        m_instance_buffer  [rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    VmaAllocation   m_instance_alloc   [rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    void*           m_instance_mapped  [rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    VkDescriptorSet m_instance_desc_set[rhi::MAX_FRAMES_IN_FLIGHT] = {};
 
-    // Per-frame indirect draw command buffer
-    VkBuffer        m_indirect_buffer = VK_NULL_HANDLE;
-    VmaAllocation   m_indirect_alloc  = VK_NULL_HANDLE;
-    void*           m_indirect_mapped = nullptr;
+    VkBuffer        m_indirect_buffer[rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    VmaAllocation   m_indirect_alloc [rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    void*           m_indirect_mapped[rhi::MAX_FRAMES_IN_FLIGHT] = {};
 
     // Draw group: one indirect draw per unique mesh geometry
     struct DrawGroup {
