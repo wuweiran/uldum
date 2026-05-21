@@ -485,6 +485,7 @@ void ScriptEngine::shutdown() {
     // them to the new map's player on its first tick, spawning ghost
     // particles (e.g. test_map's portal rim glowing on action_test).
     m_active_effects.clear();
+    m_paused = false;
     m_lua.reset();
     m_sim = nullptr;
     m_map = nullptr;

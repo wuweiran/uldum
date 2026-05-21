@@ -277,6 +277,10 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
         m_projectile_mesh.native_z_up = true;
     }
 
+    m_init_mega_vb_used   = m_mega_vb_used;
+    m_init_mega_ib_used   = m_mega_ib_used;
+    m_init_bindless_count = m_bindless_count;
+
     log::info(TAG, "Renderer initialized — textured mesh + skinned + terrain pipelines ready");
     return true;
 }
@@ -297,6 +301,23 @@ void Renderer::end_session() {
     // session doesn't start with the previous map's emitters still
     // running.
     m_effect_manager.clear();
+
+    // Roll back model + mesh caches. Same-relative-path / different-bytes
+    // models from different maps (test_map vs action_test, etc.) would
+    // otherwise return the previous session's bytes from the cache.
+    // Skinned meshes own separate VB/IB/bone allocations (not slices of
+    // the mega buffer) — destroy_mesh frees those; for static meshes it
+    // no-ops because alloc is null.
+    for (auto& [path, lm] : m_model_cache) {
+        destroy_mesh(alloc, lm.mesh);
+        if (lm.diffuse_texture.image) destroy_texture(*m_rhi, lm.diffuse_texture);
+    }
+    m_model_cache.clear();
+    m_model_failed.clear();
+    m_mesh_cache.clear();
+    m_mega_vb_used   = m_init_mega_vb_used;
+    m_mega_ib_used   = m_init_mega_ib_used;
+    m_bindless_count = m_init_bindless_count;
 }
 
 void Renderer::shutdown() {

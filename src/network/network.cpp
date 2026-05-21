@@ -1616,6 +1616,11 @@ void NetworkManager::shutdown() {
     m_client_peer_id = UINT32_MAX;
     m_local_player = simulation::Player{UINT32_MAX};
     m_lobby = LobbyState{};
+    m_paused = false;
+    m_pause_view_active = false;
+    m_pause_broadcast_timer = 0.0f;
+    m_disconnected.clear();
+    m_disconnected_view.clear();
 }
 
 } // namespace uldum::network

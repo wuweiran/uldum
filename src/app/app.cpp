@@ -1222,6 +1222,7 @@ void App::end_session() {
     m_renderer.set_terrain(nullptr);
     m_renderer.set_fog_grid(nullptr, 0, 0);
     m_renderer.end_session();
+    m_hud_renderer.reset_session_images();
     m_world_overlays.reset_session_state();
 
     // A pending LoadScene request that hadn't fired yet (or a host-side

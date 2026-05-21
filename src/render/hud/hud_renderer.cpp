@@ -2295,11 +2295,12 @@ void HudRenderer::render(VkCommandBuffer cmd) {
     }
 }
 
-// Friend access trampoline so destroy_hud_images is reachable from
-// Hud::reset_session_state without exposing it across the lib boundary.
-// Hud calls this through a public renderer hook (declared on the header).
-// (We deliberately keep it on the renderer rather than the data lib —
-// freeing GPU resources requires the device, which only the renderer holds.)
+void HudRenderer::reset_session_images() {
+    if (!m_impl) return;
+    auto& r = *m_impl;
+    if (r.rhi) vkDeviceWaitIdle(r.rhi->device());
+    destroy_hud_images(r);
+}
 
 } // namespace uldum::hud
 

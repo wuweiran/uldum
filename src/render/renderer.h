@@ -264,6 +264,13 @@ private:
     // Cached GPU meshes for special built-in meshes (projectile, etc.)
     std::unordered_map<std::string, GpuMesh> m_mesh_cache;
 
+    // Post-init baselines for the mega buffer + bindless array. end_session
+    // rolls back to these so the next map's same-path-different-bytes models
+    // re-upload cleanly instead of returning stale cache entries.
+    u32 m_init_mega_vb_used   = 0;
+    u32 m_init_mega_ib_used   = 0;
+    u32 m_init_bindless_count = 0;
+
     // Placeholder mesh for models that fail to load
     GpuMesh m_placeholder_mesh{};
 

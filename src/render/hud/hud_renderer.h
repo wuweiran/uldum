@@ -44,6 +44,13 @@ public:
     bool init(Hud& hud, rhi::VulkanRhi& rhi);
     void shutdown();
 
+    // Drop the per-session image cache. HUD icons are looked up by
+    // map-relative paths (e.g. "textures/icons/attack.ktx2"); the same
+    // key resolves to different bytes across maps, so a stale cache
+    // entry from the previous map shows the wrong icon. Called by
+    // App::end_session between maps.
+    void reset_session_images();
+
     // begin_frame() resets CPU-side draw lists and stashes the viewport
     // (physical framebuffer pixels). It also updates the bound Hud's
     // logical screen_w/h and root rect so node layout / hit tests see

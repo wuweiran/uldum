@@ -103,8 +103,16 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
     // Caller supplies physical framebuffer dims; convert to logical
     // (dp) before re-resolving composite rects so anchors match what
     // begin_frame will use next frame.
+    // Also push the dims into Impl now so any CreateNode calls that
+    // run before the first begin_frame (e.g. scene main.lua executing
+    // inside start_session, before AppState flips to Playing) can
+    // still resolve placements against a non-zero viewport.
     f32 s = m_impl->ui_scale;
     if (s <= 0.0f) s = 1.0f;
+    m_impl->physical_w = screen_w;
+    m_impl->physical_h = screen_h;
+    m_impl->screen_w   = static_cast<u32>(static_cast<f32>(screen_w) / s);
+    m_impl->screen_h   = static_cast<u32>(static_cast<f32>(screen_h) / s);
     f32 view_w_dp = static_cast<f32>(screen_w) / s;
     f32 view_h_dp = static_cast<f32>(screen_h) / s;
 
