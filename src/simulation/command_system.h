@@ -1,11 +1,11 @@
 #pragma once
 
-#include "input/command.h"
+#include "simulation/command.h"
 #include "simulation/world.h"
 
 #include <functional>
 
-namespace uldum::input {
+namespace uldum::simulation {
 
 // Notification fired after a command has been issued to its targets.
 // Pure observation — handlers may not cancel the command, may not mutate
@@ -17,7 +17,7 @@ using OrderObserver = std::function<void(const GameCommand& cmd)>;
 
 class CommandSystem {
 public:
-    void init(simulation::World* world) { m_world = world; }
+    void init(World* world) { m_world = world; }
 
     // Submit a command. Validates ownership, issues orders to each
     // valid unit, then fires the observer (if set).
@@ -33,9 +33,9 @@ public:
     void set_network_send(NetworkSendFn fn) { m_network_send = std::move(fn); }
 
 private:
-    simulation::World* m_world = nullptr;
+    World* m_world = nullptr;
     OrderObserver m_observer;
     NetworkSendFn m_network_send;
 };
 
-} // namespace uldum::input
+} // namespace uldum::simulation

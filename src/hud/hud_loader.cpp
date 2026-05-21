@@ -2,7 +2,7 @@
 
 #include "hud/hud.h"
 #include "hud/node.h"
-#include "hud/world.h"
+#include "render/hud/world.h"
 #include "hud/action_bar.h"
 #include "hud/minimap.h"
 #include "hud/command_bar.h"

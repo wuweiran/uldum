@@ -12,14 +12,15 @@
 #include "network/game_server.h"
 #include "network/network.h"
 #include "network/lobby.h"
-#include "input/command_system.h"
-#include "input/selection.h"
+#include "simulation/command_system.h"
+#include "simulation/selection.h"
 #include "input/picking.h"
 #include "input/input_preset.h"
 #include "input/input_bindings.h"
 #include "map/map.h"
 #include "hud/hud.h"
-#include "hud/world.h"
+#include "render/hud/hud_renderer.h"
+#include "render/hud/world.h"
 
 #include <memory>
 #include <string>
@@ -186,6 +187,7 @@ private:
     settings::Store          m_settings;
     i18n::LocaleManager      m_i18n;
     hud::Hud                 m_hud;
+    hud::HudRenderer         m_hud_renderer;
     hud::WorldContext        m_hud_world_ctx;
 
 #ifdef ULDUM_SHELL_UI
@@ -202,8 +204,8 @@ private:
     // ── Per-session (created in start_session, destroyed in end_session) ─
     network::GameServer      m_server;
     network::NetworkManager  m_network;
-    input::CommandSystem     m_commands;
-    input::SelectionState    m_selection;
+    simulation::CommandSystem m_commands;
+    simulation::SelectionState m_selection;
     input::Picker            m_picker;
     input::InputBindings     m_bindings;
     std::unique_ptr<input::InputPreset> m_input_preset;

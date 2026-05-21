@@ -7,6 +7,8 @@ add_library(uldum_simulation STATIC
     pathfinding.cpp
     spatial_query.cpp
     vision.cpp
+    command_system.cpp
+    selection.cpp
 )
 
 target_include_directories(uldum_simulation PUBLIC ${ULDUM_SRC})

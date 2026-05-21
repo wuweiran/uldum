@@ -199,9 +199,9 @@ if(MSVC)
 endif()
 
 # ── FreeType (font rasterization) ────────────────────────────────────────
-# Fetched unconditionally: needed by uldum_hud's MSDF glyph pipeline (all
-# builds) and by uldum_shell / RmlUi (game builds only). Minimal — strip
-# brotli, zlib, harfbuzz, png, bzip2 backends we don't use.
+# Fetched unconditionally: needed by uldum_render's MSDF glyph pipeline
+# (font.cpp) and by uldum_shell / RmlUi (game builds only). Minimal —
+# strip brotli, zlib, harfbuzz, png, bzip2 backends we don't use.
 #
 # Save caller's BUILD_SHARED_LIBS; force static for just these deps to keep
 # the dist folder self-contained (no DLL copying needed), then restore.
@@ -235,6 +235,14 @@ endif()
 # Uses FreeType (above) for font loading. We disable SVG/PNG/Skia because
 # we only feed it FT_Face / FT_GlyphSlot outlines and consume the result
 # as a raw bitmap.
+
+# msdfgen v1.12 hard-checks VCPKG_ROOT on non-Windows even when its
+# optional deps (PNG/SVG/Skia) are disabled. Stub the env var so the
+# check passes — we're not actually using vcpkg anyway.
+if(NOT WIN32 AND NOT DEFINED ENV{VCPKG_ROOT})
+    set(ENV{VCPKG_ROOT} "_uldum_skip_vcpkg")
+endif()
+
 message(STATUS "Fetching msdfgen...")
 set(MSDFGEN_DISABLE_SVG      ON  CACHE BOOL   "" FORCE)
 set(MSDFGEN_DISABLE_PNG      ON  CACHE BOOL   "" FORCE)

@@ -11,6 +11,7 @@ set(ULDUM_ENGINE_LIBS
     uldum_simulation
     uldum_network
     uldum_input
+    uldum_input_router
     uldum_map
     uldum_hud
 )

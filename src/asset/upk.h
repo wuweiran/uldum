@@ -108,6 +108,10 @@ public:
 
     bool is_open() const { return !m_path.empty(); }
 
+    // Access entries (read-only). Used by AssetManager::list_files for
+    // enumeration. Entries are sorted by name_hash, not by path.
+    const std::vector<UPKEntry>& entries() const { return m_entries; }
+
     // Check if a file exists in the archive (by normalized path).
     bool contains(std::string_view file_path) const;
 

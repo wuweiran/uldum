@@ -1,7 +1,7 @@
 #pragma once
 
-#include "input/command_system.h"
-#include "input/selection.h"
+#include "simulation/command_system.h"
+#include "simulation/selection.h"
 #include "input/picking.h"
 #include "input/input_bindings.h"
 #include "platform/platform.h"
@@ -22,8 +22,8 @@ namespace uldum::input {
 // Everything an input preset needs to do its job.
 struct InputContext {
     const platform::InputState& input;
-    SelectionState&             selection;
-    CommandSystem&              commands;
+    simulation::SelectionState& selection;
+    simulation::CommandSystem&  commands;
     Picker&                     picker;
     render::Camera&             camera;
     const InputBindings&        bindings;

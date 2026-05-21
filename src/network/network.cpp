@@ -6,16 +6,15 @@
 #include "simulation/type_registry.h"
 #include "simulation/ability_def.h"
 #include "simulation/world.h"
-#include "input/command_system.h"
+#include "simulation/command_system.h"
 #include "map/map.h"
 #include "map/terrain_data.h"
-#include "hud/hud.h"
-#include "hud/text_tag.h"
 #include "script/script.h"
 #include "core/log.h"
 
 #include <glm/gtc/constants.hpp>
 
+#include <algorithm>
 #include <chrono>
 
 namespace uldum::network {
@@ -44,7 +43,7 @@ bool NetworkManager::init_offline() {
 
 bool NetworkManager::init_host(u16 port, u32 max_players,
                                simulation::Simulation& simulation,
-                               input::CommandSystem& commands) {
+                               simulation::CommandSystem& commands) {
     m_simulation = &simulation;
     m_commands = &commands;
 
@@ -330,10 +329,16 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
     case MsgType::C_JOIN: {
         ByteReader r(data);
         r.read_u8();  // skip type
-        u32 client_hash = r.read_u32();
+        std::array<u8, 32> client_hash{};
+        r.read_bytes(client_hash.data(), client_hash.size());
         std::string peer_name = r.read_string();
 
-        if (m_map_hash != 0 && client_hash != m_map_hash) {
+        // All-zero hash on the server means "no map verification" — used
+        // by tests / future generic-server flows before the host has
+        // bound to a specific map. Skip the comparison in that case.
+        bool host_unset = std::all_of(m_map_hash.begin(), m_map_hash.end(),
+                                      [](u8 b) { return b == 0; });
+        if (!host_unset && client_hash != m_map_hash) {
             auto reject = build_reject(RejectReason::WrongMap);
             m_transport->send(peer_id, reject, true);
             log::warn(TAG, "Peer {} rejected: wrong map hash", peer_id);
@@ -967,127 +972,20 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         break;
     }
 
-    // HUD sync — decode and apply to the local Hud. No-op if no HUD
-    // pointer is installed (shouldn't happen in Client mode).
-    case MsgType::S_HUD_CREATE_NODE: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string template_id = r.read_string();
-        std::string anchor      = r.read_string();
-        f32 x = r.read_f32(), y = r.read_f32(), w = r.read_f32(), h = r.read_f32();
-        if (m_hud) {
-            hud::Hud::Placement pl{};
-            // Hold the anchor string alive across the call — the Placement
-            // field is a string_view.
-            std::string anchor_hold = anchor;
-            pl.anchor       = anchor_hold;
-            pl.x = x; pl.y = y; pl.w = w; pl.h = h;
-            // Server only sent us nodes we should see, so local_player is
-            // already the implicit owner; mark broadcast so the render
-            // filter accepts it regardless of which slot this client is on.
-            pl.players_mask = UINT32_MAX;
-            m_hud->instantiate_template(template_id, pl);
-        }
-        break;
-    }
-    case MsgType::S_HUD_DESTROY_NODE: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string id = r.read_string();
-        if (m_hud) m_hud->remove_node_by_id(id);
-        break;
-    }
-    case MsgType::S_HUD_SET_LABEL_TEXT: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string id = r.read_string();
-        i18n::LocalizedString loc;
-        loc.key = r.read_string();
-        u8 n = r.read_u8();
-        loc.args.reserve(n);
-        for (u8 i = 0; i < n; ++i) {
-            std::string k = r.read_string();
-            std::string v = r.read_string();
-            loc.args.emplace_back(std::move(k), std::move(v));
-        }
-        if (m_hud) m_hud->set_label_text(id, std::move(loc));
-        break;
-    }
-    case MsgType::S_HUD_SET_BAR_FILL: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string id = r.read_string();
-        f32 fill       = r.read_f32();
-        if (m_hud) m_hud->set_bar_fill(id, fill);
-        break;
-    }
-    case MsgType::S_HUD_SET_NODE_VISIBLE: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string id = r.read_string();
-        bool visible   = r.read_bool();
-        if (m_hud) m_hud->set_node_visible(id, visible);
-        break;
-    }
-    case MsgType::S_HUD_SET_IMAGE_SOURCE: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string id   = r.read_string();
-        std::string path = r.read_string();
-        if (m_hud) m_hud->set_image_source(id, path);
-        break;
-    }
-    case MsgType::S_HUD_SET_BUTTON_ENABLED: {
-        ByteReader r(data);
-        r.read_u8();
-        std::string id = r.read_string();
-        bool enabled   = r.read_bool();
-        if (m_hud) m_hud->set_button_enabled(id, enabled);
-        break;
-    }
-    case MsgType::S_HUD_CREATE_TEXT_TAG: {
-        ByteReader r(data);
-        r.read_u8();
-        hud::TextTagCreateInfo info{};
-        // See build_hud_create_text_tag for the wire layout: localized
-        // key + args followed by the rest of the tag's physical state.
-        info.text.key = r.read_string();
-        u8 n = r.read_u8();
-        info.text.args.reserve(n);
-        for (u8 i = 0; i < n; ++i) {
-            std::string k = r.read_string();
-            std::string v = r.read_string();
-            info.text.args.emplace_back(std::move(k), std::move(v));
-        }
-        info.px_size    = r.read_f32();
-        info.pos.x      = r.read_f32();
-        info.pos.y      = r.read_f32();
-        info.pos.z      = r.read_f32();
-        info.unit.id    = r.read_u32();
-        info.z_offset   = r.read_f32();
-        info.color.rgba = r.read_u32();
-        info.velocity_x = r.read_f32();
-        info.velocity_y = r.read_f32();
-        info.lifespan   = r.read_f32();
-        info.fadepoint  = r.read_f32();
-        info.players_mask = UINT32_MAX;  // server routed here, so it's for us
-        if (m_hud) m_hud->create_text_tag(info);
-        break;
-    }
+    // HUD sync — opcodes 0x70..0x78. Forward the raw payload to the
+    // App-installed handler (which invokes hud::apply_network_message).
+    // Keeping the decode out of NetworkManager lets the server drop the
+    // hud library entirely.
+    case MsgType::S_HUD_CREATE_NODE:
+    case MsgType::S_HUD_DESTROY_NODE:
+    case MsgType::S_HUD_SET_LABEL_TEXT:
+    case MsgType::S_HUD_SET_BAR_FILL:
+    case MsgType::S_HUD_SET_NODE_VISIBLE:
+    case MsgType::S_HUD_SET_IMAGE_SOURCE:
+    case MsgType::S_HUD_SET_BUTTON_ENABLED:
+    case MsgType::S_HUD_CREATE_TEXT_TAG:
     case MsgType::S_HUD_DISPLAY_MESSAGE: {
-        ByteReader r(data);
-        r.read_u8();
-        i18n::LocalizedString loc;
-        loc.key = r.read_string();
-        u8 n = r.read_u8();
-        loc.args.reserve(n);
-        for (u8 i = 0; i < n; ++i) {
-            std::string k = r.read_string();
-            std::string v = r.read_string();
-            loc.args.emplace_back(std::move(k), std::move(v));
-        }
-        f32 duration = r.read_f32();
-        if (m_hud) m_hud->display_message(std::move(loc), duration);
+        if (m_hud_message_fn) m_hud_message_fn(data);
         break;
     }
 
@@ -1626,7 +1524,7 @@ const f32* NetworkManager::update_client_fog(f32 dt) {
 
 // ── Shared ──────────────────────────────────────────────────────────────
 
-void NetworkManager::send_order(const input::GameCommand& cmd) {
+void NetworkManager::send_order(const simulation::GameCommand& cmd) {
     if (m_mode != Mode::Client || !m_transport) return;
     auto msg = build_order(cmd);
     m_transport->send(0, msg, true);

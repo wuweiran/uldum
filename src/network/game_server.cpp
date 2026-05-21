@@ -20,11 +20,7 @@ bool GameServer::init_simulation(asset::AssetManager& assets) {
     return true;
 }
 
-bool GameServer::init_game(map::MapManager& map,
-                           render::EffectRegistry* effects,
-                           render::EffectManager* effect_mgr,
-                           audio::AudioEngine* audio,
-                           render::Renderer* renderer) {
+bool GameServer::init_game(map::MapManager& map, audio::AudioEngine* audio) {
     // Alliances from manifest. Array index is the player id — there's no
     // separate slot number field.
     {
@@ -79,7 +75,7 @@ bool GameServer::init_game(map::MapManager& map,
     }
 
     // Scripting
-    if (!m_script.init(m_simulation, map, effects, effect_mgr, audio, renderer)) {
+    if (!m_script.init(m_simulation, map, audio)) {
         log::error(TAG, "ScriptEngine init failed");
         return false;
     }

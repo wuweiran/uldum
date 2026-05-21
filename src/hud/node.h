@@ -12,6 +12,11 @@
 
 namespace uldum::hud {
 
+// Node::draw takes a HudRenderInterface (declared in hud.h) — virtual
+// dispatch through that interface keeps `uldum_hud` from needing
+// HudRenderer symbols at link time. The concrete renderer
+// (src/render/hud/hud_renderer.{h,cpp}) implements the interface.
+
 // Base node. Owns its children; laid out in absolute screen-pixel coords
 // for v1 (relative layout and auto-sizing land later). Input routing
 // walks the tree back-to-front — children drawn later sit on top and are
@@ -86,8 +91,10 @@ public:
         return (players_mask & (1u << player_id)) != 0;
     }
 
-    // Draw self then children (children on top). Called inside Hud::render().
-    virtual void draw(Hud& hud) const;
+    // Draw self then children (children on top). Called from
+    // HudRenderer::draw_tree(); the renderer hands itself in so node
+    // implementations can hit the Vulkan-bound draw primitives directly.
+    virtual void draw(HudRenderInterface& r) const;
 
     // Input callbacks — default no-op. Interactive nodes (Button and any
     // future composite) override to track state and fire user callbacks.
@@ -112,7 +119,7 @@ protected:
 class Panel : public Node {
 public:
     Color bg = rgba(30, 30, 38, 220);
-    void draw(Hud& hud) const override;
+    void draw(HudRenderInterface& r) const override;
 };
 
 // Non-interactive text. Single line (multi-line wraps later when the line
@@ -132,7 +139,7 @@ public:
     Align                 align    = Align::Left;
 
     Label() { hit_testable = false; }
-    void draw(Hud& hud) const override;
+    void draw(HudRenderInterface& r) const override;
 };
 
 // Fill-fraction rectangle (health / mana / cast progress / cooldown).
@@ -151,7 +158,7 @@ public:
     f32         fill        = 1.0f;   // [0, 1]
 
     Bar() { hit_testable = false; }
-    void draw(Hud& hud) const override;
+    void draw(HudRenderInterface& r) const override;
 };
 
 // Textured quad. `source` is an asset path (KTX2 / PNG) resolved at draw
@@ -165,7 +172,7 @@ public:
     Color       tint = rgba(255, 255, 255, 255);
 
     Image() { hit_testable = false; }
-    void draw(Hud& hud) const override;
+    void draw(HudRenderInterface& r) const override;
 };
 
 // Clickable rectangle with hover / press visual feedback. on_release()
@@ -185,7 +192,7 @@ public:
     bool hovered() const { return m_hovered; }
     bool pressed() const { return m_pressed; }
 
-    void draw(Hud& hud) const override;
+    void draw(HudRenderInterface& r) const override;
     void on_hover_change(bool h) override { m_hovered = h; }
     void on_press()              override { if (enabled) m_pressed = true; }
     bool on_release(bool over)   override;

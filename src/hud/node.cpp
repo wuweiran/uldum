@@ -1,56 +1,61 @@
 #include "hud/node.h"
+#include "hud/hud.h"
+
+#include "i18n/locale.h"
 
 namespace uldum::hud {
 
-void Node::draw(Hud& hud) const {
+// All Node-subclass draw methods virtually-dispatch through
+// HudRenderInterface; no concrete renderer types are referenced here,
+// which is what lets `uldum_hud` compile and link without any Vulkan /
+// rhi dependency. The vtables for Node, Panel, Label, Bar, Image, and
+// Button live in this translation unit (uldum_hud) so consumers don't
+// drag the renderer in at link time.
+
+void Node::draw(HudRenderInterface& r) const {
     if (!visible) return;
-    if (!is_owned_by(hud.local_player())) return;
+    if (!is_owned_by(r.hud().local_player())) return;
     for (const auto& child : m_children) {
-        child->draw(hud);
+        child->draw(r);
     }
 }
 
-void Panel::draw(Hud& hud) const {
+void Panel::draw(HudRenderInterface& r) const {
     if (!visible) return;
-    if (!is_owned_by(hud.local_player())) return;
-    hud.draw_rect(rect, bg);
-    Node::draw(hud);
+    if (!is_owned_by(r.hud().local_player())) return;
+    r.draw_rect(rect, bg);
+    Node::draw(r);
 }
 
-void Label::draw(Hud& hud) const {
+void Label::draw(HudRenderInterface& r) const {
     if (!visible || text.empty()) return;
-    if (!is_owned_by(hud.local_player())) return;
+    if (!is_owned_by(r.hud().local_player())) return;
 
-    // Resolve the localized payload against the active locale. No
-    // resolver wired → fall back to the key literal so missing keys
-    // are visible to authors.
-    auto* lm = hud.locale_manager();
+    auto* lm = r.hud().locale_manager();
     std::string rendered = lm
         ? lm->resolve(i18n::Pool::Map, text)
         : text.key;
     if (rendered.empty()) return;
 
-    // Baseline: centered vertically within rect. Ascent puts the top of
-    // tall glyphs near the top of the rect; line height centers it.
-    f32 ascent      = hud.text_ascent_px(px_size);
-    f32 line_height = hud.text_line_height_px(px_size);
+    f32 ascent      = r.text_ascent_px(px_size);
+    f32 line_height = r.text_line_height_px(px_size);
     f32 y_baseline  = rect.y + (rect.h - line_height) * 0.5f + ascent;
 
     f32 x_left = rect.x;
     if (align != Align::Left) {
-        f32 w = hud.text_width_px(rendered, px_size);
+        f32 w = r.text_width_px(rendered, px_size);
         if (align == Align::Center) x_left = rect.x + (rect.w - w) * 0.5f;
         else                        x_left = rect.x + (rect.w - w);  // Right
     }
 
-    hud.draw_text(x_left, y_baseline, rendered, color, px_size);
-    Node::draw(hud);
+    r.draw_text(x_left, y_baseline, rendered, color, px_size);
+    Node::draw(r);
 }
 
-void Bar::draw(Hud& hud) const {
+void Bar::draw(HudRenderInterface& r) const {
     if (!visible) return;
-    if (!is_owned_by(hud.local_player())) return;
-    hud.draw_rect(rect, bg_color);
+    if (!is_owned_by(r.hud().local_player())) return;
+    r.draw_rect(rect, bg_color);
 
     f32 f = fill < 0.0f ? 0.0f : (fill > 1.0f ? 1.0f : fill);
     if (f > 0.0f) {
@@ -68,26 +73,26 @@ void Bar::draw(Hud& hud) const {
             }
             fr.h = fh;
         }
-        hud.draw_rect(fr, fill_color);
+        r.draw_rect(fr, fill_color);
     }
-    Node::draw(hud);
+    Node::draw(r);
 }
 
-void Image::draw(Hud& hud) const {
+void Image::draw(HudRenderInterface& r) const {
     if (!visible) return;
-    if (!is_owned_by(hud.local_player())) return;
+    if (!is_owned_by(r.hud().local_player())) return;
     if (!source.empty()) {
-        hud.draw_image(rect, source, tint);
+        r.draw_image(rect, source, tint);
     }
-    Node::draw(hud);
+    Node::draw(r);
 }
 
-void Button::draw(Hud& hud) const {
+void Button::draw(HudRenderInterface& r) const {
     if (!visible) return;
-    if (!is_owned_by(hud.local_player())) return;
+    if (!is_owned_by(r.hud().local_player())) return;
     Color c = m_pressed ? bg_press : (m_hovered ? bg_hover : bg);
-    hud.draw_rect(rect, c);
-    Node::draw(hud);
+    r.draw_rect(rect, c);
+    Node::draw(r);
 }
 
 bool Button::on_release(bool over) {

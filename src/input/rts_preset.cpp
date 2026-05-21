@@ -7,6 +7,8 @@
 
 namespace uldum::input {
 
+using simulation::GameCommand;
+
 static constexpr const char* TAG = "RtsInput";
 
 // Helper: check if key just pressed this frame (rising edge) — for hardcoded keys only
@@ -121,7 +123,7 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                     sel.player());
                 if (input.key_shift) {
                     for (auto& u : units) {
-                        if (!sel.is_selected(u) && sel.count() < MAX_SELECTION) {
+                        if (!sel.is_selected(u) && sel.count() < simulation::MAX_SELECTION) {
                             sel.toggle(u);
                         }
                     }

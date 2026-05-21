@@ -17,11 +17,9 @@
 // Forward declare sol types to avoid including sol2 in the header
 namespace sol { class state; }
 
-namespace uldum::simulation { class Simulation; struct World; class AbilityRegistry; }
+namespace uldum::simulation { class Simulation; struct World; class AbilityRegistry; class CommandSystem; class SelectionState; }
 namespace uldum::map { class MapManager; }
-namespace uldum::render { class EffectRegistry; class EffectManager; class Renderer; }
 namespace uldum::audio { class AudioEngine; }
-namespace uldum::input { class SelectionState; class CommandSystem; }
 namespace uldum::hud   { class Hud; }
 namespace uldum::i18n  { class LocaleManager; }
 
@@ -72,10 +70,14 @@ public:
     using AttachPointFn = std::function<glm::vec3(u32 entity_id, std::string_view bone_name)>;
 
     bool init(simulation::Simulation& sim, map::MapManager& map,
-              render::EffectRegistry* effects = nullptr,
-              render::EffectManager* effect_mgr = nullptr,
-              audio::AudioEngine* audio = nullptr,
-              render::Renderer* renderer = nullptr);
+              audio::AudioEngine* audio = nullptr);
+
+    // Lighting / environment callback. Host SetSunDirection invokes
+    // this after broadcasting the network packet so the host's own
+    // renderer reflects the change. App installs the callback; the
+    // dedicated server leaves it unset.
+    using SetSunDirectionFn = std::function<void(f32 x, f32 y, f32 z)>;
+    void set_sun_direction_fn(SetSunDirectionFn fn) { m_set_sun_direction_fn = std::move(fn); }
 
     void set_attach_point_fn(AttachPointFn fn) { m_attach_fn = std::move(fn); }
 
@@ -154,7 +156,7 @@ public:
 
 
     // Connect input systems (call after input is initialized, before scripts run).
-    void set_input(input::SelectionState* selection, input::CommandSystem* commands);
+    void set_input(simulation::SelectionState* selection, simulation::CommandSystem* commands);
 
     // Connect the HUD so the Lua bindings under `bind_hud_api` can mutate
     // node content (SetLabelText, SetBarFill, etc.) and create text tags.
@@ -254,10 +256,7 @@ private:
     std::unique_ptr<sol::state> m_lua;
     simulation::Simulation*     m_sim = nullptr;
     map::MapManager*            m_map = nullptr;
-    render::EffectRegistry*  m_effects    = nullptr;
-    render::EffectManager*   m_effect_mgr = nullptr;
     audio::AudioEngine*      m_audio      = nullptr;
-    render::Renderer*        m_renderer   = nullptr;
     i18n::LocaleManager*     m_i18n       = nullptr;
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
@@ -265,6 +264,7 @@ private:
     BroadcastFn              m_broadcast_fn;
     EffectDeliverFn          m_effect_deliver_fn;
     EffectDestroyFn          m_effect_destroy_fn;
+    SetSunDirectionFn        m_set_sun_direction_fn;
     u32                      m_player_count = 1;
 
     // Server-side tracker for active effects. Every effect — burst or
@@ -301,8 +301,8 @@ private:
     CameraSetTargetControllerFn m_camera_set_target_controller_fn;
 
     // Input (set via set_input)
-    input::SelectionState*   m_selection = nullptr;
-    input::CommandSystem*    m_commands  = nullptr;
+    simulation::SelectionState* m_selection = nullptr;
+    simulation::CommandSystem* m_commands = nullptr;
 
     // HUD (set via set_hud)
     hud::Hud*                m_hud       = nullptr;

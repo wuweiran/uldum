@@ -10,15 +10,20 @@
 #include "hud/hud.h"
 #include "simulation/handle_types.h"  // Player
 
+#include <glm/vec3.hpp>
+
+#include <functional>
 #include <string>
 #include <vector>
 
 namespace uldum::simulation { struct World; class Vision; class TypeRegistry; class AbilityRegistry; class Simulation; }
 namespace uldum::render     { class Camera; }
-namespace uldum::input      { class Picker; class SelectionState; }
+namespace uldum::simulation { class SelectionState; }
 namespace uldum::map        { struct TerrainData; }
 
 namespace uldum::hud {
+
+class HudRenderer;
 
 // When is a world-anchored bar visible? Multiple policies are OR-combined
 // — show if ANY condition is true.
@@ -71,6 +76,14 @@ struct WorldOverlayConfig {
 
 // Sim-side references the HUD needs to walk entities + project + filter by
 // fog. Set once at session start, cleared at session end.
+//
+// Picker access is exposed through `pick_*` function callbacks rather
+// than a `Picker*` member. App fills them in with lambdas that wrap
+// the actual `input::Picker` so the data-side `Hud` translation unit
+// never references Picker symbols — keeps `uldum_hud` free of the
+// render link chain. HudRenderer (which is on the render side) can
+// still keep a Picker* if it needs direct access; today it uses the
+// same callbacks for consistency.
 struct WorldContext {
     const simulation::World*        world     = nullptr;   // authoritative for host/offline, client mirror for client
     const simulation::Vision*       vision    = nullptr;   // local-player vision subsystem (fog + true sight)
@@ -78,10 +91,23 @@ struct WorldContext {
     const simulation::AbilityRegistry* abilities = nullptr;   // for resolving ability_id → icon / cost / cooldown
     const simulation::Simulation*      simulation = nullptr;  // for canonical target_filter eval (alliance lookups)
     const render::Camera*           camera    = nullptr;
-    const input::Picker*            picker    = nullptr;
-    const input::SelectionState*    selection = nullptr;
+    const simulation::SelectionState* selection = nullptr;
     const map::TerrainData*         terrain   = nullptr;
     simulation::Player              local_player{0};
+
+    // Picker callbacks — installed by App. nullptr-default; methods
+    // that need them gate on a truthy check so headless / editor uses
+    // can leave them unset.
+    std::function<simulation::Item(f32 sx, f32 sy)>            pick_item;
+    std::function<simulation::Unit(f32 sx, f32 sy)>            pick_target;
+    std::function<simulation::Unit(f32 sx, f32 sy)>            pick_unit_local;  // own units only (Player = local)
+    std::function<bool(f32 sx, f32 sy, glm::vec3& world_pos)>  screen_to_world;
+
+    // Camera yaw in radians — read by Hud's data-side drag-cast logic
+    // to build a screen-aligned basis for finger displacement. App
+    // refreshes this each frame before the HUD update tick. Avoids a
+    // direct `render::Camera` method call from `uldum_hud`.
+    f32 camera_yaw_rad = 0.0f;
 };
 
 } // namespace uldum::hud

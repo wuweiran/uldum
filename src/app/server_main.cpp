@@ -3,55 +3,58 @@
 #include "network/game_server.h"
 #include "network/network.h"
 #include "network/lobby.h"
-#include "input/command_system.h"
+#include "simulation/command_system.h"
 #include "core/log.h"
 
-#include <nlohmann/json.hpp>
-#include <fstream>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <chrono>
 #include <thread>
 
-// Dedicated server: headless, no renderer/audio/window.
-// Runs the simulation and broadcasts state to connected clients.
+// Dedicated server: headless, no renderer/audio/window. Game-agnostic
+// — no `game.json` reads, no per-game config bundled. Operator supplies
+// a map path via `--map` and (optionally) a port via `--port`.
 
 static constexpr const char* TAG = "Server";
 static constexpr float TICK_DT = 1.0f / 32.0f;
 
 struct ServerArgs {
-    std::string map_path = "maps/test_map.uldmap";
-    uldum::u16  port     = 7777;
+    std::string map_path;
+    uldum::u16  port = 7777;
 };
 
-static ServerArgs parse_args(int argc, char* argv[]) {
-    ServerArgs args;
+static void print_usage() {
+    std::fprintf(stderr,
+        "Usage: uldum_server --map <path> [--port <n>]\n"
+        "  --map <path>    Path to a packaged .uldmap (required).\n"
+        "  --port <n>      Listen port. Default: 7777.\n");
+}
 
-    // Read game.json
-    std::ifstream file("game.json");
-    if (file.is_open()) {
-        try {
-            nlohmann::json j;
-            file >> j;
-            args.map_path = j.value("default_map", args.map_path);
-            args.port     = static_cast<uldum::u16>(
-                                j.value("default_port", static_cast<int>(args.port)));
-        } catch (...) {}
-    }
-
-    // CLI overrides
+static bool parse_args(int argc, char* argv[], ServerArgs& out) {
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc)
-            args.map_path = argv[++i];
-        else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc)
-            args.port = static_cast<uldum::u16>(std::stoi(argv[++i]));
+        if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
+            out.map_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+            out.port = static_cast<uldum::u16>(std::stoi(argv[++i]));
+        } else {
+            std::fprintf(stderr, "Unknown argument: %s\n", argv[i]);
+            return false;
+        }
     }
-
-    return args;
+    if (out.map_path.empty()) {
+        std::fprintf(stderr, "Error: --map is required.\n");
+        return false;
+    }
+    return true;
 }
 
 int main(int argc, char* argv[]) {
-    auto args = parse_args(argc, argv);
+    ServerArgs args;
+    if (!parse_args(argc, argv, args)) {
+        print_usage();
+        return 2;
+    }
 
     uldum::log::info(TAG, "=== Uldum Dedicated Server ===");
     uldum::log::info(TAG, "Map: {}, Port: {}", args.map_path, args.port);
@@ -88,7 +91,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Init game logic (no renderer/audio — pass nullptr)
-    if (!server.init_game(map, nullptr, nullptr, nullptr, nullptr)) {
+    if (!server.init_game(map)) {
         uldum::log::error(TAG, "Failed to init game");
         return 1;
     }
@@ -97,7 +100,7 @@ int main(int argc, char* argv[]) {
     server.simulation().set_terrain(&map.terrain());
 
     // Init networking as host
-    uldum::input::CommandSystem commands;
+    uldum::simulation::CommandSystem commands;
     commands.init(&server.simulation().world());
     uldum::u32 max_players = static_cast<uldum::u32>(map.manifest().players.size());
     if (!network.init_host(args.port, max_players, server.simulation(), commands)) {
@@ -111,13 +114,10 @@ int main(int argc, char* argv[]) {
     // filled (no one on the server presses a Start button).
     uldum::network::init_lobby_from_manifest(network.lobby_state(), args.map_path, map.manifest());
 
-    // Set map hash so clients are validated (FNV-1a, same as App)
-    {
-        std::string hash_str = map.manifest().name + map.manifest().version;
-        uldum::u32 h = 2166136261u;
-        for (char c : hash_str) { h ^= static_cast<uldum::u8>(c); h *= 16777619u; }
-        network.set_map_hash(h);
-    }
+    // Set map script-hash for client validation. SHA-256 over every
+    // .lua file in the map (lexicographic order). Mismatch is a hard
+    // reject — clients on a different map version can't join.
+    network.set_map_hash(map.compute_script_hash(assets));
     network.set_disconnect_timeout(map.manifest().disconnect_timeout);
     network.set_pause_on_disconnect(map.manifest().pause_on_disconnect);
 

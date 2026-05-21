@@ -4,6 +4,11 @@ if(WIN32)
     list(APPEND PLATFORM_SOURCES windows/win32_platform.cpp)
 elseif(ANDROID)
     list(APPEND PLATFORM_SOURCES android/android_platform.cpp)
+else()
+    # Linux desktop. Today an empty stub — keeps the STATIC lib
+    # well-formed so the headless server build links. A real window /
+    # input implementation lands when we ship a Linux desktop target.
+    list(APPEND PLATFORM_SOURCES linux/linux_platform.cpp)
 endif()
 
 add_library(uldum_platform STATIC ${PLATFORM_SOURCES})

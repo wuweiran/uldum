@@ -1,4 +1,5 @@
-#include "hud/world.h"
+#include "render/hud/world.h"
+#include "render/hud/hud_renderer.h"
 #include "hud/hud.h"
 #include "hud/text_tag.h"
 
@@ -7,8 +8,7 @@
 #include "simulation/vision.h"
 #include "simulation/type_registry.h"
 #include "render/camera.h"
-#include "input/picking.h"
-#include "input/selection.h"
+#include "simulation/selection.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 
@@ -94,10 +94,11 @@ static bool is_fogged(const simulation::Vision& vision,
     return !vision.is_visible(player, tx, ty);
 }
 
-// Internal implementation — called from hud.cpp's draw_world_overlays
-// after it plucks the config + context out of Impl. Kept here so hud.cpp
-// doesn't need to include simulation / render / input / map.
-void draw_entity_bars_impl(Hud& hud,
+// Internal implementation — called from HudRenderer::draw_world_overlays
+// after it plucks the config + context out of state. Kept here so the
+// rest of the engine doesn't need to include simulation / render / input
+// / map directly from the HUD.
+void draw_entity_bars_impl(HudRenderer& r,
                            u32 screen_w, u32 screen_h,
                            const WorldOverlayConfig& cfg,
                            const WorldContext& ctx,
@@ -114,13 +115,11 @@ void draw_entity_bars_impl(Hud& hud,
 
     // Optional: current hovered unit (for Hovered visibility policy).
     u32 hovered_id = UINT32_MAX;
-    if (ctx.picker) {
-        // TODO: picker would need mouse coords injected; for now assume
-        // the picker tracks its own state or we skip hover until wired.
-    }
+    // TODO: pick_target callback would need mouse coords injected; for
+    // now we skip hover until wired (was a no-op gate on ctx.picker too).
 
     // Optional: selected ids (for Selected visibility policy).
-    const input::SelectionState* selection = ctx.selection;
+    const simulation::SelectionState* selection = ctx.selection;
 
     // Walk all entities with a Transform.
     auto ids  = world.transforms.ids();
@@ -180,11 +179,11 @@ void draw_entity_bars_impl(Hud& hud,
                 static_cast<f32>(ebc.width),
                 static_cast<f32>(ebc.height)
             };
-            hud.draw_rect(bg_rect, bar.style.bg_color);
+            r.draw_rect(bg_rect, bar.style.bg_color);
 
             Rect fill_rect = bg_rect;
             fill_rect.w = bg_rect.w * fraction;
-            if (fill_rect.w > 0.0f) hud.draw_rect(fill_rect, bar.style.fill_color);
+            if (fill_rect.w > 0.0f) r.draw_rect(fill_rect, bar.style.fill_color);
 
             stack_y += static_cast<f32>(ebc.height) + static_cast<f32>(ebc.spacing);
         }
@@ -196,16 +195,16 @@ void draw_entity_bars_impl(Hud& hud,
 // and its type defines a non-empty `display_name`, draws a centered label
 // (with optional bg pill) above the unit. Single label per frame.
 
-void draw_unit_name_label_impl(Hud& hud,
+void draw_unit_name_label_impl(HudRenderer& r,
                                u32 screen_w, u32 screen_h,
                                const WorldOverlayConfig& cfg,
                                const WorldContext& ctx,
                                f32 alpha) {
     if (!cfg.name_label_enabled) return;
-    if (!ctx.world || !ctx.camera || !ctx.picker || !ctx.types) return;
+    if (!ctx.world || !ctx.camera || !ctx.pick_target || !ctx.types) return;
 
-    f32 mx = hud.pointer_x();
-    f32 my = hud.pointer_y();
+    f32 mx = r.hud().pointer_x();
+    f32 my = r.hud().pointer_y();
     if (mx <= 0.0f && my <= 0.0f) return;  // no pointer seen this frame
 
     // Picker still operates in physical framebuffer pixels (its screen
@@ -213,12 +212,12 @@ void draw_unit_name_label_impl(Hud& hud,
     // were divided by ui_scale on entry to live in dp space — convert
     // back so the picker projects correctly. On desktop ui_scale ≈ 1
     // so this is a no-op; on Android xxhdpi (~2.6×) it matters a lot.
-    f32 s = hud.ui_scale();
+    f32 s = r.hud().ui_scale();
     if (s <= 0.0f) s = 1.0f;
     f32 picker_x = mx * s;
     f32 picker_y = my * s;
 
-    simulation::Unit hovered = ctx.picker->pick_target(picker_x, picker_y);
+    simulation::Unit hovered = ctx.pick_target(picker_x, picker_y);
     if (hovered.id == simulation::Unit{}.id) return;  // nothing under cursor
 
     const auto& world = *ctx.world;
@@ -244,9 +243,9 @@ void draw_unit_name_label_impl(Hud& hud,
     if (!project_to_screen(vp, anchor_world, screen_w, screen_h, cx, cy)) return;
 
     const auto& nl = cfg.name_label;
-    f32 text_w     = hud.text_width_px(text, nl.px_size);
-    f32 line_h     = hud.text_line_height_px(nl.px_size);
-    f32 ascent     = hud.text_ascent_px(nl.px_size);
+    f32 text_w     = r.text_width_px(text, nl.px_size);
+    f32 line_h     = r.text_line_height_px(nl.px_size);
+    f32 ascent     = r.text_ascent_px(nl.px_size);
 
     // Center text horizontally at cx; anchor the text's bottom of cap
     // height near cy (label sits centered around the projected point).
@@ -260,9 +259,9 @@ void draw_unit_name_label_impl(Hud& hud,
             text_w + 2.0f * nl.style.bg_pad_x,
             line_h + 2.0f * nl.style.bg_pad_y
         };
-        hud.draw_rect(bg_rect, nl.style.bg_color);
+        r.draw_rect(bg_rect, nl.style.bg_color);
     }
-    hud.draw_text(x_left, y_baseline, text, nl.style.color, nl.px_size);
+    r.draw_text(x_left, y_baseline, text, nl.style.color, nl.px_size);
 }
 
 } // namespace uldum::hud

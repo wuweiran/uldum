@@ -1,6 +1,7 @@
 #include "asset/asset.h"
 #include "core/log.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -310,6 +311,52 @@ std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
         if (!data.empty()) return data;
     }
     return {};
+}
+
+std::vector<std::string> AssetManager::list_files(std::string_view prefix,
+                                                  std::string_view suffix) const {
+    namespace fs = std::filesystem;
+    auto norm_prefix = upk_normalize_path(prefix);
+    if (!norm_prefix.empty() && norm_prefix.back() != '/') norm_prefix += '/';
+    std::string suf(suffix);
+
+    std::vector<std::string> out;
+    auto match = [&](const std::string& path) {
+        return path.starts_with(norm_prefix)
+            && (suf.empty() || path.ends_with(suf));
+    };
+
+    for (auto& mount : m_mounts) {
+        std::visit([&](auto& m) {
+            using T = std::decay_t<decltype(m)>;
+            if constexpr (std::is_same_v<T, PackageMount>) {
+                for (const auto& e : m.reader.entries()) {
+                    std::string full = m.prefix + e.path;
+                    if (match(full)) out.push_back(std::move(full));
+                }
+            } else if constexpr (std::is_same_v<T, DirectoryMount>) {
+                std::error_code ec;
+                fs::path root(m.fs_root);
+                if (!fs::is_directory(root, ec)) return;
+                for (auto it = fs::recursive_directory_iterator(root, ec);
+                     it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                    if (ec) break;
+                    if (!it->is_regular_file(ec)) continue;
+                    auto rel = fs::relative(it->path(), root, ec).generic_string();
+                    auto full = upk_normalize_path(m.prefix + rel);
+                    if (match(full)) out.push_back(std::move(full));
+                }
+            } else {
+                // ApkAssetMount enumeration TODO: AAssetDir_getNextFileName.
+                // Map-load callers can fall back to read_file_bytes on
+                // known paths until then.
+                (void)m;
+            }
+        }, *mount);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 } // namespace uldum::asset

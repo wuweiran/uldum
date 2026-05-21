@@ -5,6 +5,7 @@
 #include <glm/vec3.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -231,6 +232,13 @@ public:
     const TerrainData& terrain()  const { return m_scene.terrain; }
     TerrainData&       terrain()        { return m_scene.terrain; }
     const SceneData&   scene()    const { return m_scene; }
+
+    // SHA-256 over every `.lua` file under the map root, hashed in
+    // lexicographic path order. Identity check for client/server
+    // matchmaking — same script payload = same gameplay rules, even
+    // if non-script assets differ (textures, models, audio). Map must
+    // be loaded (mount active). Returns all-zeros on error.
+    std::array<uldum::u8, 32> compute_script_hash(asset::AssetManager& assets) const;
 
     // Mutable region list — the editor is the only legitimate caller.
     // m_scene.regions is the canonical authored data; save_objects

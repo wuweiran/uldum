@@ -2,8 +2,9 @@
 #include "core/log.h"
 #include "hud/node.h"
 #include "hud/hud_loader.h"
+#include "hud/hud_network.h"
 #include "hud/cast_indicator.h"
-#include "hud/world.h"
+#include "render/hud/world.h"
 #include "hud/text_tag.h"
 #include "hud/action_bar.h"
 
@@ -32,13 +33,6 @@ App::~App() = default;
 static constexpr const char* TAG = "App";
 static constexpr float TICK_RATE = 32.0f;  // real-time ticks per second (always constant)
 static constexpr float TICK_DT  = 1.0f / TICK_RATE;  // real-time interval between ticks
-
-// Simple FNV-1a hash for map identity
-static u32 hash_string(std::string_view s) {
-    u32 h = 2166136261u;
-    for (char c : s) { h ^= static_cast<u8>(c); h *= 16777619u; }
-    return h;
-}
 
 simulation::World& App::active_world() {
     if (m_args.net_mode == network::Mode::Client)
@@ -174,9 +168,15 @@ bool App::init(const LaunchArgs& args) {
     m_camera_controller.attach(&m_renderer.camera());
 
     // HUD — custom retained-mode UI for in-game overlays. Initialized once
-    // alongside the renderer; lives across sessions.
-    if (!m_hud.init(m_rhi)) {
+    // alongside the renderer; lives across sessions. The data side (Hud)
+    // holds the node tree + composite configs; HudRenderer owns the
+    // Vulkan-side pipelines, ring buffers, and font atlas.
+    if (!m_hud.init()) {
         log::error(TAG, "HUD init failed");
+        return false;
+    }
+    if (!m_hud_renderer.init(m_hud, m_rhi)) {
+        log::error(TAG, "HudRenderer init failed");
         return false;
     }
     m_hud.set_locale_manager(&m_i18n);
@@ -434,8 +434,9 @@ bool App::enter_lobby() {
     // Per-mode network + lobby bring-up. Offline and Host populate the lobby
     // from their own manifest (host is authoritative). Client leaves the
     // lobby empty and waits for S_LOBBY_STATE from the host to arrive.
-    u32 map_hash = hash_string(m_map.manifest().name + m_map.manifest().version);
-    m_network.set_map_hash(map_hash);
+    // Map identity is the SHA-256 of all .lua files in the map; host and
+    // joining clients compute the same digest from their local copies.
+    m_network.set_map_hash(m_map.compute_script_hash(m_asset));
     auto claim_first_open_as_me = [&](network::LobbyState& s) {
         for (auto& a : s.slots) {
             if (a.occupant == network::SlotOccupant::Open && !a.locked) {
@@ -576,7 +577,9 @@ bool App::start_session() {
         apply(TexId::AoeLine,       s.area_line_texture);
     }
     m_hud.set_local_player(m_args.local_slot);
-    m_network.set_hud(&m_hud);
+    m_network.set_hud_message_fn([this](std::span<const u8> data) {
+        hud::apply_network_message(m_hud, data);
+    });
     // Button click callback. Host / offline fires the server trigger
     // directly; client forwards to host via C_NODE_EVENT.
     m_hud.set_button_event_fn([this](const std::string& node_id) {
@@ -606,7 +609,7 @@ bool App::start_session() {
     m_hud.set_action_bar_cast_at_target_fn(
         [this](const std::string& ability_id, u32 target_unit_id,
                f32 target_x, f32 target_y, f32 target_z) {
-            input::GameCommand cmd;
+            simulation::GameCommand cmd;
             cmd.player = m_selection.player();
             cmd.units  = m_selection.selected();
             simulation::orders::Cast c;
@@ -639,7 +642,7 @@ bool App::start_session() {
     m_hud.set_command_bar_drag_commit_fn(
         [this](const std::string& command_id, u32 target_unit_id,
                f32 target_x, f32 target_y, f32 target_z) {
-            input::GameCommand cmd;
+            simulation::GameCommand cmd;
             cmd.player = m_selection.player();
             cmd.units  = m_selection.selected();
             const glm::vec3 wp{target_x, target_y, target_z};
@@ -697,7 +700,7 @@ bool App::start_session() {
         item.id         = item_id;
         item.generation = hi->generation;
 
-        input::GameCommand cmd;
+        simulation::GameCommand cmd;
         cmd.player = m_selection.player();
         cmd.units  = m_selection.selected();
         simulation::orders::Cast c;
@@ -722,7 +725,7 @@ bool App::start_session() {
             item.id         = item_id;
             item.generation = hi->generation;
 
-            input::GameCommand cmd;
+            simulation::GameCommand cmd;
             cmd.player = m_selection.player();
             cmd.units  = m_selection.selected();
             simulation::orders::Cast c;
@@ -751,7 +754,7 @@ bool App::start_session() {
         item.id         = item_id;
         item.generation = hi->generation;
 
-        input::GameCommand cmd;
+        simulation::GameCommand cmd;
         cmd.player = m_selection.player();
         cmd.units  = m_selection.selected();
         simulation::orders::DropItem d;
@@ -764,7 +767,7 @@ bool App::start_session() {
     // Inventory drag-swap — left-press on slot A, drag to B, release.
     // Same Cast / Drop pipeline, just a different order kind.
     m_hud.set_inventory_swap_fn([this](i32 slot_a, i32 slot_b) {
-        input::GameCommand cmd;
+        simulation::GameCommand cmd;
         cmd.player = m_selection.player();
         cmd.units  = m_selection.selected();
         cmd.order  = simulation::orders::SwapInventorySlot{slot_a, slot_b};
@@ -788,7 +791,7 @@ bool App::start_session() {
         m_commands.init(&m_server.simulation().world());
     } else {
         m_commands.init(nullptr);  // no local world
-        m_commands.set_network_send([this](const input::GameCommand& cmd) {
+        m_commands.set_network_send([this](const simulation::GameCommand& cmd) {
             m_network.send_order(cmd);
         });
     }
@@ -829,8 +832,15 @@ bool App::start_session() {
             });
         }
 
-        if (!m_server.init_game(m_map,
-                                &m_renderer.effect_registry(), &m_renderer.effect_manager(), &m_audio, &m_renderer)) {
+        // SetSunDirection (Lua) updates the host's own renderer here;
+        // the network broadcast to peers happens inside the binding
+        // via m_broadcast_fn (script.cpp).
+        m_server.script().set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
+            map::EnvironmentConfig env;
+            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+            m_renderer.set_environment(env);
+        });
+        if (!m_server.init_game(m_map, &m_audio)) {
             log::error(TAG, "GameServer game init failed");
             return false;
         }
@@ -1141,10 +1151,22 @@ bool App::start_session() {
         m_hud_world_ctx.abilities    = &m_server.simulation().abilities();
         m_hud_world_ctx.simulation   = &m_server.simulation();
         m_hud_world_ctx.camera       = &m_renderer.camera();
-        m_hud_world_ctx.picker       = &m_picker;
         m_hud_world_ctx.selection    = &m_selection;
         m_hud_world_ctx.terrain      = m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
         m_hud_world_ctx.local_player = simulation::Player{m_args.local_slot};
+        // Picker callbacks — Hud's data-side queries (cursor_intent,
+        // aim_state, inventory-drop-on-terrain) go through these lambdas
+        // so `uldum_hud` doesn't pull `input::Picker` symbols at link
+        // time. HudRenderer's world overlay reads `pick_target` via
+        // the same path.
+        m_hud_world_ctx.pick_item       = [this](f32 sx, f32 sy) { return m_picker.pick_item(sx, sy); };
+        m_hud_world_ctx.pick_target     = [this](f32 sx, f32 sy) { return m_picker.pick_target(sx, sy); };
+        m_hud_world_ctx.pick_unit_local = [this](f32 sx, f32 sy) {
+            return m_picker.pick_unit(sx, sy, m_selection.player());
+        };
+        m_hud_world_ctx.screen_to_world = [this](f32 sx, f32 sy, glm::vec3& wp) {
+            return m_picker.screen_to_world(sx, sy, wp);
+        };
         m_hud.set_world_context(&m_hud_world_ctx);
     }
 
@@ -1169,8 +1191,8 @@ void App::end_session() {
     // Input — drop the preset (RTS / Action) and reset its dependents.
     m_input_preset.reset();
     m_bindings  = input::InputBindings{};
-    m_commands  = input::CommandSystem{};
-    m_selection = input::SelectionState{};
+    m_commands  = simulation::CommandSystem{};
+    m_selection = simulation::SelectionState{};
 
     // HUD — full session reset: widget tree, text tags, composite
     // configs + slot interaction, drag-cast, hidden-hotkey edges,
@@ -1396,7 +1418,7 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
     // are map-level — set once from hud.json's cast_indicator config —
     // so we leave them alone here. Per-frame ring / path commands are
     // already cleared each frame by the renderer; nothing to reset.
-    m_selection = input::SelectionState{};
+    m_selection = simulation::SelectionState{};
     m_selection.set_player(simulation::Player{m_args.local_slot});
     m_hud.reset_scene_state();
     m_picker.init(&m_renderer.camera(), &m_map.terrain(), &active_world(),
@@ -1431,9 +1453,7 @@ void App::scene_switch_run_main(const std::string& scene_name) {
 
     // Lua VM full reset.
     script.shutdown();
-    if (!script.init(sim, m_map,
-                     &m_renderer.effect_registry(), &m_renderer.effect_manager(),
-                     &m_audio, &m_renderer)) {
+    if (!script.init(sim, m_map, &m_audio)) {
         log::error(TAG, "ScriptEngine re-init failed for scene '{}'", scene_name);
         return;
     }
@@ -1449,6 +1469,11 @@ void App::scene_switch_run_main(const std::string& scene_name) {
     });
     script.set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
         m_network.host_broadcast_update(entity_id, pkt);
+    });
+    script.set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
+        map::EnvironmentConfig env;
+        env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+        m_renderer.set_environment(env);
     });
     register_script_camera_callbacks();
     script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
@@ -1960,6 +1985,9 @@ void App::run() {
                 // ESC cancels both sides — symmetric with the preset's
                 // ESC handling so the player has one "bail out" key.
                 if (in.key_escape) m_hud.cancel_held_item();
+                // Refresh the per-frame camera yaw the HUD's drag-cast
+                // uses to align finger displacement with screen axes.
+                m_hud_world_ctx.camera_yaw_rad = m_renderer.camera().yaw_rad();
                 m_hud.handle_hotkeys(in);
                 m_hud.joystick_update(in);
                 m_hud.action_bar_drag_update(in);
@@ -2465,7 +2493,7 @@ void App::run() {
                     m_hud.update_text_tags(frame_dt);
                     m_hud.update_display_messages(frame_dt);
                     m_hud.update_focus(frame_dt);
-                    m_hud.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
+                    m_hud_renderer.begin_frame(m_rhi.extent().width, m_rhi.extent().height);
                     // World-anchored HUD layer first — entity HP bars,
                     // name labels, floating damage numbers. They live
                     // in screen space but conceptually belong to the
@@ -2473,8 +2501,8 @@ void App::run() {
                     // and composites: a unit's HP bar drifting near
                     // the action bar gets occluded by the bar, not
                     // overlaid on top of it.
-                    m_hud.draw_world_overlays(alpha);
-                    m_hud.draw_tree();
+                    m_hud_renderer.draw_world_overlays(alpha);
+                    m_hud_renderer.draw_tree();
                     // Box-select marquee (RTS preset's drag-rectangle).
                     // The preset records mouse coords in physical
                     // pixels (same space the Picker takes for world
@@ -2484,11 +2512,11 @@ void App::run() {
                         auto bs = m_input_preset->box_selection();
                         if (bs.active) {
                             f32 inv = 1.0f / m_hud.ui_scale();
-                            m_hud.draw_marquee(bs.x0 * inv, bs.y0 * inv,
-                                               bs.x1 * inv, bs.y1 * inv);
+                            m_hud_renderer.draw_marquee(bs.x0 * inv, bs.y0 * inv,
+                                                        bs.x1 * inv, bs.y1 * inv);
                         }
                     }
-                    m_hud.render(cmd);
+                    m_hud_renderer.render(cmd);
                 }
 #ifdef ULDUM_SHELL_UI
                 if (m_shell) {
@@ -2545,6 +2573,7 @@ void App::shutdown() {
     if (m_shell) m_shell.reset();
 #endif
     m_audio.shutdown();
+    m_hud_renderer.shutdown();
     m_hud.shutdown();
     m_world_overlays.shutdown();
     m_renderer.shutdown();

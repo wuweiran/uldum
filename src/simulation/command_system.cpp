@@ -1,7 +1,7 @@
-#include "input/command_system.h"
+#include "simulation/command_system.h"
 #include "simulation/world.h"
 
-namespace uldum::input {
+namespace uldum::simulation {
 
 void CommandSystem::submit(const GameCommand& cmd) {
     // Client mode: send to server instead of executing locally
@@ -25,10 +25,10 @@ void CommandSystem::submit(const GameCommand& cmd) {
         auto* owner = m_world->owners.get(unit.id);
         if (!owner || owner->player.id != cmd.player.id) continue;
 
-        simulation::Order order;
+        Order order;
         order.payload = cmd.order;
         order.queued  = cmd.queued;
-        simulation::issue_order(*m_world, unit, std::move(order));
+        issue_order(*m_world, unit, std::move(order));
     }
 
     // Post-issuance observer. Pure notification — fires once per
@@ -38,4 +38,4 @@ void CommandSystem::submit(const GameCommand& cmd) {
     if (m_observer) m_observer(cmd);
 }
 
-} // namespace uldum::input
+} // namespace uldum::simulation

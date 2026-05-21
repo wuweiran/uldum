@@ -4,13 +4,11 @@
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
-#include "input/selection.h"
-#include "input/command_system.h"
-#include "input/command.h"
+#include "simulation/command_system.h"
+#include "simulation/command.h"
+#include "simulation/selection.h"
 #include "map/map.h"
 #include "asset/asset.h"
-#include "render/effect.h"
-#include "render/renderer.h"
 #include "audio/audio.h"
 #include "i18n/locale.h"
 #include "network/protocol.h"
@@ -125,16 +123,10 @@ ScriptEngine::~ScriptEngine() = default;
 // ── Init / Shutdown ───────────────────────────────────────────────────────
 
 bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
-                         render::EffectRegistry* effects,
-                         render::EffectManager* effect_mgr,
-                         audio::AudioEngine* audio,
-                         render::Renderer* renderer) {
+                         audio::AudioEngine* audio) {
     m_sim = &sim;
     m_map = &map;
-    m_effects = effects;
     m_audio = audio;
-    m_effect_mgr = effect_mgr;
-    m_renderer = renderer;
 
     m_lua = std::make_unique<sol::state>();
     auto& lua = *m_lua;
@@ -1884,13 +1876,11 @@ void ScriptEngine::bind_api() {
     // ── Environment API ────────────────────────────────────────────────────
 
     lua["SetSunDirection"] = [this](f32 x, f32 y, f32 z) {
-        if (m_renderer) {
-            map::EnvironmentConfig env;
-            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
-            // Preserve existing settings, just update sun direction
-            // (full env config update — simple approach)
-            m_renderer->set_environment(env);
-        }
+        // Local apply on the host (no-op on dedicated server, which
+        // leaves m_set_sun_direction_fn unset). The callback's job is
+        // to push the new direction into the local renderer's
+        // environment config.
+        if (m_set_sun_direction_fn) m_set_sun_direction_fn(x, y, z);
         // Mirror to clients so a script-driven cinematic lighting
         // change (sunset, dawn, eclipse) reaches every peer's
         // renderer, not just the host's.
@@ -2545,7 +2535,7 @@ void ScriptEngine::bind_timer_api() {
 
 // ── Input API ─────────────────────────────────────────────────────────────
 
-void ScriptEngine::set_input(input::SelectionState* selection, input::CommandSystem* commands) {
+void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::CommandSystem* commands) {
     m_selection = selection;
     m_commands = commands;
 
@@ -2561,7 +2551,7 @@ void ScriptEngine::set_input(input::SelectionState* selection, input::CommandSys
     // cannot cancel — cast validity is data-driven by ability
     // target_filter, not script-overridable from this hook.
     if (m_commands) {
-        m_commands->set_order_observer([this](const input::GameCommand& cmd) {
+        m_commands->set_order_observer([this](const simulation::GameCommand& cmd) {
             // Decompose command into context
             m_ctx_order_player = cmd.player.id;
             m_ctx_order_queued = cmd.queued;

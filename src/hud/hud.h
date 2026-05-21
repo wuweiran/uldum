@@ -12,10 +12,6 @@
 #include <string_view>
 #include <unordered_map>
 
-// Forward-decls: keep the header free of vulkan.h / VMA.
-typedef struct VkCommandBuffer_T* VkCommandBuffer;
-
-namespace uldum::rhi      { class VulkanRhi; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::i18n     { class LocaleManager; }
 
@@ -54,18 +50,45 @@ struct Rect {
     f32 x = 0, y = 0, w = 0, h = 0;
 };
 
-// The HUD subsystem. Owns the Vulkan pipeline, pooled ring buffers for
-// vertex / index data, and a 1×1 white texture used for non-textured
-// quads. Rendered as an overlay inside the main render pass after the
-// 3D scene.
+class Hud;
+
+// Abstract render-primitive surface. `Node::draw` walks the tree and
+// calls these virtual methods to emit quads — the concrete renderer
+// (HudRenderer in src/render/hud/) implements them. The interface
+// lives in `uldum_hud` so node draws compile and link without
+// referencing any Vulkan symbols; only the vtable lookup crosses the
+// boundary at runtime.
+class HudRenderInterface {
+public:
+    virtual ~HudRenderInterface();
+
+    // Owning Hud — node draws read locale-manager and local-player
+    // slot from it for text resolution and ownership filtering.
+    virtual Hud& hud() const = 0;
+
+    // Primitive draws.
+    virtual void draw_rect(const Rect& r, Color color) = 0;
+    virtual void draw_image(const Rect& r, std::string_view asset_path,
+                            Color tint) = 0;
+    virtual void draw_text(f32 x_left, f32 y_baseline, std::string_view utf8,
+                           Color color, f32 px_size) = 0;
+
+    // Font metric queries — node layout uses these for centering /
+    // baseline placement.
+    virtual f32 text_ascent_px(f32 px_size)      const = 0;
+    virtual f32 text_line_height_px(f32 px_size) const = 0;
+    virtual f32 text_width_px(std::string_view utf8, f32 px_size) const = 0;
+};
+
+
+// The HUD data subsystem. Holds the retained widget tree, composite
+// configs + runtimes, text-tag pool, focus target, and the various
+// callbacks the host wires up. Rendering (Vulkan pipelines, ring
+// buffers, font atlas, draw walks) lives next door in HudRenderer —
+// see src/render/hud/hud_renderer.h.
 //
-// Lifecycle per frame:
-//   hud.begin_frame(w, h)        — reset CPU-side draw lists, stash viewport
-//   hud.draw_rect(...) etc.       — record quads
-//   hud.render(cmd)              — upload, bind pipeline, draw (inside render pass)
-//
-// Stage A scope: solid-color rectangles only. Widget tree, text, input,
-// and platform-specific affordances land in subsequent stages.
+// State-mutating callers (App, Lua bindings, hud_network apply) only
+// need this header.
 class Hud {
 public:
     Hud();
@@ -73,7 +96,9 @@ public:
     Hud(const Hud&) = delete;
     Hud& operator=(const Hud&) = delete;
 
-    bool init(rhi::VulkanRhi& rhi);
+    // Initialize data-side state (creates the root Panel). HudRenderer
+    // brings up the Vulkan side separately.
+    bool init();
     void shutdown();
 
     // Local player for this process (engine-internal — NOT Lua-visible).
@@ -123,26 +148,6 @@ public:
     // viewport instead of staying pinned to the old dimensions.
     void on_viewport_resized(u32 screen_w, u32 screen_h);
 
-    // ── Per-frame ────────────────────────────────────────────────────────
-    // begin_frame() resets the CPU-side draw list and stashes the viewport.
-    // render() uploads to the GPU ring buffer and issues draw calls inside
-    // the caller's render pass. Tree widgets are drawn via hud.root().draw()
-    // — callers don't iterate explicitly.
-    void begin_frame(u32 screen_w, u32 screen_h);
-    void render(VkCommandBuffer cmd);
-
-    // Low-level primitive — draw a solid-color rectangle. Used by widgets
-    // internally; callers usually add Panel / Button nodes via the tree
-    // instead.
-    void draw_rect(const Rect& r, Color color);
-
-    // Transient selection-marquee rectangle (the rect the player drags
-    // across the world to box-select units). Draws with the colors
-    // authored in hud.json's `selection_marquee` block; fill defaults
-    // to transparent (outline-only) so a busy terrain stays readable.
-    // Coords are in the same logical-pixel space as draw_rect.
-    void draw_marquee(f32 x0, f32 y0, f32 x1, f32 y1);
-
     // Per-map styling for the selection marquee. Authored in hud.json
     // (`selection_marquee: { fill, border }`). Called by the loader.
     struct MarqueeStyle {
@@ -150,43 +155,7 @@ public:
         Color border = rgba(80,  220, 90,  220);
     };
     void set_marquee_style(const MarqueeStyle& style);
-
-    // Low-level primitive — draw a texture, stretched to fill the rect.
-    // `asset_path` is resolved by the asset manager (KTX2 / PNG); the
-    // first call for a path uploads the image and caches its GPU
-    // resources for the Hud's lifetime, subsequent calls just bind the
-    // cached descriptor. `tint` is a multiplier (default opaque white).
-    // No-ops if the asset is missing or fails to decode.
-    void draw_image(const Rect& r, std::string_view asset_path,
-                    Color tint = rgba(255, 255, 255, 255));
-
-    // Draw an image clipped to a circular disc — square texture is
-    // sampled radially so its inscribed circle covers the disc; the
-    // texture's corners (outside that inscribed circle) are clipped.
-    // Use this for round MOBA-style ability buttons where a square
-    // icon needs to fit a circular button without visible square edges.
-    void draw_image_disc(f32 cx, f32 cy, f32 radius,
-                         std::string_view asset_path,
-                         Color tint = rgba(255, 255, 255, 255));
-
-    // Low-level primitive — draw a single line of UTF-8 text using the
-    // default HUD font. Position is the left end of the text baseline (in
-    // screen pixels). px_size selects on-screen glyph size; the MSDF
-    // atlas was authored at one size but scales cleanly. No-ops silently
-    // if the font failed to load or the atlas is full.
-    void draw_text(f32 x_left, f32 y_baseline, std::string_view utf8,
-                   Color color, f32 px_size);
-
-    // Line metrics of the default UI font, in on-screen pixels at the
-    // given target size. Used by Label and other text-bearing nodes to
-    // position the baseline and align vertically.
-    f32 text_ascent_px(f32 px_size)      const;
-    f32 text_line_height_px(f32 px_size) const;
-
-    // Measure the pixel width a UTF-8 string would occupy at the given
-    // target size. Used by Label for center / right alignment. Returns 0
-    // if the font failed to load.
-    f32 text_width_px(std::string_view utf8, f32 px_size) const;
+    const MarqueeStyle& marquee_style() const;
 
     // ── Widget tree ──────────────────────────────────────────────────────
     // One persistent root Panel is created at init; all widgets attach as
@@ -265,19 +234,16 @@ public:
     void register_instantiated_tree(std::string id, std::string_view anchor,
                                     f32 x, f32 y, f32 w, f32 h);
 
-    // Walk the tree, hit-test + draw the visible subtree, and record quads
-    // for this frame. Called between begin_frame() and render(). No-op if
-    // the root is empty.
-    void draw_tree();
-
     // ── World UI ─────────────────────────────────────────────────────────
     // Configuration is set once at map load (from hud.json's
-    // `world_overlays` block). Context is set at session start / cleared at
-    // session end; it carries refs into the active sim, camera, picker,
-    // selection, terrain. draw_world_overlays() walks all entities each
-    // frame and emits quads into the same batcher as screen UI.
+    // `world_overlays` block). Context is set at session start / cleared
+    // at session end; it carries refs into the active sim, camera,
+    // picker, selection, terrain. State-side queries (cursor_intent,
+    // focus_target, aim_state) and the renderer's world-overlay walk
+    // both consult it.
     void set_world_overlay_config(const WorldOverlayConfig& cfg);
     void set_world_context(const WorldContext* ctx);
+    const WorldContext* world_context() const;
 
     // LocaleManager for client-side i18n string resolution. The HUD reads
     // this on text-tag / label render to substitute localized keys with
@@ -285,10 +251,6 @@ public:
     // payloads render as the literal key.
     void set_locale_manager(i18n::LocaleManager* mgr);
     i18n::LocaleManager* locale_manager() const;
-    // `alpha` is the sub-tick interpolation factor (0..1) — passed through
-    // to the projection so world-anchored overlays follow smoothly-moving
-    // units, matching how `Renderer::draw` interpolates the units themselves.
-    void draw_world_overlays(f32 alpha);
 
     // Advance text-tag animation state (velocity × dt, age, fade).
     // Called once per frame before draw_world_overlays; expired tags
@@ -699,8 +661,17 @@ public:
     f32 pointer_x() const;
     f32 pointer_y() const;
 
-    // Opaque state — declared in hud.cpp to keep Vulkan / VMA out of the header.
+    // Opaque state — declared in hud_impl.h so both hud.cpp and
+    // hud_renderer.cpp can see it.
     struct Impl;
+    Impl* impl() { return m_impl; }
+    const Impl* impl() const { return m_impl; }
+
+    // HudRenderer (in src/render/hud/) reads Hud's state and consumes
+    // Impl directly for the per-frame draw walk. Friend access avoids
+    // adding ~50 trivial getters; matches the renderer ↔ simulation
+    // pattern elsewhere in the engine. See docs/hud-split.md.
+    friend class HudRenderer;
 private:
     Impl* m_impl = nullptr;
 };

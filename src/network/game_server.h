@@ -5,7 +5,6 @@
 
 namespace uldum::asset { class AssetManager; }
 namespace uldum::map { class MapManager; }
-namespace uldum::render { class EffectRegistry; class EffectManager; class Renderer; }
 namespace uldum::audio { class AudioEngine; }
 
 namespace uldum::network {
@@ -20,11 +19,7 @@ public:
     // 1) init_simulation — must be called before map loading (map registers types/entities)
     // 2) init_game — called after map load (alliances, scripting, map scripts)
     bool init_simulation(asset::AssetManager& assets);
-    bool init_game(map::MapManager& map,
-                   render::EffectRegistry* effects = nullptr,
-                   render::EffectManager* effect_mgr = nullptr,
-                   audio::AudioEngine* audio = nullptr,
-                   render::Renderer* renderer = nullptr);
+    bool init_game(map::MapManager& map, audio::AudioEngine* audio = nullptr);
 
     void shutdown();
 

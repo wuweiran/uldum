@@ -8,6 +8,8 @@
 
 namespace uldum::input {
 
+using simulation::GameCommand;
+
 void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
     // Targeting first so a click commits the armed ability before any
     // other handler sees it. Movement runs only when the click wasn't

@@ -77,6 +77,14 @@ public:
     // Read raw bytes from packages or filesystem. Used by all loaders.
     std::vector<u8> read_file_bytes(std::string_view path) const;
 
+    // Enumerate virtual paths beneath `prefix`, optionally filtered by
+    // suffix (e.g. ".lua"). Walks every matching mount (package +
+    // directory; APK enumeration not implemented yet). Returned paths
+    // are normalized (lowercase, forward-slash) and sorted
+    // lexicographically — used for deterministic script-hash inputs.
+    std::vector<std::string> list_files(std::string_view prefix,
+                                        std::string_view suffix = "") const;
+
     // Global instance for code that can't easily pass AssetManager around.
     static AssetManager* instance() { return s_instance; }
 

@@ -7,36 +7,40 @@
 #include <functional>
 #include <vector>
 
-namespace uldum::input {
+namespace uldum::simulation {
 
 static constexpr u32 MAX_SELECTION = 24;
 static constexpr u32 NUM_CONTROL_GROUPS = 10;
 
+// Per-player selection state. Lives on the client side — the server
+// doesn't track which units a given player has selected; selection is
+// pure UI intent. Server's script engine references the type through
+// a nullable pointer so headless builds (no UI) leave it unset.
 class SelectionState {
 public:
-    void set_player(simulation::Player player) { m_player = player; }
-    simulation::Player player() const { return m_player; }
+    void set_player(Player player) { m_player = player; }
+    Player player() const { return m_player; }
 
     // ── Selection ─────────────────────────────────────────────────────────
 
-    const std::vector<simulation::Unit>& selected() const { return m_selected; }
+    const std::vector<Unit>& selected() const { return m_selected; }
     bool empty() const { return m_selected.empty(); }
     u32  count() const { return static_cast<u32>(m_selected.size()); }
 
     // Replace selection with a single unit.
-    void select(simulation::Unit unit);
+    void select(Unit unit);
 
     // Replace selection with multiple units (clamped to MAX_SELECTION).
-    void select_multiple(std::vector<simulation::Unit> units);
+    void select_multiple(std::vector<Unit> units);
 
     // Toggle a unit in/out of selection (shift-click).
-    void toggle(simulation::Unit unit);
+    void toggle(Unit unit);
 
     // Clear selection.
     void clear();
 
     // Check if a unit is selected.
-    bool is_selected(simulation::Unit unit) const;
+    bool is_selected(Unit unit) const;
 
     // Selection change callback (fired after any mutation).
     std::function<void()> on_change;
@@ -53,9 +57,9 @@ public:
     void add_to_group(u32 group);
 
 private:
-    simulation::Player m_player;
-    std::vector<simulation::Unit> m_selected;
-    std::array<std::vector<simulation::Unit>, NUM_CONTROL_GROUPS> m_groups;
+    Player m_player;
+    std::vector<Unit> m_selected;
+    std::array<std::vector<Unit>, NUM_CONTROL_GROUPS> m_groups;
 };
 
-} // namespace uldum::input
+} // namespace uldum::simulation

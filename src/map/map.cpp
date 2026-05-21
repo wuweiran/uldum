@@ -5,6 +5,7 @@
 #include "simulation/world.h"
 #include "simulation/handle_types.h"
 #include "simulation/pathfinding.h"  // PATHING_SUBDIV
+#include "core/hash.h"
 #include "core/log.h"
 
 #include <nlohmann/json.hpp>
@@ -20,6 +21,23 @@ static constexpr const char* TAG = "Map";
 bool MapManager::init() {
     log::info(TAG, "MapManager initialized");
     return true;
+}
+
+std::array<u8, 32> MapManager::compute_script_hash(asset::AssetManager& assets) const {
+    if (m_map_root.empty()) return {};
+    auto paths = assets.list_files(m_map_root, ".lua");
+    Sha256 h;
+    for (const auto& p : paths) {
+        // Hash path + NUL + contents so reordering or renaming changes
+        // the digest. list_files returns sorted, so the iteration order
+        // is deterministic across machines.
+        h.update(p);
+        u8 sep = 0;
+        h.update({&sep, 1});
+        auto bytes = assets.read_file_bytes(p);
+        h.update({bytes.data(), bytes.size()});
+    }
+    return h.finalize();
 }
 
 void MapManager::shutdown() {

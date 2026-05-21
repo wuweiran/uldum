@@ -4,7 +4,7 @@
 #include "simulation/world.h"
 #include "simulation/vision.h"
 #include "simulation/handle_types.h"
-#include "input/command.h"
+#include "simulation/command.h"
 
 #include <glm/vec3.hpp>
 
@@ -15,10 +15,8 @@
 #include <unordered_set>
 #include <vector>
 
-namespace uldum::simulation { class Simulation; class TypeRegistry; class AbilityRegistry; }
-namespace uldum::input  { class CommandSystem; }
+namespace uldum::simulation { class Simulation; class TypeRegistry; class AbilityRegistry; class CommandSystem; }
 namespace uldum::map    { class MapManager; }
-namespace uldum::hud    { class Hud; }
 namespace uldum::script { class ScriptEngine; }
 
 namespace uldum::network {
@@ -54,7 +52,7 @@ public:
     bool init_offline();
     bool init_host(u16 port, u32 max_players,
                    simulation::Simulation& simulation,
-                   input::CommandSystem& commands);
+                   simulation::CommandSystem& commands);
     bool init_client(std::string_view address, u16 port);
 
     void shutdown();
@@ -91,7 +89,7 @@ public:
 
     // ── Client API ──────────────────────────────────────────────────────
     // Send a command to the server (called instead of local CommandSystem).
-    void send_order(const input::GameCommand& cmd);
+    void send_order(const simulation::GameCommand& cmd);
 
     // The World populated from network snapshots (for rendering).
     simulation::World& client_world() { return m_client_world; }
@@ -114,9 +112,12 @@ public:
     // - On host: set_hud() + set_script() install handlers so client-side
     //   C_NODE_EVENT can fire server-side triggers, and host_hud_sync can
     //   route outgoing state deltas.
-    // - On client: set_hud() installs the target HUD that S_HUD_* messages
-    //   apply to locally.
-    void set_hud(hud::Hud* hud)                 { m_hud = hud; }
+    // - On client: set_hud_message_fn() installs a callback that gets each
+    //   raw S_HUD_* payload; the App routes it to hud::apply_network_message.
+    //   Keeping the HUD dispatch out of network/ lets headless builds (the
+    //   server) drop the hud library entirely.
+    using HudMessageFn = std::function<void(std::span<const u8>)>;
+    void set_hud_message_fn(HudMessageFn fn) { m_hud_message_fn = std::move(fn); }
     void set_script(script::ScriptEngine* scr)  { m_script = scr; }
 
     // Host: route a packet built by Hud's sync_fn to the matching peer(s).
@@ -136,8 +137,10 @@ public:
     const f32* update_client_fog(f32 dt);
     simulation::Vision& client_vision() { return m_client_vision; }
 
-    // Set the map hash for join verification.
-    void set_map_hash(u32 hash) { m_map_hash = hash; }
+    // Set the map's script-hash (SHA-256) for join verification.
+    // Client and server compute the same digest from the map's .lua
+    // files; mismatch on C_JOIN is a hard reject (RejectReason::WrongMap).
+    void set_map_hash(const std::array<u8, 32>& hash) { m_map_hash = hash; }
 
     // Configure reconnect behavior (call after init_host).
     void set_disconnect_timeout(f32 seconds) { m_disconnect_timeout = seconds; }
@@ -318,7 +321,7 @@ private:
     bool m_game_started = false;
     bool m_game_ended = false;
     std::unique_ptr<Transport> m_transport;
-    u32 m_map_hash = 0;
+    std::array<u8, 32> m_map_hash{};
     EndData m_end_data;
     std::string m_player_name;   // this process's display name
 
@@ -330,7 +333,7 @@ private:
 
     // ── Host-side ───────────────────────────────────────────────────────
     simulation::Simulation* m_simulation = nullptr;
-    input::CommandSystem* m_commands = nullptr;
+    simulation::CommandSystem* m_commands = nullptr;
 
     struct PeerInfo {
         u32 peer_id;
@@ -395,9 +398,9 @@ private:
     const simulation::AbilityRegistry* m_client_abilities = nullptr;
 
     // HUD sync plumbing — set by App during start_session. Host uses
-    // m_script to dispatch C_NODE_EVENT; client uses m_hud to apply
-    // S_HUD_* messages.
-    hud::Hud*               m_hud    = nullptr;
+    // m_script to dispatch C_NODE_EVENT; client uses m_hud_message_fn
+    // to forward S_HUD_* messages to hud::apply_network_message.
+    HudMessageFn            m_hud_message_fn;
     script::ScriptEngine*   m_script = nullptr;
 
     // Vision (client computes fog locally from received entities; the

@@ -675,11 +675,20 @@ Full internationalization across rendering, content, and UI. Today the engine is
 - Shell + HUD i18n — RmlUi and HUD authors reference string keys rather than literal text; engine looks up against the active locale.
 - RTL shaping — Hebrew / Arabic visual ordering. Same HarfBuzz integration covers it.
 
+### Phase 23 — Headless Server
+
+Make `uldum_server` a clean, game-agnostic, headless binary that builds and runs on Linux as well as Windows — the prerequisite shape for any future cloud-deployable session host. One process still hosts one game session; multi-session orchestration is a separate concern (see Deferred).
+
+- Generic server — strip `game.json` reads; ship `dist/uldum_server/` (exe + `engine.uldpak`). Operator supplies maps.
+- Map fingerprinting — SHA-256 over every `.lua` file in the map, lexicographic path order. Mismatch on `C_JOIN` is a hard reject.
+- Library split for headless builds — `uldum_hud` becomes pure data with a render-side `HudRenderer` in `uldum_render`; `uldum_input` becomes the tiny bindings lib with picker / presets moved to `uldum_input_router`. Server's transitive link graph no longer pulls Vulkan / rhi / vma / freetype / msdfgen.
+- Linux build target — server is headless; CMake + a few `#ifdef _WIN32` cleanups.
+
 ## 16. Deferred / Future Work
 
 Topics scoped out of current phases — revisit when the time comes.
 
-- **Multi-lobby server** — today's `uldum_server` hosts one game per process. Multi-tenant support (lobby directory, browse / create / join) is deferred. Workaround: multiple server processes on different ports.
+- **Multi-session orchestration** — host machine runs many game sessions, one process per session (industry standard for crash isolation). Needs a "master" service: spawns / reaps `uldum_server` processes on demand, tracks active sessions, handles client lobby browse + create requests. Real master needs auth, persistence, monitoring, rate limiting — large enough to be its own phase. Production deployments slot this in via Agones on Kubernetes; smaller deployments would ship a custom `uldum_master.exe`.
 - **LAN game discovery** — WC3-style auto-populated list of local hosts via UDP broadcast, so clients don't have to type an IP.
 - **OpenGL ES RHI** — alternative backend for Android devices / emulators where Vulkan is unavailable, buggy, or poorly supported (e.g. Mesa-emulated paths).
 - **Binary `objects.json`** — current JSON serialization is human-readable and editor-friendly but bloats on large maps and slows load. Switch the in-package representation to FlatBuffers (same family as `terrain.bin`) once map sizes / load times warrant it. Editor's source-folder mode keeps JSON for hand-editing; packed `.uldmap` ships binary.

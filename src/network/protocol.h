@@ -1,12 +1,13 @@
 #pragma once
 
 #include "core/types.h"
-#include "input/command.h"
+#include "simulation/command.h"
 #include "network/lobby.h"
 
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include <array>
 #include <cstring>
 #include <span>
 #include <string>
@@ -136,6 +137,7 @@ public:
         m_buf.insert(m_buf.end(), s.begin(), s.end());
     }
     void write_bool(bool v) { write_u8(v ? 1 : 0); }
+    void write_bytes(const u8* p, size_t n) { m_buf.insert(m_buf.end(), p, p + n); }
 
     const std::vector<u8>& data() const { return m_buf; }
     std::vector<u8>& data() { return m_buf; }
@@ -166,6 +168,7 @@ public:
         return s;
     }
     bool read_bool() { return read_u8() != 0; }
+    void read_bytes(u8* p, size_t n) { read(p, n); }
 
 private:
     void read(void* p, size_t n) {
@@ -185,15 +188,15 @@ inline MsgType peek_type(std::span<const u8> data) {
 
 // ── Client → Server ──────────────────────────────────────────────────────
 
-inline std::vector<u8> build_join(u32 map_hash, std::string_view player_name) {
+inline std::vector<u8> build_join(const std::array<u8, 32>& map_hash, std::string_view player_name) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::C_JOIN));
-    w.write_u32(map_hash);
+    w.write_bytes(map_hash.data(), map_hash.size());
     w.write_string(player_name);
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_order(const input::GameCommand& cmd) {
+inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::C_ORDER));
     w.write_bool(cmd.queued);
@@ -514,11 +517,11 @@ inline u32 parse_projectile_dying(std::span<const u8> data) {
 
 // ── Client-side deserialization helpers ───────────────────────────────────
 
-inline input::GameCommand parse_order(std::span<const u8> data, simulation::Player player) {
+inline simulation::GameCommand parse_order(std::span<const u8> data, simulation::Player player) {
     ByteReader r(data);
     r.read_u8();  // skip MsgType
 
-    input::GameCommand cmd;
+    simulation::GameCommand cmd;
     cmd.player = player;
     cmd.queued = r.read_bool();
     u8 unit_count = r.read_u8();
