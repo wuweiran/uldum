@@ -684,6 +684,27 @@ Make `uldum_server` a clean, game-agnostic, headless binary that builds and runs
 - Library split for headless builds — `uldum_hud` becomes pure data with a render-side `HudRenderer` in `uldum_render`; `uldum_input` becomes the tiny bindings lib with picker / presets moved to `uldum_input_router`. Server's transitive link graph no longer pulls Vulkan / rhi / vma / freetype / msdfgen.
 - Linux build target — server is headless; CMake + a few `#ifdef _WIN32` cleanups.
 
+### Phase 24 — Transport Robustness
+
+Plain UDP via ENet works on the open internet but is silently dropped by a large fraction of real-world networks — corporate firewalls, mobile carriers, restrictive Wi-Fi. ENet also ships unencrypted, has no auth on join, and treats a one-second blip as a session-ending disconnect. Phase 24 lands the transport pieces every higher-level networking concern (identity, lobby, master) assumes. The engine stays platform B: it ships the transport mechanisms and the auth-on-join *seam*; games wire in their identity vendor.
+
+- On-wire encryption — protect all client↔server traffic. Pick one of DTLS over UDP, QUIC (bundles encryption + reconnect + multiplexing if a compact C library is available), or noise-protocol layered on ENet. Tradeoffs evaluated at scope time; choice is one-way.
+- WebSocket-over-TLS fallback — when UDP fails to establish or to deliver, the client falls back to `wss://`. Server listens on both. Same wire protocol on both paths so higher layers don't care.
+- Auth-on-join callback — `C_JOIN` carries an opaque token; server validates via a pluggable callback. Default is "accept any" to preserve single-player + LAN ergonomics; production games swap in their identity vendor's verification.
+- Reconnect-after-blip — client preserves a session id at handshake; server holds the simulation slot open for N seconds after disconnect; the same id can rejoin. Mobile-critical.
+- Version handshake — client + server exchange engine version at handshake (map hash already covered by Phase 23); mismatch is a clean rejection with a usable error string, not a silent desync.
+
+### Phase 25 — OpenGL ES RHI
+
+Only ~50% of in-market Android phones support Vulkan 1.3 (most missing devices lack dynamic rendering or synchronization-2, both of which the current RHI uses). The unsupported half overlaps heavily with the lower-end, casual-game-paying audience. Phase 25 adds a second RHI backend targeting OpenGL ES 3.2 so the engine reaches the rest of the Android market. Quality is "fallback" — features that don't translate cleanly (bindless, indirect draw, shadow cascades when those land) gate to the Vulkan backend.
+
+- RHI abstraction — extract the implicit interface in `vulkan_rhi.h` into an abstract `Rhi` base. `VulkanRhi` and `GlesRhi` are concrete implementations selected at startup based on device capability.
+- GLES 3.2 backend — context creation (EGL on Android), framebuffer-as-swapchain, deferred state batches as command-buffer-equivalent, UBO + sampler bindings as descriptor-equivalent, program + state cache as pipeline-equivalent.
+- Shader pipeline — author once in SPIR-V (current `.spv` flow); transpile to GLSL ES at build time via SPIRV-Cross, ship both compiled SPIR-V and GLSL ES sources inside `engine.uldpak`.
+- Bindless texture array → texture-2D-array — GLES has no real bindless. The static mesh / instance pipeline collapses material indexing into a single 2D-array sampler with per-instance layer index.
+- Indirect draw → instanced draw loop — GLES has glDrawElementsIndirect but limited; fall back to one `glDrawElementsInstancedBaseInstance`-equivalent per draw group.
+- Per-feature gating — UI's "graphics" settings expose only what the active backend supports. Vulkan-only features list lives next to the RHI selector.
+
 ## 16. Deferred / Future Work
 
 Two tiers by whether they block shipping a real production game; grouped by domain inside each tier.
@@ -692,15 +713,13 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 
 **Networking & deployment**
 
-- **Transport robustness** — ENet plain UDP is dropped by a large fraction of real networks (corporate firewalls, mobile carriers, restricted Wi-Fi). Need TCP / WebSocket fallback, on-wire encryption, auth on join, reconnect-after-blip. Mobile especially.
-- **Multi-session orchestration** — "master" service that spawns / reaps `uldum_server` processes per session (process-per-session for crash isolation), runs lobby browse / create, applies rate limits. Production deploys via Agones on Kubernetes; smaller ones ship a custom `uldum_master.exe`.
-- **Identity / accounts** — anonymous + registered users, OAuth (Apple / Google sign-in is non-negotiable on mobile), session tokens. Intertwined with the master.
-- **Update & patching pipeline** — client/server version negotiation, asset CDN, delta updates for mobile. Today everything ships as one binary + uldpak.
-- **Observability** — crash reports, server metrics, player telemetry. Ship v1.0 blind without it.
+- **Reference master** — game-agnostic web service that orchestrates `uldum_server` pods (spawn / reap), brokers lobby browse / create, applies rate limits, and bridges client auth tokens to the active identity vendor. Lives in this repo as a separate binary alongside `uldum_server` — shares `network/protocol.h` but is its own deploy. Each game deploys an instance configured for that game; the alternative is renting orchestration via Hathora / GameLift / Edgegap, which works against the same `uldum_server` interface.
+- **Identity seam** — engine surface for the auth-on-join callback shape (token validator, session id issuance). Concrete identity provider — Apple Sign-In, Google Play Games, Firebase Auth — is per-game vendor code, not engine.
+- **Update & patching pipeline** — client/server version negotiation lives in Phase 24's handshake; what's left is the per-game asset CDN story and delta updates for mobile binaries. Both are per-game vendor work.
+- **Observability seam** — engine surface for emitting structured events + crash hooks. Wire format and sink (Sentry / Crashlytics / Firebase Analytics) is per-game vendor code.
 
 **Platform reach**
 
-- **OpenGL ES RHI** — only ~50% of Android phones support Vulkan 1.3, and the unsupported half overlaps heavily with the casual / paid-app audience. Alternative RHI backend keeps that half playable.
 - **iOS client** — currently Windows + Android. Needs Metal RHI backend (or MoltenVK shim) and an iOS platform layer to mirror `android_platform.cpp`.
 
 **Game integration hooks**
