@@ -92,7 +92,13 @@ void NetworkManager::host_on_disconnect(u32 peer_id) {
         log::info(TAG, "Player {} (peer {}) disconnected — waiting {:.0f}s for reconnect",
                   player_id, peer_id, m_disconnect_timeout);
 
-        m_disconnected.push_back({it->player, std::move(it->known_entities), m_disconnect_timeout});
+        DisconnectedPlayer dp;
+        dp.player          = it->player;
+        dp.known_entities  = std::move(it->known_entities);
+        dp.timer           = m_disconnect_timeout;
+        dp.auth_token      = std::move(it->auth_token);
+        dp.player_name     = std::move(it->player_name);
+        m_disconnected.push_back(std::move(dp));
         m_peers.erase(it);
 
         if (m_pause_on_disconnect && m_game_started) {
@@ -331,6 +337,12 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         r.read_u8();  // skip type
         std::array<u8, 32> client_hash{};
         r.read_bytes(client_hash.data(), client_hash.size());
+        u16 token_len = r.read_u16();
+        std::vector<u8> client_token;
+        if (token_len > 0) {
+            client_token.resize(token_len);
+            r.read_bytes(client_token.data(), token_len);
+        }
         std::string peer_name = r.read_string();
 
         // All-zero hash on the server means "no map verification" — used
@@ -345,11 +357,22 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             return;
         }
 
+        // Auth-on-join: only runs if a callback has been installed (the
+        // worker does this after reading its stdin config). Without one
+        // we accept every join, preserving LAN / dev ergonomics.
+        if (m_auth_callback && !m_auth_callback(client_token, peer_name)) {
+            auto reject = build_reject(RejectReason::Unauthorized);
+            m_transport->send(peer_id, reject, true);
+            log::warn(TAG, "Peer {} rejected: auth callback denied", peer_id);
+            return;
+        }
+
         // Lobby phase: register the peer with no slot and send them the
         // current lobby snapshot. Slot claims happen via C_CLAIM_SLOT.
         if (m_phase == Phase::Lobby) {
             // Register peer (no player slot yet; assigned at host_commit_start)
-            PeerInfo info{peer_id, simulation::Player{UINT32_MAX}, std::move(peer_name), {}};
+            PeerInfo info{peer_id, simulation::Player{UINT32_MAX}, std::move(peer_name),
+                          false, {}, client_token};
             m_peers.push_back(std::move(info));
 
             auto assign = build_lobby_assign(peer_id);
@@ -361,13 +384,37 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             return;
         }
 
-        // Playing phase: reconnect path. Find a disconnected slot to
-        // restore; slot is not assigned fresh because lobby is already
-        // finalized.
-        if (!m_disconnected.empty()) {
-            auto it = m_disconnected.begin();
+        // Playing phase: reconnect path. Match the C_JOIN against the
+        // disconnected list. With a non-empty token we pin the match
+        // to the specific peer that holds that token, so multiple
+        // simultaneous disconnects don't shuffle slots. With an empty
+        // token (LAN / dev) we fall back to first-in-the-list.
+        std::vector<DisconnectedPlayer>::iterator it = m_disconnected.end();
+        if (!client_token.empty()) {
+            it = std::find_if(m_disconnected.begin(), m_disconnected.end(),
+                              [&](const DisconnectedPlayer& d) {
+                                  return d.auth_token == client_token;
+                              });
+            if (it == m_disconnected.end()) {
+                // Token doesn't match anyone we remember — a stranger
+                // trying to slip into someone else's slot. Reject.
+                auto reject = build_reject(RejectReason::Unauthorized);
+                m_transport->send(peer_id, reject, true);
+                log::warn(TAG, "Peer {} rejected: token didn't match any disconnected slot", peer_id);
+                return;
+            }
+        } else if (!m_disconnected.empty()) {
+            it = m_disconnected.begin();
+        }
+        if (it != m_disconnected.end()) {
             u32 slot = it->player.id;
-            PeerInfo info{peer_id, it->player, std::move(peer_name), {}};
+            // Prefer the saved display_name (the one the player joined
+            // with originally) over whatever the reconnecting client
+            // re-sent — keeps the lobby UI stable across blips.
+            std::string restored_name = it->player_name.empty() ? std::move(peer_name)
+                                                                 : it->player_name;
+            PeerInfo info{peer_id, it->player, std::move(restored_name),
+                          false, {}, std::move(it->auth_token)};
             m_disconnected.erase(it);
 
             auto welcome = build_welcome(slot,
@@ -805,8 +852,9 @@ bool NetworkManager::init_client(std::string_view address, u16 port) {
 }
 
 void NetworkManager::client_on_connect(u32 /*peer_id*/) {
-    log::info(TAG, "Connected to server, sending C_JOIN (name='{}')", m_player_name);
-    auto msg = build_join(m_map_hash, m_player_name);
+    log::info(TAG, "Connected to server, sending C_JOIN (name='{}', token={}B)",
+              m_player_name, m_auth_token.size());
+    auto msg = build_join(m_map_hash, m_auth_token, m_player_name);
     m_transport->send(0, msg, true);
 }
 
@@ -842,7 +890,15 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         ByteReader r(data);
         r.read_u8();
         u8 reason = r.read_u8();
-        log::error(TAG, "Server rejected connection (reason={})", reason);
+        std::string_view explanation;
+        switch (static_cast<RejectReason>(reason)) {
+            case RejectReason::Full:         explanation = "lobby is full";                                     break;
+            case RejectReason::WrongMap:     explanation = "map mismatch — your map differs from the server's"; break;
+            case RejectReason::Started:      explanation = "session already started";                           break;
+            case RejectReason::Unauthorized: explanation = "auth-on-join rejected the presented token";         break;
+            default:                         explanation = "unknown";                                            break;
+        }
+        log::error(TAG, "Server rejected connection: {} (reason={})", explanation, reason);
         break;
     }
     case MsgType::S_SPAWN:   client_handle_spawn(data); break;

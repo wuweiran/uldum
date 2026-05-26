@@ -20,7 +20,9 @@ bool GameServer::init_simulation(asset::AssetManager& assets) {
     return true;
 }
 
-bool GameServer::init_game(map::MapManager& map, audio::AudioEngine* audio) {
+bool GameServer::init_game(map::MapManager& map,
+                            audio::AudioEngine* audio,
+                            PreMainHook pre_main_hook) {
     // Alliances from manifest. Array index is the player id — there's no
     // separate slot number field.
     {
@@ -118,6 +120,11 @@ bool GameServer::init_game(map::MapManager& map, audio::AudioEngine* audio) {
 
     // Load engine constants (available to all scripts via require("constants"))
     m_script.load_script("engine/scripts/constants.lua");
+
+    // Pre-main hook: lets the caller inject globals into the Lua VM
+    // (e.g. `GAME_SESSION` from the worker's stdin config) before any
+    // map script runs.
+    if (pre_main_hook) pre_main_hook(m_script);
 
     // Load and run per-scene main script. Every map MUST define `main()`
     // in its scene's scripts/main.lua (or fall back to <map>/scripts/main.lua

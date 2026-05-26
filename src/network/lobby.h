@@ -80,7 +80,7 @@ inline void init_lobby_from_manifest(LobbyState& out,
 
 // True when every slot is Human or Computer (no Open). The game can be
 // started with Open slots; this helper exists only for callers that want
-// that signal (e.g. `uldum_server` auto-commits when the lobby is full).
+// that signal (e.g. `uldum_worker` auto-commits when the lobby is full).
 inline bool lobby_all_slots_claimed(const LobbyState& s) {
     if (s.slots.empty()) return false;
     for (const auto& a : s.slots) {

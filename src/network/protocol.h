@@ -118,9 +118,10 @@ enum class NodeEventKind : u8 {
 };
 
 enum class RejectReason : u8 {
-    Full     = 0,
-    WrongMap = 1,
-    Started  = 2,
+    Full         = 0,
+    WrongMap     = 1,
+    Started      = 2,
+    Unauthorized = 3,
 };
 
 // ── Binary read/write helpers ─────────────────────────────────────────────
@@ -188,10 +189,18 @@ inline MsgType peek_type(std::span<const u8> data) {
 
 // ── Client → Server ──────────────────────────────────────────────────────
 
-inline std::vector<u8> build_join(const std::array<u8, 32>& map_hash, std::string_view player_name) {
+inline std::vector<u8> build_join(const std::array<u8, 32>& map_hash,
+                                  std::span<const u8> auth_token,
+                                  std::string_view player_name) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::C_JOIN));
     w.write_bytes(map_hash.data(), map_hash.size());
+    // Auth token: opaque bytes, validated by the worker's auth-on-join
+    // callback. Empty = LAN / dev (worker with no token table accepts all).
+    w.write_u16(static_cast<u16>(auth_token.size()));
+    if (!auth_token.empty()) {
+        w.write_bytes(auth_token.data(), auth_token.size());
+    }
     w.write_string(player_name);
     return std::move(w.data());
 }

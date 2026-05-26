@@ -140,7 +140,7 @@ Both satisfy the same `read_file_bytes(virtual_path) → bytes` interface. All a
 |---|---|---|
 | `uldum_dev`    | ✅ | ❌ |
 | `uldum_game`   | ✅ | ❌ |
-| `uldum_server` | ✅ | ❌ |
+| `uldum_worker` | ✅ | ❌ |
 | `uldum_editor` | ✅ | ✅ |
 
 Only the editor can point at a loose source directory. Everything else consumes the packaged `.uldmap` file that the build produced.
@@ -160,7 +160,7 @@ Source trees (`engine/`, `maps/<name>.uldmap/`) remain directories; the build pi
 
 ## Texture Format
 
-**KTX2 + Basis Universal** is the only texture format the engine accepts. This applies to every target (`uldum_dev`, `uldum_game`, `uldum_server`, `uldum_editor`) and every mount (`engine.uldpak`, `.uldmap` file, loose directory). A PNG inside a mount is a load error — there is no format fallback, and no bake step in the engine pipeline.
+**KTX2 + Basis Universal** is the only texture format the engine accepts. This applies to every target (`uldum_dev`, `uldum_game`, `uldum_worker`, `uldum_editor`) and every mount (`engine.uldpak`, `.uldmap` file, loose directory). A PNG inside a mount is a load error — there is no format fallback, and no bake step in the engine pipeline.
 
 Library: [Basis Universal](https://github.com/BinomialLLC/basis_universal) provides both the runtime transcoder (linked into `uldum_asset` via `basisu_transcoder.cpp` compiled as a small static lib) and the authoring CLI (`basisu.exe` built as part of the engine build, lands in `build/bin/`). One KTX2 payload transcodes to BC7 on desktop and ASTC on Android at GPU upload time.
 

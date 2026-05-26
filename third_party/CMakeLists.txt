@@ -164,6 +164,20 @@ if(ANDROID)
     )
 endif()
 
+# ── cpp-httplib (HTTP server for uldum_server orchestrator — Phase 24) ────
+# Single-header C++ HTTP server. We use it in plain-HTTP mode; TLS
+# termination is the reverse proxy's job in production. Desktop-only —
+# the orchestrator is a backend daemon, never built for Android.
+if(NOT ANDROID)
+    message(STATUS "Fetching cpp-httplib...")
+    FetchContent_Declare(httplib
+        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.18.7.tar.gz
+    )
+    FetchContent_Populate(httplib)
+    add_library(httplib INTERFACE)
+    target_include_directories(httplib SYSTEM INTERFACE ${httplib_SOURCE_DIR})
+endif()
+
 # ── Basis Universal (KTX2 container + UASTC encoder/transcoder) ───────────
 # BasisU is the codec behind KTX2 UASTC/ETC1S. It ships both an authoring
 # CLI (basisu.exe — we invoke it from scripts/png_to_ktx2.ps1) and a

@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 21 (Projectile) complete. Next: Phase 22 (I18n).
+Phase 24 (Server Orchestration + Reconnect) complete. Next: Phase 25 (OpenGL ES RHI).
 
 **What works:**
 - Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
@@ -178,7 +178,8 @@ Phase 21 (Projectile) complete. Next: Phase 22 (I18n).
 - Build targets (Phase 15a):
   - `uldum_dev` — development runtime (debug, auto-starts map)
   - `uldum_game` — shipped product runtime, parameterized by a game project (name, icon, bundled maps, package ID)
-  - `uldum_server` — headless dedicated server (no renderer/audio/window)
+  - `uldum_worker` — headless per-session game server (no renderer/audio/window). One process per active game session.
+  - `uldum_server` — orchestrator (HTTP API for game backends, spawns workers, dispatches webhooks)
   - `uldum_editor` — in-engine terrain editor (ImGui)
   - `uldum_pack` — package tool (pack/unpack/list .uldpak / .uldmap archives)
   - `sample_game/game.json` — product configuration (name, window, maps, default_map, Android metadata)
@@ -186,7 +187,7 @@ Phase 21 (Projectile) complete. Next: Phase 22 (I18n).
     - `build.ps1` — build all targets
     - `build_dev.ps1` — build uldum_dev only
     - `build_game.ps1` — build uldum_game only
-    - `build_server.ps1` — build uldum_server only
+    - `build_server.ps1` — build server-side targets (`uldum_worker` + `uldum_server`)
     - `build_editor.ps1` — build uldum_editor only
 - Packaging (Phase 15b):
   - `.uldpak` — engine asset archive (`engine.uldpak`)
@@ -222,6 +223,17 @@ Phase 21 (Projectile) complete. Next: Phase 22 (I18n).
   - Node-event + composite UI bindings so maps can compose dialogs from atoms
   - Script-driven game pause and single-player query
   - Camera scripting — per-player addressed (scripts run server-only), WC3-style ground-target semantics, plus zoom, trauma shake, and a hard lock-to-unit
+- Headless server (Phase 23):
+  - `uldum_worker` builds and runs game-agnostic on Linux as well as Windows
+  - SHA-256 map fingerprint, hard-reject on `C_JOIN` mismatch
+  - Server-side library split keeps Vulkan / RHI / fonts out of the headless link graph
+- Server orchestration (Phase 24):
+  - `uldum_server` orchestrator with HTTP API; spawns `uldum_worker` per session
+  - Map allowlist auto-discovered from `maps/`; engine stays cloud-neutral (caller auth is the operator's job, terminated at a reverse proxy in production)
+  - Per-player session tokens validated at C_JOIN; reconnect-after-blip restores the same slot via the same token
+  - `GAME_SESSION` global exposes the game backend's `initial_data` JSON to map Lua
+  - End-of-session result captured from worker stdout and POSTed to the configured webhook URL
+  - `uldum_dev --server <url>` doubles as a game-backend stand-in for local testing
 - Ninja build system for parallel compilation
 
 ## Prerequisites
@@ -316,7 +328,8 @@ src/
 ├── map/            Map format, terrain data, scene loader
 ├── editor/         Map editor executable — terrain tools, cliff/ramp editing
 ├── tools/          Build-time CLI utilities (uldum_pack, uldum_gen_overlays)
-└── app/            Engine core + entry points (uldum_dev, uldum_game, uldum_server, uldum_editor, android_main)
+├── server/         Headless server-side binaries (uldum_worker, future uldum_server orchestrator)
+└── app/            Client / editor entry points (uldum_dev, uldum_game, android_main)
 ```
 
 ## Documentation

@@ -181,7 +181,8 @@ else()
 
     # ── Desktop ENGINE build ─────────────────────────────────────────────────
     # No game project supplied. Builds engine developer tools:
-    #   uldum_dev, uldum_editor (in src/editor/), uldum_server, uldum_pack.
+    #   uldum_dev (here), uldum_editor (src/editor/), uldum_worker + uldum_server
+    #   (src/server/), uldum_pack (src/tools/).
     # Packs engine assets + every .uldmap folder under maps/ for dev runtime.
     # Does NOT produce uldum_game — that's build_game.ps1's job.
 
@@ -191,6 +192,11 @@ else()
     )
     target_include_directories(uldum_dev PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum_dev PRIVATE ${ULDUM_ENGINE_LIBS})
+    # cpp-httplib for the orchestrator-via-HTTP flow (`--server`).
+    # uldum_dev acts briefly as a game-backend stand-in: POSTs `/sessions`
+    # to `uldum_server`, takes one token, then becomes the first player.
+    # Header-only, no SSL needed (local dev uses plain http://).
+    target_link_libraries(uldum_dev PRIVATE httplib)
     if(ULDUM_DEV_UI)
         target_sources(uldum_dev PRIVATE dev_console.cpp)
         target_link_libraries(uldum_dev PRIVATE imgui)
@@ -228,20 +234,5 @@ else()
     )
     add_dependencies(pack_engine_maps uldum_pack uldum_dev_shaders)
     add_dependencies(uldum_dev pack_engine_maps)
-
-    # ── uldum_server — Headless dedicated server ──────────────────────────
-    set(ULDUM_SERVER_LIBS
-        uldum_core
-        uldum_asset
-        uldum_i18n
-        uldum_simulation
-        uldum_script
-        uldum_network
-        uldum_map
-    )
-    add_executable(uldum_server server_main.cpp)
-    target_include_directories(uldum_server PRIVATE ${ULDUM_SRC})
-    target_link_libraries(uldum_server PRIVATE ${ULDUM_SERVER_LIBS})
-    add_dependencies(uldum_server pack_engine_maps)
 
 endif()

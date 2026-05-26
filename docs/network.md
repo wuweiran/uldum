@@ -211,7 +211,7 @@ Lua calls EndGame    → S_END broadcast → session over
 
 A `NetworkManager::Phase` flag (`None / Lobby / Playing`) gates which incoming messages are honored. Offline mode skips all of this — simulation starts immediately.
 
-The dedicated `uldum_server` auto-commits Start the moment all slots are filled (no UI to press a button). Multi-lobby support on the server process is deferred; see the "Deferred / Future Work" section in [design.md](design.md).
+The dedicated `uldum_worker` auto-commits Start the moment all slots are filled (no UI to press a button). Multi-session orchestration lives in `uldum_server` on top of multiple worker processes — see [Production Deployment Topology](#production-deployment-topology).
 
 ## Reconnect
 
@@ -242,8 +242,154 @@ The engine fires `on_game_end` event (for triggers), then broadcasts `S_END` wit
 
 - Server can serve one game at a time (multi-game deferred)
 
+## Production Deployment Topology
+
+Everything above describes the wire protocol between a worker and its clients. For production deployment, an orchestrator (`uldum_server`) sits on top of multiple worker processes (`uldum_worker`), and per-game backends handle identity and persistence entirely outside the engine. This section is the end-to-end picture.
+
+### Actors
+
+| Actor | Who writes it | Where it runs |
+|---|---|---|
+| **Client app** | Game dev | Player's phone — App Store / Play Store binary embeds the engine |
+| **Game backend** | Game dev (any language) | Game dev's cloud — owns login + identity + profiles + persistence; never inside the engine repo |
+| **`uldum_server`** | Engine (game-agnostic) | Single deployment that all games on Uldum share. HTTP API for game backends, spawns workers, dispatches game-end webhooks |
+| **`uldum_worker`** | Engine (game-agnostic) | Spawned by `uldum_server` per game session; one process per active session; exits when the game ends |
+
+### Sequence
+
+```
+Player    Client App     Game Backend        uldum_server         uldum_worker
+  │           │              │                     │                   │
+  │  Sign in / tap Play (game-side UI, vendor SDK of game dev's choice)│
+  │           │ login + auth │                     │                   │
+  │           │─────────────>│                     │                   │
+  │           │              │                     │                   │
+  │           │ "find game"  │                     │                   │
+  │           │─────────────>│                     │                   │
+  │           │              │  POST /sessions     │                   │
+  │           │              │  { map,             │                   │
+  │           │              │    webhook_url,     │                   │
+  │           │              │    initial_data }   │                   │
+  │           │              │────HTTPS via proxy─>│                   │
+  │           │              │  (reverse proxy     │                   │
+  │           │              │   terminates cloud- │                   │
+  │           │              │   native auth here) │                   │
+  │           │              │                     │ pick free port    │
+  │           │              │                     │ generate tokens   │
+  │           │              │                     │ fork+exec ───────>│ (starts)
+  │           │              │                     │ pass config via   │
+  │           │              │                     │ child's stdin     │
+  │           │              │                     │                   │
+  │           │              │ { server_addr,      │                   │
+  │           │              │   port, tokens[] }  │                   │
+  │           │              │<───HTTPS────────────│                   │
+  │           │              │                                         │
+  │           │ { addr, port,│                                         │
+  │           │   token }    │                                         │
+  │           │<─────────────│                                         │
+  │           │                                                        │
+  │           │ UDP connect ──────────────────────────────────────────>│
+  │           │ C_JOIN { map_hash, token, name } ─────────────────────>│
+  │           │                                                        │ auth callback:
+  │           │                                                        │   check token in
+  │           │                                                        │   expected-joiners
+  │           │                                                        │   table (in-memory)
+  │           │                                                        │
+  │           │ S_LOBBY_STATE ◄────────────────────────────────────────│
+  │           │                                                        │
+  │           │ ... game proceeds ...                                  │
+  │           │                                                        │ game ends
+  │           │                                                        │ writes result JSON
+  │           │                                                        │ to stdout, exits
+  │           │              │                     │ reads child stdout│
+  │           │              │                     │ on process exit   │
+  │           │              │ POST <webhook_url>  │                   │
+  │           │              │ { results, ... }    │                   │
+  │           │              │<───HTTPS────────────│                   │
+  │           │              │ game backend awards │                   │
+  │           │              │ XP, updates profile,│                   │
+  │           │              │ etc.                │                   │
+```
+
+### Step responsibilities
+
+| # | Step | Owner |
+|---|------|-------|
+| 1 | Player launches client app, logs in via game backend | Game dev (client + backend) |
+| 2 | Game backend authenticates the player however it wants | Game dev's backend |
+| 3 | Client asks game backend for a match | Game dev's client + backend |
+| 4 | Game backend POSTs `/sessions` to `uldum_server` with the match config | Game dev's backend |
+| 5 | (Production) reverse proxy in front of `uldum_server` terminates cloud-native auth (Azure AD / IAM / etc.); `uldum_server` itself stays cloud-neutral | Operator / proxy |
+| 6 | `uldum_server` picks a free UDP port from its range, generates random bearer tokens (one per player declared in the map's manifest) | Engine — `uldum_server` |
+| 6 | `uldum_server` fork+execs `uldum_worker`, passes config (map, tokens, port, etc.) via the child's stdin | Engine — `uldum_server` |
+| 7 | `uldum_server` fork+execs `uldum_worker`, passes config (map, tokens, etc.) via the child's stdin | Engine — `uldum_server` |
+| 8 | `uldum_server` responds with `{ addr, port, tokens }` to the game backend | Engine — `uldum_server` |
+| 9 | Game backend gives each player their token + connection info | Game dev's backend |
+| 10 | Players connect to the worker via UDP, present token in `C_JOIN` | Engine — worker / client |
+| 11 | `uldum_worker` checks the token against its in-memory expected-joiners table | Engine — `uldum_worker` |
+| 12 | Game proceeds. On game-end, worker writes result JSON to stdout, exits | Engine — `uldum_worker` |
+| 13 | `uldum_server` reads the worker's stdout, POSTs results to the game backend's webhook URL, frees the port | Engine — `uldum_server` |
+
+### Tokens
+
+Per-player session tokens are simple **random bearer tokens** (e.g. 128-bit UUIDs), held in an in-memory table on the worker. No crypto on the engine side: HTTPS between game backend ↔ player protects the token in transit, the token is unguessable due to randomness, and it never leaves the trust circle (game backend, player, worker).
+
+When a worker spawns, the orchestrator hands it a list of expected `(token, display_name)` pairs via stdin config. On every `C_JOIN`, the worker checks the presented token against this table. Unknown token → `S_REJECT(Unauthorized)`.
+
+### Caller auth (game backend → `uldum_server`)
+
+`uldum_server` itself is **unauthenticated**. It does not validate the caller's identity. This is a deliberate choice: every cloud has its own service-to-service auth pattern (Azure AD / Managed Identity, AWS IAM / SigV4, GCP Workload Identity, Kubernetes ServiceAccount tokens), and baking any one of them into the engine would lock deployments into that cloud — or require maintaining N codepaths.
+
+Instead, production deployments terminate caller auth at a reverse proxy in front of the orchestrator:
+
+```
+game backend  →  Azure API Management / nginx / Cloudflare Access  →  uldum_server
+              (validates the cloud-native identity token here,
+               drops requests that don't authenticate)
+```
+
+The orchestrator is reachable only through the proxy (network-layer isolation). Local dev points game-backend clients (or `uldum_dev`) directly at the orchestrator's port; no proxy involved.
+
+### Auth-on-join callback (server-side seam)
+
+`uldum_worker` exposes a configurable validator that fires on every `C_JOIN`:
+
+```cpp
+using AuthCallback = std::function<bool(std::span<const u8> token,
+                                        std::string_view peer_name)>;
+```
+
+**Default behavior is set by the spawn mode:**
+
+| `uldum_worker` startup | Behavior |
+|---|---|
+| Spawned by `uldum_server` (production) | Validator checks the token against the expected-joiners table passed via stdin |
+| Standalone (LAN / dev / single-player, no stdin config) | No tokens table → accept all; Phase 23's "operator supplies a map" path keeps working unchanged |
+
+### Inter-process communication
+
+The orchestrator ↔ worker channel is whatever the OS gives us by default: the worker's stdout/stderr handles, captured by the orchestrator at spawn time.
+
+- **stdin (worker)**: orchestrator writes the JSON config blob once at spawn (map path, tokens, expected players, initial_data, webhook URL).
+- **stdout (worker)**: reserved for one final JSON line at game-end (results), written right before exit.
+- **stderr (worker)**: regular logs, the orchestrator can pipe them to a logfile or `/dev/null`.
+
+No sockets, no named pipes, no shared files. Cross-platform via `posix_spawn` on Linux / `CreateProcess` on Windows.
+
+### What game devs customize vs what the engine ships
+
+`uldum_server` and `uldum_worker` are **game-agnostic binaries**. They ship from this repo and never need to be forked — game devs deploy them as-is and call into the HTTP API from their own backend.
+
+All game-specific concerns — login, identity vendor (Firebase / Apple / Google), profiles, persistence, payments, leaderboards, anti-cheat business logic — live entirely in the game backend, which the game dev writes in any language they want. The engine doesn't know about identity vendors and doesn't need to.
+
+### LAN / dev / single-player path
+
+Skips the orchestrator entirely. `uldum_worker` runs standalone (today's `uldum_server` behavior, just renamed), accepts any client because there's no tokens table. This is Phase 23's path, unchanged.
+
 ## Future Work
 
 - **Delta compression**: only send entities that changed since last acknowledged snapshot
-- **Transport fallback**: TCP or QUIC for environments that block UDP
+- **Transport fallback**: TCP / WebSocket-over-TLS for the ~5-10% of sessions on restricted networks that drop UDP (see [design.md](design.md) Deferred / Future Work)
+- **Transport encryption**: DTLS or QUIC for on-wire confidentiality + integrity (deferred — see [design.md](design.md))
+- **Protocol-version handshake**: clean rejection on stale-client / stale-server mismatches (deferred until shipped clients are out-of-sync with running servers)
 - **Bandwidth optimization**: variable send rate, priority-based entity updates

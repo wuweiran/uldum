@@ -21,7 +21,7 @@ scripts\build_editor.ps1
 scripts\build_server.ps1
 ```
 
-**Output:** `build\bin\` — `uldum_dev.exe`, `uldum_editor.exe`, `uldum_server.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and every `maps\*.uldmap\` from the engine repo packed into `build\bin\maps\`. **No `uldum_game.exe`** — that target only appears in per-project game builds (below).
+**Output:** `build\bin\` — `uldum_dev.exe`, `uldum_editor.exe`, `uldum_worker.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and every `maps\*.uldmap\` from the engine repo packed into `build\bin\maps\`. **No `uldum_game.exe`** — that target only appears in per-project game builds (below). `uldum_server.exe` (orchestrator) is Phase 24 work, not yet produced.
 
 Run `uldum_dev.exe` from `build\bin\` to iterate. Loads `maps/test_map.uldmap` by default; `--map <path>` picks a different one.
 

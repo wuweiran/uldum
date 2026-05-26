@@ -57,6 +57,10 @@ struct LaunchArgs {
     // BCP 47 locale code (e.g. "en", "zh-CN"). Empty = use default "en".
     // Set via `--locale <code>` CLI arg.
     std::string locale;
+    // Bearer token presented to the worker in C_JOIN. Set when the dev
+    // CLI got a token from `uldum_server` (via `--server`) or passed one
+    // through directly (`--token`). Empty = no token (LAN / dev path).
+    std::vector<u8> auth_token;
 };
 
 class App {

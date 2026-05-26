@@ -204,7 +204,7 @@ public:
     // `path` is the map root (e.g. "maps/test_map.uldmap"). It is also the
     // virtual asset prefix. The backing storage is chosen by `allow_directory`:
     //   - false (default): `path` must be a packaged `.uldmap` file on disk.
-    //     This is what uldum_dev / uldum_game / uldum_server use — they only
+    //     This is what uldum_dev / uldum_game / uldum_worker use — they only
     //     consume shipped packages.
     //   - true:            `path` may also be a directory on disk (loose files).
     //     Only uldum_editor uses this, so it can edit the source tree live.

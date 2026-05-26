@@ -15,7 +15,7 @@ There is no UI toggle — the mode is a consequence of the path the user picks. 
 
 Both modes consume the same asset formats — KTX2 for textures, glTF for models, JSON for configs, Lua for scripts, custom binary for `terrain.bin`. The modes only differ in how changes are persisted (rewritten archive vs. loose files on disk).
 
-Every other target (`uldum_dev`, `uldum_game`, `uldum_server`) is strict: packed maps only. Source-folder mode is the editor's sole exception, motivated purely by the save-to-loose-files workflow — not by format flexibility.
+Every other target (`uldum_dev`, `uldum_game`, `uldum_worker`) is strict: packed maps only. Source-folder mode is the editor's sole exception, motivated purely by the save-to-loose-files workflow — not by format flexibility.
 
 ## What each mode edits
 

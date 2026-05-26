@@ -25,6 +25,11 @@ add_subdirectory(hud)
 # Executables / shared-library entry point
 add_subdirectory(app)
 
+# Headless server binaries (orchestrator + per-session worker). Desktop-only.
+if(NOT ANDROID)
+    add_subdirectory(server)
+endif()
+
 # Desktop-only. uldum_pack is needed by both engine and game builds (it produces
 # .uldpak / .uldmap archives). The editor is engine-dev only; a per-project
 # game build doesn't produce it.

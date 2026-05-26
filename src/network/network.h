@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -87,6 +88,12 @@ public:
     bool client_game_ended() const { return m_game_ended; }
     const EndData& client_end_data() const { return m_end_data; }
 
+    // Host: has EndGame been called? (mirrors the flag set by host_end_game
+    // / received by clients via S_END). Workers poll this to detect when
+    // they should write the result to stdout and exit.
+    bool is_game_ended() const { return m_game_ended; }
+    const EndData& end_data() const { return m_end_data; }
+
     // ── Client API ──────────────────────────────────────────────────────
     // Send a command to the server (called instead of local CommandSystem).
     void send_order(const simulation::GameCommand& cmd);
@@ -141,6 +148,19 @@ public:
     // Client and server compute the same digest from the map's .lua
     // files; mismatch on C_JOIN is a hard reject (RejectReason::WrongMap).
     void set_map_hash(const std::array<u8, 32>& hash) { m_map_hash = hash; }
+
+    // Client-side: bytes to present in C_JOIN. Engine doesn't interpret
+    // them. Empty (default) = LAN / dev. Production clients call this
+    // after receiving a session token from their game backend.
+    void set_auth_token(std::vector<u8> token) { m_auth_token = std::move(token); }
+
+    // Host-side: validator invoked on every incoming C_JOIN. Returns true
+    // to admit, false to reject with S_REJECT(Unauthorized). Default (no
+    // callback installed) accepts every join — preserves LAN / dev
+    // ergonomics. Production hosts wire in their token-table check here.
+    using AuthCallback = std::function<bool(std::span<const u8> token,
+                                            std::string_view peer_name)>;
+    void set_auth_callback(AuthCallback fn) { m_auth_callback = std::move(fn); }
 
     // Configure reconnect behavior (call after init_host).
     void set_disconnect_timeout(f32 seconds) { m_disconnect_timeout = seconds; }
@@ -325,6 +345,11 @@ private:
     EndData m_end_data;
     std::string m_player_name;   // this process's display name
 
+    // Client-side: token to present in C_JOIN. Host-side: validator
+    // installed by the worker after reading its stdin config.
+    std::vector<u8> m_auth_token;
+    AuthCallback    m_auth_callback;
+
     // Lobby snapshot. On host: authoritative copy, pushed to all peers on
     // every mutation. On client: mirror of the host's snapshot.
     LobbyState m_lobby;
@@ -341,6 +366,11 @@ private:
         std::string player_name;     // from C_JOIN, shown in lobby + surfaced to Lua
         bool loaded = false;         // Loading-phase: peer sent C_LOAD_DONE
         std::unordered_set<u32> known_entities;
+        // Auth token presented at first C_JOIN. Stored so that a later
+        // C_JOIN carrying the same token can be matched back to this
+        // slot — that's what makes reconnect-after-blip work without
+        // shuffling roles when multiple peers drop.
+        std::vector<u8> auth_token;
     };
     std::vector<PeerInfo> m_peers;
     std::unordered_set<u32> m_prev_tick_entities;
@@ -350,6 +380,8 @@ private:
         simulation::Player player;
         std::unordered_set<u32> known_entities;  // preserved from PeerInfo
         f32 timer = 0;                           // seconds remaining
+        std::vector<u8> auth_token;              // preserved from PeerInfo for reconnect matching
+        std::string player_name;                 // preserved so the new peer keeps the lobby display
     };
     std::vector<DisconnectedPlayer> m_disconnected;
     f32 m_disconnect_timeout = 60.0f;

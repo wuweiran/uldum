@@ -469,6 +469,11 @@ bool App::enter_lobby() {
         // map path the user picked (will be confirmed by the host).
         m_network.lobby_state().map_path = m_args.map_path;
         m_network.lobby_state().map_name = m_map.manifest().name;
+        // Forward the worker-session bearer token (when one is present)
+        // so the worker's auth-on-join check passes. Empty token =
+        // LAN / dev path; the worker's "no callback installed" default
+        // accepts the join.
+        m_network.set_auth_token(m_args.auth_token);
         if (!m_network.init_client(m_args.connect_address, m_args.port)) {
             log::error(TAG, "Failed to connect to {}:{}", m_args.connect_address, m_args.port);
             return false;

@@ -16,6 +16,7 @@
 namespace uldum::log {
 
 static Level s_min_level = Level::Trace;
+static bool  s_use_stderr = false;  // workers flip this on at startup
 
 // Desktop-only file sink — opens run.log next to the exe on first use. Flushed
 // on every write so a crash leaves a readable trail even if stdout is buffered
@@ -29,6 +30,10 @@ static std::ofstream& log_file() {
 
 void set_level(Level level) {
     s_min_level = level;
+}
+
+void redirect_to_stderr() {
+    s_use_stderr = true;
 }
 
 
@@ -72,7 +77,14 @@ void write(Level level, std::string_view tag, std::string_view message) {
 
     auto line = std::format("[{:%H:%M:%S}] [{}] [{}] {}\n", time, level_str(level), tag, message);
 
-    std::print("{}", line);
+    // Default sink is stdout. The worker calls `redirect_to_stderr` at
+    // startup so its stdout stays a clean structured-output channel for
+    // the orchestrator to capture; every other binary keeps the default.
+    std::FILE* sink = s_use_stderr ? stderr : stdout;
+    std::print(sink, "{}", line);
+    // Flush eagerly so live diagnostics appear under redirection (where
+    // the default is full-buffering, not line-buffering).
+    std::fflush(sink);
 
     if (auto& f = log_file(); f) {
         f << line;

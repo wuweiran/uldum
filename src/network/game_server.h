@@ -19,7 +19,15 @@ public:
     // 1) init_simulation — must be called before map loading (map registers types/entities)
     // 2) init_game — called after map load (alliances, scripting, map scripts)
     bool init_simulation(asset::AssetManager& assets);
-    bool init_game(map::MapManager& map, audio::AudioEngine* audio = nullptr);
+
+    // `pre_main_hook` fires after Lua is initialized + constants are
+    // loaded but BEFORE the map's `main()` runs. The worker uses this
+    // to inject the GAME_SESSION global so map scripts can read
+    // session-supplied data from inside main().
+    using PreMainHook = std::function<void(script::ScriptEngine&)>;
+    bool init_game(map::MapManager& map,
+                   audio::AudioEngine* audio = nullptr,
+                   PreMainHook pre_main_hook = {});
 
     void shutdown();
 

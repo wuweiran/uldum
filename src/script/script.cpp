@@ -532,6 +532,40 @@ bool ScriptEngine::call_function(std::string_view name) {
     return true;
 }
 
+// JSON → Lua value. Arrays become 1-indexed tables (Lua convention),
+// objects become string-keyed tables, scalars convert directly.
+static sol::object json_to_lua(sol::state& lua, const nlohmann::json& j) {
+    if (j.is_null())           return sol::make_object(lua, sol::nil);
+    if (j.is_boolean())        return sol::make_object(lua, j.get<bool>());
+    if (j.is_number_integer()) return sol::make_object(lua, j.get<i64>());
+    if (j.is_number_float())   return sol::make_object(lua, j.get<f64>());
+    if (j.is_string())         return sol::make_object(lua, j.get<std::string>());
+    if (j.is_array()) {
+        sol::table t = lua.create_table();
+        for (size_t i = 0; i < j.size(); ++i) {
+            t[static_cast<int>(i + 1)] = json_to_lua(lua, j[i]);
+        }
+        return t;
+    }
+    if (j.is_object()) {
+        sol::table t = lua.create_table();
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            t[it.key()] = json_to_lua(lua, it.value());
+        }
+        return t;
+    }
+    return sol::make_object(lua, sol::nil);
+}
+
+void ScriptEngine::set_global_from_json(std::string_view name, const nlohmann::json& value) {
+    if (!m_lua) {
+        log::warn(TAG, "set_global_from_json('{}'): Lua VM not initialized", name);
+        return;
+    }
+    std::string name_str(name);
+    (*m_lua)[name_str] = json_to_lua(*m_lua, value);
+}
+
 // ── Script paths (require) ────────────────────────────────────────────────
 
 void ScriptEngine::set_script_paths(std::string_view scene_scripts,

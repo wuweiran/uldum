@@ -33,7 +33,8 @@ Uldum is a game engine for map-based, unit-centric games with Lua scripting, mul
 | `audio` | 3D positional audio, SFX, music streaming | core, asset |
 | `asset` | Resource manager, format loaders (glTF, KTX2, OGG) | core |
 | `editor` | In-engine terrain editor (ImGui) | core, render, simulation, map |
-| `app` | Entry point, main loop, game state machine | All |
+| `app` | Client entry points (uldum_dev, uldum_game), main loop, game state machine | All |
+| `server` | Headless server-side binaries (uldum_worker per-session, future uldum_server orchestrator) | core, asset, i18n, simulation, script, network, map |
 
 ### Asset Split
 

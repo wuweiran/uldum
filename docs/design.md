@@ -551,7 +551,7 @@ Build targets, cross-platform packaging, and asset baking.
 #### Phase 15a — Build Targets
 - **`uldum_game`**: shipped product executable (Release build, no debug UI, no editor)
 - **`game.json`**: product configuration (product name, default map, window title, resolution)
-- **`uldum_server`**: headless dedicated server (no renderer, no audio, no window — simulation + networking only)
+- **`uldum_worker`** (initially built as `uldum_server`, renamed in Phase 24): headless per-session game server (no renderer, no audio, no window — simulation + networking only)
 - Build scripts: `build_game.ps1`, `build_server.ps1`
 
 #### Phase 15b — PAK Archive
@@ -675,24 +675,28 @@ Full internationalization across rendering, content, and UI. Today the engine is
 - Shell + HUD i18n — RmlUi and HUD authors reference string keys rather than literal text; engine looks up against the active locale.
 - RTL shaping — Hebrew / Arabic visual ordering. Same HarfBuzz integration covers it.
 
-### Phase 23 — Headless Server
+### Phase 23 — Headless Worker
 
-Make `uldum_server` a clean, game-agnostic, headless binary that builds and runs on Linux as well as Windows — the prerequisite shape for any future cloud-deployable session host. One process still hosts one game session; multi-session orchestration is a separate concern (see Deferred).
+Make the per-session game server a clean, game-agnostic, headless binary that builds and runs on Linux as well as Windows — the prerequisite shape for any future cloud-deployable session host. One process still hosts one game session; multi-session orchestration lands in Phase 24 as a separate `uldum_server` binary on top. *(Built and shipped as `uldum_server`; renamed to `uldum_worker` in Phase 24 once the orchestrator takes the `uldum_server` slot.)*
 
-- Generic server — strip `game.json` reads; ship `dist/uldum_server/` (exe + `engine.uldpak`). Operator supplies maps.
+- Generic worker — strip `game.json` reads; operator supplies maps via `--map`.
 - Map fingerprinting — SHA-256 over every `.lua` file in the map, lexicographic path order. Mismatch on `C_JOIN` is a hard reject.
-- Library split for headless builds — `uldum_hud` becomes pure data with a render-side `HudRenderer` in `uldum_render`; `uldum_input` becomes the tiny bindings lib with picker / presets moved to `uldum_input_router`. Server's transitive link graph no longer pulls Vulkan / rhi / vma / freetype / msdfgen.
-- Linux build target — server is headless; CMake + a few `#ifdef _WIN32` cleanups.
+- Library split for headless builds — `uldum_hud` becomes pure data with a render-side `HudRenderer` in `uldum_render`; `uldum_input` becomes the tiny bindings lib with picker / presets moved to `uldum_input_router`. Worker's transitive link graph no longer pulls Vulkan / rhi / vma / freetype / msdfgen.
+- Linux build target — worker is headless; CMake + a few `#ifdef _WIN32` cleanups.
 
-### Phase 24 — Transport Robustness
+### Phase 24 — Server Orchestration + Reconnect
 
-Plain UDP via ENet works on the open internet but is silently dropped by a large fraction of real-world networks — corporate firewalls, mobile carriers, restrictive Wi-Fi. ENet also ships unencrypted, has no auth on join, and treats a one-second blip as a session-ending disconnect. Phase 24 lands the transport pieces every higher-level networking concern (identity, lobby, master) assumes. The engine stays platform B: it ships the transport mechanisms and the auth-on-join *seam*; games wire in their identity vendor.
+Production-deployment shape: `uldum_server` (orchestrator) spawns `uldum_worker` processes per session, driven by an HTTP API game backends call into. Architecture in [network.md](network.md#production-deployment-topology).
 
-- On-wire encryption — protect all client↔server traffic. Pick one of DTLS over UDP, QUIC (bundles encryption + reconnect + multiplexing if a compact C library is available), or noise-protocol layered on ENet. Tradeoffs evaluated at scope time; choice is one-way.
-- WebSocket-over-TLS fallback — when UDP fails to establish or to deliver, the client falls back to `wss://`. Server listens on both. Same wire protocol on both paths so higher layers don't care.
-- Auth-on-join callback — `C_JOIN` carries an opaque token; server validates via a pluggable callback. Default is "accept any" to preserve single-player + LAN ergonomics; production games swap in their identity vendor's verification.
-- Reconnect-after-blip — client preserves a session id at handshake; server holds the simulation slot open for N seconds after disconnect; the same id can rejoin. Mobile-critical.
-- Version handshake — client + server exchange engine version at handshake (map hash already covered by Phase 23); mismatch is a clean rejection with a usable error string, not a silent desync.
+- Two binaries — `uldum_server` (orchestrator), `uldum_worker` (one process per session).
+- HTTP API for game backends — `POST /sessions` creates a session and returns connection info + per-player tokens.
+- Map allowlist auto-discovered from `<cwd>/maps/`.
+- Auth-on-join — worker validates per-player tokens at `C_JOIN` (standalone mode still accepts all).
+- Reconnect-after-blip — disconnected slots held open for N seconds; same token rejoins the same slot.
+- `GAME_SESSION` global — game backend's `initial_data` JSON exposed to map Lua before `main()` runs.
+- Webhook dispatch — worker writes end-of-session result to stdout; orchestrator POSTs it to the game backend's `webhook_url`.
+- `uldum_dev --server <url>` — dev client doubles as a game-backend stand-in for local testing.
+- Engine stays cloud-neutral — caller auth is the deployment's job (Azure API Management / App Gateway / nginx / etc. terminate cloud-native auth in front of the orchestrator).
 
 ### Phase 25 — OpenGL ES RHI
 
@@ -713,9 +717,6 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 
 **Networking & deployment**
 
-- **Reference master** — game-agnostic web service that orchestrates `uldum_server` pods (spawn / reap), brokers lobby browse / create, applies rate limits, and bridges client auth tokens to the active identity vendor. Lives in this repo as a separate binary alongside `uldum_server` — shares `network/protocol.h` but is its own deploy. Each game deploys an instance configured for that game; the alternative is renting orchestration via Hathora / GameLift / Edgegap, which works against the same `uldum_server` interface.
-- **Identity seam** — engine surface for the auth-on-join callback shape (token validator, session id issuance). Concrete identity provider — Apple Sign-In, Google Play Games, Firebase Auth — is per-game vendor code, not engine.
-- **Update & patching pipeline** — client/server version negotiation lives in Phase 24's handshake; what's left is the per-game asset CDN story and delta updates for mobile binaries. Both are per-game vendor work.
 - **Observability seam** — engine surface for emitting structured events + crash hooks. Wire format and sink (Sentry / Crashlytics / Firebase Analytics) is per-game vendor code.
 
 **Platform reach**
@@ -730,6 +731,9 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 
 **Networking**
 
+- **Transport encryption** — DTLS-over-UDP, QUIC, or noise-on-ENet. Closes on-path packet snooping + injection. Server-authoritative game logic already neutralizes most cheating; vendor-SDK HTTPS already protects login. Add when threat model justifies it: real-money / regulated data, competitive title where griefing is existential, GDPR / regulatory requirement on EU launch.
+- **TCP fallback (WebSocket-over-TLS)** — secondary transport for the ~5-10% of sessions on restricted networks (corporate firewalls, locked-down public Wi-Fi) where UDP gets dropped. Server listens on both; same wire protocol; client falls back when UDP fails to establish or deliver. Pulls TLS in transitively, which closes the encryption gap as a side effect.
+- **Protocol version handshake** — client + server exchange a wire-protocol version at `C_JOIN`; mismatch is a clean rejection. Useful once shipped clients are out-of-sync with running servers (App Store auto-update windows, mixed live versions); not useful pre-launch when client + server are rebuilt together every run.
 - **LAN game discovery** — WC3-style UDP broadcast so local clients don't have to type an IP.
 
 **Tooling & authoring**

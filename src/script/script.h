@@ -242,6 +242,13 @@ public:
     // not defined or threw.
     bool call_function(std::string_view name);
 
+    // Set a Lua global from a JSON value. Used by the worker to inject
+    // the orchestrator-supplied `GAME_SESSION` blob before `main()` runs.
+    // JSON arrays become 1-indexed Lua tables; objects become string-
+    // keyed tables; scalars convert directly. Caller is responsible for
+    // doing this between init and main().
+    void set_global_from_json(std::string_view name, const nlohmann::json& value);
+
 private:
     void bind_api();
     void bind_trigger_api();

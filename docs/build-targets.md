@@ -17,7 +17,8 @@ Four executables + one packaging tool, all built from engine source.
 |--------|----------|---------|
 | `uldum_dev` | Engine devs | Run any map from `maps/`; debug overlay, dev console, hot-reload |
 | `uldum_editor` | Map authors | ImGui terrain editor; opens `.uldmap` folders or archives |
-| `uldum_server` | Multiplayer | Headless authoritative simulation (no window, no renderer, no audio) |
+| `uldum_worker` | Multiplayer | One process per active game session. Headless authoritative simulation (no window, no renderer, no audio) |
+| `uldum_server` | Multiplayer | Orchestrator. HTTP API for game backends, spawns / reaps `uldum_worker` processes. *(Phase 24+, not yet built)* |
 | `uldum_pack` | Build pipeline | Pack/unpack/list `.uldpak` and `.uldmap` archives |
 | `uldum_game` | End users | Shipped product runtime. Parameterized by a game project (name, icon, bundled maps, package ID) |
 
@@ -38,11 +39,19 @@ Four executables + one packaging tool, all built from engine source.
 - No gameplay simulation, no network.
 - Windows only.
 
-### `uldum_server` — dedicated server
+### `uldum_worker` — per-session game server
 
 - No window, no renderer, no audio.
 - Authoritative simulation at 32 Hz, runs map Lua, accepts ENet connections.
-- Reads config from CLI; `game.json` is read only when pointed at a game project.
+- Reads `--map <path>` and `--port <n>` from CLI.
+- One process per active game session. Spawned by `uldum_server` (orchestrator) in production, or runnable standalone for LAN / dev.
+
+### `uldum_server` — orchestrator *(Phase 24+, not yet built)*
+
+- HTTP API that game backends call into to request a session: `POST /sessions`.
+- Spawns `uldum_worker` processes on demand, picks UDP ports from a configured range, issues per-player session tokens.
+- On game-end, POSTs result JSON to the game backend's configured webhook URL.
+- See [network.md](network.md#production-deployment-topology) for the full architecture.
 
 ### `uldum_pack` — packaging tool
 
@@ -117,7 +126,7 @@ All build / test / asset-util scripts are PowerShell (`.ps1`). The helper at `sc
 | `build.ps1` | all engine targets | `engine.uldpak`, every map in `maps/` |
 | `build_dev.ps1` | `uldum_dev` only | `engine.uldpak`, every map in `maps/` |
 | `build_editor.ps1` | `uldum_editor` only | `engine.uldpak` |
-| `build_server.ps1` | `uldum_server` only | `engine.uldpak`, every map in `maps/` |
+| `build_server.ps1` | server-side targets (`uldum_worker`; `uldum_server` once it lands) | `engine.uldpak`, every map in `maps/` |
 | `convert_skybox.py` | — (asset util) | EXR → KTX2 cubemap faces |
 | `png_to_ktx2.ps1` | — (asset util) | PNG → KTX2 |
 
@@ -135,7 +144,7 @@ Game scripts always take (or default to) a game project directory. They never bu
 ## Current state
 
 **Done:**
-- Engine build (`scripts\build.ps1`) produces `uldum_dev`, `uldum_editor`, `uldum_server`, `uldum_pack` + `engine.uldpak` + every `maps/*.uldmap/` packed into `build/bin/maps/`. Does **not** produce `uldum_game` — that's strictly a game-project output now.
+- Engine build (`scripts\build.ps1`) produces `uldum_dev`, `uldum_editor`, `uldum_worker`, `uldum_pack` + `engine.uldpak` + every `maps/*.uldmap/` packed into `build/bin/maps/`. Does **not** produce `uldum_game` (per-project) or `uldum_server` (Phase 24, not yet built).
 - `sample_game/` with `game.json`, `branding/icon.png` + committed `icon.ico` + committed Android launcher icons (`branding/android/mipmap-*/ic_launcher.png`), and `maps/simple_map.uldmap/` (flat 32×32 grass).
 - **Parameterized Windows build (`scripts\build_game.ps1 [<project>]`)** — per-project CMake build tree at `build/game-<project>/`; reads `game.json` via CMake's `file(READ ... JSON)`; exe renamed from `game.json.name` (whitespace stripped); icon embedded from `<project>/branding/icon.ico`; only maps listed in `game.json.maps` are packed. Output: `dist/<GameName>/<GameName>.exe` + `engine.uldpak` + `maps/` + `game.json`.
 - **Parameterized Android game build (`scripts\build_android_game.ps1 [<project>]`)** — PowerShell extracts `android.package_id` / `android.app_name` / `version` from `game.json` and passes them to Gradle as `-P` properties. `applicationId`, `versionName`, and `android:label` (manifest placeholder) are per-project. Launcher icons come from `<project>/branding/android/` via Gradle `sourceSets.res.srcDirs`. APK assets pre-staged by PowerShell into `src/game/assets/` (engine.uldpak + game.json + uldum_pack-packed maps). Output: `dist/<GameName>.apk` (signed debug or release).
@@ -153,6 +162,7 @@ Game scripts always take (or default to) a game project directory. They never bu
 |--------|---------|---------|----------------|
 | `uldum_dev` | .exe | — | — |
 | `uldum_editor` | .exe | — | — |
-| `uldum_server` | .exe | — | .elf |
+| `uldum_worker` | .exe | — | .elf |
+| `uldum_server` | .exe (planned) | — | .elf (planned) |
 | `uldum_pack` | .exe | — | .elf |
 | `uldum_game` | .exe | .apk | .elf |

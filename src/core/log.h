@@ -14,6 +14,13 @@ enum class Level : int {
 };
 
 void set_level(Level level);
+
+// Switch the live-output sink from stdout to stderr. Workers call this
+// at startup so their stdout is reserved for structured output (the
+// end-of-session result JSON the orchestrator captures). Other binaries
+// keep the default stdout sink.
+void redirect_to_stderr();
+
 void write(Level level, std::string_view tag, std::string_view message);
 
 template <typename... Args>
