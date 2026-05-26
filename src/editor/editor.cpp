@@ -1731,7 +1731,53 @@ void Editor::switch_scene(const std::string& scene_name) {
 }
 
 void Editor::open_map(const std::string& path) {
-    vkDeviceWaitIdle(m_rhi.device());
+    // Drop entity handles while the outgoing world is still populated so
+    // destroy_preview's validate() can still find the preview entity.
+    destroy_preview();
+    m_preview_type_id.clear();
+    m_preview_variation = 0;
+    m_selected_unit = {};
+    m_selected_item = {};
+    m_selected_destructable = {};
+    m_selected_doodad = {};
+
+    // Mid-stroke brush / drag / placement / region interaction state would
+    // otherwise carry into the new map (e.g. a paint stroke continuing on
+    // a fresh tile layer, an in-progress region rect snapping to new geometry).
+    m_brush_applied      = false;
+    m_last_brush_vx      = -1;
+    m_last_brush_vy      = -1;
+    m_cursor_valid       = false;
+    m_stroke_active      = false;
+    m_terrain_dirty      = false;
+    m_drag_active        = false;
+    m_place_continuous   = false;
+    m_has_last_placement = false;
+    m_region_focus       = -1;
+    m_region_drag_active = false;
+
+    // TerrainEdit records hold vertex indices into the outgoing terrain;
+    // replaying them against a different-size new terrain writes OOB.
+    m_undo_stack.clear();
+    m_redo_stack.clear();
+
+    // Null out renderer + simulation terrain pointers before unload_map
+    // destroys the TerrainData they currently reference.
+    m_renderer.set_terrain(nullptr);
+    m_simulation.set_terrain(nullptr);
+
+    // Renderer model cache + bone buffers + mega-buffer rollback — without
+    // this, same-relative-path models in the new map return stale cached
+    // entries pointing into the old map's bytes (collapsed meshes).
+    m_renderer.end_session();
+
+    // Type / ability registries accumulate across maps because
+    // load_unit_types_from_doc inserts via operator[] (overwrites duplicate
+    // keys, leaves orphans). Dev binary handles this via
+    // GameServer::shutdown → Simulation::shutdown; editor owns its own
+    // Simulation and must wipe + re-init explicitly.
+    m_simulation.shutdown();
+    m_simulation.init(m_asset);
 
     m_map.unload_map();
     m_map_loaded = false;
