@@ -29,7 +29,7 @@ layout(push_constant) uniform PushConstants {
 
 layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
-layout(location = 2) in vec2 frag_tile_uv;
+layout(location = 2) centroid in vec2 frag_tile_uv;
 layout(location = 3) in vec3 frag_world_pos;
 layout(location = 4) flat in uint frag_layer_corners;
 layout(location = 5) flat in uint frag_case_info;

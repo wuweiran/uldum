@@ -16,7 +16,7 @@ layout(location = 4) in uint in_case_info;
 
 layout(location = 0) out vec3 frag_world_normal;
 layout(location = 1) out vec2 frag_texcoord;
-layout(location = 2) out vec2 frag_tile_uv;
+layout(location = 2) centroid out vec2 frag_tile_uv;
 layout(location = 3) out vec3 frag_world_pos;
 layout(location = 4) flat out uint frag_layer_corners;
 layout(location = 5) flat out uint frag_case_info;
