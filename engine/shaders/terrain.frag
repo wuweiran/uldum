@@ -88,9 +88,14 @@ void main() {
         vec2 uv = fract(frag_tile_uv);
         uint ct[4] = uint[4](c0, c1, c2, c3);
 
-        // Noise perturbation
+        // Noise perturbation. The edge mask vanishes at all four tile
+        // edges so adjacent tiles' SDF curves (and is_edge_* waves) meet
+        // exactly at edge midpoints — otherwise the per-fragment radius
+        // shift pulls each side's curve in opposite directions and
+        // creates a visible jump across the shared edge.
         float noise = texture(transition_noise, frag_tile_uv).r;
-        float perturb = (noise - 0.5) * 0.22;
+        float edge_mask = 16.0 * uv.x * (1.0 - uv.x) * uv.y * (1.0 - uv.y);
+        float perturb = (noise - 0.5) * 0.22 * edge_mask;
 
         // SDF per corner (same perturbation for all — shifts circle radius by noise)
         vec2 cp[4] = vec2[4](vec2(0,0), vec2(1,0), vec2(0,1), vec2(1,1));

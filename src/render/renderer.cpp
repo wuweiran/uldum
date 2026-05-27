@@ -2257,12 +2257,13 @@ bool Renderer::create_water_pipeline() {
     cfg.stages[1].module = frag;
     cfg.stages[1].pName  = "main";
 
-    // Water push constants: terrain base (144) + water params (48)
+    // Water push constants: terrain base (144) + water params (40) + pad (8) + camera_pos (16) = 208
     VkPushConstantRange push_range{};
     push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     push_range.offset     = 0;
     push_range.size       = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32)  // terrain base: 144
-                          + 2 * sizeof(glm::vec4) + 2 * sizeof(u32);                       // water: +40 = 184
+                          + 2 * sizeof(glm::vec4) + 2 * sizeof(u32)                        // water params: 40 → 184
+                          + 2 * sizeof(u32) + sizeof(glm::vec4);                            // pad + camera_pos: 24 → 208
 
     VkDescriptorSetLayout water_layouts[] = {m_terrain_desc_layout, m_shadow_desc_layout};
     VkPipelineLayoutCreateInfo layout_ci{};
@@ -3361,6 +3362,11 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
             glm::vec4 deep_color;
             u32 water_mask;
             u32 deep_mask;
+            // Pad up to vec4 alignment for camera_pos (matches the std140-ish
+            // layout the shader expects).
+            u32 _pad0;
+            u32 _pad1;
+            glm::vec4 camera_pos;
         } water_push{};
         water_push.mvp = terrain_mvp;
         water_push.model = terrain_model;
@@ -3371,6 +3377,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         water_push.deep_color = glm::vec4(m_water_params.deep_color, 0.0f);
         water_push.water_mask = m_water_params.water_mask;
         water_push.deep_mask = m_water_params.deep_mask;
+        water_push.camera_pos = glm::vec4(m_camera.position(), 0.0f);
         vkCmdPushConstants(cmd, m_water_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(water_push), &water_push);
 

@@ -1,5 +1,19 @@
 #version 450
 
+// Water surface shading.
+//
+// Height model:
+//   logical_z    = terrain_z          (gameplay, decals, animation anchor)
+//   visual_z     = terrain_z + 2.0    (this surface, all water tiles)
+//   real-world_z = visual + Gerstner ripples baked into normals only
+//                  (no vertex displacement)
+//
+// Shallow water = puddle: surface sits on top of the visible riverbed.
+// Deep water    = "infinity pool": surface flush with the surrounding
+//                 terrain lip; the seabed is conceptual / not modeled.
+//                 Both archetypes use the same +2 offset so beach-to-sea
+//                 boundaries stitch continuously.
+
 layout(set = 0, binding = 0) uniform sampler2DArray terrain_layers;
 layout(set = 0, binding = 1) uniform sampler2D fog_tex;
 layout(set = 0, binding = 2) uniform sampler2D transition_noise;
@@ -25,6 +39,7 @@ layout(push_constant) uniform PushConstants {
     vec4  deep_color;      // rgb (a unused)
     uint  water_mask;      // bitmask: layer IDs that are water
     uint  deep_mask;       // bitmask: deep water layers (rendered opaque)
+    vec4  camera_pos;      // xyz = camera world position (w unused)
 } pc;
 
 layout(location = 0) in vec3 frag_world_normal;
@@ -79,16 +94,20 @@ void main() {
         vec2 uv = fract(frag_tile_uv);
         uint ct[4] = uint[4](c0, c1, c2, c3);
 
+        // Edge-vanishing mask: keeps SDF curves anchored to midpoints
+        // at shared tile edges. See matching block in terrain.frag.
+        float edge_mask = 16.0 * uv.x * (1.0 - uv.x) * uv.y * (1.0 - uv.y);
+
         // When deep water touches land: match terrain noise exactly.
         // When only shallow water touches land: puddle-like edges.
         // When only water types meet (no land): match terrain noise.
         float noise, perturb;
         if (has_deep || !has_land) {
             noise = texture(transition_noise, frag_tile_uv).r;
-            perturb = (noise - 0.5) * 0.22;  // identical to terrain.frag
+            perturb = (noise - 0.5) * 0.22 * edge_mask;  // identical to terrain.frag
         } else {
             noise = texture(transition_noise, frag_tile_uv * 1.4 + vec2(0.37, 0.71)).r;
-            perturb = (noise - 0.5) * 0.28;
+            perturb = (noise - 0.5) * 0.28 * edge_mask;
         }
 
         vec2 cp[4] = vec2[4](vec2(0,0), vec2(1,0), vec2(0,1), vec2(1,1));
@@ -215,7 +234,8 @@ void main() {
 
     // ── Specular highlights ─────────────────────────────────────────────
     vec3 light_dir = normalize(env.sun_direction.xyz);
-    vec3 view_dir = normalize(vec3(0.0, -0.6, 1.0));
+    vec3 view_dir = normalize(pc.camera_pos.xyz - frag_world_pos);
+    // Damped normal for the specular highlight (artistic: tighter sun glint).
     vec3 surface_normal = normalize(vec3(water_n.xy * 0.6, 1.0));
     vec3 half_vec = normalize(light_dir + view_dir);
     float ndoth = max(dot(surface_normal, half_vec), 0.0);
@@ -224,8 +244,9 @@ void main() {
     // Wave crest tint
     float wave_intensity = max(water_n.x + water_n.y, 0.0) * 0.5;
 
-    // Cubemap reflection: reflect view off water surface
-    vec3 reflected = reflect(-view_dir, surface_normal);
+    // Cubemap reflection uses the *full* wave normal so the sky follows
+    // the real wave gradient (decoupled from the damped specular normal).
+    vec3 reflected = reflect(-view_dir, water_n);
     vec3 env_reflect = texture(env_cubemap, reflected).rgb;
 
     // Fog
@@ -239,10 +260,28 @@ void main() {
     vec3 shallow_color = mix(tint_color, env_reflect, reflect_strength) + vec3(spec * 0.3);
     float shallow_alpha = (spec * 0.8 + wave_intensity * 0.4 + 0.1) * water_alpha;
 
-    // Fresnel edge brightening: thin water at shore catches more light
+    // View-dependent refraction tint. Beer-Lambert: light path through
+    // water = depth / view_dir.z; at glancing angles the path stretches,
+    // more tint absorbed, riverbed shows less. Coefficient 0.08 is in the
+    // clear-coastal range — straight-down view barely changes alpha,
+    // grazing angles push it significantly. Depth matches WATER_Z_OFFSET
+    // in water.vert.
+    {
+        const float WATER_DEPTH = 2.0;
+        const float ABSORPTION  = 0.08;
+        float view_cos = max(view_dir.z, 0.05);
+        float thickness = 1.0 - exp(-(WATER_DEPTH / view_cos) * ABSORPTION);
+        shallow_alpha = mix(shallow_alpha, water_alpha, thickness * 0.5);
+    }
+
+    // Foam rides `water_alpha` so it follows the SDF shoreline curve;
+    // the animated noise only modulates intensity (not position) so the
+    // foam band can't drift off the curve.
     float fresnel = (1.0 - smoothstep(0.0, 0.5, water_alpha)) * water_alpha * 2.0;
-    shallow_color = mix(shallow_color, vec3(0.85, 0.9, 0.95), fresnel * 0.6);
-    shallow_alpha = clamp(shallow_alpha + fresnel * 0.3, 0.0, 1.0);
+    float foam_shimmer = texture(transition_noise, wpos * 0.005 + wt * vec2(0.04, 0.03)).r;
+    float foam = clamp(fresnel * (0.65 + foam_shimmer * 0.6), 0.0, 1.0);
+    shallow_color = mix(shallow_color, vec3(1.0), foam);
+    shallow_alpha = clamp(shallow_alpha + foam * 0.55, 0.0, 1.0);
 
     // Noise-driven shade: organic base variation
     float shade1 = texture(transition_noise, wpos * 0.001 + wt * vec2(0.004, 0.003)).r;

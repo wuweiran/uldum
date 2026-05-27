@@ -22,7 +22,10 @@ layout(location = 4) flat out uint frag_layer_corners;
 layout(location = 5) flat out uint frag_case_info;
 layout(location = 6) out vec2 frag_fog_uv;
 
-const float WATER_Z_OFFSET = 2.0;  // water surface sits above riverbed
+// Visual surface offset above logical (terrain) z. Same for shallow and
+// deep water so beach-to-sea boundaries stitch continuously. See
+// water.frag for the full height model.
+const float WATER_Z_OFFSET = 2.0;
 
 void main() {
     vec3 pos = in_position + vec3(0.0, 0.0, WATER_Z_OFFSET);
