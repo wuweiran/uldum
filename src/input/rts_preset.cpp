@@ -617,6 +617,8 @@ void RtsPreset::handle_camera(const InputContext& ctx, f32 dt) {
 
     // Edge pan: only for shipped game builds, not dev
 #ifndef ULDUM_DEBUG
+    const f32 w = static_cast<f32>(ctx.screen_w);
+    const f32 h = static_cast<f32>(ctx.screen_h);
     if (input.mouse_x < EDGE_PAN_MARGIN)     pan_x = -1.0f;
     if (input.mouse_x > w - EDGE_PAN_MARGIN) pan_x =  1.0f;
     if (input.mouse_y < EDGE_PAN_MARGIN)     pan_y = -1.0f;

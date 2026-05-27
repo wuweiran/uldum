@@ -15,7 +15,7 @@ namespace {
 // One-shot UNDEFINED → TRANSFER_DST → copy → SHADER_READ_ONLY transition
 // shared by upload_texture_rgba / _array / _cubemap. `regions` describes
 // which buffer offsets feed which image layers/mips.
-void upload_pixels_to_image(rhi::VulkanRhi& rhi, rhi::TextureHandle image, u32 layer_count,
+void upload_pixels_to_image(rhi::Rhi& rhi, rhi::TextureHandle image, u32 layer_count,
                             rhi::BufferHandle staging,
                             std::span<const rhi::BufferImageCopy> regions) {
     rhi::CommandList cmd = rhi.begin_oneshot();
@@ -46,7 +46,7 @@ void upload_pixels_to_image(rhi::VulkanRhi& rhi, rhi::TextureHandle image, u32 l
     rhi.end_oneshot(cmd);
 }
 
-rhi::BufferHandle make_staging(rhi::VulkanRhi& rhi, u64 size) {
+rhi::BufferHandle make_staging(rhi::Rhi& rhi, u64 size) {
     rhi::BufferDesc d{};
     d.size   = size;
     d.usage  = rhi::BufferUsage::TransferSrc;
@@ -56,7 +56,7 @@ rhi::BufferHandle make_staging(rhi::VulkanRhi& rhi, u64 size) {
 
 } // namespace
 
-GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width, u32 height, bool srgb, bool clamp) {
+GpuTexture upload_texture_rgba(rhi::Rhi& rhi, const u8* pixels, u32 width, u32 height, bool srgb, bool clamp) {
     u64 image_size = static_cast<u64>(width) * height * 4;
 
     auto staging = make_staging(rhi, image_size);
@@ -104,7 +104,7 @@ GpuTexture upload_texture_rgba(rhi::VulkanRhi& rhi, const u8* pixels, u32 width,
     return tex;
 }
 
-GpuTexture upload_texture(rhi::VulkanRhi& rhi, const asset::TextureData& data) {
+GpuTexture upload_texture(rhi::Rhi& rhi, const asset::TextureData& data) {
     if (data.pixels.empty() || data.width == 0 || data.height == 0) {
         log::error(TAG, "Invalid texture data");
         return {};
@@ -127,7 +127,7 @@ GpuTexture upload_texture(rhi::VulkanRhi& rhi, const asset::TextureData& data) {
     return upload_texture_rgba(rhi, rgba.data(), data.width, data.height);
 }
 
-GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32 layer_count,
+GpuTexture upload_texture_array(rhi::Rhi& rhi, const u8** layers_data, u32 layer_count,
                                 u32 width, u32 height, bool srgb) {
     u64 layer_size = static_cast<u64>(width) * height * 4;
     u64 total_size = layer_size * layer_count;
@@ -184,7 +184,7 @@ GpuTexture upload_texture_array(rhi::VulkanRhi& rhi, const u8** layers_data, u32
     return tex;
 }
 
-GpuTexture upload_texture_cubemap(rhi::VulkanRhi& rhi, const u8* faces[6],
+GpuTexture upload_texture_cubemap(rhi::Rhi& rhi, const u8* faces[6],
                                   u32 width, u32 height) {
     u64 face_size  = static_cast<u64>(width) * height * 4;
     u64 total_size = face_size * 6;
@@ -245,7 +245,7 @@ GpuTexture upload_texture_cubemap(rhi::VulkanRhi& rhi, const u8* faces[6],
     return tex;
 }
 
-void destroy_texture(rhi::VulkanRhi& rhi, GpuTexture& tex) {
+void destroy_texture(rhi::Rhi& rhi, GpuTexture& tex) {
     rhi.destroy_sampler(tex.sampler);
     rhi.destroy_texture(tex.texture);
     tex = {};

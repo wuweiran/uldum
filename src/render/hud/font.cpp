@@ -53,7 +53,7 @@ static std::string read_os_file(std::string_view filesystem_path) {
 // Initialize the primary face from a byte buffer + create the atlas.
 // Shared between asset-path and OS-path init paths so the FreeType /
 // msdfgen plumbing lives in one place.
-bool Font::init_primary_from_bytes(rhi::VulkanRhi& rhi,
+bool Font::init_primary_from_bytes(rhi::Rhi& rhi,
                                      std::string bytes,
                                      std::string_view origin,
                                      rhi::DescriptorSetLayoutHandle desc_layout,
@@ -95,7 +95,7 @@ bool Font::init_primary_from_bytes(rhi::VulkanRhi& rhi,
     return true;
 }
 
-bool Font::init_from_system(rhi::VulkanRhi& rhi,
+bool Font::init_from_system(rhi::Rhi& rhi,
                               rhi::DescriptorSetLayoutHandle desc_layout,
                               rhi::SamplerHandle sampler) {
     // Per-platform list of well-known font paths. First entry that loads

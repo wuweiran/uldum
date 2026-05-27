@@ -21,7 +21,7 @@
 
 #include <span>
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::editor {
 
@@ -32,7 +32,7 @@ public:
     EditorOverlays(const EditorOverlays&) = delete;
     EditorOverlays& operator=(const EditorOverlays&) = delete;
 
-    bool init(rhi::VulkanRhi& rhi);
+    bool init(rhi::Rhi& rhi);
     void shutdown();
 
     // Reset the vertex / draw-cmd buffers for a new frame. Call once

@@ -6,7 +6,7 @@
 
 namespace uldum::render {
 
-static rhi::BufferHandle upload_buffer(rhi::VulkanRhi& rhi, const void* data,
+static rhi::BufferHandle upload_buffer(rhi::Rhi& rhi, const void* data,
                                        usize size, rhi::BufferUsage usage) {
     rhi::BufferDesc d{};
     d.size   = size;
@@ -20,7 +20,7 @@ static rhi::BufferHandle upload_buffer(rhi::VulkanRhi& rhi, const void* data,
     return h;
 }
 
-GpuMesh upload_mesh(rhi::VulkanRhi& rhi, const asset::MeshData& mesh) {
+GpuMesh upload_mesh(rhi::Rhi& rhi, const asset::MeshData& mesh) {
     GpuMesh gpu{};
     if (mesh.vertices.empty()) return gpu;
 
@@ -45,7 +45,7 @@ GpuMesh upload_mesh(rhi::VulkanRhi& rhi, const asset::MeshData& mesh) {
     return gpu;
 }
 
-GpuMesh upload_skinned_mesh(rhi::VulkanRhi& rhi, const asset::SkinnedMeshData& mesh, u32 bone_count) {
+GpuMesh upload_skinned_mesh(rhi::Rhi& rhi, const asset::SkinnedMeshData& mesh, u32 bone_count) {
     GpuMesh gpu{};
     gpu.is_skinned = true;
     gpu.bone_count = bone_count;
@@ -75,7 +75,7 @@ GpuMesh upload_skinned_mesh(rhi::VulkanRhi& rhi, const asset::SkinnedMeshData& m
     return gpu;
 }
 
-void destroy_mesh(rhi::VulkanRhi& rhi, GpuMesh& mesh) {
+void destroy_mesh(rhi::Rhi& rhi, GpuMesh& mesh) {
     if (mesh.owns_buffers) {
         rhi.destroy_buffer(mesh.vertex_buffer);
         rhi.destroy_buffer(mesh.index_buffer);

@@ -24,7 +24,7 @@
 
 #include "rhi/handles.h"
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::hud {
 
@@ -62,7 +62,7 @@ public:
     // no system font loaded at all — Windows / macOS / Android always
     // succeed; minimal Linux installs may fail and need a game-supplied
     // fallback via load_fallback / load_fallback_os_path.
-    bool init_from_system(rhi::VulkanRhi& rhi,
+    bool init_from_system(rhi::Rhi& rhi,
                           rhi::DescriptorSetLayoutHandle desc_layout,
                           rhi::SamplerHandle sampler);
 
@@ -105,13 +105,13 @@ private:
     bool rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out);
     bool upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y);
     bool load_fallback_from_bytes(std::string bytes, std::string_view origin);
-    bool init_primary_from_bytes(rhi::VulkanRhi& rhi,
+    bool init_primary_from_bytes(rhi::Rhi& rhi,
                                   std::string bytes,
                                   std::string_view origin,
                                   rhi::DescriptorSetLayoutHandle desc_layout,
                                   rhi::SamplerHandle sampler);
 
-    rhi::VulkanRhi* m_rhi = nullptr;
+    rhi::Rhi* m_rhi = nullptr;
 
     // msdfgen handles — declared as void* to keep msdfgen includes out of
     // this header. Cast back in font.cpp.

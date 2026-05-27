@@ -36,7 +36,7 @@
 #include <string_view>
 #include <vector>
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::render {
 
@@ -76,7 +76,7 @@ public:
     WorldOverlays(const WorldOverlays&) = delete;
     WorldOverlays& operator=(const WorldOverlays&) = delete;
 
-    bool init(rhi::VulkanRhi& rhi);
+    bool init(rhi::Rhi& rhi);
     void shutdown();
 
     // Free every slot's GpuTexture and descriptor set. Called by

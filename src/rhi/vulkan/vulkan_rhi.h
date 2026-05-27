@@ -30,10 +30,10 @@ struct Config {
     bool enable_validation = true;
 };
 
-class VulkanRhi {
+class Rhi {
 public:
-    VulkanRhi() = default;
-    ~VulkanRhi();
+    Rhi() = default;
+    ~Rhi();
 
     bool init(const Config& config, platform::Platform& platform);
     void shutdown();
@@ -56,6 +56,11 @@ public:
     // platform reports a non-null native_window_handle().
     void recreate_surface(platform::Platform& platform);
 
+    // Block until all submitted GPU work has finished. Used by consumers
+    // before destroying resources that may be in-flight (texture rebind,
+    // session teardown). Backend-agnostic.
+    void wait_idle();
+
     // Opaque pointer to the native window (ANativeWindow* / HWND) the
     // current VkSurfaceKHR is bound to. Used by the main loop to detect
     // a window handoff and trigger `recreate_surface` exactly when the
@@ -69,8 +74,11 @@ public:
     VmaAllocator     allocator() const { return m_allocator; }
     Extent2D         extent()    const { return { m_swapchain_extent.width, m_swapchain_extent.height }; }
     VkExtent2D       vk_extent() const { return m_swapchain_extent; }
-    VkFormat         swapchain_format() const { return m_swapchain_format; }
-    VkFormat         depth_format()     const { return m_depth_format; }
+    TextureFormat    swapchain_format() const;
+    TextureFormat    depth_format()     const;
+    // Backend-typed accessors — only valid in backend-tied code (ImGui).
+    VkFormat         swapchain_format_vk() const { return m_swapchain_format; }
+    VkFormat         depth_format_vk()     const { return m_depth_format; }
     VkSampleCountFlagBits msaa_samples() const { return m_msaa_samples; }
     u32              current_image_index() const { return m_current_image_index; }
     // Ring-buffer index for resources that are written per-frame but read by
@@ -298,47 +306,47 @@ private:
 // CommandList. Inlining the 4-line lookup lets the optimizer fold the resolve
 // + Vk call into a single function and skip the cross-TU jump.
 
-inline VkShaderModule VulkanRhi::resolve(ShaderModuleHandle h) const {
+inline VkShaderModule Rhi::resolve(ShaderModuleHandle h) const {
     if (!h.is_valid() || h.index >= m_shader_modules.size()) return VK_NULL_HANDLE;
     const auto& rec = m_shader_modules[h.index];
     return rec.generation == h.generation ? rec.module : VK_NULL_HANDLE;
 }
-inline VkBuffer VulkanRhi::resolve(BufferHandle h) const {
+inline VkBuffer Rhi::resolve(BufferHandle h) const {
     if (!h.is_valid() || h.index >= m_buffers.size()) return VK_NULL_HANDLE;
     const auto& rec = m_buffers[h.index];
     return rec.generation == h.generation ? rec.buffer : VK_NULL_HANDLE;
 }
-inline VkImage VulkanRhi::resolve(TextureHandle h) const {
+inline VkImage Rhi::resolve(TextureHandle h) const {
     if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
     const auto& rec = m_textures[h.index];
     return rec.generation == h.generation ? rec.image : VK_NULL_HANDLE;
 }
-inline VkImageView VulkanRhi::resolve_view(TextureHandle h) const {
+inline VkImageView Rhi::resolve_view(TextureHandle h) const {
     if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
     const auto& rec = m_textures[h.index];
     return rec.generation == h.generation ? rec.view : VK_NULL_HANDLE;
 }
-inline VkSampler VulkanRhi::resolve(SamplerHandle h) const {
+inline VkSampler Rhi::resolve(SamplerHandle h) const {
     if (!h.is_valid() || h.index >= m_samplers.size()) return VK_NULL_HANDLE;
     const auto& rec = m_samplers[h.index];
     return rec.generation == h.generation ? rec.sampler : VK_NULL_HANDLE;
 }
-inline VkDescriptorSetLayout VulkanRhi::resolve(DescriptorSetLayoutHandle h) const {
+inline VkDescriptorSetLayout Rhi::resolve(DescriptorSetLayoutHandle h) const {
     if (!h.is_valid() || h.index >= m_dsl_records.size()) return VK_NULL_HANDLE;
     const auto& rec = m_dsl_records[h.index];
     return rec.generation == h.generation ? rec.layout : VK_NULL_HANDLE;
 }
-inline VkDescriptorSet VulkanRhi::resolve(DescriptorSetHandle h) const {
+inline VkDescriptorSet Rhi::resolve(DescriptorSetHandle h) const {
     if (!h.is_valid() || h.index >= m_dset_records.size()) return VK_NULL_HANDLE;
     const auto& rec = m_dset_records[h.index];
     return rec.generation == h.generation ? rec.set : VK_NULL_HANDLE;
 }
-inline VkPipelineLayout VulkanRhi::resolve(PipelineLayoutHandle h) const {
+inline VkPipelineLayout Rhi::resolve(PipelineLayoutHandle h) const {
     if (!h.is_valid() || h.index >= m_pl_records.size()) return VK_NULL_HANDLE;
     const auto& rec = m_pl_records[h.index];
     return rec.generation == h.generation ? rec.layout : VK_NULL_HANDLE;
 }
-inline VkPipeline VulkanRhi::resolve(PipelineHandle h) const {
+inline VkPipeline Rhi::resolve(PipelineHandle h) const {
     if (!h.is_valid() || h.index >= m_pipeline_records.size()) return VK_NULL_HANDLE;
     const auto& rec = m_pipeline_records[h.index];
     return rec.generation == h.generation ? rec.pipeline : VK_NULL_HANDLE;

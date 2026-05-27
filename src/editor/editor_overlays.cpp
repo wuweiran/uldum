@@ -55,7 +55,7 @@ u32 pack_premul_rgba(glm::vec4 c) {
 } // namespace
 
 struct EditorOverlays::Impl {
-    rhi::VulkanRhi* rhi = nullptr;
+    rhi::Rhi* rhi = nullptr;
 
     rhi::PipelineLayoutHandle      pipeline_layout{};
     rhi::PipelineHandle            pipeline{};
@@ -77,7 +77,7 @@ struct EditorOverlays::Impl {
 
 // ── Pipeline ─────────────────────────────────────────────────────────────
 
-static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
@@ -116,24 +116,6 @@ static bool create_white_texture(EditorOverlays::Impl& s) {
     w.sampler = s.white_tex.sampler;
     s.rhi->update_descriptor_set(s.desc_set, std::span{&w, 1});
     return true;
-}
-
-// Helper to map the RHI's VkFormat accessors to the rhi:: enum. Until the
-// RHI exposes swapchain_format() / depth_format() as rhi::TextureFormat,
-// this conversion lives in consumer code.
-static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
-    switch (f) {
-        case VK_FORMAT_R8_UNORM:            return rhi::TextureFormat::R8_UNORM;
-        case VK_FORMAT_R8G8B8A8_UNORM:      return rhi::TextureFormat::R8G8B8A8_UNORM;
-        case VK_FORMAT_R8G8B8A8_SRGB:       return rhi::TextureFormat::R8G8B8A8_SRGB;
-        case VK_FORMAT_B8G8R8A8_UNORM:      return rhi::TextureFormat::B8G8R8A8_UNORM;
-        case VK_FORMAT_B8G8R8A8_SRGB:       return rhi::TextureFormat::B8G8R8A8_SRGB;
-        case VK_FORMAT_D32_SFLOAT:          return rhi::TextureFormat::D32_SFLOAT;
-        case VK_FORMAT_R16G16B16A16_SFLOAT: return rhi::TextureFormat::R16G16B16A16_SFLOAT;
-        case VK_FORMAT_R32_SFLOAT:          return rhi::TextureFormat::R32_SFLOAT;
-        default: break;
-    }
-    return rhi::TextureFormat::Undefined;
 }
 
 static bool create_pipeline(EditorOverlays::Impl& s) {
@@ -198,8 +180,8 @@ static bool create_pipeline(EditorOverlays::Impl& s) {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(s.rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(s.rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(s.rhi->depth_format());
+    rhi::TextureFormat color_fmt = s.rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = s.rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = s.pipeline_layout;
@@ -240,7 +222,7 @@ static bool create_buffers(EditorOverlays::Impl& s) {
 EditorOverlays::EditorOverlays() = default;
 EditorOverlays::~EditorOverlays() { shutdown(); }
 
-bool EditorOverlays::init(rhi::VulkanRhi& rhi) {
+bool EditorOverlays::init(rhi::Rhi& rhi) {
     m_impl = new Impl{};
     m_impl->rhi = &rhi;
     if (!create_descriptors(*m_impl))    { log::error(TAG, "descriptors failed"); return false; }

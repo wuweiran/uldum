@@ -5,7 +5,7 @@
 
 #include <glm/mat4x4.hpp>
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::render {
 
@@ -29,11 +29,11 @@ struct ShadowBuffer {
     // `rhi.mapped_ptr(buffer)` when writing.
 };
 
-bool create_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm);
-void destroy_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm);
+bool create_shadow_map(rhi::Rhi& rhi, ShadowMap& sm);
+void destroy_shadow_map(rhi::Rhi& rhi, ShadowMap& sm);
 
-bool create_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb);
-void destroy_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb);
+bool create_shadow_buffer(rhi::Rhi& rhi, ShadowBuffer& sb);
+void destroy_shadow_buffer(rhi::Rhi& rhi, ShadowBuffer& sb);
 
 // Compute the light view-projection matrix for a directional light.
 // Fits an orthographic frustum around the given scene bounds.

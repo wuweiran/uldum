@@ -25,7 +25,7 @@ namespace uldum {
 
 static constexpr const char* TAG = "DevUI";
 
-bool DevConsole::init(rhi::VulkanRhi& rhi, platform::Platform& platform) {
+bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
     m_rhi      = &rhi;
     m_platform = &platform;
 
@@ -97,8 +97,8 @@ bool DevConsole::init(rhi::VulkanRhi& rhi, platform::Platform& platform) {
     init_info.PipelineInfoMain.MSAASamples = rhi.msaa_samples();
     init_info.UseDynamicRendering = true;
 
-    VkFormat color_format = rhi.swapchain_format();
-    VkFormat depth_format = rhi.depth_format();
+    VkFormat color_format = rhi.swapchain_format_vk();
+    VkFormat depth_format = rhi.depth_format_vk();
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
@@ -116,7 +116,7 @@ bool DevConsole::init(rhi::VulkanRhi& rhi, platform::Platform& platform) {
 
 void DevConsole::shutdown() {
     if (!m_initialized) return;
-    vkDeviceWaitIdle(m_rhi->device());
+    m_rhi->wait_idle();
     ImGui_ImplVulkan_Shutdown();
 #ifdef _WIN32
     ImGui_ImplWin32_Shutdown();
@@ -773,7 +773,8 @@ void DevConsole::draw_disconnected_overlay() {
 
 void DevConsole::render(rhi::CommandList& cmd) {
     if (!m_initialized) return;
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.raw());
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(),
+                                    static_cast<VkCommandBuffer>(cmd.backend_handle()));
 }
 
 DevConsole::Action DevConsole::poll_action() {

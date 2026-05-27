@@ -80,8 +80,12 @@ static VkShaderStageFlags to_vk_shader_stage(ShaderStage s) {
 
 // ── Methods ──────────────────────────────────────────────────────────────
 
+// Cast the backend-erased handle back to its native type. `m_cmd` is
+// stored as `void*` in the public header so consumers don't see vulkan.h.
+static inline VkCommandBuffer vk(void* p) { return static_cast<VkCommandBuffer>(p); }
+
 void CommandList::bind_pipeline(PipelineHandle pipeline) {
-    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_rhi->resolve(pipeline));
+    vkCmdBindPipeline(vk(m_cmd), VK_PIPELINE_BIND_POINT_GRAPHICS, m_rhi->resolve(pipeline));
 }
 
 void CommandList::bind_descriptor_sets(PipelineLayoutHandle layout, u32 first_set,
@@ -93,18 +97,18 @@ void CommandList::bind_descriptor_sets(PipelineLayoutHandle layout, u32 first_se
     VkDescriptorSet vk_sets[kMax];
     const u32 n = std::min(static_cast<u32>(sets.size()), kMax);
     for (u32 i = 0; i < n; ++i) vk_sets[i] = m_rhi->resolve(sets[i]);
-    vkCmdBindDescriptorSets(m_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    vkCmdBindDescriptorSets(vk(m_cmd), VK_PIPELINE_BIND_POINT_GRAPHICS,
                             m_rhi->resolve(layout), first_set, n, vk_sets, 0, nullptr);
 }
 
 void CommandList::bind_vertex_buffer(u32 binding, BufferHandle buf, u64 offset) {
     VkBuffer vb = m_rhi->resolve(buf);
     VkDeviceSize o = offset;
-    vkCmdBindVertexBuffers(m_cmd, binding, 1, &vb, &o);
+    vkCmdBindVertexBuffers(vk(m_cmd), binding, 1, &vb, &o);
 }
 
 void CommandList::bind_index_buffer(BufferHandle buf, u64 offset, IndexType type) {
-    vkCmdBindIndexBuffer(m_cmd, m_rhi->resolve(buf), offset,
+    vkCmdBindIndexBuffer(vk(m_cmd), m_rhi->resolve(buf), offset,
                          type == IndexType::U16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 }
 
@@ -113,33 +117,33 @@ void CommandList::set_viewport(f32 x, f32 y, f32 width, f32 height,
     VkViewport vp{};
     vp.x = x; vp.y = y; vp.width = width; vp.height = height;
     vp.minDepth = min_depth; vp.maxDepth = max_depth;
-    vkCmdSetViewport(m_cmd, 0, 1, &vp);
+    vkCmdSetViewport(vk(m_cmd), 0, 1, &vp);
 }
 
 void CommandList::set_scissor(i32 x, i32 y, u32 width, u32 height) {
     VkRect2D r{{x, y}, {width, height}};
-    vkCmdSetScissor(m_cmd, 0, 1, &r);
+    vkCmdSetScissor(vk(m_cmd), 0, 1, &r);
 }
 
 void CommandList::push_constants(PipelineLayoutHandle layout, ShaderStage stages,
                                  u32 offset, u32 size, const void* data) {
-    vkCmdPushConstants(m_cmd, m_rhi->resolve(layout), to_vk_shader_stage(stages),
+    vkCmdPushConstants(vk(m_cmd), m_rhi->resolve(layout), to_vk_shader_stage(stages),
                        offset, size, data);
 }
 
 void CommandList::draw(u32 vertex_count, u32 instance_count,
                        u32 first_vertex, u32 first_instance) {
-    vkCmdDraw(m_cmd, vertex_count, instance_count, first_vertex, first_instance);
+    vkCmdDraw(vk(m_cmd), vertex_count, instance_count, first_vertex, first_instance);
 }
 
 void CommandList::draw_indexed(u32 index_count, u32 instance_count,
                                u32 first_index, i32 vertex_offset, u32 first_instance) {
-    vkCmdDrawIndexed(m_cmd, index_count, instance_count, first_index, vertex_offset, first_instance);
+    vkCmdDrawIndexed(vk(m_cmd), index_count, instance_count, first_index, vertex_offset, first_instance);
 }
 
 void CommandList::draw_indexed_indirect(BufferHandle buf, u64 offset,
                                         u32 draw_count, u32 stride) {
-    vkCmdDrawIndexedIndirect(m_cmd, m_rhi->resolve(buf), offset, draw_count, stride);
+    vkCmdDrawIndexedIndirect(vk(m_cmd), m_rhi->resolve(buf), offset, draw_count, stride);
 }
 
 void CommandList::image_barriers(std::span<const ImageBarrier> barriers) {
@@ -174,7 +178,7 @@ void CommandList::image_barriers(std::span<const ImageBarrier> barriers) {
     dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dep.imageMemoryBarrierCount = n;
     dep.pImageMemoryBarriers    = vk_bars;
-    vkCmdPipelineBarrier2(m_cmd, &dep);
+    vkCmdPipelineBarrier2(vk(m_cmd), &dep);
 }
 
 void CommandList::copy_buffer_to_image(BufferHandle src, TextureHandle dst,
@@ -199,7 +203,7 @@ void CommandList::copy_buffer_to_image(BufferHandle src, TextureHandle dst,
         vk_regions[i].imageOffset       = { r.image_offset_x, r.image_offset_y, r.image_offset_z };
         vk_regions[i].imageExtent       = { r.image_extent_w, r.image_extent_h, r.image_extent_d };
     }
-    vkCmdCopyBufferToImage(m_cmd, m_rhi->resolve(src), m_rhi->resolve(dst),
+    vkCmdCopyBufferToImage(vk(m_cmd), m_rhi->resolve(src), m_rhi->resolve(dst),
                            to_vk_layout(dst_layout), n, vk_regions);
 }
 
@@ -208,7 +212,69 @@ void CommandList::clear_color_image(TextureHandle image, f32 r, f32 g, f32 b, f3
     VkClearColorValue clear{};
     clear.float32[0] = r; clear.float32[1] = g; clear.float32[2] = b; clear.float32[3] = a;
     VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdClearColorImage(m_cmd, m_rhi->resolve(image), to_vk_layout(layout), &clear, 1, &range);
+    vkCmdClearColorImage(vk(m_cmd), m_rhi->resolve(image), to_vk_layout(layout), &clear, 1, &range);
+}
+
+static VkAttachmentLoadOp to_vk_load(LoadOp o) {
+    switch (o) {
+        case LoadOp::Load:     return VK_ATTACHMENT_LOAD_OP_LOAD;
+        case LoadOp::Clear:    return VK_ATTACHMENT_LOAD_OP_CLEAR;
+        case LoadOp::DontCare: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    }
+    return VK_ATTACHMENT_LOAD_OP_LOAD;
+}
+static VkAttachmentStoreOp to_vk_store(StoreOp o) {
+    switch (o) {
+        case StoreOp::Store:    return VK_ATTACHMENT_STORE_OP_STORE;
+        case StoreOp::DontCare: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    }
+    return VK_ATTACHMENT_STORE_OP_STORE;
+}
+
+void CommandList::begin_rendering(const RenderingDesc& desc) {
+    constexpr u32 kInlineColor = 4;
+    VkRenderingAttachmentInfo inline_color[kInlineColor];
+    std::vector<VkRenderingAttachmentInfo> heap_color;
+    const u32 nc = static_cast<u32>(desc.color_attachments.size());
+    VkRenderingAttachmentInfo* vk_color = inline_color;
+    if (nc > kInlineColor) {
+        heap_color.resize(nc);
+        vk_color = heap_color.data();
+    }
+    for (u32 i = 0; i < nc; ++i) {
+        const auto& a = desc.color_attachments[i];
+        vk_color[i] = {};
+        vk_color[i].sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        vk_color[i].imageView   = m_rhi->resolve_view(a.image);
+        vk_color[i].imageLayout = to_vk_layout(a.layout);
+        vk_color[i].loadOp      = to_vk_load(a.load);
+        vk_color[i].storeOp     = to_vk_store(a.store);
+        vk_color[i].clearValue.color = {{ a.clear.r, a.clear.g, a.clear.b, a.clear.a }};
+    }
+
+    VkRenderingAttachmentInfo vk_depth{};
+    if (desc.depth) {
+        vk_depth.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        vk_depth.imageView   = m_rhi->resolve_view(desc.depth->image);
+        vk_depth.imageLayout = to_vk_layout(desc.depth->layout);
+        vk_depth.loadOp      = to_vk_load(desc.depth->load);
+        vk_depth.storeOp     = to_vk_store(desc.depth->store);
+        vk_depth.clearValue.depthStencil = { desc.depth->clear.depth, desc.depth->clear.stencil };
+    }
+
+    VkRenderingInfo rendering{};
+    rendering.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering.renderArea           = { { desc.area_x, desc.area_y },
+                                       { desc.area_width, desc.area_height } };
+    rendering.layerCount           = desc.layer_count;
+    rendering.colorAttachmentCount = nc;
+    rendering.pColorAttachments    = (nc > 0) ? vk_color : nullptr;
+    rendering.pDepthAttachment     = desc.depth ? &vk_depth : nullptr;
+    vkCmdBeginRendering(vk(m_cmd), &rendering);
+}
+
+void CommandList::end_rendering() {
+    vkCmdEndRendering(vk(m_cmd));
 }
 
 } // namespace uldum::rhi

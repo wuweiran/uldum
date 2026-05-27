@@ -81,7 +81,7 @@ struct Batch {
 };
 
 struct HudRenderer::Impl {
-    rhi::VulkanRhi* rhi = nullptr;
+    rhi::Rhi* rhi = nullptr;
 
     rhi::DescriptorSetLayoutHandle desc_layout{};
     rhi::SamplerHandle             sampler{};
@@ -105,7 +105,7 @@ struct HudRenderer::Impl {
 };
 
 // ── Shader loading helper ─────────────────────────────────────────────────
-static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
@@ -117,18 +117,6 @@ static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view
 }
 
 // ── Setup helpers ─────────────────────────────────────────────────────────
-
-static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
-    switch (f) {
-        case VK_FORMAT_R8G8B8A8_UNORM: return rhi::TextureFormat::R8G8B8A8_UNORM;
-        case VK_FORMAT_R8G8B8A8_SRGB:  return rhi::TextureFormat::R8G8B8A8_SRGB;
-        case VK_FORMAT_B8G8R8A8_UNORM: return rhi::TextureFormat::B8G8R8A8_UNORM;
-        case VK_FORMAT_B8G8R8A8_SRGB:  return rhi::TextureFormat::B8G8R8A8_SRGB;
-        case VK_FORMAT_D32_SFLOAT:     return rhi::TextureFormat::D32_SFLOAT;
-        default: break;
-    }
-    return rhi::TextureFormat::Undefined;
-}
 
 static bool create_descriptor_layout(HudRenderer::Impl& r) {
     rhi::DescriptorSetLayoutBinding b{};
@@ -202,8 +190,8 @@ static bool create_pipeline_variant(HudRenderer::Impl& r, std::string_view frag_
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(r.rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(r.rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(r.rhi->depth_format());
+    rhi::TextureFormat color_fmt = r.rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = r.rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = r.pipe_layout;
@@ -1834,7 +1822,7 @@ HudRenderer::~HudRenderer() {
     shutdown();
 }
 
-bool HudRenderer::init(Hud& hud, rhi::VulkanRhi& rhi) {
+bool HudRenderer::init(Hud& hud, rhi::Rhi& rhi) {
     if (m_impl) {
         log::error(TAG, "HudRenderer::init called twice");
         return false;
@@ -2095,7 +2083,7 @@ void HudRenderer::render(rhi::CommandList& cmd) {
 void HudRenderer::reset_session_images() {
     if (!m_impl) return;
     auto& r = *m_impl;
-    if (r.rhi) vkDeviceWaitIdle(r.rhi->device());
+    if (r.rhi) r.rhi->wait_idle();
     destroy_hud_images(r);
 }
 

@@ -108,7 +108,7 @@ Shell::~Shell() {
     shutdown();
 }
 
-bool Shell::init(rhi::VulkanRhi& rhi, u32 window_w, u32 window_h) {
+bool Shell::init(rhi::Rhi& rhi, u32 window_w, u32 window_h) {
     auto& impl = *m_impl;
     if (impl.initialized) return true;
 

@@ -50,7 +50,7 @@ struct InstanceData {
 
 class Renderer {
 public:
-    bool init(rhi::VulkanRhi& rhi);
+    bool init(rhi::Rhi& rhi);
     void shutdown();
 
     // Tear down anything scoped to a single game session — currently the
@@ -155,7 +155,7 @@ private:
     // Draw paths use this to apply the kFoggedMemoryAlpha dim cue.
     bool is_in_fog_memory(const simulation::World& world, u32 id) const;
 
-    rhi::VulkanRhi* m_rhi = nullptr;
+    rhi::Rhi* m_rhi = nullptr;
     const map::TerrainData* m_terrain_data = nullptr;
     Camera          m_camera;
     std::string     m_map_root;  // map root for resolving model paths

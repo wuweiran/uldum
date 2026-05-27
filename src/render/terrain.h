@@ -7,7 +7,7 @@
 #include <glm/vec3.hpp>
 
 namespace uldum::map  { struct TerrainData; }
-namespace uldum::rhi  { class VulkanRhi; }
+namespace uldum::rhi  { class Rhi; }
 
 namespace uldum::render {
 
@@ -26,8 +26,8 @@ struct TerrainMesh {
 };
 
 // Build a GPU mesh from terrain data. Call again to rebuild after edits.
-TerrainMesh build_terrain_mesh(rhi::VulkanRhi& rhi, const map::TerrainData& terrain);
+TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& terrain);
 
-void destroy_terrain_mesh(rhi::VulkanRhi& rhi, TerrainMesh& mesh);
+void destroy_terrain_mesh(rhi::Rhi& rhi, TerrainMesh& mesh);
 
 } // namespace uldum::render

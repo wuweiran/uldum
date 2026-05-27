@@ -16,7 +16,7 @@ static constexpr const char* TAG = "UI";
 static_assert(sizeof(Rml::Vertex) == 20, "Rml::Vertex layout changed");
 
 // ── Shader loading helper (mirrors the pattern in renderer.cpp) ──────────
-static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
@@ -27,7 +27,7 @@ static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view
     return rhi.create_shader_module(bytes);
 }
 
-RenderInterface::RenderInterface(rhi::VulkanRhi& rhi) : m_rhi(rhi) {}
+RenderInterface::RenderInterface(rhi::Rhi& rhi) : m_rhi(rhi) {}
 RenderInterface::~RenderInterface() { shutdown(); }
 
 bool RenderInterface::init() {
@@ -55,18 +55,6 @@ void RenderInterface::shutdown() {
     m_rhi.destroy_pipeline_layout(m_pipeline_layout);
     m_rhi.destroy_sampler(m_sampler);
     m_rhi.destroy_descriptor_set_layout(m_desc_layout);
-}
-
-static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
-    switch (f) {
-        case VK_FORMAT_R8G8B8A8_UNORM: return rhi::TextureFormat::R8G8B8A8_UNORM;
-        case VK_FORMAT_R8G8B8A8_SRGB:  return rhi::TextureFormat::R8G8B8A8_SRGB;
-        case VK_FORMAT_B8G8R8A8_UNORM: return rhi::TextureFormat::B8G8R8A8_UNORM;
-        case VK_FORMAT_B8G8R8A8_SRGB:  return rhi::TextureFormat::B8G8R8A8_SRGB;
-        case VK_FORMAT_D32_SFLOAT:     return rhi::TextureFormat::D32_SFLOAT;
-        default: break;
-    }
-    return rhi::TextureFormat::Undefined;
 }
 
 // ── One-time setup ───────────────────────────────────────────────────────
@@ -149,8 +137,8 @@ bool RenderInterface::create_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi.msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi.swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi.depth_format());
+    rhi::TextureFormat color_fmt = m_rhi.swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi.depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_pipeline_layout;

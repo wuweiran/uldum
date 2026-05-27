@@ -4,7 +4,7 @@
 #include "asset/model.h"
 #include "rhi/handles.h"
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::render {
 
@@ -28,12 +28,12 @@ struct GpuMesh {
 };
 
 // Upload CPU-side MeshData to GPU buffers.
-GpuMesh upload_mesh(rhi::VulkanRhi& rhi, const asset::MeshData& mesh);
+GpuMesh upload_mesh(rhi::Rhi& rhi, const asset::MeshData& mesh);
 
 // Upload skinned mesh.
-GpuMesh upload_skinned_mesh(rhi::VulkanRhi& rhi, const asset::SkinnedMeshData& mesh, u32 bone_count);
+GpuMesh upload_skinned_mesh(rhi::Rhi& rhi, const asset::SkinnedMeshData& mesh, u32 bone_count);
 
 // Destroy GPU mesh buffers (no-op for mega-buffer refs).
-void destroy_mesh(rhi::VulkanRhi& rhi, GpuMesh& mesh);
+void destroy_mesh(rhi::Rhi& rhi, GpuMesh& mesh);
 
 } // namespace uldum::render

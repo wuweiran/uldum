@@ -12,7 +12,7 @@
 
 namespace uldum::render {
 
-TerrainMesh build_terrain_mesh(rhi::VulkanRhi& rhi, const map::TerrainData& td) {
+TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
     if (!td.is_valid()) {
         log::error("Terrain", "Cannot build mesh from invalid TerrainData");
         return {};
@@ -697,7 +697,7 @@ TerrainMesh build_terrain_mesh(rhi::VulkanRhi& rhi, const map::TerrainData& td) 
     return result;
 }
 
-void destroy_terrain_mesh(rhi::VulkanRhi& rhi, TerrainMesh& mesh) {
+void destroy_terrain_mesh(rhi::Rhi& rhi, TerrainMesh& mesh) {
     destroy_mesh(rhi, mesh.gpu_mesh);
     mesh = {};
 }

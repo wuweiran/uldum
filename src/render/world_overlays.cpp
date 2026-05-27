@@ -61,7 +61,7 @@ u32 pack_premul_rgba(f32 r, f32 g, f32 b, f32 a) {
 } // namespace
 
 struct WorldOverlays::Impl {
-    rhi::VulkanRhi* rhi = nullptr;
+    rhi::Rhi* rhi = nullptr;
 
     rhi::PipelineLayoutHandle      pipeline_layout{};
     rhi::PipelineHandle            pipeline{};
@@ -91,7 +91,7 @@ struct WorldOverlays::Impl {
 
 // ── Pipeline ─────────────────────────────────────────────────────────────
 
-static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
@@ -99,17 +99,6 @@ static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view
     return rhi.create_shader_module(bytes);
 }
 
-static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
-    switch (f) {
-        case VK_FORMAT_R8G8B8A8_UNORM:      return rhi::TextureFormat::R8G8B8A8_UNORM;
-        case VK_FORMAT_R8G8B8A8_SRGB:       return rhi::TextureFormat::R8G8B8A8_SRGB;
-        case VK_FORMAT_B8G8R8A8_UNORM:      return rhi::TextureFormat::B8G8R8A8_UNORM;
-        case VK_FORMAT_B8G8R8A8_SRGB:       return rhi::TextureFormat::B8G8R8A8_SRGB;
-        case VK_FORMAT_D32_SFLOAT:          return rhi::TextureFormat::D32_SFLOAT;
-        default: break;
-    }
-    return rhi::TextureFormat::Undefined;
-}
 
 static bool create_descriptor_layout(WorldOverlays::Impl& s) {
     rhi::DescriptorSetLayoutBinding b{};
@@ -176,8 +165,8 @@ static bool create_pipeline(WorldOverlays::Impl& s) {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(s.rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(s.rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(s.rhi->depth_format());
+    rhi::TextureFormat color_fmt = s.rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = s.rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = s.pipeline_layout;
@@ -218,7 +207,7 @@ static bool create_buffers(WorldOverlays::Impl& s) {
 WorldOverlays::WorldOverlays() = default;
 WorldOverlays::~WorldOverlays() { shutdown(); }
 
-bool WorldOverlays::init(rhi::VulkanRhi& rhi) {
+bool WorldOverlays::init(rhi::Rhi& rhi) {
     m_impl = new Impl{};
     m_impl->rhi = &rhi;
     if (!create_descriptor_layout(*m_impl)) { log::error(TAG, "desc layout failed"); return false; }
@@ -324,7 +313,7 @@ bool WorldOverlays::set_texture(TextureId id, std::string_view path) {
     // Wait for in-flight frames to finish referencing the old image
     // before destroying it. This is rare (called once per session at
     // map load), so the stall is acceptable.
-    vkDeviceWaitIdle(m_impl->rhi->device());
+    m_impl->rhi->wait_idle();
     auto& d = m_impl->decals[static_cast<usize>(id)];
     destroy_texture(*m_impl->rhi, d.tex);
     d.tex = new_tex;

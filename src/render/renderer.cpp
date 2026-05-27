@@ -52,7 +52,7 @@ static f32 effective_visual_alpha(const simulation::World& world, u32 id,
 
 // ── Shader loading helper ──────────────────────────────────────────────────
 
-static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) {
         log::error(TAG, "Shader load without AssetManager: '{}'", path);
@@ -109,7 +109,7 @@ static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal) {
 
 // ── Init / Shutdown ────────────────────────────────────────────────────────
 
-bool Renderer::init(rhi::VulkanRhi& rhi) {
+bool Renderer::init(rhi::Rhi& rhi) {
     m_rhi = &rhi;
 
     f32 aspect = static_cast<f32>(rhi.extent().width) / static_cast<f32>(rhi.extent().height);
@@ -255,7 +255,7 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
 void Renderer::end_session() {
     if (!m_rhi) return;
     // GPU must be idle before freeing any bone buffer still in flight.
-    vkDeviceWaitIdle(m_rhi->device());
+    m_rhi->wait_idle();
     for (auto& [eid, anim] : m_anim_instances) {
         m_rhi->destroy_buffer(anim.bone_buffer);
         // Descriptor sets will be freed when the pool is destroyed in
@@ -636,7 +636,7 @@ void Renderer::add_point_light(glm::vec3 position, glm::vec3 color, f32 radius, 
 void Renderer::set_terrain(const map::TerrainData* terrain) {
     // The terrain mesh is bound by every frame's draw cmds; the previous
     // frame may still be in flight when callers swap or clear terrain.
-    vkDeviceWaitIdle(m_rhi->device());
+    m_rhi->wait_idle();
     destroy_terrain_mesh(*m_rhi, m_terrain);
 
     if (!terrain) {
@@ -1127,7 +1127,7 @@ bool Renderer::create_water_normal() {
 }
 
 void Renderer::load_tileset_textures(const map::Tileset& tileset) {
-    vkDeviceWaitIdle(m_rhi->device());
+    m_rhi->wait_idle();
     if (m_terrain_material.layer_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.layer_array);
     if (m_terrain_material.normal_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.normal_array);
     m_terrain_material.has_normals = false;
@@ -1280,17 +1280,6 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
 
 // ── Pipeline creation helpers ─────────────────────────────────────────────
 
-static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
-    switch (f) {
-        case VK_FORMAT_R8G8B8A8_UNORM: return rhi::TextureFormat::R8G8B8A8_UNORM;
-        case VK_FORMAT_R8G8B8A8_SRGB:  return rhi::TextureFormat::R8G8B8A8_SRGB;
-        case VK_FORMAT_B8G8R8A8_UNORM: return rhi::TextureFormat::B8G8R8A8_UNORM;
-        case VK_FORMAT_B8G8R8A8_SRGB:  return rhi::TextureFormat::B8G8R8A8_SRGB;
-        case VK_FORMAT_D32_SFLOAT:     return rhi::TextureFormat::D32_SFLOAT;
-        default: break;
-    }
-    return rhi::TextureFormat::Undefined;
-}
 
 bool Renderer::create_mesh_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/mesh.vert.spv");
@@ -1354,8 +1343,8 @@ bool Renderer::create_mesh_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_mesh_pipeline_layout;
@@ -1449,8 +1438,8 @@ bool Renderer::create_skinned_mesh_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_skinned_mesh_pipeline_layout;
@@ -1571,8 +1560,8 @@ bool Renderer::create_particle_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_particle_pipeline_layout;
@@ -1650,8 +1639,8 @@ bool Renderer::create_terrain_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_terrain_pipeline_layout;
@@ -1738,8 +1727,8 @@ bool Renderer::create_water_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_water_pipeline_layout;
@@ -1868,8 +1857,8 @@ bool Renderer::create_skybox_pipeline() {
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
-    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_skybox_pipeline_layout;
@@ -2247,24 +2236,18 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
     to_depth.aspect     = rhi::ImageAspect::Depth;
     cmd.image_barrier(to_depth);
 
-    // Dynamic-rendering attachment setup still uses raw Vk because the
-    // CommandList abstraction doesn't yet wrap VkRenderingAttachmentInfo
-    // (it needs image views, clear values, etc — out of scope for now).
-    VkCommandBuffer raw_cmd = cmd.raw();
-    VkRenderingAttachmentInfo depth_attachment{};
-    depth_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depth_attachment.imageView   = m_rhi->resolve_view(m_shadow_map.depth_image);
-    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depth_attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
-    depth_attachment.clearValue.depthStencil = {1.0f, 0};
+    rhi::DepthAttachment depth_att{};
+    depth_att.image  = m_shadow_map.depth_image;
+    depth_att.layout = rhi::ImageLayout::DepthAttachmentOptimal;
+    depth_att.load   = rhi::LoadOp::Clear;
+    depth_att.store  = rhi::StoreOp::Store;
+    depth_att.clear  = { 1.0f, 0 };
 
-    VkRenderingInfo rendering{};
-    rendering.sType            = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    rendering.renderArea       = {{0, 0}, {m_shadow_map.size, m_shadow_map.size}};
-    rendering.layerCount       = 1;
-    rendering.pDepthAttachment = &depth_attachment;
-    vkCmdBeginRendering(raw_cmd, &rendering);
+    rhi::RenderingDesc rdesc{};
+    rdesc.depth       = &depth_att;
+    rdesc.area_width  = m_shadow_map.size;
+    rdesc.area_height = m_shadow_map.size;
+    cmd.begin_rendering(rdesc);
 
     f32 size_f = static_cast<f32>(m_shadow_map.size);
     cmd.bind_pipeline(m_shadow_pipeline);
@@ -2367,7 +2350,7 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
                                   sizeof(VkDrawIndexedIndirectCommand));
     }
 
-    vkCmdEndRendering(raw_cmd);
+    cmd.end_rendering();
 
     // Transition shadow map for sampling
     rhi::ImageBarrier to_read{};
@@ -2702,7 +2685,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         }
         if (!stale.empty()) {
             // Wait for GPU to finish using the bone buffers before destroying
-            vkDeviceWaitIdle(m_rhi->device());
+            m_rhi->wait_idle();
         }
         for (u32 eid : stale) {
             auto it = m_anim_instances.find(eid);

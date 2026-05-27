@@ -11,7 +11,7 @@
 #include <span>
 #include <vector>
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::render {
 
@@ -68,7 +68,7 @@ class ParticleSystem {
 public:
     static constexpr u32 MAX_PARTICLES = 8192;
 
-    bool init(rhi::VulkanRhi& rhi);
+    bool init(rhi::Rhi& rhi);
     void shutdown();
 
     // Add an emitter. Returns its id for later removal.
@@ -116,7 +116,7 @@ private:
     rhi::BufferHandle m_vertex_buffer{};
     u32               m_quad_count = 0;
 
-    rhi::VulkanRhi* m_rhi = nullptr;
+    rhi::Rhi* m_rhi = nullptr;
 };
 
 } // namespace uldum::render

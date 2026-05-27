@@ -3,7 +3,7 @@
 #include "render/gpu_texture.h"
 #include "rhi/handles.h"
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::render {
 

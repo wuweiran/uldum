@@ -9,7 +9,7 @@ namespace uldum::render {
 
 static constexpr const char* TAG = "Shadow";
 
-bool create_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm) {
+bool create_shadow_map(rhi::Rhi& rhi, ShadowMap& sm) {
     sm.size = SHADOW_MAP_SIZE;
 
     rhi::TextureDesc td{};
@@ -45,13 +45,13 @@ bool create_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm) {
     return true;
 }
 
-void destroy_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm) {
+void destroy_shadow_map(rhi::Rhi& rhi, ShadowMap& sm) {
     rhi.destroy_sampler(sm.sampler);
     rhi.destroy_texture(sm.depth_image);
     sm = {};
 }
 
-bool create_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb) {
+bool create_shadow_buffer(rhi::Rhi& rhi, ShadowBuffer& sb) {
     rhi::BufferDesc d{};
     d.size   = sizeof(ShadowUBO);
     d.usage  = rhi::BufferUsage::Uniform;
@@ -64,7 +64,7 @@ bool create_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb) {
     return true;
 }
 
-void destroy_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb) {
+void destroy_shadow_buffer(rhi::Rhi& rhi, ShadowBuffer& sb) {
     rhi.destroy_buffer(sb.buffer);
     sb = {};
 }

@@ -13,7 +13,7 @@
 
 #include "rhi/command_list.h"
 
-namespace uldum::rhi      { class VulkanRhi; }
+namespace uldum::rhi      { class Rhi; }
 namespace uldum::platform { class Platform; }
 
 namespace uldum {
@@ -65,7 +65,7 @@ public:
     // reflects what's active (initial CLI / settings value).
     void set_active_locale(std::string code);
 
-    bool init(rhi::VulkanRhi& rhi, platform::Platform& platform);
+    bool init(rhi::Rhi& rhi, platform::Platform& platform);
     void shutdown();
 
     // Per-frame. `update()` runs the ImGui logic (must happen outside the
@@ -107,7 +107,7 @@ private:
     void draw_pause_overlay(network::NetworkManager& net);
     void draw_disconnected_overlay();
 
-    rhi::VulkanRhi*     m_rhi = nullptr;
+    rhi::Rhi*     m_rhi = nullptr;
     platform::Platform* m_platform = nullptr;  // for input feed + map enumeration
     void*               m_imgui_pool = nullptr;  // VkDescriptorPool, opaque here
     bool                m_initialized = false;

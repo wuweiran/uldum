@@ -24,7 +24,7 @@
 
 #include <string_view>
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::hud {
 
@@ -40,7 +40,7 @@ public:
     // Bind to a Hud instance + Vulkan device. Hud must outlive
     // HudRenderer. Creates pipelines, descriptor pool, ring buffers,
     // 1×1 white texture, and loads the system font.
-    bool init(Hud& hud, rhi::VulkanRhi& rhi);
+    bool init(Hud& hud, rhi::Rhi& rhi);
     void shutdown();
 
     // Drop the per-session image cache. HUD icons are looked up by

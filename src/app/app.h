@@ -182,7 +182,7 @@ private:
 
     // ── Persistent (survive across sessions) ────────────────────────────
     std::unique_ptr<platform::Platform> m_platform;
-    rhi::VulkanRhi           m_rhi;
+    rhi::Rhi           m_rhi;
     asset::AssetManager      m_asset;
     render::Renderer         m_renderer;
     render::CameraController m_camera_controller;

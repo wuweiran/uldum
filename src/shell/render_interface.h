@@ -11,7 +11,7 @@
 
 #include <unordered_map>
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::shell {
 
@@ -30,7 +30,7 @@ namespace uldum::shell {
 //   call of the frame binds the pipeline + viewport lazily.
 class RenderInterface final : public Rml::RenderInterface {
 public:
-    explicit RenderInterface(rhi::VulkanRhi& rhi);
+    explicit RenderInterface(rhi::Rhi& rhi);
     ~RenderInterface() override;
 
     // One-time setup: pipeline, descriptor layout/pool, sampler, default
@@ -87,7 +87,7 @@ private:
     // Lazy-bind pipeline + viewport once per frame (first RenderGeometry call).
     void ensure_pipeline_bound();
 
-    rhi::VulkanRhi&                m_rhi;
+    rhi::Rhi&                m_rhi;
     rhi::DescriptorSetLayoutHandle m_desc_layout{};
     rhi::PipelineLayoutHandle      m_pipeline_layout{};
     rhi::PipelineHandle            m_pipeline{};

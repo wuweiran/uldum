@@ -54,11 +54,11 @@ static void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEX
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-VulkanRhi::~VulkanRhi() {
+Rhi::~Rhi() {
     shutdown();
 }
 
-bool VulkanRhi::init(const Config& config, platform::Platform& platform) {
+bool Rhi::init(const Config& config, platform::Platform& platform) {
     if (!create_instance(config))  return false;
     if (!create_surface(platform)) return false;
     if (!pick_physical_device())   return false;
@@ -72,7 +72,7 @@ bool VulkanRhi::init(const Config& config, platform::Platform& platform) {
     return true;
 }
 
-void VulkanRhi::shutdown() {
+void Rhi::shutdown() {
     if (m_device) vkDeviceWaitIdle(m_device);
 
     for (auto& sem : m_render_finished) {
@@ -81,7 +81,7 @@ void VulkanRhi::shutdown() {
     m_render_finished.clear();
 
     // Idempotent: zero each handle after destroying so a second shutdown
-    // (App::shutdown() runs explicitly, then ~App → ~VulkanRhi calls
+    // (App::shutdown() runs explicitly, then ~App → ~Rhi calls
     // shutdown() again) doesn't re-feed stale handles into vkDestroy*
     // with a NULL device.
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -191,7 +191,7 @@ void VulkanRhi::shutdown() {
 // Instance
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::create_instance(const Config& config) {
+bool Rhi::create_instance(const Config& config) {
     VkApplicationInfo app_info{};
     app_info.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app_info.pApplicationName   = "Uldum";
@@ -290,7 +290,7 @@ bool VulkanRhi::create_instance(const Config& config) {
 // Surface
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::create_surface(platform::Platform& platform) {
+bool Rhi::create_surface(platform::Platform& platform) {
 #ifdef ULDUM_PLATFORM_WINDOWS
     VkWin32SurfaceCreateInfoKHR ci{};
     ci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
@@ -321,7 +321,11 @@ bool VulkanRhi::create_surface(platform::Platform& platform) {
     return true;
 }
 
-void VulkanRhi::recreate_surface(platform::Platform& platform) {
+void Rhi::wait_idle() {
+    if (m_device != VK_NULL_HANDLE) vkDeviceWaitIdle(m_device);
+}
+
+void Rhi::recreate_surface(platform::Platform& platform) {
     if (m_device == VK_NULL_HANDLE) return;  // not initialized yet
 
     // The old swapchain and surface are tied to a now-destroyed
@@ -361,7 +365,7 @@ void VulkanRhi::recreate_surface(platform::Platform& platform) {
 // Physical device
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::pick_physical_device() {
+bool Rhi::pick_physical_device() {
     u32 count = 0;
     vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
     if (count == 0) {
@@ -395,7 +399,7 @@ bool VulkanRhi::pick_physical_device() {
 // Logical device
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::create_device() {
+bool Rhi::create_device() {
     // Find queue families
     u32 family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count, nullptr);
@@ -497,7 +501,7 @@ bool VulkanRhi::create_device() {
 // Swapchain
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::create_swapchain(u32 width, u32 height) {
+bool Rhi::create_swapchain(u32 width, u32 height) {
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device, m_surface, &caps);
 
@@ -764,7 +768,7 @@ bool VulkanRhi::create_swapchain(u32 width, u32 height) {
     return true;
 }
 
-void VulkanRhi::destroy_swapchain() {
+void Rhi::destroy_swapchain() {
     if (m_msaa_color_view)  { vkDestroyImageView(m_device, m_msaa_color_view, nullptr); m_msaa_color_view = VK_NULL_HANDLE; }
     if (m_msaa_color_image) { vmaDestroyImage(m_allocator, m_msaa_color_image, m_msaa_color_alloc); m_msaa_color_image = VK_NULL_HANDLE; m_msaa_color_alloc = VK_NULL_HANDLE; }
     if (m_depth_view)  { vkDestroyImageView(m_device, m_depth_view, nullptr); m_depth_view = VK_NULL_HANDLE; }
@@ -786,7 +790,7 @@ void VulkanRhi::destroy_swapchain() {
 // Command & sync resources
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::create_command_resources() {
+bool Rhi::create_command_resources() {
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         VkCommandPoolCreateInfo pool_ci{};
         pool_ci.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -812,7 +816,7 @@ bool VulkanRhi::create_command_resources() {
     return true;
 }
 
-bool VulkanRhi::create_sync_objects() {
+bool Rhi::create_sync_objects() {
     VkSemaphoreCreateInfo sem_ci{};
     sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
@@ -840,12 +844,12 @@ bool VulkanRhi::create_sync_objects() {
 // Frame loop
 // ---------------------------------------------------------------------------
 
-void VulkanRhi::handle_resize(u32 width, u32 height) {
+void Rhi::handle_resize(u32 width, u32 height) {
     if (width == 0 || height == 0) return;
     m_swapchain_dirty = true;
 }
 
-CommandList VulkanRhi::begin_oneshot() {
+CommandList Rhi::begin_oneshot() {
     VkCommandPool pool = m_command_pools[0];
 
     VkCommandBufferAllocateInfo alloc_info{};
@@ -865,8 +869,8 @@ CommandList VulkanRhi::begin_oneshot() {
     return CommandList(*this, cmd);
 }
 
-void VulkanRhi::end_oneshot(CommandList& cl) {
-    VkCommandBuffer cmd = cl.raw();
+void Rhi::end_oneshot(CommandList& cl) {
+    VkCommandBuffer cmd = static_cast<VkCommandBuffer>(cl.backend_handle());
     vkEndCommandBuffer(cmd);
 
     VkSubmitInfo submit{};
@@ -882,7 +886,7 @@ void VulkanRhi::end_oneshot(CommandList& cl) {
 
 // ── Resource factories ──────────────────────────────────────────────────
 
-ShaderModuleHandle VulkanRhi::create_shader_module(std::span<const u8> spirv) {
+ShaderModuleHandle Rhi::create_shader_module(std::span<const u8> spirv) {
     if (spirv.empty() || (spirv.size() % 4) != 0) {
         log::error(TAG, "create_shader_module: empty or non-multiple-of-4 bytecode ({} bytes)", spirv.size());
         return {};
@@ -914,7 +918,7 @@ ShaderModuleHandle VulkanRhi::create_shader_module(std::span<const u8> spirv) {
     return ShaderModuleHandle{idx, rec.generation};
 }
 
-void VulkanRhi::destroy_shader_module(ShaderModuleHandle h) {
+void Rhi::destroy_shader_module(ShaderModuleHandle h) {
     if (!h.is_valid() || h.index >= m_shader_modules.size()) return;
     auto& rec = m_shader_modules[h.index];
     if (rec.generation != h.generation) return;  // stale handle
@@ -975,6 +979,19 @@ VkImageUsageFlags to_vk_image_usage(TextureUsage u) {
     if (any(u, TextureUsage::TransferSrc))     f |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (any(u, TextureUsage::TransferDst))     f |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     return f;
+}
+
+static TextureFormat from_vk_format(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8_UNORM:               return TextureFormat::R8_UNORM;
+        case VK_FORMAT_R8G8B8A8_UNORM:         return TextureFormat::R8G8B8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:          return TextureFormat::R8G8B8A8_SRGB;
+        case VK_FORMAT_B8G8R8A8_UNORM:         return TextureFormat::B8G8R8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB:          return TextureFormat::B8G8R8A8_SRGB;
+        case VK_FORMAT_D32_SFLOAT:             return TextureFormat::D32_SFLOAT;
+        default: break;
+    }
+    return TextureFormat::Undefined;
 }
 
 VkFormat to_vk_format(TextureFormat f) {
@@ -1053,7 +1070,10 @@ VkImageAspectFlags aspect_for_usage(TextureUsage u) {
 
 } // anonymous
 
-BufferHandle VulkanRhi::create_buffer(const BufferDesc& desc) {
+TextureFormat Rhi::swapchain_format() const { return from_vk_format(m_swapchain_format); }
+TextureFormat Rhi::depth_format()     const { return from_vk_format(m_depth_format); }
+
+BufferHandle Rhi::create_buffer(const BufferDesc& desc) {
     if (desc.size == 0 || desc.usage == BufferUsage::None) {
         log::error(TAG, "create_buffer: invalid desc (size={}, usage=0)", desc.size);
         return {};
@@ -1097,7 +1117,7 @@ BufferHandle VulkanRhi::create_buffer(const BufferDesc& desc) {
     return BufferHandle{idx, gen};
 }
 
-void VulkanRhi::destroy_buffer(BufferHandle h) {
+void Rhi::destroy_buffer(BufferHandle h) {
     if (!h.is_valid() || h.index >= m_buffers.size()) return;
     auto& rec = m_buffers[h.index];
     if (rec.generation != h.generation) return;
@@ -1113,21 +1133,21 @@ void VulkanRhi::destroy_buffer(BufferHandle h) {
 
 // resolve(BufferHandle) — inlined in vulkan_rhi.h
 
-VmaAllocation VulkanRhi::alloc_of(BufferHandle h) const {
+VmaAllocation Rhi::alloc_of(BufferHandle h) const {
     if (!h.is_valid() || h.index >= m_buffers.size()) return VK_NULL_HANDLE;
     const auto& rec = m_buffers[h.index];
     if (rec.generation != h.generation) return VK_NULL_HANDLE;
     return rec.alloc;
 }
 
-void* VulkanRhi::mapped_ptr(BufferHandle h) const {
+void* Rhi::mapped_ptr(BufferHandle h) const {
     if (!h.is_valid() || h.index >= m_buffers.size()) return nullptr;
     const auto& rec = m_buffers[h.index];
     if (rec.generation != h.generation) return nullptr;
     return rec.mapped;
 }
 
-TextureHandle VulkanRhi::create_texture(const TextureDesc& desc) {
+TextureHandle Rhi::create_texture(const TextureDesc& desc) {
     if (desc.width == 0 || desc.height == 0 || desc.format == TextureFormat::Undefined) {
         log::error(TAG, "create_texture: invalid desc ({}x{}, format=undefined?)",
                    desc.width, desc.height);
@@ -1199,7 +1219,7 @@ TextureHandle VulkanRhi::create_texture(const TextureDesc& desc) {
     return TextureHandle{idx, gen};
 }
 
-void VulkanRhi::destroy_texture(TextureHandle h) {
+void Rhi::destroy_texture(TextureHandle h) {
     if (!h.is_valid() || h.index >= m_textures.size()) return;
     auto& rec = m_textures[h.index];
     if (rec.generation != h.generation) return;
@@ -1212,14 +1232,14 @@ void VulkanRhi::destroy_texture(TextureHandle h) {
 
 // resolve(TextureHandle) / resolve_view — inlined in vulkan_rhi.h
 
-VmaAllocation VulkanRhi::alloc_of(TextureHandle h) const {
+VmaAllocation Rhi::alloc_of(TextureHandle h) const {
     if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
     const auto& rec = m_textures[h.index];
     if (rec.generation != h.generation) return VK_NULL_HANDLE;
     return rec.alloc;
 }
 
-SamplerHandle VulkanRhi::create_sampler(const SamplerDesc& desc) {
+SamplerHandle Rhi::create_sampler(const SamplerDesc& desc) {
     VkSamplerCreateInfo sci{};
     sci.sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sci.magFilter        = to_vk_filter(desc.mag_filter);
@@ -1250,7 +1270,7 @@ SamplerHandle VulkanRhi::create_sampler(const SamplerDesc& desc) {
     return SamplerHandle{idx, gen};
 }
 
-void VulkanRhi::destroy_sampler(SamplerHandle h) {
+void Rhi::destroy_sampler(SamplerHandle h) {
     if (!h.is_valid() || h.index >= m_samplers.size()) return;
     auto& rec = m_samplers[h.index];
     if (rec.generation != h.generation) return;
@@ -1346,7 +1366,7 @@ VkVertexInputRate to_vk_input_rate(bool per_instance) {
 
 // ── Descriptor set layouts ──────────────────────────────────────────────
 
-DescriptorSetLayoutHandle VulkanRhi::create_descriptor_set_layout(const DescriptorSetLayoutDesc& desc) {
+DescriptorSetLayoutHandle Rhi::create_descriptor_set_layout(const DescriptorSetLayoutDesc& desc) {
     std::vector<VkDescriptorSetLayoutBinding> vk_bindings(desc.bindings.size());
     std::vector<VkDescriptorBindingFlags>     vk_flags(desc.bindings.size(), 0);
     bool any_bindless = false;
@@ -1393,7 +1413,7 @@ DescriptorSetLayoutHandle VulkanRhi::create_descriptor_set_layout(const Descript
     return DescriptorSetLayoutHandle{idx, gen};
 }
 
-void VulkanRhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
+void Rhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
     if (!h.is_valid() || h.index >= m_dsl_records.size()) return;
     auto& rec = m_dsl_records[h.index];
     if (rec.generation != h.generation) return;
@@ -1409,7 +1429,7 @@ void VulkanRhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
 
 // ── Descriptor pool growth ──────────────────────────────────────────────
 
-bool VulkanRhi::grow_descriptor_pool() {
+bool Rhi::grow_descriptor_pool() {
     // Generous fixed-size pool — supports the engine's largest descriptor
     // workload (bindless + per-frame + per-entity + UI) for one session
     // before needing to grow. Each call appends a fresh pool to the ring.
@@ -1436,7 +1456,7 @@ bool VulkanRhi::grow_descriptor_pool() {
     return true;
 }
 
-DescriptorSetHandle VulkanRhi::allocate_descriptor_set(DescriptorSetLayoutHandle layout_h,
+DescriptorSetHandle Rhi::allocate_descriptor_set(DescriptorSetLayoutHandle layout_h,
                                                        u32 variable_count) {
     VkDescriptorSetLayout layout = resolve(layout_h);
     if (layout == VK_NULL_HANDLE) return {};
@@ -1480,7 +1500,7 @@ DescriptorSetHandle VulkanRhi::allocate_descriptor_set(DescriptorSetLayoutHandle
     return DescriptorSetHandle{idx, gen};
 }
 
-void VulkanRhi::update_descriptor_set(DescriptorSetHandle h, std::span<const WriteDescriptor> writes) {
+void Rhi::update_descriptor_set(DescriptorSetHandle h, std::span<const WriteDescriptor> writes) {
     VkDescriptorSet set = resolve(h);
     if (set == VK_NULL_HANDLE || writes.empty()) return;
 
@@ -1528,7 +1548,7 @@ void VulkanRhi::update_descriptor_set(DescriptorSetHandle h, std::span<const Wri
     vkUpdateDescriptorSets(m_device, static_cast<u32>(vk_writes.size()), vk_writes.data(), 0, nullptr);
 }
 
-void VulkanRhi::free_descriptor_set(DescriptorSetHandle h) {
+void Rhi::free_descriptor_set(DescriptorSetHandle h) {
     if (!h.is_valid() || h.index >= m_dset_records.size()) return;
     auto& rec = m_dset_records[h.index];
     if (rec.generation != h.generation) return;
@@ -1545,7 +1565,7 @@ void VulkanRhi::free_descriptor_set(DescriptorSetHandle h) {
 
 // ── Pipeline layout ─────────────────────────────────────────────────────
 
-PipelineLayoutHandle VulkanRhi::create_pipeline_layout(const PipelineLayoutDesc& desc) {
+PipelineLayoutHandle Rhi::create_pipeline_layout(const PipelineLayoutDesc& desc) {
     std::vector<VkDescriptorSetLayout> vk_layouts(desc.set_layouts.size());
     for (usize i = 0; i < desc.set_layouts.size(); ++i) {
         vk_layouts[i] = resolve(desc.set_layouts[i]);
@@ -1577,7 +1597,7 @@ PipelineLayoutHandle VulkanRhi::create_pipeline_layout(const PipelineLayoutDesc&
     return PipelineLayoutHandle{idx, gen};
 }
 
-void VulkanRhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
+void Rhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
     if (!h.is_valid() || h.index >= m_pl_records.size()) return;
     auto& rec = m_pl_records[h.index];
     if (rec.generation != h.generation) return;
@@ -1593,7 +1613,7 @@ void VulkanRhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
 
 // ── Graphics pipeline ───────────────────────────────────────────────────
 
-PipelineHandle VulkanRhi::create_graphics_pipeline(const GraphicsPipelineDesc& desc) {
+PipelineHandle Rhi::create_graphics_pipeline(const GraphicsPipelineDesc& desc) {
     // Stages
     std::vector<VkPipelineShaderStageCreateInfo> vk_stages(desc.stages.size());
     for (usize i = 0; i < desc.stages.size(); ++i) {
@@ -1726,7 +1746,7 @@ PipelineHandle VulkanRhi::create_graphics_pipeline(const GraphicsPipelineDesc& d
     return PipelineHandle{idx, gen};
 }
 
-void VulkanRhi::destroy_pipeline(PipelineHandle h) {
+void Rhi::destroy_pipeline(PipelineHandle h) {
     if (!h.is_valid() || h.index >= m_pipeline_records.size()) return;
     auto& rec = m_pipeline_records[h.index];
     if (rec.generation != h.generation) return;
@@ -1740,7 +1760,7 @@ void VulkanRhi::destroy_pipeline(PipelineHandle h) {
 
 // resolve(PipelineHandle) — inlined in vulkan_rhi.h
 
-VkCommandBuffer VulkanRhi::begin_frame() {
+VkCommandBuffer Rhi::begin_frame() {
     vkWaitForFences(m_device, 1, &m_in_flight[m_frame_index], VK_TRUE, UINT64_MAX);
 
     VkResult result = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
@@ -1831,7 +1851,7 @@ VkCommandBuffer VulkanRhi::begin_frame() {
     return cmd;
 }
 
-void VulkanRhi::begin_rendering() {
+void Rhi::begin_rendering() {
     if (!m_frame_active) return;
     VkCommandBuffer cmd = m_command_buffers[m_frame_index];
 
@@ -1866,7 +1886,7 @@ void VulkanRhi::begin_rendering() {
     vkCmdBeginRendering(cmd, &rendering);
 }
 
-void VulkanRhi::end_frame() {
+void Rhi::end_frame() {
     if (!m_frame_active) return;
     m_frame_active = false;
 
@@ -1937,7 +1957,7 @@ void VulkanRhi::end_frame() {
 // VMA allocator
 // ---------------------------------------------------------------------------
 
-bool VulkanRhi::create_allocator() {
+bool Rhi::create_allocator() {
     VmaAllocatorCreateInfo ci{};
     ci.instance       = m_instance;
     ci.physicalDevice  = m_physical_device;

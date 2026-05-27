@@ -104,7 +104,7 @@ private:
 
     // Modules
     std::unique_ptr<platform::Platform> m_platform;
-    rhi::VulkanRhi          m_rhi;
+    rhi::Rhi          m_rhi;
     asset::AssetManager     m_asset;
     render::Renderer        m_renderer;
     EditorOverlays          m_overlays;

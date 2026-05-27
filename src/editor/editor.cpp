@@ -224,8 +224,8 @@ bool Editor::init_imgui() {
     init_info.PipelineInfoMain.MSAASamples = m_rhi.msaa_samples();
     init_info.UseDynamicRendering = true;
 
-    VkFormat color_format = m_rhi.swapchain_format();
-    VkFormat depth_format = m_rhi.depth_format();
+    VkFormat color_format = m_rhi.swapchain_format_vk();
+    VkFormat depth_format = m_rhi.depth_format_vk();
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
@@ -473,7 +473,7 @@ void Editor::run() {
         frame_count++;
     }
 
-    vkDeviceWaitIdle(m_rhi.device());
+    m_rhi.wait_idle();
     log::info(TAG, "Exiting editor loop ({} frames)", frame_count);
 }
 
@@ -485,7 +485,8 @@ void Editor::imgui_new_frame() {
 
 void Editor::imgui_render(rhi::CommandList& cmd) {
     ImGui::Render();
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.raw());
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(),
+                                    static_cast<VkCommandBuffer>(cmd.backend_handle()));
 }
 
 // ── Ray-terrain intersection ─────────────────────────────────────────────
@@ -1680,7 +1681,7 @@ void Editor::redo() {
 
 void Editor::rebuild_terrain_mesh() {
     if (!m_map_loaded) return;
-    vkDeviceWaitIdle(m_rhi.device());
+    m_rhi.wait_idle();
     m_renderer.set_terrain(&m_map.terrain());
     m_simulation.set_terrain(&m_map.terrain());
 
@@ -1715,7 +1716,7 @@ void Editor::rebuild_terrain_mesh() {
 void Editor::switch_scene(const std::string& scene_name) {
     if (!m_map_loaded || scene_name == m_current_scene) return;
 
-    vkDeviceWaitIdle(m_rhi.device());
+    m_rhi.wait_idle();
 
     if (m_map.switch_scene(scene_name, m_asset, m_simulation)) {
         m_current_scene = scene_name;

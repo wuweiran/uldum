@@ -25,7 +25,7 @@ static glm::vec3 random_sphere_dir() {
 
 // ── Init / Shutdown ───────────────────────────────────────────────────────
 
-bool ParticleSystem::init(rhi::VulkanRhi& rhi) {
+bool ParticleSystem::init(rhi::Rhi& rhi) {
     m_rhi = &rhi;
 
     // Create dynamic vertex buffer (persistently mapped)

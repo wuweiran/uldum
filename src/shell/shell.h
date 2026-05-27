@@ -15,7 +15,7 @@ namespace Rml {
     class ElementDocument;
 }
 
-namespace uldum::rhi { class VulkanRhi; }
+namespace uldum::rhi { class Rhi; }
 
 namespace uldum::shell {
 
@@ -37,7 +37,7 @@ public:
     // Set up RmlUi, install our interface implementations, create the single
     // Context sized to the window. Must be called after the Vulkan RHI is up
     // (the RenderInterface holds a pointer to it).
-    bool init(rhi::VulkanRhi& rhi, u32 window_w, u32 window_h);
+    bool init(rhi::Rhi& rhi, u32 window_w, u32 window_h);
     void shutdown();
 
     // Window resize hook — reforms the RmlUi context dimensions.

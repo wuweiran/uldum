@@ -13,13 +13,11 @@
 #include "rhi/handles.h"
 #include "rhi/types.h"
 
-#include <vulkan/vulkan.h>
-
 #include <span>
 
 namespace uldum::rhi {
 
-class VulkanRhi;
+class Rhi;
 
 // Pipeline stages — bitmask. Map to VkPipelineStageFlags2 inside the RHI.
 enum class PipelineStage : u32 {
@@ -109,11 +107,56 @@ struct BufferImageCopy {
     ImageAspect aspect     = ImageAspect::Color;
 };
 
-// Lightweight value wrapper around a VkCommandBuffer + back-pointer to the
-// RHI (for handle resolution). Passed by reference through draw paths.
+// ── Dynamic-rendering scope ─────────────────────────────────────────────
+// Backend-agnostic begin/end for a single render-pass scope. Vulkan maps
+// directly to vkCmdBeginRendering/vkCmdEndRendering. DX12 maps to
+// OMSetRenderTargets + ClearRenderTargetView. GL maps to glBindFramebuffer
+// + glClear. Metal maps to MTLRenderCommandEncoder.
+
+enum class LoadOp  : u8 { Load, Clear, DontCare };
+enum class StoreOp : u8 { Store, DontCare };
+
+struct ClearColorValue        { f32 r = 0, g = 0, b = 0, a = 0; };
+struct ClearDepthStencilValue { f32 depth = 1.0f; u32 stencil = 0; };
+
+struct ColorAttachment {
+    TextureHandle    image;
+    ImageLayout      layout = ImageLayout::ColorAttachmentOptimal;
+    LoadOp           load   = LoadOp::Load;
+    StoreOp          store  = StoreOp::Store;
+    ClearColorValue  clear;
+};
+
+struct DepthAttachment {
+    TextureHandle          image;
+    ImageLayout            layout = ImageLayout::DepthAttachmentOptimal;
+    LoadOp                 load   = LoadOp::Load;
+    StoreOp                store  = StoreOp::Store;
+    ClearDepthStencilValue clear;
+    ImageAspect            aspect = ImageAspect::Depth;
+};
+
+struct RenderingDesc {
+    std::span<const ColorAttachment> color_attachments;
+    const DepthAttachment*           depth = nullptr;  // optional
+    i32 area_x      = 0;
+    i32 area_y      = 0;
+    u32 area_width  = 0;
+    u32 area_height = 0;
+    u32 layer_count = 1;
+};
+
+// Lightweight value wrapper around a backend-native command buffer +
+// back-pointer to the RHI (for handle resolution). Passed by reference
+// through draw paths. The `backend_handle` is the raw native handle
+// (VkCommandBuffer on Vulkan, ID3D12GraphicsCommandList* on DX12, etc.)
+// — callers that need it cast `backend_handle()` to the right type.
 class CommandList {
 public:
-    CommandList(VulkanRhi& rhi, VkCommandBuffer cmd) : m_rhi(&rhi), m_cmd(cmd) {}
+    CommandList() = default;
+    CommandList(Rhi& rhi, void* backend_handle) : m_rhi(&rhi), m_cmd(backend_handle) {}
+
+    bool is_valid() const { return m_cmd != nullptr; }
 
     // Pipeline + descriptor binding
     void bind_pipeline(PipelineHandle pipeline);
@@ -155,15 +198,22 @@ public:
     void clear_color_image(TextureHandle image, f32 r, f32 g, f32 b, f32 a,
                            ImageLayout layout = ImageLayout::TransferDstOptimal);
 
+    // Begin / end a dynamic-rendering scope. Maps to vkCmdBeginRendering
+    // on Vulkan; glBindFramebuffer + clears on GL; OMSetRenderTargets on
+    // DX12; MTLRenderCommandEncoder on Metal.
+    void begin_rendering(const RenderingDesc& desc);
+    void end_rendering();
+
     // Backend-specific accessor for ImGui or other libraries that need the
-    // raw VkCommandBuffer. Stripping this is part of the later header-cleanup
-    // pass once nothing outside the RHI imports vulkan.h directly.
-    VkCommandBuffer raw() const { return m_cmd; }
-    VulkanRhi&      rhi() const { return *m_rhi; }
+    // raw native command buffer. Caller is responsible for casting to the
+    // correct backend type (VkCommandBuffer / ID3D12GraphicsCommandList* /
+    // id<MTLCommandBuffer>) — guarded by the build's active backend macro.
+    void* backend_handle() const { return m_cmd; }
+    Rhi&  rhi() const { return *m_rhi; }
 
 private:
-    VulkanRhi*      m_rhi;
-    VkCommandBuffer m_cmd;
+    Rhi*  m_rhi = nullptr;
+    void* m_cmd = nullptr;
 };
 
 } // namespace uldum::rhi
