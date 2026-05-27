@@ -7,8 +7,7 @@
 #include <glm/vec3.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
+#include "rhi/handles.h"
 
 #include <array>
 #include <string>
@@ -69,11 +68,10 @@ struct AnimationInstance {
     // Global bone transforms (before inverse bind — for attachment point lookups)
     std::vector<glm::mat4> bone_globals;
 
-    // Per-entity GPU bone buffer (allocated by renderer)
-    VkBuffer      bone_buffer     = VK_NULL_HANDLE;
-    VmaAllocation bone_alloc      = VK_NULL_HANDLE;
-    void*         bone_mapped     = nullptr;
-    VkDescriptorSet bone_descriptor = VK_NULL_HANDLE;
+    // Per-entity GPU bone buffer (allocated by renderer). Persistent map
+    // lives inside the RHI's record; query via rhi.mapped_ptr(bone_buffer).
+    rhi::BufferHandle        bone_buffer{};
+    rhi::DescriptorSetHandle bone_descriptor{};
 
     AnimationInstance() { state_to_clip.fill(-1); }
 };

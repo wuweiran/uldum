@@ -16,21 +16,15 @@ static constexpr const char* TAG = "UI";
 static_assert(sizeof(Rml::Vertex) == 20, "Rml::Vertex layout changed");
 
 // ── Shader loading helper (mirrors the pattern in renderer.cpp) ──────────
-static VkShaderModule load_shader(VkDevice device, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
-    if (!mgr) return VK_NULL_HANDLE;
+    if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
     if (bytes.empty()) {
         log::error(TAG, "UI shader not found: '{}'", path);
-        return VK_NULL_HANDLE;
+        return {};
     }
-    VkShaderModuleCreateInfo ci{};
-    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = bytes.size();
-    ci.pCode    = reinterpret_cast<const uint32_t*>(bytes.data());
-    VkShaderModule mod = VK_NULL_HANDLE;
-    vkCreateShaderModule(device, &ci, nullptr, &mod);
-    return mod;
+    return rhi.create_shader_module(bytes);
 }
 
 RenderInterface::RenderInterface(rhi::VulkanRhi& rhi) : m_rhi(rhi) {}
@@ -57,193 +51,124 @@ void RenderInterface::shutdown() {
     m_textures.clear();
     destroy_texture(m_white);
 
-    if (m_pipeline)        { vkDestroyPipeline(device, m_pipeline, nullptr);              m_pipeline = VK_NULL_HANDLE; }
-    if (m_pipeline_layout) { vkDestroyPipelineLayout(device, m_pipeline_layout, nullptr); m_pipeline_layout = VK_NULL_HANDLE; }
-    if (m_sampler)         { vkDestroySampler(device, m_sampler, nullptr);                m_sampler = VK_NULL_HANDLE; }
-    if (m_desc_pool)       { vkDestroyDescriptorPool(device, m_desc_pool, nullptr);       m_desc_pool = VK_NULL_HANDLE; }
-    if (m_desc_layout)     { vkDestroyDescriptorSetLayout(device, m_desc_layout, nullptr); m_desc_layout = VK_NULL_HANDLE; }
+    m_rhi.destroy_pipeline(m_pipeline);
+    m_rhi.destroy_pipeline_layout(m_pipeline_layout);
+    m_rhi.destroy_sampler(m_sampler);
+    m_rhi.destroy_descriptor_set_layout(m_desc_layout);
+}
+
+static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8G8B8A8_UNORM: return rhi::TextureFormat::R8G8B8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:  return rhi::TextureFormat::R8G8B8A8_SRGB;
+        case VK_FORMAT_B8G8R8A8_UNORM: return rhi::TextureFormat::B8G8R8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB:  return rhi::TextureFormat::B8G8R8A8_SRGB;
+        case VK_FORMAT_D32_SFLOAT:     return rhi::TextureFormat::D32_SFLOAT;
+        default: break;
+    }
+    return rhi::TextureFormat::Undefined;
 }
 
 // ── One-time setup ───────────────────────────────────────────────────────
 
 bool RenderInterface::create_descriptor_layout() {
-    VkDescriptorSetLayoutBinding b{};
-    b.binding         = 0;
-    b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    b.descriptorCount = 1;
-    b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutCreateInfo ci{};
-    ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    ci.bindingCount = 1;
-    ci.pBindings    = &b;
-    return vkCreateDescriptorSetLayout(m_rhi.device(), &ci, nullptr, &m_desc_layout) == VK_SUCCESS;
+    rhi::DescriptorSetLayoutBinding b{};
+    b.binding = 0;
+    b.type    = rhi::DescriptorType::CombinedImageSampler;
+    b.count   = 1;
+    b.stages  = rhi::ShaderStage::Fragment;
+    rhi::DescriptorSetLayoutDesc desc{};
+    desc.bindings = std::span{&b, 1};
+    m_desc_layout = m_rhi.create_descriptor_set_layout(desc);
+    return m_desc_layout.is_valid();
 }
 
 bool RenderInterface::create_descriptor_pool() {
-    // 128 texture sets — well beyond what Shell UI typically needs. Each RML
-    // document uses a handful (font atlas + any image decorators).
-    VkDescriptorPoolSize sz{};
-    sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sz.descriptorCount = 128;
-
-    VkDescriptorPoolCreateInfo ci{};
-    ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    ci.maxSets       = 128;
-    ci.poolSizeCount = 1;
-    ci.pPoolSizes    = &sz;
-    return vkCreateDescriptorPool(m_rhi.device(), &ci, nullptr, &m_desc_pool) == VK_SUCCESS;
+    // Pools are now hidden inside the RHI; nothing to do here. Kept as a
+    // no-op so the init order in `init()` doesn't need to change.
+    return true;
 }
 
 bool RenderInterface::create_sampler() {
-    VkSamplerCreateInfo ci{};
-    ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    ci.magFilter    = VK_FILTER_LINEAR;
-    ci.minFilter    = VK_FILTER_LINEAR;
-    ci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    return vkCreateSampler(m_rhi.device(), &ci, nullptr, &m_sampler) == VK_SUCCESS;
+    rhi::SamplerDesc sd{};
+    sd.address_u = rhi::AddressMode::ClampToEdge;
+    sd.address_v = rhi::AddressMode::ClampToEdge;
+    sd.address_w = rhi::AddressMode::ClampToEdge;
+    m_sampler = m_rhi.create_sampler(sd);
+    return m_sampler.is_valid();
 }
 
 bool RenderInterface::create_pipeline_layout() {
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pc.offset     = 0;
-    pc.size       = sizeof(glm::mat4);
-
-    VkPipelineLayoutCreateInfo ci{};
-    ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    ci.setLayoutCount         = 1;
-    ci.pSetLayouts            = &m_desc_layout;
-    ci.pushConstantRangeCount = 1;
-    ci.pPushConstantRanges    = &pc;
-    return vkCreatePipelineLayout(m_rhi.device(), &ci, nullptr, &m_pipeline_layout) == VK_SUCCESS;
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);
+    rhi::PipelineLayoutDesc d{};
+    d.set_layouts    = std::span{&m_desc_layout, 1};
+    d.push_constants = std::span{&pc, 1};
+    m_pipeline_layout = m_rhi.create_pipeline_layout(d);
+    return m_pipeline_layout.is_valid();
 }
 
 bool RenderInterface::create_pipeline() {
-    VkDevice device = m_rhi.device();
-    VkShaderModule vert = load_shader(device, "engine/shaders/ui_shell.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/ui_shell.frag.spv");
-    if (!vert || !frag) {
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+    auto vert_h = load_shader(m_rhi, "engine/shaders/ui_shell.vert.spv");
+    auto frag_h = load_shader(m_rhi, "engine/shaders/ui_shell.frag.spv");
+    if (!m_rhi.resolve(vert_h) || !m_rhi.resolve(frag_h)) {
+        m_rhi.destroy_shader_module(vert_h);
+        m_rhi.destroy_shader_module(frag_h);
         return false;
     }
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
-    stages[0].pName  = "main";
-    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
-    stages[1].pName  = "main";
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    VkVertexInputBindingDescription binding{};
-    binding.binding   = 0;
-    binding.stride    = sizeof(Rml::Vertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::VertexBindingDesc binding{ 0, sizeof(Rml::Vertex), false };
+    rhi::VertexAttributeDesc attrs[3]{
+        { 0, 0, offsetof(Rml::Vertex, position),  rhi::TextureFormat::R32G32_SFLOAT  },
+        { 1, 0, offsetof(Rml::Vertex, colour),    rhi::TextureFormat::R8G8B8A8_UNORM },
+        { 2, 0, offsetof(Rml::Vertex, tex_coord), rhi::TextureFormat::R32G32_SFLOAT  },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 3};
 
-    VkVertexInputAttributeDescription attrs[3]{};
-    attrs[0].location = 0;  // pos
-    attrs[0].binding  = 0;
-    attrs[0].format   = VK_FORMAT_R32G32_SFLOAT;
-    attrs[0].offset   = offsetof(Rml::Vertex, position);
-    attrs[1].location = 1;  // color (u8×4 normalized → vec4 in shader)
-    attrs[1].binding  = 0;
-    attrs[1].format   = VK_FORMAT_R8G8B8A8_UNORM;
-    attrs[1].offset   = offsetof(Rml::Vertex, colour);
-    attrs[2].location = 2;  // uv
-    attrs[2].binding  = 0;
-    attrs[2].format   = VK_FORMAT_R32G32_SFLOAT;
-    attrs[2].offset   = offsetof(Rml::Vertex, tex_coord);
+    rhi::RasterizerState rs{};
+    rs.cull_mode = rhi::CullMode::None;
 
-    VkPipelineVertexInputStateCreateInfo vi{};
-    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vi.vertexBindingDescriptionCount   = 1;
-    vi.pVertexBindingDescriptions      = &binding;
-    vi.vertexAttributeDescriptionCount = 3;
-    vi.pVertexAttributeDescriptions    = attrs;
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = false;
+    ds.depth_write_enable = false;
 
-    VkPipelineInputAssemblyStateCreateInfo ia{};
-    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::One;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::OneMinusSrcAlpha;
 
-    VkPipelineViewportStateCreateInfo vp{};
-    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vp.viewportCount = 1;
-    vp.scissorCount  = 1;
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi.msaa_samples());
 
-    VkPipelineRasterizationStateCreateInfo rs{};
-    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_NONE;
-    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth   = 1.0f;
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi.swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi.depth_format());
 
-    VkPipelineMultisampleStateCreateInfo ms{};
-    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = m_rhi.msaa_samples();
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::TriangleList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
 
-    VkPipelineDepthStencilStateCreateInfo ds{};
-    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    ds.depthTestEnable  = VK_FALSE;
-    ds.depthWriteEnable = VK_FALSE;
-
-    // Premultiplied alpha blend.
-    VkPipelineColorBlendAttachmentState ba{};
-    ba.blendEnable         = VK_TRUE;
-    ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ba.colorBlendOp        = VK_BLEND_OP_ADD;
-    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ba.alphaBlendOp        = VK_BLEND_OP_ADD;
-    ba.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                           | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-    VkPipelineColorBlendStateCreateInfo cb{};
-    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments    = &ba;
-
-    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
-    dyn.pDynamicStates    = dyn_states;
-
-    VkFormat color_format = m_rhi.swapchain_format();
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount    = 1;
-    rendering.pColorAttachmentFormats = &color_format;
-    rendering.depthAttachmentFormat   = m_rhi.depth_format();
-
-    VkGraphicsPipelineCreateInfo ci{};
-    ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    ci.pNext               = &rendering;
-    ci.stageCount          = 2;
-    ci.pStages             = stages;
-    ci.pVertexInputState   = &vi;
-    ci.pInputAssemblyState = &ia;
-    ci.pViewportState      = &vp;
-    ci.pRasterizationState = &rs;
-    ci.pMultisampleState   = &ms;
-    ci.pDepthStencilState  = &ds;
-    ci.pColorBlendState    = &cb;
-    ci.pDynamicState       = &dyn;
-    ci.layout              = m_pipeline_layout;
-
-    VkResult r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &m_pipeline);
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
-    if (r != VK_SUCCESS) {
-        log::error(TAG, "vkCreateGraphicsPipelines (UI) failed: {}", static_cast<int>(r));
+    m_pipeline = m_rhi.create_graphics_pipeline(desc);
+    m_rhi.destroy_shader_module(vert_h);
+    m_rhi.destroy_shader_module(frag_h);
+    if (!m_pipeline.is_valid()) {
+        log::error(TAG, "create_graphics_pipeline (UI) failed");
         return false;
     }
     return true;
@@ -251,152 +176,108 @@ bool RenderInterface::create_pipeline() {
 
 // ── Texture helpers ──────────────────────────────────────────────────────
 
-VkDescriptorSet RenderInterface::allocate_texture_set(VkImageView view) {
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool     = m_desc_pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &m_desc_layout;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(m_rhi.device(), &ai, &set) != VK_SUCCESS) {
-        log::error(TAG, "UI descriptor pool exhausted (raise size?)");
-        return VK_NULL_HANDLE;
+rhi::DescriptorSetHandle RenderInterface::allocate_texture_set(rhi::TextureHandle tex) {
+    auto set = m_rhi.allocate_descriptor_set(m_desc_layout);
+    if (!set.is_valid()) {
+        log::error(TAG, "UI descriptor allocation failed");
+        return {};
     }
-    VkDescriptorImageInfo img{};
-    img.sampler     = m_sampler;
-    img.imageView   = view;
-    img.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet w{};
-    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet          = set;
-    w.dstBinding      = 0;
-    w.descriptorCount = 1;
-    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo      = &img;
-    vkUpdateDescriptorSets(m_rhi.device(), 1, &w, 0, nullptr);
+    rhi::WriteDescriptor w{};
+    w.binding = 0;
+    w.type    = rhi::DescriptorType::CombinedImageSampler;
+    w.texture = tex;
+    w.sampler = m_sampler;
+    m_rhi.update_descriptor_set(set, std::span{&w, 1});
     return set;
 }
 
 RenderInterface::Texture RenderInterface::create_texture_from_rgba(const u8* rgba, u32 w, u32 h) {
     Texture tex{};
-    VkDeviceSize size = static_cast<VkDeviceSize>(w) * h * 4;
+    u64 size = static_cast<u64>(w) * h * 4;
 
-    // Staging buffer (host visible).
-    VkBufferCreateInfo bci{};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size  = size;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-    aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;  // gives us pMappedData
-    VkBuffer stage = VK_NULL_HANDLE;
-    VmaAllocation stage_alloc = VK_NULL_HANDLE;
-    VmaAllocationInfo stage_info{};
-    if (vmaCreateBuffer(m_rhi.allocator(), &bci, &aci, &stage, &stage_alloc, &stage_info) != VK_SUCCESS) {
+    rhi::BufferDesc bd{};
+    bd.size   = size;
+    bd.usage  = rhi::BufferUsage::TransferSrc;
+    bd.memory = rhi::MemoryUsage::HostSequential;
+    auto stage = m_rhi.create_buffer(bd);
+    if (!stage.is_valid()) {
         log::error(TAG, "staging buffer create failed");
         return tex;
     }
-    if (!stage_info.pMappedData) {
+    void* stage_mapped = m_rhi.mapped_ptr(stage);
+    if (!stage_mapped) {
         log::error(TAG, "staging buffer not mapped");
-        vmaDestroyBuffer(m_rhi.allocator(), stage, stage_alloc);
+        m_rhi.destroy_buffer(stage);
         return tex;
     }
-    std::memcpy(stage_info.pMappedData, rgba, size);
+    std::memcpy(stage_mapped, rgba, size);
 
-    // Image (device-local).
-    VkImageCreateInfo ici{};
-    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent        = { w, h, 1 };
-    ici.mipLevels     = 1;
-    ici.arrayLayers   = 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo img_aci{};
-    img_aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-    if (vmaCreateImage(m_rhi.allocator(), &ici, &img_aci, &tex.image, &tex.alloc, nullptr) != VK_SUCCESS) {
-        log::error(TAG, "image create failed");
-        vmaDestroyBuffer(m_rhi.allocator(), stage, stage_alloc);
-        return tex;
+    {
+        rhi::TextureDesc td{};
+        td.width  = w;
+        td.height = h;
+        td.format = rhi::TextureFormat::R8G8B8A8_UNORM;
+        td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
+        tex.handle = m_rhi.create_texture(td);
+        if (!tex.handle.is_valid()) {
+            log::error(TAG, "image create failed");
+            m_rhi.destroy_buffer(stage);
+            return tex;
+        }
     }
 
     // Upload via one-shot command buffer: UNDEFINED → TRANSFER_DST → copy → SHADER_READ_ONLY.
-    VkCommandBuffer cmd = m_rhi.begin_oneshot();
+    rhi::CommandList cmd = m_rhi.begin_oneshot();
     {
-        VkImageMemoryBarrier to_xfer{};
-        to_xfer.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_xfer.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        to_xfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_xfer.srcAccessMask       = 0;
-        to_xfer.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_xfer.image               = tex.image;
-        to_xfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_xfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_xfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_xfer);
+        rhi::ImageBarrier b{};
+        b.image      = tex.handle;
+        b.src_stage  = rhi::PipelineStage::TopOfPipe;
+        b.dst_stage  = rhi::PipelineStage::Transfer;
+        b.dst_access = rhi::AccessFlag::TransferWrite;
+        b.old_layout = rhi::ImageLayout::Undefined;
+        b.new_layout = rhi::ImageLayout::TransferDstOptimal;
+        cmd.image_barrier(b);
 
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent      = { w, h, 1 };
-        vkCmdCopyBufferToImage(cmd, stage, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        rhi::BufferImageCopy copy{};
+        copy.image_extent_w = w;
+        copy.image_extent_h = h;
+        cmd.copy_buffer_to_image(stage, tex.handle, std::span{&copy, 1});
 
-        VkImageMemoryBarrier to_read{};
-        to_read.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_read.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_read.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        to_read.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_read.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        to_read.image               = tex.image;
-        to_read.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_read);
+        rhi::ImageBarrier b2{};
+        b2.image      = tex.handle;
+        b2.src_stage  = rhi::PipelineStage::Transfer;
+        b2.src_access = rhi::AccessFlag::TransferWrite;
+        b2.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b2.dst_access = rhi::AccessFlag::ShaderRead;
+        b2.old_layout = rhi::ImageLayout::TransferDstOptimal;
+        b2.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b2);
     }
     m_rhi.end_oneshot(cmd);
 
-    vmaDestroyBuffer(m_rhi.allocator(), stage, stage_alloc);
+    m_rhi.destroy_buffer(stage);
 
-    // View + descriptor set.
-    VkImageViewCreateInfo vci{};
-    vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image            = tex.image;
-    vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(m_rhi.device(), &vci, nullptr, &tex.view) != VK_SUCCESS) {
-        log::error(TAG, "image view create failed");
-        vmaDestroyImage(m_rhi.allocator(), tex.image, tex.alloc);
-        tex = {};
-        return tex;
-    }
-    tex.set = allocate_texture_set(tex.view);
+    tex.set = allocate_texture_set(tex.handle);
     return tex;
 }
 
 void RenderInterface::destroy_texture(Texture& tex) {
-    if (tex.set)   { vkFreeDescriptorSets(m_rhi.device(), m_desc_pool, 1, &tex.set); tex.set = VK_NULL_HANDLE; }
-    if (tex.view)  { vkDestroyImageView(m_rhi.device(), tex.view, nullptr);          tex.view = VK_NULL_HANDLE; }
-    if (tex.image) { vmaDestroyImage(m_rhi.allocator(), tex.image, tex.alloc);       tex.image = VK_NULL_HANDLE; tex.alloc = VK_NULL_HANDLE; }
+    m_rhi.free_descriptor_set(tex.set);
+    tex.set = {};
+    m_rhi.destroy_texture(tex.handle);
 }
 
 bool RenderInterface::create_white_texture() {
     u8 pixel[4] = {255, 255, 255, 255};
     m_white = create_texture_from_rgba(pixel, 1, 1);
-    return m_white.set != VK_NULL_HANDLE;
+    return m_white.set.is_valid();
 }
 
 // ── Geometry ─────────────────────────────────────────────────────────────
 
 void RenderInterface::destroy_geometry(Geometry& g) {
-    if (g.vb) vmaDestroyBuffer(m_rhi.allocator(), g.vb, g.vb_alloc);
-    if (g.ib) vmaDestroyBuffer(m_rhi.allocator(), g.ib, g.ib_alloc);
+    m_rhi.destroy_buffer(g.vb);
+    m_rhi.destroy_buffer(g.ib);
     g = {};
 }
 
@@ -406,30 +287,28 @@ Rml::CompiledGeometryHandle RenderInterface::CompileGeometry(
     Geometry g{};
     g.index_count = static_cast<u32>(indices.size());
 
-    auto make = [&](VkBufferUsageFlags usage, VkDeviceSize size, const void* src,
-                    VkBuffer& buf, VmaAllocation& alloc) -> bool {
-        VkBufferCreateInfo bci{};
-        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bci.size  = size;
-        bci.usage = usage;
-        VmaAllocationCreateInfo aci{};
-        aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;  // host-visible, good for UI volumes
-        aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo info{};
-        if (vmaCreateBuffer(m_rhi.allocator(), &bci, &aci, &buf, &alloc, &info) != VK_SUCCESS)
-            return false;
-        if (!info.pMappedData) return false;
-        std::memcpy(info.pMappedData, src, size);
-        return true;
+    auto make = [&](rhi::BufferUsage usage, u64 size, const void* src,
+                    rhi::BufferHandle& out) -> bool {
+        rhi::BufferDesc d{};
+        d.size   = size;
+        d.usage  = usage;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        out = m_rhi.create_buffer(d);
+        if (!out.is_valid()) return false;
+        if (void* dst = m_rhi.mapped_ptr(out)) {
+            std::memcpy(dst, src, size);
+            return true;
+        }
+        return false;
     };
 
-    VkDeviceSize vb_size = vertices.size() * sizeof(Rml::Vertex);
-    VkDeviceSize ib_size = indices.size()  * sizeof(u32);
-    if (!make(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vb_size, vertices.data(), g.vb, g.vb_alloc)) return 0;
+    u64 vb_size = vertices.size() * sizeof(Rml::Vertex);
+    u64 ib_size = indices.size()  * sizeof(u32);
+    if (!make(rhi::BufferUsage::Vertex, vb_size, vertices.data(), g.vb)) return 0;
 
     // RmlUi indices are `int`; Vulkan wants u32. Same size, trivially copy.
-    if (!make(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, ib_size, indices.data(), g.ib, g.ib_alloc)) {
-        vmaDestroyBuffer(m_rhi.allocator(), g.vb, g.vb_alloc);
+    if (!make(rhi::BufferUsage::Index, ib_size, indices.data(), g.ib)) {
+        m_rhi.destroy_buffer(g.vb);
         return 0;
     }
 
@@ -439,21 +318,15 @@ Rml::CompiledGeometryHandle RenderInterface::CompileGeometry(
 }
 
 void RenderInterface::ensure_pipeline_bound() {
-    if (m_pipeline_bound) return;
+    if (m_pipeline_bound || !m_cmd) return;
     m_pipeline_bound = true;
-    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
-
-    VkViewport vp{};
-    vp.width    = static_cast<float>(m_extent.width);
-    vp.height   = static_cast<float>(m_extent.height);
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    vkCmdSetViewport(m_cmd, 0, 1, &vp);
+    m_cmd->bind_pipeline(m_pipeline);
+    m_cmd->set_viewport(0, 0, static_cast<f32>(m_extent.width), static_cast<f32>(m_extent.height));
 
     // Default scissor covers full viewport until SetScissorRegion overrides.
     m_scissor         = { {0, 0}, m_extent };
     m_scissor_enabled = false;
-    vkCmdSetScissor(m_cmd, 0, 1, &m_scissor);
+    m_cmd->set_scissor(0, 0, m_extent.width, m_extent.height);
 }
 
 void RenderInterface::RenderGeometry(Rml::CompiledGeometryHandle geometry,
@@ -461,7 +334,7 @@ void RenderInterface::RenderGeometry(Rml::CompiledGeometryHandle geometry,
                                      Rml::TextureHandle texture)
 {
     auto it = m_geometries.find(geometry);
-    if (it == m_geometries.end()) return;
+    if (it == m_geometries.end() || !m_cmd) return;
     auto& g = it->second;
 
     ensure_pipeline_bound();
@@ -475,24 +348,22 @@ void RenderInterface::RenderGeometry(Rml::CompiledGeometryHandle geometry,
                                  -1.0f, 1.0f);
     glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(translation.x, translation.y, 0.0f));
     glm::mat4 mvp = ortho * m_transform * t;
-    vkCmdPushConstants(m_cmd, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
-                       0, sizeof(glm::mat4), glm::value_ptr(mvp));
+    m_cmd->push_constants(m_pipeline_layout, rhi::ShaderStage::Vertex,
+                          0, sizeof(glm::mat4), glm::value_ptr(mvp));
 
     // Apply scissor (track state to avoid rebinding when unchanged).
-    vkCmdSetScissor(m_cmd, 0, 1, &m_scissor);
+    m_cmd->set_scissor(m_scissor.offset.x, m_scissor.offset.y,
+                       m_scissor.extent.width, m_scissor.extent.height);
 
-    VkDescriptorSet tex_set = m_white.set;
+    rhi::DescriptorSetHandle tex_set = m_white.set;
     if (texture != 0) {
         auto t_it = m_textures.find(texture);
-        if (t_it != m_textures.end() && t_it->second.set) tex_set = t_it->second.set;
+        if (t_it != m_textures.end() && t_it->second.set.is_valid()) tex_set = t_it->second.set;
     }
-    vkCmdBindDescriptorSets(m_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_pipeline_layout, 0, 1, &tex_set, 0, nullptr);
-
-    VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(m_cmd, 0, 1, &g.vb, &off);
-    vkCmdBindIndexBuffer(m_cmd, g.ib, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(m_cmd, g.index_count, 1, 0, 0, 0);
+    m_cmd->bind_descriptor_set(m_pipeline_layout, 0, tex_set);
+    m_cmd->bind_vertex_buffer(0, g.vb);
+    m_cmd->bind_index_buffer(g.ib, 0, rhi::IndexType::U32);
+    m_cmd->draw_indexed(g.index_count);
 }
 
 void RenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
@@ -533,7 +404,7 @@ Rml::TextureHandle RenderInterface::LoadTexture(Rml::Vector2i& texture_dimension
         return 0;
     }
     Texture tex = create_texture_from_rgba(decoded->pixels.data(), decoded->width, decoded->height);
-    if (tex.set == VK_NULL_HANDLE) return 0;
+    if (!tex.set.is_valid()) return 0;
 
     texture_dimensions = Rml::Vector2i(static_cast<int>(decoded->width),
                                        static_cast<int>(decoded->height));
@@ -549,7 +420,7 @@ Rml::TextureHandle RenderInterface::GenerateTexture(Rml::Span<const Rml::byte> s
     Texture tex = create_texture_from_rgba(source.data(),
                                            static_cast<u32>(source_dimensions.x),
                                            static_cast<u32>(source_dimensions.y));
-    if (tex.set == VK_NULL_HANDLE) return 0;
+    if (!tex.set.is_valid()) return 0;
     auto handle = m_next_tex++;
     m_textures.emplace(handle, tex);
     return handle;
@@ -589,8 +460,8 @@ void RenderInterface::SetTransform(const Rml::Matrix4f* transform) {
 
 // ── Frame setup ──────────────────────────────────────────────────────────
 
-void RenderInterface::begin_frame(VkCommandBuffer cmd, VkExtent2D extent) {
-    m_cmd              = cmd;
+void RenderInterface::begin_frame(rhi::CommandList& cmd, VkExtent2D extent) {
+    m_cmd              = &cmd;
     m_extent           = extent;
     m_pipeline_bound   = false;
     m_scissor_enabled  = false;

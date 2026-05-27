@@ -56,8 +56,8 @@ static std::string read_os_file(std::string_view filesystem_path) {
 bool Font::init_primary_from_bytes(rhi::VulkanRhi& rhi,
                                      std::string bytes,
                                      std::string_view origin,
-                                     VkDescriptorSetLayout desc_layout,
-                                     VkSampler sampler) {
+                                     rhi::DescriptorSetLayoutHandle desc_layout,
+                                     rhi::SamplerHandle sampler) {
     m_rhi = &rhi;
     m_ttf_bytes = std::move(bytes);
 
@@ -96,8 +96,8 @@ bool Font::init_primary_from_bytes(rhi::VulkanRhi& rhi,
 }
 
 bool Font::init_from_system(rhi::VulkanRhi& rhi,
-                              VkDescriptorSetLayout desc_layout,
-                              VkSampler sampler) {
+                              rhi::DescriptorSetLayoutHandle desc_layout,
+                              rhi::SamplerHandle sampler) {
     // Per-platform list of well-known font paths. First entry that loads
     // becomes the primary; the rest are added as fallbacks consulted
     // per-codepoint. The chain aims to cover all common scripts using
@@ -263,10 +263,9 @@ void Font::shutdown() {
         VkDevice device = m_rhi->device();
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
-            if (m_atlas_set)   { vkFreeDescriptorSets(device, m_atlas_pool, 1, &m_atlas_set); m_atlas_set = VK_NULL_HANDLE; }
-            if (m_atlas_pool)  { vkDestroyDescriptorPool(device, m_atlas_pool, nullptr);      m_atlas_pool = VK_NULL_HANDLE; }
-            if (m_atlas_view)  { vkDestroyImageView(device, m_atlas_view, nullptr);           m_atlas_view = VK_NULL_HANDLE; }
-            if (m_atlas_image) { vmaDestroyImage(m_rhi->allocator(), m_atlas_image, m_atlas_alloc); m_atlas_image = VK_NULL_HANDLE; m_atlas_alloc = VK_NULL_HANDLE; }
+            if (m_atlas_set.is_valid()) { m_rhi->free_descriptor_set(m_atlas_set); m_atlas_set = {}; }
+            m_rhi->destroy_texture(m_atlas);
+            m_atlas = {};
         }
     }
 
@@ -278,109 +277,59 @@ void Font::shutdown() {
 
 // ── Atlas creation ────────────────────────────────────────────────────────
 
-bool Font::create_atlas(VkDescriptorSetLayout desc_layout, VkSampler sampler) {
-    VkDevice device = m_rhi->device();
-
+bool Font::create_atlas(rhi::DescriptorSetLayoutHandle desc_layout, rhi::SamplerHandle sampler) {
     // Atlas image: R8G8B8A8 — R/G/B = MSDF channels, A = unused (could hold
     // coverage for MTSDF later). Starts zeroed (UNDEFINED) and stays in
     // SHADER_READ_ONLY_OPTIMAL once the first glyph is uploaded; subsequent
     // uploads transition per-copy via begin_oneshot / end_oneshot.
-    VkImageCreateInfo ici{};
-    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent        = { kAtlasSize, kAtlasSize, 1 };
-    ici.mipLevels     = 1;
-    ici.arrayLayers   = 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-    if (vmaCreateImage(m_rhi->allocator(), &ici, &aci, &m_atlas_image, &m_atlas_alloc, nullptr) != VK_SUCCESS) {
-        return false;
+    {
+        rhi::TextureDesc td{};
+        td.width  = kAtlasSize;
+        td.height = kAtlasSize;
+        td.format = rhi::TextureFormat::R8G8B8A8_UNORM;
+        td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
+        m_atlas = m_rhi->create_texture(td);
+        if (!m_atlas.is_valid()) return false;
     }
 
     // Clear the atlas to zero so unused regions don't contain garbage
     // memory — bilinear sampling near glyph-cell edges would otherwise
     // pick up random distance-field values and produce visible artifacts.
     // UNDEFINED → TRANSFER_DST → clear → SHADER_READ_ONLY_OPTIMAL.
-    VkCommandBuffer cmd = m_rhi->begin_oneshot();
+    rhi::CommandList cmd = m_rhi->begin_oneshot();
     {
-        VkImageMemoryBarrier to_xfer{};
-        to_xfer.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_xfer.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        to_xfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_xfer.srcAccessMask       = 0;
-        to_xfer.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_xfer.image               = m_atlas_image;
-        to_xfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_xfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_xfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_xfer);
+        rhi::ImageBarrier b{};
+        b.image      = m_atlas;
+        b.src_stage  = rhi::PipelineStage::TopOfPipe;
+        b.dst_stage  = rhi::PipelineStage::Transfer;
+        b.dst_access = rhi::AccessFlag::TransferWrite;
+        b.old_layout = rhi::ImageLayout::Undefined;
+        b.new_layout = rhi::ImageLayout::TransferDstOptimal;
+        cmd.image_barrier(b);
 
-        VkClearColorValue clear{};  // zero-init: R=G=B=A=0
-        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(cmd, m_atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                             &clear, 1, &range);
+        cmd.clear_color_image(m_atlas, 0.0f, 0.0f, 0.0f, 0.0f);
 
-        VkImageMemoryBarrier to_read{};
-        to_read.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_read.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_read.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        to_read.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_read.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        to_read.image               = m_atlas_image;
-        to_read.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_read);
+        rhi::ImageBarrier b2{};
+        b2.image      = m_atlas;
+        b2.src_stage  = rhi::PipelineStage::Transfer;
+        b2.src_access = rhi::AccessFlag::TransferWrite;
+        b2.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b2.dst_access = rhi::AccessFlag::ShaderRead;
+        b2.old_layout = rhi::ImageLayout::TransferDstOptimal;
+        b2.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b2);
     }
     m_rhi->end_oneshot(cmd);
 
-    VkImageViewCreateInfo vci{};
-    vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image            = m_atlas_image;
-    vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(device, &vci, nullptr, &m_atlas_view) != VK_SUCCESS) return false;
+    m_atlas_set = m_rhi->allocate_descriptor_set(desc_layout);
+    if (!m_atlas_set.is_valid()) return false;
 
-    // Descriptor pool for this atlas set. Sized 1 — we never allocate more.
-    VkDescriptorPoolSize sz{};
-    sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sz.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo pci{};
-    pci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pci.maxSets       = 1;
-    pci.poolSizeCount = 1;
-    pci.pPoolSizes    = &sz;
-    if (vkCreateDescriptorPool(device, &pci, nullptr, &m_atlas_pool) != VK_SUCCESS) return false;
-
-    VkDescriptorSetAllocateInfo dai{};
-    dai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dai.descriptorPool     = m_atlas_pool;
-    dai.descriptorSetCount = 1;
-    dai.pSetLayouts        = &desc_layout;
-    if (vkAllocateDescriptorSets(device, &dai, &m_atlas_set) != VK_SUCCESS) return false;
-
-    VkDescriptorImageInfo img{};
-    img.sampler     = sampler;
-    img.imageView   = m_atlas_view;
-    img.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet w{};
-    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet          = m_atlas_set;
-    w.dstBinding      = 0;
-    w.descriptorCount = 1;
-    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo      = &img;
-    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+    rhi::WriteDescriptor wd{};
+    wd.binding = 0;
+    wd.type    = rhi::DescriptorType::CombinedImageSampler;
+    wd.texture = m_atlas;
+    wd.sampler = sampler;
+    m_rhi->update_descriptor_set(m_atlas_set, std::span{&wd, 1});
     return true;
 }
 
@@ -388,56 +337,46 @@ bool Font::create_atlas(VkDescriptorSetLayout desc_layout, VkSampler sampler) {
 
 bool Font::upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y) {
     // Staging buffer.
-    VkDeviceSize size = static_cast<VkDeviceSize>(w) * h * 4;
-    VkBufferCreateInfo bci{};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size  = size;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-    aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    VkBuffer stage = VK_NULL_HANDLE;
-    VmaAllocation stage_alloc = VK_NULL_HANDLE;
-    VmaAllocationInfo stage_info{};
-    if (vmaCreateBuffer(m_rhi->allocator(), &bci, &aci, &stage, &stage_alloc, &stage_info) != VK_SUCCESS) return false;
-    std::memcpy(stage_info.pMappedData, rgba, size);
+    u64 size = static_cast<u64>(w) * h * 4;
+    rhi::BufferDesc bd{};
+    bd.size   = size;
+    bd.usage  = rhi::BufferUsage::TransferSrc;
+    bd.memory = rhi::MemoryUsage::HostSequential;
+    auto stage = m_rhi->create_buffer(bd);
+    if (!stage.is_valid()) return false;
+    std::memcpy(m_rhi->mapped_ptr(stage), rgba, size);
 
-    VkCommandBuffer cmd = m_rhi->begin_oneshot();
+    rhi::CommandList cmd = m_rhi->begin_oneshot();
     {
-        VkImageMemoryBarrier to_xfer{};
-        to_xfer.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_xfer.oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        to_xfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_xfer.srcAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        to_xfer.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_xfer.image               = m_atlas_image;
-        to_xfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_xfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_xfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_xfer);
+        rhi::ImageBarrier b{};
+        b.image      = m_atlas;
+        b.src_stage  = rhi::PipelineStage::FragmentShader;
+        b.src_access = rhi::AccessFlag::ShaderRead;
+        b.dst_stage  = rhi::PipelineStage::Transfer;
+        b.dst_access = rhi::AccessFlag::TransferWrite;
+        b.old_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        b.new_layout = rhi::ImageLayout::TransferDstOptimal;
+        cmd.image_barrier(b);
 
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageOffset      = { static_cast<i32>(dst_x), static_cast<i32>(dst_y), 0 };
-        copy.imageExtent      = { w, h, 1 };
-        vkCmdCopyBufferToImage(cmd, stage, m_atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        rhi::BufferImageCopy copy{};
+        copy.image_offset_x = static_cast<i32>(dst_x);
+        copy.image_offset_y = static_cast<i32>(dst_y);
+        copy.image_extent_w = w;
+        copy.image_extent_h = h;
+        cmd.copy_buffer_to_image(stage, m_atlas, std::span{&copy, 1});
 
-        VkImageMemoryBarrier to_read{};
-        to_read.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_read.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_read.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        to_read.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_read.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        to_read.image               = m_atlas_image;
-        to_read.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_read);
+        rhi::ImageBarrier b2{};
+        b2.image      = m_atlas;
+        b2.src_stage  = rhi::PipelineStage::Transfer;
+        b2.src_access = rhi::AccessFlag::TransferWrite;
+        b2.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b2.dst_access = rhi::AccessFlag::ShaderRead;
+        b2.old_layout = rhi::ImageLayout::TransferDstOptimal;
+        b2.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b2);
     }
     m_rhi->end_oneshot(cmd);
-    vmaDestroyBuffer(m_rhi->allocator(), stage, stage_alloc);
+    m_rhi->destroy_buffer(stage);
     return true;
 }
 

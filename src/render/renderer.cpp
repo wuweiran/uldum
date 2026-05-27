@@ -52,26 +52,18 @@ static f32 effective_visual_alpha(const simulation::World& world, u32 id,
 
 // ── Shader loading helper ──────────────────────────────────────────────────
 
-static VkShaderModule load_shader(VkDevice device, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) {
         log::error(TAG, "Shader load without AssetManager: '{}'", path);
-        return VK_NULL_HANDLE;
+        return {};
     }
     auto bytes = mgr->read_file_bytes(path);
     if (bytes.empty()) {
         log::error(TAG, "Shader not found in any package: '{}'", path);
-        return VK_NULL_HANDLE;
+        return {};
     }
-
-    VkShaderModuleCreateInfo ci{};
-    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = bytes.size();
-    ci.pCode    = reinterpret_cast<const uint32_t*>(bytes.data());
-
-    VkShaderModule mod = VK_NULL_HANDLE;
-    vkCreateShaderModule(device, &ci, nullptr, &mod);
-    return mod;
+    return rhi.create_shader_module(bytes);
 }
 
 // ── Procedural texture generation ─────────────────────────────────────────
@@ -145,28 +137,20 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
 
     // Mega vertex/index buffers — all static meshes share one VB + IB (Phase 14b)
     {
-        VmaAllocationCreateInfo alloc_ci{};
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        VkBufferCreateInfo vb_ci{};
-        vb_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        vb_ci.size  = MEGA_MAX_VERTICES * sizeof(asset::Vertex);
-        vb_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        VmaAllocationInfo vb_info{};
-        vmaCreateBuffer(rhi.allocator(), &vb_ci, &alloc_ci,
-                        &m_mega_vb, &m_mega_vb_alloc, &vb_info);
-        m_mega_vb_mapped = vb_info.pMappedData;
-
-        VkBufferCreateInfo ib_ci{};
-        ib_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        ib_ci.size  = MEGA_MAX_INDICES * sizeof(u32);
-        ib_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        VmaAllocationInfo ib_info{};
-        vmaCreateBuffer(rhi.allocator(), &ib_ci, &alloc_ci,
-                        &m_mega_ib, &m_mega_ib_alloc, &ib_info);
-        m_mega_ib_mapped = ib_info.pMappedData;
+        {
+            rhi::BufferDesc d{};
+            d.size   = MEGA_MAX_VERTICES * sizeof(asset::Vertex);
+            d.usage  = rhi::BufferUsage::Vertex;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            m_mega_vb = rhi.create_buffer(d);
+        }
+        {
+            rhi::BufferDesc d{};
+            d.size   = MEGA_MAX_INDICES * sizeof(u32);
+            d.usage  = rhi::BufferUsage::Index;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            m_mega_ib = rhi.create_buffer(d);
+        }
 
         log::info(TAG, "Mega buffers created: VB {} verts, IB {} indices",
                   MEGA_MAX_VERTICES, MEGA_MAX_INDICES);
@@ -175,40 +159,23 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
     // Instance SSBO + indirect buffer, one of each per frame-in-flight.
     for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
         {
-            VkBufferCreateInfo buf_ci{};
-            buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(InstanceData);
-            buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            rhi::BufferDesc d{};
+            d.size   = MAX_STATIC_INSTANCES * sizeof(InstanceData);
+            d.usage  = rhi::BufferUsage::Storage;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            m_instance_buffer[f] = rhi.create_buffer(d);
 
-            VmaAllocationCreateInfo alloc_ci{};
-            alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-            alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-            VmaAllocationInfo alloc_info{};
-            vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
-                            &m_instance_buffer[f], &m_instance_alloc[f], &alloc_info);
-            m_instance_mapped[f] = alloc_info.pMappedData;
-
-            m_instance_desc_set[f] = allocate_bone_descriptor(m_instance_buffer[f],
-                                                              MAX_STATIC_INSTANCES * sizeof(InstanceData));
+            m_instance_desc_set[f] = allocate_bone_descriptor(
+                m_instance_buffer[f],
+                MAX_STATIC_INSTANCES * sizeof(InstanceData));
         }
 
         {
-            VkBufferCreateInfo buf_ci{};
-            buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            buf_ci.size  = MAX_STATIC_INSTANCES * sizeof(VkDrawIndexedIndirectCommand);
-            buf_ci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-
-            VmaAllocationCreateInfo alloc_ci{};
-            alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-            alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-            VmaAllocationInfo alloc_info{};
-            vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
-                            &m_indirect_buffer[f], &m_indirect_alloc[f], &alloc_info);
-            m_indirect_mapped[f] = alloc_info.pMappedData;
+            rhi::BufferDesc d{};
+            d.size   = MAX_STATIC_INSTANCES * sizeof(VkDrawIndexedIndirectCommand);
+            d.usage  = rhi::BufferUsage::Indirect;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            m_indirect_buffer[f] = rhi.create_buffer(d);
         }
     }
 
@@ -287,11 +254,10 @@ bool Renderer::init(rhi::VulkanRhi& rhi) {
 
 void Renderer::end_session() {
     if (!m_rhi) return;
-    VmaAllocator alloc = m_rhi->allocator();
     // GPU must be idle before freeing any bone buffer still in flight.
     vkDeviceWaitIdle(m_rhi->device());
     for (auto& [eid, anim] : m_anim_instances) {
-        if (anim.bone_buffer) vmaDestroyBuffer(alloc, anim.bone_buffer, anim.bone_alloc);
+        m_rhi->destroy_buffer(anim.bone_buffer);
         // Descriptor sets will be freed when the pool is destroyed in
         // shutdown(). They're cheap to leak per session for the small
         // # of units we run; revisit when sessions are very long-lived.
@@ -309,8 +275,8 @@ void Renderer::end_session() {
     // the mega buffer) — destroy_mesh frees those; for static meshes it
     // no-ops because alloc is null.
     for (auto& [path, lm] : m_model_cache) {
-        destroy_mesh(alloc, lm.mesh);
-        if (lm.diffuse_texture.image) destroy_texture(*m_rhi, lm.diffuse_texture);
+        destroy_mesh(*m_rhi, lm.mesh);
+        if (lm.diffuse_texture.texture.is_valid()) destroy_texture(*m_rhi, lm.diffuse_texture);
     }
     m_model_cache.clear();
     m_model_failed.clear();
@@ -323,104 +289,92 @@ void Renderer::end_session() {
 void Renderer::shutdown() {
     if (!m_rhi) return;
     VkDevice device = m_rhi->device();
-    VmaAllocator alloc = m_rhi->allocator();
 
     vkDeviceWaitIdle(device);
 
     m_particles.shutdown();
-    destroy_terrain_mesh(alloc, m_terrain);
+    destroy_terrain_mesh(*m_rhi, m_terrain);
     for (auto& [eid, anim] : m_anim_instances) {
         // Descriptor sets freed implicitly when pools are destroyed below
-        if (anim.bone_buffer) vmaDestroyBuffer(alloc, anim.bone_buffer, anim.bone_alloc);
+        m_rhi->destroy_buffer(anim.bone_buffer);
     }
     m_anim_instances.clear();
     for (auto& [path, lm] : m_model_cache) {
-        destroy_mesh(alloc, lm.mesh);
-        if (lm.diffuse_texture.image) destroy_texture(*m_rhi, lm.diffuse_texture);
+        destroy_mesh(*m_rhi, lm.mesh);
+        if (lm.diffuse_texture.texture.is_valid()) destroy_texture(*m_rhi, lm.diffuse_texture);
     }
     m_model_cache.clear();
     m_model_failed.clear();
-    destroy_mesh(alloc, m_projectile_mesh);
-    destroy_mesh(alloc, m_placeholder_mesh);
+    destroy_mesh(*m_rhi, m_projectile_mesh);
+    destroy_mesh(*m_rhi, m_placeholder_mesh);
     for (auto& [path, mesh] : m_mesh_cache) {
-        destroy_mesh(alloc, mesh);
+        destroy_mesh(*m_rhi, mesh);
     }
     m_mesh_cache.clear();
 
     // Destroy instance/indirect/mega buffers
     for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
-        if (m_instance_buffer[f]) vmaDestroyBuffer(alloc, m_instance_buffer[f], m_instance_alloc[f]);
-        if (m_indirect_buffer[f]) vmaDestroyBuffer(alloc, m_indirect_buffer[f], m_indirect_alloc[f]);
-        m_instance_buffer[f] = VK_NULL_HANDLE;
-        m_indirect_buffer[f] = VK_NULL_HANDLE;
-        m_instance_mapped[f] = nullptr;
-        m_indirect_mapped[f] = nullptr;
-        m_instance_desc_set[f] = VK_NULL_HANDLE;
+        m_rhi->destroy_buffer(m_instance_buffer[f]);
+        m_rhi->destroy_buffer(m_indirect_buffer[f]);
+        m_instance_buffer[f] = {};
+        m_indirect_buffer[f] = {};
+        if (m_instance_desc_set[f].is_valid()) m_rhi->free_descriptor_set(m_instance_desc_set[f]);
+        m_instance_desc_set[f] = {};
     }
-    if (m_mega_vb) vmaDestroyBuffer(alloc, m_mega_vb, m_mega_vb_alloc);
-    if (m_mega_ib) vmaDestroyBuffer(alloc, m_mega_ib, m_mega_ib_alloc);
+    m_rhi->destroy_buffer(m_mega_vb);
+    m_rhi->destroy_buffer(m_mega_ib);
 
     // Destroy bindless resources
-    if (m_bindless_set)    { /* freed when pool is destroyed */ }
-    if (m_bindless_pool)   vkDestroyDescriptorPool(device, m_bindless_pool, nullptr);
-    if (m_bindless_layout) vkDestroyDescriptorSetLayout(device, m_bindless_layout, nullptr);
+    if (m_bindless_set.is_valid()) m_rhi->free_descriptor_set(m_bindless_set);
+    m_rhi->destroy_descriptor_set_layout(m_bindless_layout);
 
     // Destroy fog resources
-    if (m_fog_texture.image) destroy_texture(*m_rhi, m_fog_texture);
-    if (m_fog_staging_buffer) {
-        // No need to unmap — VMA persistent mapping freed with buffer
-        vmaDestroyBuffer(alloc, m_fog_staging_buffer, m_fog_staging_alloc);
-    }
+    if (m_fog_texture.texture.is_valid()) destroy_texture(*m_rhi, m_fog_texture);
+    m_rhi->destroy_buffer(m_fog_staging_buffer);
 
     // Destroy textures
     destroy_texture(*m_rhi, m_corpse_texture);
     destroy_texture(*m_rhi, m_default_texture);
-    if (m_terrain_material.layer_array.image) destroy_texture(*m_rhi, m_terrain_material.layer_array);
-    if (m_terrain_material.normal_array.image) destroy_texture(*m_rhi, m_terrain_material.normal_array);
-    if (m_transition_noise.image) destroy_texture(*m_rhi, m_transition_noise);
-    if (m_water_normal.image) destroy_texture(*m_rhi, m_water_normal);
+    if (m_terrain_material.layer_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.layer_array);
+    if (m_terrain_material.normal_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.normal_array);
+    if (m_transition_noise.texture.is_valid()) destroy_texture(*m_rhi, m_transition_noise);
+    if (m_water_normal.texture.is_valid()) destroy_texture(*m_rhi, m_water_normal);
 
     // Destroy shadow resources
     destroy_shadow_map(*m_rhi, m_shadow_map);
     destroy_shadow_buffer(*m_rhi, m_shadow_ubo);
-    if (m_env_ubo_buffer) {
-        vmaDestroyBuffer(m_rhi->allocator(), m_env_ubo_buffer, m_env_ubo_alloc);
-        m_env_ubo_buffer = VK_NULL_HANDLE;
-    }
-    if (m_default_cubemap.image) destroy_texture(*m_rhi, m_default_cubemap);
+    m_rhi->destroy_buffer(m_env_ubo_buffer);
+    m_env_ubo_buffer = {};
+    if (m_default_cubemap.texture.is_valid()) destroy_texture(*m_rhi, m_default_cubemap);
 
     // Destroy pipelines
-    if (m_particle_pipeline)              vkDestroyPipeline(device, m_particle_pipeline, nullptr);
-    if (m_particle_pipeline_layout)       vkDestroyPipelineLayout(device, m_particle_pipeline_layout, nullptr);
-    if (m_skinned_shadow_pipeline)        vkDestroyPipeline(device, m_skinned_shadow_pipeline, nullptr);
-    if (m_skinned_shadow_pipeline_layout) vkDestroyPipelineLayout(device, m_skinned_shadow_pipeline_layout, nullptr);
-    if (m_skinned_mesh_pipeline)          vkDestroyPipeline(device, m_skinned_mesh_pipeline, nullptr);
-    if (m_skinned_mesh_pipeline_layout)   vkDestroyPipelineLayout(device, m_skinned_mesh_pipeline_layout, nullptr);
-    if (m_terrain_shadow_pipeline)  vkDestroyPipeline(device, m_terrain_shadow_pipeline, nullptr);
+    m_rhi->destroy_pipeline(m_particle_pipeline);
+    m_rhi->destroy_pipeline_layout(m_particle_pipeline_layout);
+    m_rhi->destroy_pipeline(m_skinned_shadow_pipeline);
+    m_rhi->destroy_pipeline_layout(m_skinned_shadow_pipeline_layout);
+    m_rhi->destroy_pipeline(m_skinned_mesh_pipeline);
+    m_rhi->destroy_pipeline_layout(m_skinned_mesh_pipeline_layout);
+    m_rhi->destroy_pipeline(m_terrain_shadow_pipeline);
     // m_terrain_shadow_pipeline_layout is shared with m_shadow_pipeline_layout, don't destroy twice
-    if (m_shadow_pipeline)         vkDestroyPipeline(device, m_shadow_pipeline, nullptr);
-    if (m_shadow_pipeline_layout)  vkDestroyPipelineLayout(device, m_shadow_pipeline_layout, nullptr);
-    if (m_water_pipeline)          vkDestroyPipeline(device, m_water_pipeline, nullptr);
-    if (m_water_pipeline_layout)   vkDestroyPipelineLayout(device, m_water_pipeline_layout, nullptr);
-    if (m_skybox_pipeline)         vkDestroyPipeline(device, m_skybox_pipeline, nullptr);
-    if (m_skybox_pipeline_layout)  vkDestroyPipelineLayout(device, m_skybox_pipeline_layout, nullptr);
-    if (m_skybox_desc_layout)      vkDestroyDescriptorSetLayout(device, m_skybox_desc_layout, nullptr);
-    if (m_skybox_cubemap.image)    destroy_texture(*m_rhi, m_skybox_cubemap);
-    destroy_mesh(m_rhi->allocator(), m_skybox_mesh);
-    if (m_terrain_pipeline)        vkDestroyPipeline(device, m_terrain_pipeline, nullptr);
-    if (m_terrain_pipeline_layout) vkDestroyPipelineLayout(device, m_terrain_pipeline_layout, nullptr);
-    if (m_mesh_pipeline)           vkDestroyPipeline(device, m_mesh_pipeline, nullptr);
-    if (m_mesh_pipeline_layout)    vkDestroyPipelineLayout(device, m_mesh_pipeline_layout, nullptr);
+    m_rhi->destroy_pipeline(m_shadow_pipeline);
+    m_rhi->destroy_pipeline_layout(m_shadow_pipeline_layout);
+    m_rhi->destroy_pipeline(m_water_pipeline);
+    m_rhi->destroy_pipeline_layout(m_water_pipeline_layout);
+    m_rhi->destroy_pipeline(m_skybox_pipeline);
+    m_rhi->destroy_pipeline_layout(m_skybox_pipeline_layout);
+    m_rhi->destroy_descriptor_set_layout(m_skybox_desc_layout);
+    if (m_skybox_cubemap.texture.is_valid())    destroy_texture(*m_rhi, m_skybox_cubemap);
+    destroy_mesh(*m_rhi, m_skybox_mesh);
+    m_rhi->destroy_pipeline(m_terrain_pipeline);
+    m_rhi->destroy_pipeline_layout(m_terrain_pipeline_layout);
+    m_rhi->destroy_pipeline(m_mesh_pipeline);
+    m_rhi->destroy_pipeline_layout(m_mesh_pipeline_layout);
 
     // Destroy descriptor infrastructure
-    for (auto pool : m_descriptor_pools) {
-        if (pool) vkDestroyDescriptorPool(device, pool, nullptr);
-    }
-    m_descriptor_pools.clear();
-    if (m_bone_desc_layout)     vkDestroyDescriptorSetLayout(device, m_bone_desc_layout, nullptr);
-    if (m_shadow_desc_layout)   vkDestroyDescriptorSetLayout(device, m_shadow_desc_layout, nullptr);
-    if (m_terrain_desc_layout)  vkDestroyDescriptorSetLayout(device, m_terrain_desc_layout, nullptr);
-    if (m_mesh_desc_layout)     vkDestroyDescriptorSetLayout(device, m_mesh_desc_layout, nullptr);
+    m_rhi->destroy_descriptor_set_layout(m_bone_desc_layout);
+    m_rhi->destroy_descriptor_set_layout(m_shadow_desc_layout);
+    m_rhi->destroy_descriptor_set_layout(m_terrain_desc_layout);
+    m_rhi->destroy_descriptor_set_layout(m_mesh_desc_layout);
 
     m_rhi = nullptr;
     log::info(TAG, "Renderer shut down");
@@ -468,27 +422,20 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
     // Allocate per-entity bone buffer (persistently mapped)
     u32 bone_count = static_cast<u32>(model.data.skeleton.bones.size());
     if (bone_count > 0) {
-        VkBufferCreateInfo buf_ci{};
-        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buf_ci.size  = bone_count * sizeof(glm::mat4);
-        buf_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-        VmaAllocationCreateInfo alloc_ci{};
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        VmaAllocationInfo info{};
-        vmaCreateBuffer(m_rhi->allocator(), &buf_ci, &alloc_ci,
-                        &inst.bone_buffer, &inst.bone_alloc, &info);
-        inst.bone_mapped = info.pMappedData;
+        rhi::BufferDesc d{};
+        d.size   = bone_count * sizeof(glm::mat4);
+        d.usage  = rhi::BufferUsage::Storage;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        inst.bone_buffer = m_rhi->create_buffer(d);
 
         // Initialize to identity
-        auto* bones = static_cast<glm::mat4*>(inst.bone_mapped);
+        auto* bones = static_cast<glm::mat4*>(m_rhi->mapped_ptr(inst.bone_buffer));
         for (u32 i = 0; i < bone_count; ++i) bones[i] = glm::mat4{1.0f};
 
         // Allocate descriptor set
-        inst.bone_descriptor = allocate_bone_descriptor(inst.bone_buffer, bone_count * sizeof(glm::mat4));
+        inst.bone_descriptor = allocate_bone_descriptor(
+            inst.bone_buffer,
+            bone_count * sizeof(glm::mat4));
     }
 
     auto [inserted, _] = m_anim_instances.emplace(entity_id, std::move(inst));
@@ -593,7 +540,8 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 }
 
 void Renderer::set_environment(const map::EnvironmentConfig& env) {
-    if (!m_env_ubo_mapped) return;
+    void* env_mapped = m_rhi->mapped_ptr(m_env_ubo_buffer);
+    if (!env_mapped) return;
 
     m_sun_direction = glm::normalize(env.sun_direction);
     m_env_data = {};
@@ -601,12 +549,12 @@ void Renderer::set_environment(const map::EnvironmentConfig& env) {
     m_env_data.sun_color     = glm::vec4(env.sun_color, 0.0f);
     m_env_data.ambient_color = glm::vec4(env.ambient_color, env.ambient_intensity);
     m_env_data.fog_color     = glm::vec4(env.fog_color, 0.0f);
-    std::memcpy(m_env_ubo_mapped, &m_env_data, sizeof(m_env_data));
+    std::memcpy(env_mapped, &m_env_data, sizeof(m_env_data));
 
     // Load skybox cubemap if specified
     m_has_skybox = false;
     if (env.has_skybox() && !m_map_root.empty()) {
-        if (m_skybox_cubemap.image) destroy_texture(*m_rhi, m_skybox_cubemap);
+        if (m_skybox_cubemap.texture.is_valid()) destroy_texture(*m_rhi, m_skybox_cubemap);
 
         // Vulkan cubemap layers: +X, -X, +Y, -Y, +Z, -Z
         // Game coords: X=right, Y=forward, Z=up
@@ -651,36 +599,19 @@ void Renderer::set_environment(const map::EnvironmentConfig& env) {
 
         if (all_loaded && face_w > 0) {
             m_skybox_cubemap = upload_texture_cubemap(*m_rhi, face_data, face_w, face_h);
-            if (m_skybox_cubemap.image) {
-                // Allocate descriptor set for skybox
-                VkDescriptorSetAllocateInfo alloc_info{};
-                alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                alloc_info.descriptorPool     = m_descriptor_pools.back();
-                alloc_info.descriptorSetCount = 1;
-                alloc_info.pSetLayouts        = &m_skybox_desc_layout;
-
-                if (vkAllocateDescriptorSets(m_rhi->device(), &alloc_info, &m_skybox_desc_set) != VK_SUCCESS) {
-                    allocate_or_grow_pool();
-                    alloc_info.descriptorPool = m_descriptor_pools.back();
-                    vkAllocateDescriptorSets(m_rhi->device(), &alloc_info, &m_skybox_desc_set);
+            if (m_skybox_cubemap.texture.is_valid()) {
+                if (m_skybox_desc_set.is_valid()) m_rhi->free_descriptor_set(m_skybox_desc_set);
+                m_skybox_desc_set = m_rhi->allocate_descriptor_set(m_skybox_desc_layout);
+                if (m_skybox_desc_set.is_valid()) {
+                    rhi::WriteDescriptor w{};
+                    w.binding = 0;
+                    w.type    = rhi::DescriptorType::CombinedImageSampler;
+                    w.texture = m_skybox_cubemap.texture;
+                    w.sampler = m_skybox_cubemap.sampler;
+                    m_rhi->update_descriptor_set(m_skybox_desc_set, std::span{&w, 1});
+                    m_has_skybox = true;
+                    log::info(TAG, "Skybox loaded ({}x{})", face_w, face_h);
                 }
-
-                VkDescriptorImageInfo img_info{};
-                img_info.sampler     = m_skybox_cubemap.sampler;
-                img_info.imageView   = m_skybox_cubemap.view;
-                img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-                VkWriteDescriptorSet write{};
-                write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet          = m_skybox_desc_set;
-                write.dstBinding      = 0;
-                write.descriptorCount = 1;
-                write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                write.pImageInfo      = &img_info;
-
-                vkUpdateDescriptorSets(m_rhi->device(), 1, &write, 0, nullptr);
-                m_has_skybox = true;
-                log::info(TAG, "Skybox loaded ({}x{})", face_w, face_h);
             }
         }
     }
@@ -703,11 +634,10 @@ void Renderer::add_point_light(glm::vec3 position, glm::vec3 color, f32 radius, 
 }
 
 void Renderer::set_terrain(const map::TerrainData* terrain) {
-    VmaAllocator alloc = m_rhi->allocator();
     // The terrain mesh is bound by every frame's draw cmds; the previous
     // frame may still be in flight when callers swap or clear terrain.
     vkDeviceWaitIdle(m_rhi->device());
-    destroy_terrain_mesh(alloc, m_terrain);
+    destroy_terrain_mesh(*m_rhi, m_terrain);
 
     if (!terrain) {
         // Teardown: free GPU mesh + drop CPU data pointer. Used by
@@ -717,7 +647,7 @@ void Renderer::set_terrain(const map::TerrainData* terrain) {
         return;
     }
 
-    m_terrain = build_terrain_mesh(alloc, *terrain);
+    m_terrain = build_terrain_mesh(*m_rhi, *terrain);
     m_terrain_data = terrain;
 
     // Re-allocate terrain descriptor set.
@@ -734,101 +664,59 @@ void Renderer::set_fog_grid(const f32* values, u32 tiles_x, u32 tiles_y) {
         return;
     }
 
-    VkDevice device = m_rhi->device();
-    VmaAllocator allocator = m_rhi->allocator();
-
     // (Re)create fog texture if dimensions changed
     if (tiles_x != m_fog_width || tiles_y != m_fog_height) {
         // Destroy old resources
-        if (m_fog_texture.image) destroy_texture(*m_rhi, m_fog_texture);
-        if (m_fog_staging_buffer) {
-            if (m_fog_staging_mapped) vmaUnmapMemory(allocator, m_fog_staging_alloc);
-            vmaDestroyBuffer(allocator, m_fog_staging_buffer, m_fog_staging_alloc);
-            m_fog_staging_buffer = VK_NULL_HANDLE;
-            m_fog_staging_mapped = nullptr;
-        }
+        if (m_fog_texture.texture.is_valid()) destroy_texture(*m_rhi, m_fog_texture);
+        m_rhi->destroy_buffer(m_fog_staging_buffer);
+        m_fog_staging_buffer = {};
 
         m_fog_width = tiles_x;
         m_fog_height = tiles_y;
 
         // Create persistent staging buffer (mapped once)
-        VkDeviceSize buf_size = static_cast<VkDeviceSize>(tiles_x) * tiles_y * 4; // RGBA
-        VkBufferCreateInfo buf_ci{};
-        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buf_ci.size  = buf_size;
-        buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-        VmaAllocationCreateInfo alloc_ci{};
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        VmaAllocationInfo alloc_info{};
-        vmaCreateBuffer(allocator, &buf_ci, &alloc_ci,
-                        &m_fog_staging_buffer, &m_fog_staging_alloc, &alloc_info);
-        m_fog_staging_mapped = alloc_info.pMappedData;
+        {
+            rhi::BufferDesc d{};
+            d.size   = static_cast<u64>(tiles_x) * tiles_y * 4; // RGBA
+            d.usage  = rhi::BufferUsage::TransferSrc;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            m_fog_staging_buffer = m_rhi->create_buffer(d);
+        }
 
         // Create GPU image (R8G8B8A8_UNORM — we expand R8 to RGBA for compatibility)
-        VkImageCreateInfo img_ci{};
-        img_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        img_ci.imageType     = VK_IMAGE_TYPE_2D;
-        img_ci.format        = VK_FORMAT_R8G8B8A8_UNORM;
-        img_ci.extent        = {tiles_x, tiles_y, 1};
-        img_ci.mipLevels     = 1;
-        img_ci.arrayLayers   = 1;
-        img_ci.samples       = VK_SAMPLE_COUNT_1_BIT;
-        img_ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        img_ci.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        VmaAllocationCreateInfo img_alloc_ci{};
-        img_alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-
         m_fog_texture = {};
         m_fog_texture.width = tiles_x;
         m_fog_texture.height = tiles_y;
-        vmaCreateImage(allocator, &img_ci, &img_alloc_ci,
-                       &m_fog_texture.image, &m_fog_texture.alloc, nullptr);
-
-        // Image view
-        VkImageViewCreateInfo view_ci{};
-        view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_ci.image    = m_fog_texture.image;
-        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_ci.format   = VK_FORMAT_R8G8B8A8_UNORM;
-        view_ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCreateImageView(device, &view_ci, nullptr, &m_fog_texture.view);
+        {
+            rhi::TextureDesc td{};
+            td.width  = tiles_x;
+            td.height = tiles_y;
+            td.format = rhi::TextureFormat::R8G8B8A8_UNORM;
+            td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
+            m_fog_texture.texture = m_rhi->create_texture(td);
+        }
 
         // Sampler (bilinear, clamp to edge for smooth fog borders)
-        VkSamplerCreateInfo sampler_ci{};
-        sampler_ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_ci.magFilter    = VK_FILTER_LINEAR;
-        sampler_ci.minFilter    = VK_FILTER_LINEAR;
-        sampler_ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        sampler_ci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        sampler_ci.maxLod       = 0.0f;
-        vkCreateSampler(device, &sampler_ci, nullptr, &m_fog_texture.sampler);
+        {
+            rhi::SamplerDesc sd{};
+            sd.address_u   = rhi::AddressMode::ClampToEdge;
+            sd.address_v   = rhi::AddressMode::ClampToEdge;
+            sd.address_w   = rhi::AddressMode::ClampToEdge;
+            sd.mipmap_mode = rhi::MipmapMode::Nearest;
+            sd.max_lod     = 0.0f;
+            m_fog_texture.sampler = m_rhi->create_sampler(sd);
+        }
 
         // Initial transition to SHADER_READ_ONLY (will transition to TRANSFER_DST each frame)
-        VkCommandBuffer cmd = m_rhi->begin_oneshot();
-        VkImageMemoryBarrier2 barrier{};
-        barrier.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
-        barrier.srcAccessMask = VK_ACCESS_2_NONE;
-        barrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        barrier.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.image         = m_fog_texture.image;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-        VkDependencyInfo dep{};
-        dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers    = &barrier;
-        vkCmdPipelineBarrier2(cmd, &dep);
+        rhi::CommandList cmd = m_rhi->begin_oneshot();
+        rhi::ImageBarrier b{};
+        b.image      = m_fog_texture.texture;
+        b.src_stage  = rhi::PipelineStage::TopOfPipe;
+        b.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b.dst_access = rhi::AccessFlag::ShaderRead;
+        b.old_layout = rhi::ImageLayout::Undefined;
+        b.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b);
         m_rhi->end_oneshot(cmd);
 
         // Re-create terrain descriptor set with fog texture bound
@@ -838,8 +726,7 @@ void Renderer::set_fog_grid(const f32* values, u32 tiles_x, u32 tiles_y) {
     }
 
     // Convert float brightness → RGBA staging buffer
-    if (m_fog_staging_mapped) {
-        auto* dst = static_cast<u8*>(m_fog_staging_mapped);
+    if (auto* dst = static_cast<u8*>(m_rhi->mapped_ptr(m_fog_staging_buffer))) {
         u32 count = tiles_x * tiles_y;
         for (u32 i = 0; i < count; ++i) {
             u8 brightness = static_cast<u8>(std::clamp(values[i], 0.0f, 1.0f) * 255.0f);
@@ -854,48 +741,33 @@ void Renderer::set_fog_grid(const f32* values, u32 tiles_x, u32 tiles_y) {
     m_fog_dirty = true;
 }
 
-void Renderer::upload_fog(VkCommandBuffer cmd) {
-    if (!m_fog_dirty || !m_fog_texture.image || !m_fog_staging_buffer) return;
+void Renderer::upload_fog(rhi::CommandList& cmd) {
+    if (!m_fog_dirty || !m_fog_texture.texture.is_valid() || !m_fog_staging_buffer.is_valid()) return;
 
-    // Transition SHADER_READ_ONLY → TRANSFER_DST
-    VkImageMemoryBarrier2 to_transfer{};
-    to_transfer.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    to_transfer.srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    to_transfer.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    to_transfer.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    to_transfer.oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    to_transfer.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_transfer.image         = m_fog_texture.image;
-    to_transfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    rhi::ImageBarrier to_transfer{};
+    to_transfer.image       = m_fog_texture.texture;
+    to_transfer.src_stage   = rhi::PipelineStage::FragmentShader;
+    to_transfer.src_access  = rhi::AccessFlag::ShaderRead;
+    to_transfer.dst_stage   = rhi::PipelineStage::Transfer;
+    to_transfer.dst_access  = rhi::AccessFlag::TransferWrite;
+    to_transfer.old_layout  = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    to_transfer.new_layout  = rhi::ImageLayout::TransferDstOptimal;
+    cmd.image_barrier(to_transfer);
 
-    VkDependencyInfo dep{};
-    dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers    = &to_transfer;
-    vkCmdPipelineBarrier2(cmd, &dep);
+    rhi::BufferImageCopy region{};
+    region.image_extent_w = m_fog_width;
+    region.image_extent_h = m_fog_height;
+    cmd.copy_buffer_to_image(m_fog_staging_buffer, m_fog_texture.texture, std::span{&region, 1});
 
-    // Copy staging → image
-    VkBufferImageCopy region{};
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent      = {m_fog_width, m_fog_height, 1};
-    vkCmdCopyBufferToImage(cmd, m_fog_staging_buffer, m_fog_texture.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    // Transition TRANSFER_DST → SHADER_READ_ONLY
-    VkImageMemoryBarrier2 to_shader{};
-    to_shader.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    to_shader.srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    to_shader.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    to_shader.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    to_shader.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    to_shader.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_shader.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    to_shader.image         = m_fog_texture.image;
-    to_shader.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    dep.pImageMemoryBarriers = &to_shader;
-    vkCmdPipelineBarrier2(cmd, &dep);
+    rhi::ImageBarrier to_shader{};
+    to_shader.image      = m_fog_texture.texture;
+    to_shader.src_stage  = rhi::PipelineStage::Transfer;
+    to_shader.src_access = rhi::AccessFlag::TransferWrite;
+    to_shader.dst_stage  = rhi::PipelineStage::FragmentShader;
+    to_shader.dst_access = rhi::AccessFlag::ShaderRead;
+    to_shader.old_layout = rhi::ImageLayout::TransferDstOptimal;
+    to_shader.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    cmd.image_barrier(to_shader);
 
     m_fog_dirty = false;
 }
@@ -928,57 +800,35 @@ bool Renderer::is_fog_hidden(const simulation::World& world, u32 id, const simul
 // ── Descriptor set layouts + pool ─────────────────────────────────────────
 
 bool Renderer::create_descriptor_layouts() {
-    VkDevice device = m_rhi->device();
-
     // Mesh descriptor set layout: 1 combined image sampler at binding 0
     {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding         = 0;
-        binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount = 1;
-        binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutCreateInfo ci{};
-        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 1;
-        ci.pBindings    = &binding;
-
-        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_mesh_desc_layout) != VK_SUCCESS) {
+        rhi::DescriptorSetLayoutBinding b{};
+        b.binding = 0;
+        b.type    = rhi::DescriptorType::CombinedImageSampler;
+        b.count   = 1;
+        b.stages  = rhi::ShaderStage::Fragment;
+        rhi::DescriptorSetLayoutDesc desc{};
+        desc.bindings = std::span{&b, 1};
+        m_mesh_desc_layout = m_rhi->create_descriptor_set_layout(desc);
+        if (!m_mesh_desc_layout.is_valid()) {
             log::error(TAG, "Failed to create mesh descriptor set layout");
             return false;
         }
     }
 
-    // Terrain descriptor set layout: layers + fog + noise + normals
+    // Terrain descriptor set layout: layers + fog + noise + normals + water
     {
-        VkDescriptorSetLayoutBinding bindings[5]{};
-        bindings[0].binding         = 0;  // terrain layer array
-        bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[1].binding         = 1;  // fog texture
-        bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[2].binding         = 2;  // transition noise
-        bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[3].binding         = 3;  // normal map array
-        bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[3].descriptorCount = 1;
-        bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-        bindings[4].binding         = 4;  // water normal map
-        bindings[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[4].descriptorCount = 1;
-        bindings[4].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutCreateInfo ci{};
-        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 5;
-        ci.pBindings    = bindings;
-
-        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_terrain_desc_layout) != VK_SUCCESS) {
+        rhi::DescriptorSetLayoutBinding bindings[5]{};
+        for (u32 i = 0; i < 5; ++i) {
+            bindings[i].binding = i;
+            bindings[i].type    = rhi::DescriptorType::CombinedImageSampler;
+            bindings[i].count   = 1;
+            bindings[i].stages  = rhi::ShaderStage::Fragment;
+        }
+        rhi::DescriptorSetLayoutDesc desc{};
+        desc.bindings = std::span{bindings, 5};
+        m_terrain_desc_layout = m_rhi->create_descriptor_set_layout(desc);
+        if (!m_terrain_desc_layout.is_valid()) {
             log::error(TAG, "Failed to create terrain descriptor set layout");
             return false;
         }
@@ -990,33 +840,16 @@ bool Renderer::create_descriptor_layouts() {
     //   binding 2: environment UBO (sun, ambient, fog)
     //   binding 3: environment cubemap (skybox / fallback)
     {
-        VkDescriptorSetLayoutBinding bindings[4]{};
-        bindings[0].binding         = 0;
-        bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        bindings[1].binding         = 1;
-        bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        bindings[2].binding         = 2;  // environment UBO
-        bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        bindings[3].binding         = 3;  // environment cubemap
-        bindings[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[3].descriptorCount = 1;
-        bindings[3].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutCreateInfo ci{};
-        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 4;
-        ci.pBindings    = bindings;
-
-        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_shadow_desc_layout) != VK_SUCCESS) {
+        rhi::DescriptorSetLayoutBinding bindings[4]{};
+        bindings[0].binding = 0; bindings[0].type = rhi::DescriptorType::UniformBuffer;
+        bindings[1].binding = 1; bindings[1].type = rhi::DescriptorType::CombinedImageSampler;
+        bindings[2].binding = 2; bindings[2].type = rhi::DescriptorType::UniformBuffer;
+        bindings[3].binding = 3; bindings[3].type = rhi::DescriptorType::CombinedImageSampler;
+        for (auto& b : bindings) { b.count = 1; b.stages = rhi::ShaderStage::Fragment; }
+        rhi::DescriptorSetLayoutDesc desc{};
+        desc.bindings = std::span{bindings, 4};
+        m_shadow_desc_layout = m_rhi->create_descriptor_set_layout(desc);
+        if (!m_shadow_desc_layout.is_valid()) {
             log::error(TAG, "Failed to create shadow descriptor set layout");
             return false;
         }
@@ -1024,181 +857,55 @@ bool Renderer::create_descriptor_layouts() {
 
     // Bone SSBO descriptor set layout (set 2 for skinned mesh, set 0 for skinned shadow)
     {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding         = 0;
-        binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        binding.descriptorCount = 1;
-        binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
-
-        VkDescriptorSetLayoutCreateInfo ci{};
-        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 1;
-        ci.pBindings    = &binding;
-
-        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_bone_desc_layout) != VK_SUCCESS) {
+        rhi::DescriptorSetLayoutBinding b{};
+        b.binding = 0;
+        b.type    = rhi::DescriptorType::StorageBuffer;
+        b.count   = 1;
+        b.stages  = rhi::ShaderStage::Vertex;
+        rhi::DescriptorSetLayoutDesc desc{};
+        desc.bindings = std::span{&b, 1};
+        m_bone_desc_layout = m_rhi->create_descriptor_set_layout(desc);
+        if (!m_bone_desc_layout.is_valid()) {
             log::error(TAG, "Failed to create bone descriptor set layout");
             return false;
         }
     }
 
-    // Create initial descriptor pool
-    if (!allocate_or_grow_pool()) {
-        log::error(TAG, "Failed to create descriptor pool");
-        return false;
-    }
-
-    log::info(TAG, "Descriptor layouts and pool created");
+    log::info(TAG, "Descriptor layouts created");
     return true;
 }
 
-VkDescriptorPool Renderer::allocate_or_grow_pool() {
-    VkDevice device = m_rhi->device();
+rhi::DescriptorSetHandle Renderer::allocate_mesh_descriptor(const GpuTexture& diffuse) {
+    rhi::DescriptorSetHandle set = m_rhi->allocate_descriptor_set(m_mesh_desc_layout);
+    if (!set.is_valid()) return {};
 
-    VkDescriptorPoolSize pool_sizes[3]{};
-    pool_sizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    pool_sizes[0].descriptorCount = 64;
-    pool_sizes[1].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    pool_sizes[1].descriptorCount = 8;
-    pool_sizes[2].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_sizes[2].descriptorCount = 256;
-
-    VkDescriptorPoolCreateInfo pool_ci{};
-    pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pool_ci.maxSets       = 300;
-    pool_ci.poolSizeCount = 3;
-    pool_ci.pPoolSizes    = pool_sizes;
-
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &pool) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create descriptor pool");
-        return VK_NULL_HANDLE;
-    }
-
-    m_descriptor_pools.push_back(pool);
-    log::info(TAG, "Descriptor pool #{} created (300 sets)", m_descriptor_pools.size());
-    return pool;
-}
-
-VkDescriptorSet Renderer::allocate_mesh_descriptor(const GpuTexture& diffuse) {
-    VkDevice device = m_rhi->device();
-
-    VkDescriptorSetAllocateInfo alloc_info{};
-    alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pools.back();
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts        = &m_mesh_desc_layout;
-
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        // Pool full — grow and retry
-        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
-        alloc_info.descriptorPool = m_descriptor_pools.back();
-        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
-    }
-
-    VkDescriptorImageInfo img_info{};
-    img_info.sampler     = diffuse.sampler;
-    img_info.imageView   = diffuse.view;
-    img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = set;
-    write.dstBinding      = 0;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo      = &img_info;
-
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    rhi::WriteDescriptor w{};
+    w.binding = 0;
+    w.type    = rhi::DescriptorType::CombinedImageSampler;
+    w.texture = diffuse.texture;
+    w.sampler = diffuse.sampler;
+    m_rhi->update_descriptor_set(set, std::span{&w, 1});
     return set;
 }
 
-VkDescriptorSet Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat) {
-    VkDevice device = m_rhi->device();
+rhi::DescriptorSetHandle Renderer::allocate_terrain_descriptor(const TerrainMaterial& mat) {
+    rhi::DescriptorSetHandle set = m_rhi->allocate_descriptor_set(m_terrain_desc_layout);
+    if (!set.is_valid()) return {};
 
-    VkDescriptorSetAllocateInfo alloc_info{};
-    alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pools.back();
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts        = &m_terrain_desc_layout;
+    const GpuTexture& layer_tex  = mat.layer_array.texture.is_valid() ? mat.layer_array : m_default_texture;
+    const GpuTexture& fog_tex    = m_fog_texture.texture.is_valid() ? m_fog_texture : m_default_texture;
+    const GpuTexture& mask_tex   = m_transition_noise.texture.is_valid() ? m_transition_noise : m_default_texture;
+    const GpuTexture& norm_tex   = mat.normal_array.texture.is_valid() ? mat.normal_array : m_default_texture;
+    const GpuTexture& water_norm = m_water_normal.texture.is_valid() ? m_water_normal : m_default_texture;
 
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
-        alloc_info.descriptorPool = m_descriptor_pools.back();
-        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
-    }
-
-    VkDescriptorImageInfo img_infos[5]{};
-    VkWriteDescriptorSet writes[5]{};
-
-    // Binding 0: terrain layer array texture
-    const GpuTexture& layer_tex = mat.layer_array.image ? mat.layer_array : m_default_texture;
-    img_infos[0].sampler     = layer_tex.sampler;
-    img_infos[0].imageView   = layer_tex.view;
-    img_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = set;
-    writes[0].dstBinding      = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo      = &img_infos[0];
-
-    // Binding 1: fog texture
-    const GpuTexture& fog_tex = m_fog_texture.image ? m_fog_texture : m_default_texture;
-    img_infos[1].sampler     = fog_tex.sampler;
-    img_infos[1].imageView   = fog_tex.view;
-    img_infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = set;
-    writes[1].dstBinding      = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo      = &img_infos[1];
-
-    // Binding 2: transition noise texture
-    const GpuTexture& mask_tex = m_transition_noise.image ? m_transition_noise : m_default_texture;
-    img_infos[2].sampler     = mask_tex.sampler;
-    img_infos[2].imageView   = mask_tex.view;
-    img_infos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet          = set;
-    writes[2].dstBinding      = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].pImageInfo      = &img_infos[2];
-
-    // Binding 3: normal map array (use default texture if no normals loaded)
-    const GpuTexture& norm_tex = mat.normal_array.image ? mat.normal_array : m_default_texture;
-    img_infos[3].sampler     = norm_tex.sampler;
-    img_infos[3].imageView   = norm_tex.view;
-    img_infos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet          = set;
-    writes[3].dstBinding      = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo      = &img_infos[3];
-
-    // Binding 4: water normal map
-    const GpuTexture& water_norm = m_water_normal.image ? m_water_normal : m_default_texture;
-    img_infos[4].sampler     = water_norm.sampler;
-    img_infos[4].imageView   = water_norm.view;
-    img_infos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    writes[4].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet          = set;
-    writes[4].dstBinding      = 4;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].pImageInfo      = &img_infos[4];
-
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    rhi::WriteDescriptor ws[5]{};
+    for (auto& w : ws) { w.type = rhi::DescriptorType::CombinedImageSampler; }
+    ws[0].binding = 0; ws[0].texture = layer_tex.texture;  ws[0].sampler = layer_tex.sampler;
+    ws[1].binding = 1; ws[1].texture = fog_tex.texture;    ws[1].sampler = fog_tex.sampler;
+    ws[2].binding = 2; ws[2].texture = mask_tex.texture;   ws[2].sampler = mask_tex.sampler;
+    ws[3].binding = 3; ws[3].texture = norm_tex.texture;   ws[3].sampler = norm_tex.sampler;
+    ws[4].binding = 4; ws[4].texture = water_norm.texture; ws[4].sampler = water_norm.sampler;
+    m_rhi->update_descriptor_set(set, std::span{ws, 5});
     return set;
 }
 
@@ -1222,8 +929,7 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
 
     gpu.vertex_buffer = m_mega_vb;
     gpu.index_buffer  = m_mega_ib;
-    gpu.vertex_alloc  = VK_NULL_HANDLE;  // not individually allocated
-    gpu.index_alloc   = VK_NULL_HANDLE;
+    gpu.owns_buffers  = false;  // slice of the shared mega buffer
     gpu.vertex_count  = vc;
     gpu.index_count   = ic;
     gpu.first_vertex  = m_mega_vb_used;
@@ -1237,11 +943,13 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
     }
     gpu.bounding_radius = std::sqrt(max_r2);
 
-    auto* vb_dst = static_cast<u8*>(m_mega_vb_mapped) + m_mega_vb_used * sizeof(asset::Vertex);
+    auto* vb_dst = static_cast<u8*>(m_rhi->mapped_ptr(m_mega_vb))
+                 + m_mega_vb_used * sizeof(asset::Vertex);
     std::memcpy(vb_dst, mesh.vertices.data(), vc * sizeof(asset::Vertex));
     m_mega_vb_used += vc;
 
-    auto* ib_dst = static_cast<u8*>(m_mega_ib_mapped) + m_mega_ib_used * sizeof(u32);
+    auto* ib_dst = static_cast<u8*>(m_rhi->mapped_ptr(m_mega_ib))
+                 + m_mega_ib_used * sizeof(u32);
     std::memcpy(ib_dst, mesh.indices.data(), ic * sizeof(u32));
     m_mega_ib_used += ic;
 
@@ -1251,69 +959,27 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
 // ── Bindless texture array (Phase 14b) ───────────────────────────────────
 
 bool Renderer::create_bindless_resources() {
-    VkDevice device = m_rhi->device();
-
     // Descriptor set layout: variable-size sampler2D array
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding         = 0;
-    binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = MAX_BINDLESS_TEXTURES;
-    binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    rhi::DescriptorSetLayoutBinding b{};
+    b.binding             = 0;
+    b.type                = rhi::DescriptorType::CombinedImageSampler;
+    b.count               = MAX_BINDLESS_TEXTURES;
+    b.stages              = rhi::ShaderStage::Fragment;
+    b.partially_bound     = true;
+    b.variable_count      = true;
+    b.update_after_bind   = true;
 
-    VkDescriptorBindingFlags bindless_flags =
-        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-        VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    rhi::DescriptorSetLayoutDesc desc{};
+    desc.bindings = std::span{&b, 1};
 
-    VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci{};
-    flags_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    flags_ci.bindingCount  = 1;
-    flags_ci.pBindingFlags = &bindless_flags;
-
-    VkDescriptorSetLayoutCreateInfo layout_ci{};
-    layout_ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layout_ci.pNext        = &flags_ci;
-    layout_ci.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    layout_ci.bindingCount = 1;
-    layout_ci.pBindings    = &binding;
-
-    if (vkCreateDescriptorSetLayout(device, &layout_ci, nullptr, &m_bindless_layout) != VK_SUCCESS) {
+    m_bindless_layout = m_rhi->create_descriptor_set_layout(desc);
+    if (!m_bindless_layout.is_valid()) {
         log::error(TAG, "Failed to create bindless descriptor set layout");
         return false;
     }
 
-    // Dedicated pool for the one bindless set
-    VkDescriptorPoolSize pool_size{};
-    pool_size.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    pool_size.descriptorCount = MAX_BINDLESS_TEXTURES;
-
-    VkDescriptorPoolCreateInfo pool_ci{};
-    pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    pool_ci.maxSets       = 1;
-    pool_ci.poolSizeCount = 1;
-    pool_ci.pPoolSizes    = &pool_size;
-
-    if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &m_bindless_pool) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create bindless descriptor pool");
-        return false;
-    }
-
-    // Allocate the bindless set with variable descriptor count
-    u32 variable_count = MAX_BINDLESS_TEXTURES;
-    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_ci{};
-    variable_ci.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    variable_ci.descriptorSetCount = 1;
-    variable_ci.pDescriptorCounts  = &variable_count;
-
-    VkDescriptorSetAllocateInfo alloc_ci{};
-    alloc_ci.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_ci.pNext              = &variable_ci;
-    alloc_ci.descriptorPool     = m_bindless_pool;
-    alloc_ci.descriptorSetCount = 1;
-    alloc_ci.pSetLayouts        = &m_bindless_layout;
-
-    if (vkAllocateDescriptorSets(device, &alloc_ci, &m_bindless_set) != VK_SUCCESS) {
+    m_bindless_set = m_rhi->allocate_descriptor_set(m_bindless_layout, MAX_BINDLESS_TEXTURES);
+    if (!m_bindless_set.is_valid()) {
         log::error(TAG, "Failed to allocate bindless descriptor set");
         return false;
     }
@@ -1330,21 +996,13 @@ u32 Renderer::register_bindless_texture(const GpuTexture& tex) {
 
     u32 idx = m_bindless_count++;
 
-    VkDescriptorImageInfo img_info{};
-    img_info.sampler     = tex.sampler;
-    img_info.imageView   = tex.view;
-    img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = m_bindless_set;
-    write.dstBinding      = 0;
-    write.dstArrayElement = idx;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo      = &img_info;
-
-    vkUpdateDescriptorSets(m_rhi->device(), 1, &write, 0, nullptr);
+    rhi::WriteDescriptor w{};
+    w.binding       = 0;
+    w.array_element = idx;
+    w.type          = rhi::DescriptorType::CombinedImageSampler;
+    w.texture       = tex.texture;
+    w.sampler       = tex.sampler;
+    m_rhi->update_descriptor_set(m_bindless_set, std::span{&w, 1});
     return idx;
 }
 
@@ -1354,7 +1012,7 @@ bool Renderer::create_default_texture() {
     // 4x4 warm orange texture for placeholder meshes
     auto pixels = generate_solid_texture(4, 220, 160, 80);
     m_default_texture = upload_texture_rgba(*m_rhi, pixels.data(), 4, 4);
-    if (!m_default_texture.image) return false;
+    if (!m_default_texture.texture.is_valid()) return false;
 
     m_default_material.diffuse = m_default_texture;
     m_default_material.descriptor_set = allocate_mesh_descriptor(m_default_texture);
@@ -1365,7 +1023,7 @@ bool Renderer::create_default_texture() {
     // Corpse texture (dark gray)
     auto corpse_pixels = generate_solid_texture(4, 50, 50, 50);
     m_corpse_texture = upload_texture_rgba(*m_rhi, corpse_pixels.data(), 4, 4);
-    if (!m_corpse_texture.image) return false;
+    if (!m_corpse_texture.texture.is_valid()) return false;
     m_corpse_material.diffuse = m_corpse_texture;
     m_corpse_material.descriptor_set = allocate_mesh_descriptor(m_corpse_texture);
 
@@ -1385,7 +1043,7 @@ bool Renderer::create_terrain_textures() {
     m_terrain_material.layer_array = upload_texture_array(*m_rhi, layer_data, 1, TEX_SIZE, TEX_SIZE);
     m_terrain_material.layer_count = 1;
     log::info(TAG, "Default terrain texture created (1 layer)");
-    return m_terrain_material.layer_array.image != VK_NULL_HANDLE;
+    return m_terrain_material.layer_array.texture.is_valid();
 }
 
 // Simple hash noise for procedural texture generation
@@ -1414,7 +1072,7 @@ bool Renderer::create_transition_noise() {
     }
 
     m_transition_noise = upload_texture_rgba(*m_rhi, pixels.data(), SIZE, SIZE);
-    if (!m_transition_noise.image) {
+    if (!m_transition_noise.texture.is_valid()) {
         log::error(TAG, "Failed to create transition noise texture");
         return false;
     }
@@ -1460,7 +1118,7 @@ bool Renderer::create_water_normal() {
     }
 
     m_water_normal = upload_texture_rgba(*m_rhi, pixels.data(), SIZE, SIZE);
-    if (!m_water_normal.image) {
+    if (!m_water_normal.texture.is_valid()) {
         log::error(TAG, "Failed to create water normal map");
         return false;
     }
@@ -1470,8 +1128,8 @@ bool Renderer::create_water_normal() {
 
 void Renderer::load_tileset_textures(const map::Tileset& tileset) {
     vkDeviceWaitIdle(m_rhi->device());
-    if (m_terrain_material.layer_array.image) destroy_texture(*m_rhi, m_terrain_material.layer_array);
-    if (m_terrain_material.normal_array.image) destroy_texture(*m_rhi, m_terrain_material.normal_array);
+    if (m_terrain_material.layer_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.layer_array);
+    if (m_terrain_material.normal_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.normal_array);
     m_terrain_material.has_normals = false;
 
     if (tileset.layers.empty()) {
@@ -1622,345 +1280,235 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
 
 // ── Pipeline creation helpers ─────────────────────────────────────────────
 
-// Shared pipeline state (vertex input, rasterizer, depth, blend, dynamic)
-struct PipelineStateConfig {
-    VkPipelineShaderStageCreateInfo stages[2];
-    VkPipelineVertexInputStateCreateInfo vertex_input;
-    VkPipelineInputAssemblyStateCreateInfo input_assembly;
-    VkPipelineViewportStateCreateInfo viewport_state;
-    VkPipelineRasterizationStateCreateInfo rasterizer;
-    VkPipelineMultisampleStateCreateInfo multisample;
-    VkPipelineDepthStencilStateCreateInfo depth_stencil;
-    VkPipelineColorBlendAttachmentState blend_attachment;
-    VkPipelineColorBlendStateCreateInfo color_blend;
-    VkPipelineDynamicStateCreateInfo dynamic_state;
-    VkDynamicState dynamic_states[2];
-    VkVertexInputBindingDescription binding;
-    VkVertexInputAttributeDescription attrs[5];
-};
-
-static PipelineStateConfig make_common_pipeline_state() {
-    PipelineStateConfig cfg{};
-
-    cfg.binding.binding   = 0;
-    cfg.binding.stride    = sizeof(asset::Vertex);
-    cfg.binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    cfg.attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(asset::Vertex, position)};
-    cfg.attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(asset::Vertex, normal)};
-    cfg.attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(asset::Vertex, texcoord)};
-
-    cfg.vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    cfg.vertex_input.vertexBindingDescriptionCount   = 1;
-    cfg.vertex_input.pVertexBindingDescriptions      = &cfg.binding;
-    cfg.vertex_input.vertexAttributeDescriptionCount = 3;
-    cfg.vertex_input.pVertexAttributeDescriptions    = cfg.attrs;
-
-    cfg.input_assembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    cfg.input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    cfg.viewport_state.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    cfg.viewport_state.viewportCount = 1;
-    cfg.viewport_state.scissorCount  = 1;
-
-    cfg.rasterizer.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    cfg.rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    cfg.rasterizer.cullMode    = VK_CULL_MODE_BACK_BIT;
-    cfg.rasterizer.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    cfg.rasterizer.lineWidth   = 1.0f;
-
-    cfg.multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    cfg.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-    cfg.depth_stencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    cfg.depth_stencil.depthTestEnable  = VK_TRUE;
-    cfg.depth_stencil.depthWriteEnable = VK_TRUE;
-    cfg.depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS;
-
-    cfg.blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-    cfg.color_blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cfg.color_blend.attachmentCount = 1;
-    cfg.color_blend.pAttachments    = &cfg.blend_attachment;
-
-    cfg.dynamic_states[0] = VK_DYNAMIC_STATE_VIEWPORT;
-    cfg.dynamic_states[1] = VK_DYNAMIC_STATE_SCISSOR;
-    cfg.dynamic_state.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    cfg.dynamic_state.dynamicStateCount = 2;
-    cfg.dynamic_state.pDynamicStates    = cfg.dynamic_states;
-
-    return cfg;
+static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8G8B8A8_UNORM: return rhi::TextureFormat::R8G8B8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:  return rhi::TextureFormat::R8G8B8A8_SRGB;
+        case VK_FORMAT_B8G8R8A8_UNORM: return rhi::TextureFormat::B8G8R8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB:  return rhi::TextureFormat::B8G8R8A8_SRGB;
+        case VK_FORMAT_D32_SFLOAT:     return rhi::TextureFormat::D32_SFLOAT;
+        default: break;
+    }
+    return rhi::TextureFormat::Undefined;
 }
 
 bool Renderer::create_mesh_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/mesh.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/mesh.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/mesh.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/mesh.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load mesh shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    auto cfg = make_common_pipeline_state();
-    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);  // just vp
 
-    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    cfg.stages[0].module = vert;
-    cfg.stages[0].pName  = "main";
-    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    cfg.stages[1].module = frag;
-    cfg.stages[1].pName  = "main";
+    rhi::DescriptorSetLayoutHandle set_layouts[] = { m_bindless_layout, m_shadow_desc_layout, m_bone_desc_layout };
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{set_layouts, 3};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_mesh_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_mesh_pipeline_layout.is_valid()) {
+        log::error(TAG, "Failed to create mesh pipeline layout");
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
+        return false;
+    }
+
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
+
+    rhi::VertexBindingDesc binding{ 0, sizeof(asset::Vertex), false };
+    rhi::VertexAttributeDesc attrs[3]{
+        { 0, 0, offsetof(asset::Vertex, position), rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(asset::Vertex, normal),   rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(asset::Vertex, texcoord), rhi::TextureFormat::R32G32_SFLOAT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 3};
+
+    rhi::RasterizerState rs{};
+    rs.cull_mode  = rhi::CullMode::Back;
+    rs.front_face = rhi::FrontFace::CounterClockwise;
+
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = true;
+    ds.depth_compare      = rhi::CompareOp::Less;
 
     // Alpha blending so InstanceData.alpha (driven by visual_alpha)
-    // actually shows up on screen — opaque instances (alpha=1) end up
-    // identical to the pre-blend pipeline. Re-anchor pAttachments to
-    // *this* cfg's blend_attachment in case NRVO didn't keep the
-    // address stable (same gotcha we hit in the skinned pipeline).
-    cfg.blend_attachment.blendEnable         = VK_TRUE;
-    cfg.blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    cfg.blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    cfg.blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
-    cfg.blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    cfg.blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    cfg.blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
-    cfg.color_blend.pAttachments             = &cfg.blend_attachment;
+    // shows up on screen. Opaque instances (alpha=1) match the pre-blend
+    // pipeline; translucent ones blend.
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::SrcAlpha;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::Zero;
 
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_range.offset     = 0;
-    push_range.size       = sizeof(glm::mat4);  // just vp
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
 
-    // Set 0 = bindless textures, set 1 = shadow, set 2 = instance SSBO (Phase 14b)
-    VkDescriptorSetLayout mesh_layouts[] = {m_bindless_layout, m_shadow_desc_layout, m_bone_desc_layout};
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 3;
-    layout_ci.pSetLayouts            = mesh_layouts;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
 
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_mesh_pipeline_layout) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create mesh pipeline layout");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_mesh_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::TriangleList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
 
-    VkFormat color_format = m_rhi->swapchain_format();
-    VkFormat depth_format = m_rhi->depth_format();
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.colorAttachmentCount    = 1;
-    rendering_ci.pColorAttachmentFormats = &color_format;
-    rendering_ci.depthAttachmentFormat   = depth_format;
-
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = cfg.stages;
-    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
-    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
-    pipeline_ci.pViewportState      = &cfg.viewport_state;
-    pipeline_ci.pRasterizationState = &cfg.rasterizer;
-    pipeline_ci.pMultisampleState   = &cfg.multisample;
-    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
-    pipeline_ci.pColorBlendState    = &cfg.color_blend;
-    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
-    pipeline_ci.layout              = m_mesh_pipeline_layout;
-
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_mesh_pipeline) != VK_SUCCESS) {
+    m_mesh_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_mesh_pipeline.is_valid()) {
         log::error(TAG, "Failed to create mesh pipeline");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
         return false;
     }
-
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
     log::info(TAG, "Mesh pipeline created (textured + shadow)");
     return true;
 }
 
 bool Renderer::create_skinned_mesh_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/skinned_mesh.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/skinned_mesh.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/skinned_mesh.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/skinned_mesh.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load skinned mesh shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    // Skinned vertex input: 5 attributes, 64-byte stride
-    VkVertexInputBindingDescription binding{};
-    binding.binding   = 0;
-    binding.stride    = sizeof(asset::SkinnedVertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    // Push constants: vertex = mat4 mvp + mat4 model, fragment = vec4 visual (alpha)
+    rhi::PushConstantRange pcs[2]{};
+    pcs[0].stages = rhi::ShaderStage::Vertex;
+    pcs[0].offset = 0;
+    pcs[0].size   = 2 * sizeof(glm::mat4);
+    pcs[1].stages = rhi::ShaderStage::Fragment;
+    pcs[1].offset = 2 * sizeof(glm::mat4);
+    pcs[1].size   = sizeof(glm::vec4);
 
-    VkVertexInputAttributeDescription attrs[5]{};
-    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(asset::SkinnedVertex, position)};
-    attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(asset::SkinnedVertex, normal)};
-    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(asset::SkinnedVertex, texcoord)};
-    attrs[3] = {3, 0, VK_FORMAT_R32G32B32A32_UINT,   offsetof(asset::SkinnedVertex, bone_indices)};
-    attrs[4] = {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(asset::SkinnedVertex, bone_weights)};
-
-    auto cfg = make_common_pipeline_state();
-    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
-    // Override vertex input with skinned format
-    cfg.vertex_input.pVertexBindingDescriptions    = &binding;
-    cfg.vertex_input.vertexAttributeDescriptionCount = 5;
-    cfg.vertex_input.pVertexAttributeDescriptions  = attrs;
-    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    cfg.stages[0].module = vert;
-    cfg.stages[0].pName  = "main";
-    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    cfg.stages[1].module = frag;
-    cfg.stages[1].pName  = "main";
-
-    // Alpha blending for SetUnitAlpha / ghost-rendering. Opaque units
-    // (alpha=1) end up identical to the previous pipeline; translucent
-    // units blend into the framebuffer. Depth write stays on — fine for
-    // mostly-opaque humanoid silhouettes; switch to dithered alpha if
-    // we ever need clean see-through ghosts.
-    cfg.blend_attachment.blendEnable         = VK_TRUE;
-    cfg.blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    cfg.blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    cfg.blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
-    cfg.blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    cfg.blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    cfg.blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
-    // make_common_pipeline_state() set color_blend.pAttachments to its
-    // *own* blend_attachment before returning by value. NRVO usually
-    // keeps the addresses identical, but it's not guaranteed — re-
-    // anchor the pointer to *this* cfg's blend_attachment so the alpha
-    // overrides above are guaranteed to land in the pipeline.
-    cfg.color_blend.pAttachments = &cfg.blend_attachment;
-
-    // Layout: set 0 = material, set 1 = shadow, set 2 = bones SSBO
-    // Push constants: mat4 mvp + mat4 model (vertex), then vec4 visual
-    // (fragment) where visual.x is alpha. Fragment range starts after
-    // the two mat4s; sizes are tracked separately per stage.
-    VkPushConstantRange push_ranges[2]{};
-    push_ranges[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_ranges[0].offset     = 0;
-    push_ranges[0].size       = 2 * sizeof(glm::mat4);
-    push_ranges[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    push_ranges[1].offset     = 2 * sizeof(glm::mat4);
-    push_ranges[1].size       = sizeof(glm::vec4);
-
-    VkDescriptorSetLayout layouts[] = {m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout};
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 3;
-    layout_ci.pSetLayouts            = layouts;
-    layout_ci.pushConstantRangeCount = 2;
-    layout_ci.pPushConstantRanges    = push_ranges;
-
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_skinned_mesh_pipeline_layout) != VK_SUCCESS) {
+    rhi::DescriptorSetLayoutHandle set_layouts[] = { m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout };
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{set_layouts, 3};
+    pl_desc.push_constants = std::span{pcs, 2};
+    m_skinned_mesh_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_skinned_mesh_pipeline_layout.is_valid()) {
         log::error(TAG, "Failed to create skinned mesh pipeline layout");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkFormat color_format = m_rhi->swapchain_format();
-    VkFormat depth_format = m_rhi->depth_format();
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.colorAttachmentCount    = 1;
-    rendering_ci.pColorAttachmentFormats = &color_format;
-    rendering_ci.depthAttachmentFormat   = depth_format;
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = cfg.stages;
-    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
-    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
-    pipeline_ci.pViewportState      = &cfg.viewport_state;
-    pipeline_ci.pRasterizationState = &cfg.rasterizer;
-    pipeline_ci.pMultisampleState   = &cfg.multisample;
-    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
-    pipeline_ci.pColorBlendState    = &cfg.color_blend;
-    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
-    pipeline_ci.layout              = m_skinned_mesh_pipeline_layout;
+    rhi::VertexBindingDesc binding{ 0, sizeof(asset::SkinnedVertex), false };
+    rhi::VertexAttributeDesc attrs[5]{
+        { 0, 0, offsetof(asset::SkinnedVertex, position),     rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(asset::SkinnedVertex, normal),       rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(asset::SkinnedVertex, texcoord),     rhi::TextureFormat::R32G32_SFLOAT },
+        { 3, 0, offsetof(asset::SkinnedVertex, bone_indices), rhi::TextureFormat::R32G32B32A32_UINT },
+        { 4, 0, offsetof(asset::SkinnedVertex, bone_weights), rhi::TextureFormat::R32G32B32A32_SFLOAT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 5};
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_skinned_mesh_pipeline) != VK_SUCCESS) {
+    rhi::RasterizerState rs{};
+    rs.cull_mode  = rhi::CullMode::Back;
+    rs.front_face = rhi::FrontFace::CounterClockwise;
+
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = true;
+    ds.depth_compare      = rhi::CompareOp::Less;
+
+    // Alpha blending for SetUnitAlpha / ghost-rendering. Depth write stays
+    // on — fine for mostly-opaque humanoid silhouettes; switch to dithered
+    // alpha if we ever need clean see-through ghosts.
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::SrcAlpha;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::Zero;
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_skinned_mesh_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::TriangleList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_skinned_mesh_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_skinned_mesh_pipeline.is_valid()) {
         log::error(TAG, "Failed to create skinned mesh pipeline");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
         return false;
     }
 
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    // Skinned shadow pipeline — depth-only, set 0 = bones SSBO, push = mat4 light_mvp
+    auto shadow_vert_h = load_shader(*m_rhi, "engine/shaders/skinned_shadow.vert.spv");
+    if (m_rhi->resolve(shadow_vert_h)) {
+        rhi::PushConstantRange spc{};
+        spc.stages = rhi::ShaderStage::Vertex;
+        spc.size   = sizeof(glm::mat4);
 
-    // Skinned shadow pipeline
-    VkShaderModule shadow_vert = load_shader(device, "engine/shaders/skinned_shadow.vert.spv");
-    if (shadow_vert) {
-        // Shadow layout: set 0 = bones SSBO, push constant = light_mvp
-        VkPushConstantRange shadow_push{};
-        shadow_push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        shadow_push.size       = sizeof(glm::mat4);
+        rhi::PipelineLayoutDesc spl{};
+        spl.set_layouts    = std::span{&m_bone_desc_layout, 1};
+        spl.push_constants = std::span{&spc, 1};
+        m_skinned_shadow_pipeline_layout = m_rhi->create_pipeline_layout(spl);
 
-        VkPipelineLayoutCreateInfo shadow_layout_ci{};
-        shadow_layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        shadow_layout_ci.setLayoutCount         = 1;
-        shadow_layout_ci.pSetLayouts            = &m_bone_desc_layout;
-        shadow_layout_ci.pushConstantRangeCount = 1;
-        shadow_layout_ci.pPushConstantRanges    = &shadow_push;
+        rhi::ShaderStageDesc shadow_stages[1]{};
+        shadow_stages[0].stage  = rhi::ShaderStage::Vertex;
+        shadow_stages[0].module = shadow_vert_h;
 
-        vkCreatePipelineLayout(device, &shadow_layout_ci, nullptr, &m_skinned_shadow_pipeline_layout);
+        rhi::RasterizerState shadow_rs = rs;
+        shadow_rs.depth_bias_enable          = true;
+        shadow_rs.depth_bias_constant_factor = 1.25f;
+        shadow_rs.depth_bias_slope_factor    = 1.75f;
 
-        VkPipelineShaderStageCreateInfo shadow_stage{};
-        shadow_stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shadow_stage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
-        shadow_stage.module = shadow_vert;
-        shadow_stage.pName  = "main";
+        rhi::MultisampleState shadow_ms{};
+        shadow_ms.sample_count = 1;  // shadow is 1x
 
-        // Shadow: depth-only, no color
-        VkPipelineRenderingCreateInfo shadow_rendering{};
-        shadow_rendering.sType                = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        shadow_rendering.depthAttachmentFormat = m_rhi->depth_format();
+        rhi::GraphicsPipelineDesc sdesc{};
+        sdesc.layout            = m_skinned_shadow_pipeline_layout;
+        sdesc.stages            = std::span{shadow_stages, 1};
+        sdesc.vertex_input      = vi;
+        sdesc.topology          = rhi::PrimitiveTopology::TriangleList;
+        sdesc.rasterizer        = shadow_rs;
+        sdesc.depth_stencil     = ds;
+        sdesc.multisample       = shadow_ms;
+        sdesc.render.depth_format = depth_fmt;
+        // no color attachments → blend_attachments empty
 
-        cfg.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;  // shadow is 1x
-        cfg.vertex_input.pVertexBindingDescriptions    = &binding;
-        cfg.vertex_input.vertexAttributeDescriptionCount = 5;
-        cfg.vertex_input.pVertexAttributeDescriptions  = attrs;
-        cfg.rasterizer.depthBiasEnable    = VK_TRUE;
-        cfg.rasterizer.depthBiasConstantFactor = 1.25f;
-        cfg.rasterizer.depthBiasSlopeFactor    = 1.75f;
-        cfg.color_blend.attachmentCount = 0;
-
-        VkGraphicsPipelineCreateInfo shadow_ci{};
-        shadow_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        shadow_ci.pNext               = &shadow_rendering;
-        shadow_ci.stageCount          = 1;
-        shadow_ci.pStages             = &shadow_stage;
-        shadow_ci.pVertexInputState   = &cfg.vertex_input;
-        shadow_ci.pInputAssemblyState = &cfg.input_assembly;
-        shadow_ci.pViewportState      = &cfg.viewport_state;
-        shadow_ci.pRasterizationState = &cfg.rasterizer;
-        shadow_ci.pMultisampleState   = &cfg.multisample;
-        shadow_ci.pDepthStencilState  = &cfg.depth_stencil;
-        shadow_ci.pColorBlendState    = &cfg.color_blend;
-        shadow_ci.pDynamicState       = &cfg.dynamic_state;
-        shadow_ci.layout              = m_skinned_shadow_pipeline_layout;
-
-        vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &shadow_ci, nullptr, &m_skinned_shadow_pipeline);
-        vkDestroyShaderModule(device, shadow_vert, nullptr);
+        m_skinned_shadow_pipeline = m_rhi->create_graphics_pipeline(sdesc);
+        m_rhi->destroy_shader_module(shadow_vert_h);
     }
 
     log::info(TAG, "Skinned mesh pipeline created (textured + shadow + bone SSBO)");
@@ -1968,350 +1516,247 @@ bool Renderer::create_skinned_mesh_pipeline() {
 }
 
 bool Renderer::create_particle_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/particle.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/particle.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/particle.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/particle.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load particle shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    // Vertex input: position(vec3) + color(vec4) + texcoord(vec2) + texture_id(uint)
-    VkVertexInputBindingDescription binding{};
-    binding.binding   = 0;
-    binding.stride    = sizeof(ParticleVertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);
 
-    VkVertexInputAttributeDescription attrs[4]{};
-    attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(ParticleVertex, position)};
-    attrs[1] = {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,  offsetof(ParticleVertex, color)};
-    attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,        offsetof(ParticleVertex, texcoord)};
-    attrs[3] = {3, 0, VK_FORMAT_R32_UINT,             offsetof(ParticleVertex, texture_id)};
-
-    VkPipelineVertexInputStateCreateInfo vertex_input{};
-    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input.vertexBindingDescriptionCount   = 1;
-    vertex_input.pVertexBindingDescriptions      = &binding;
-    vertex_input.vertexAttributeDescriptionCount = 4;
-    vertex_input.pVertexAttributeDescriptions    = attrs;
-
-    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
-    input_assembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-    VkPipelineViewportStateCreateInfo viewport_state{};
-    viewport_state.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport_state.viewportCount = 1;
-    viewport_state.scissorCount  = 1;
-
-    VkPipelineRasterizationStateCreateInfo rasterizer{};
-    rasterizer.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode    = VK_CULL_MODE_NONE;  // particles are double-sided
-    rasterizer.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.lineWidth   = 1.0f;
-
-    VkPipelineMultisampleStateCreateInfo multisample{};
-    multisample.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = m_rhi->msaa_samples();
-
-    VkPipelineDepthStencilStateCreateInfo depth_stencil{};
-    depth_stencil.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth_stencil.depthTestEnable  = VK_TRUE;
-    depth_stencil.depthWriteEnable = VK_FALSE;  // don't write depth — particles are transparent
-    depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS;
-
-    // Alpha blending: src_alpha * src + (1 - src_alpha) * dst
-    VkPipelineColorBlendAttachmentState blend_att{};
-    blend_att.blendEnable         = VK_TRUE;
-    blend_att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blend_att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blend_att.colorBlendOp        = VK_BLEND_OP_ADD;
-    blend_att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend_att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    blend_att.alphaBlendOp        = VK_BLEND_OP_ADD;
-    blend_att.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-    VkPipelineColorBlendStateCreateInfo color_blend{};
-    color_blend.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    color_blend.attachmentCount = 1;
-    color_blend.pAttachments    = &blend_att;
-
-    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic_state{};
-    dynamic_state.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamic_state.dynamicStateCount = 2;
-    dynamic_state.pDynamicStates    = dynamic_states;
-
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
-    stages[0].pName  = "main";
-    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
-    stages[1].pName  = "main";
-
-    // Push constant: just the VP matrix
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_range.size       = sizeof(glm::mat4);
-
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
-
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_particle_pipeline_layout) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_particle_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_particle_pipeline_layout.is_valid()) {
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkFormat color_format = m_rhi->swapchain_format();
-    VkFormat depth_format = m_rhi->depth_format();
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.colorAttachmentCount    = 1;
-    rendering_ci.pColorAttachmentFormats = &color_format;
-    rendering_ci.depthAttachmentFormat   = depth_format;
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = stages;
-    pipeline_ci.pVertexInputState   = &vertex_input;
-    pipeline_ci.pInputAssemblyState = &input_assembly;
-    pipeline_ci.pViewportState      = &viewport_state;
-    pipeline_ci.pRasterizationState = &rasterizer;
-    pipeline_ci.pMultisampleState   = &multisample;
-    pipeline_ci.pDepthStencilState  = &depth_stencil;
-    pipeline_ci.pColorBlendState    = &color_blend;
-    pipeline_ci.pDynamicState       = &dynamic_state;
-    pipeline_ci.layout              = m_particle_pipeline_layout;
+    rhi::VertexBindingDesc binding{ 0, sizeof(ParticleVertex), false };
+    rhi::VertexAttributeDesc attrs[4]{
+        { 0, 0, offsetof(ParticleVertex, position),   rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(ParticleVertex, color),      rhi::TextureFormat::R32G32B32A32_SFLOAT },
+        { 2, 0, offsetof(ParticleVertex, texcoord),   rhi::TextureFormat::R32G32_SFLOAT },
+        { 3, 0, offsetof(ParticleVertex, texture_id), rhi::TextureFormat::R32_UINT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 4};
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_particle_pipeline) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::RasterizerState rs{};
+    rs.cull_mode = rhi::CullMode::None;  // particles are double-sided
 
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = false;  // particles are transparent
+    ds.depth_compare      = rhi::CompareOp::Less;
+
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::SrcAlpha;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::Zero;
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_particle_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_particle_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_particle_pipeline.is_valid()) return false;
+
     log::info(TAG, "Particle pipeline created (alpha-blended)");
     return true;
 }
 
 bool Renderer::create_terrain_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/terrain.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/terrain.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/terrain.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/terrain.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load terrain shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkVertexInputBindingDescription terrain_binding{};
-    terrain_binding.binding   = 0;
-    terrain_binding.stride    = sizeof(TerrainVertex);
-    terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
+    pc.size   = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32);
 
-    VkVertexInputAttributeDescription terrain_attrs[5]{};
-    terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
-    terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal)};
-    terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(TerrainVertex, texcoord)};
-    terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, layer_corners)};
-    terrain_attrs[4] = {4, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, case_info)};
-
-    auto cfg = make_common_pipeline_state();
-    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
-    cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
-    cfg.vertex_input.vertexAttributeDescriptionCount  = 5;
-    cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
-
-    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    cfg.stages[0].module = vert;
-    cfg.stages[0].pName  = "main";
-    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    cfg.stages[1].module = frag;
-    cfg.stages[1].pName  = "main";
-
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    push_range.offset     = 0;
-    push_range.size       = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32);  // mvp + model + world_size + fog_enabled + pad
-
-    VkDescriptorSetLayout terrain_layouts[] = {m_terrain_desc_layout, m_shadow_desc_layout};
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 2;
-    layout_ci.pSetLayouts            = terrain_layouts;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
-
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_terrain_pipeline_layout) != VK_SUCCESS) {
+    rhi::DescriptorSetLayoutHandle set_layouts[] = { m_terrain_desc_layout, m_shadow_desc_layout };
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{set_layouts, 2};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_terrain_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_terrain_pipeline_layout.is_valid()) {
         log::error(TAG, "Failed to create terrain pipeline layout");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkFormat color_format = m_rhi->swapchain_format();
-    VkFormat depth_format = m_rhi->depth_format();
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.colorAttachmentCount    = 1;
-    rendering_ci.pColorAttachmentFormats = &color_format;
-    rendering_ci.depthAttachmentFormat   = depth_format;
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = cfg.stages;
-    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
-    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
-    pipeline_ci.pViewportState      = &cfg.viewport_state;
-    pipeline_ci.pRasterizationState = &cfg.rasterizer;
-    pipeline_ci.pMultisampleState   = &cfg.multisample;
-    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
-    pipeline_ci.pColorBlendState    = &cfg.color_blend;
-    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
-    pipeline_ci.layout              = m_terrain_pipeline_layout;
+    rhi::VertexBindingDesc binding{ 0, sizeof(TerrainVertex), false };
+    rhi::VertexAttributeDesc attrs[5]{
+        { 0, 0, offsetof(TerrainVertex, position),      rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(TerrainVertex, normal),        rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(TerrainVertex, texcoord),      rhi::TextureFormat::R32G32_SFLOAT },
+        { 3, 0, offsetof(TerrainVertex, layer_corners), rhi::TextureFormat::R32_UINT },
+        { 4, 0, offsetof(TerrainVertex, case_info),     rhi::TextureFormat::R32_UINT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 5};
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_terrain_pipeline) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create terrain pipeline");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::RasterizerState rs{};
+    rs.cull_mode  = rhi::CullMode::Back;
+    rs.front_face = rhi::FrontFace::CounterClockwise;
 
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = true;
+    ds.depth_compare      = rhi::CompareOp::Less;
+
+    rhi::BlendAttachmentState ba{};  // opaque
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_terrain_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_terrain_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_terrain_pipeline.is_valid()) return false;
+
     log::info(TAG, "Terrain pipeline created (splatmap + shadow)");
     return true;
 }
 
 bool Renderer::create_water_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/water.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/water.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/water.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/water.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load water shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
-
-    // Same vertex layout as terrain
-    VkVertexInputBindingDescription terrain_binding{};
-    terrain_binding.binding   = 0;
-    terrain_binding.stride    = sizeof(TerrainVertex);
-    terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    VkVertexInputAttributeDescription terrain_attrs[5]{};
-    terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
-    terrain_attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, normal)};
-    terrain_attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(TerrainVertex, texcoord)};
-    terrain_attrs[3] = {3, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, layer_corners)};
-    terrain_attrs[4] = {4, 0, VK_FORMAT_R32_UINT,         offsetof(TerrainVertex, case_info)};
-
-    auto cfg = make_common_pipeline_state();
-    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
-    cfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
-    cfg.vertex_input.vertexAttributeDescriptionCount  = 5;
-    cfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
-
-    // Alpha blending: src_alpha, one_minus_src_alpha
-    cfg.blend_attachment.blendEnable         = VK_TRUE;
-    cfg.blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    cfg.blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    cfg.blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
-    cfg.blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    cfg.blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    cfg.blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
-    // Re-point after copy (make_common_pipeline_state returns by value)
-    cfg.color_blend.pAttachments = &cfg.blend_attachment;
-
-    // Depth test ON, depth write OFF (don't occlude things behind water)
-    cfg.depth_stencil.depthWriteEnable = VK_FALSE;
-
-    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    cfg.stages[0].module = vert;
-    cfg.stages[0].pName  = "main";
-    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    cfg.stages[1].module = frag;
-    cfg.stages[1].pName  = "main";
 
     // Water push constants: terrain base (144) + water params (40) + pad (8) + camera_pos (16) = 208
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    push_range.offset     = 0;
-    push_range.size       = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32)  // terrain base: 144
-                          + 2 * sizeof(glm::vec4) + 2 * sizeof(u32)                        // water params: 40 → 184
-                          + 2 * sizeof(u32) + sizeof(glm::vec4);                            // pad + camera_pos: 24 → 208
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
+    pc.size   = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32)
+              + 2 * sizeof(glm::vec4) + 2 * sizeof(u32)
+              + 2 * sizeof(u32) + sizeof(glm::vec4);
 
-    VkDescriptorSetLayout water_layouts[] = {m_terrain_desc_layout, m_shadow_desc_layout};
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 2;
-    layout_ci.pSetLayouts            = water_layouts;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
-
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_water_pipeline_layout) != VK_SUCCESS) {
+    rhi::DescriptorSetLayoutHandle set_layouts[] = { m_terrain_desc_layout, m_shadow_desc_layout };
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{set_layouts, 2};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_water_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_water_pipeline_layout.is_valid()) {
         log::error(TAG, "Failed to create water pipeline layout");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkFormat color_format = m_rhi->swapchain_format();
-    VkFormat depth_format = m_rhi->depth_format();
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.colorAttachmentCount    = 1;
-    rendering_ci.pColorAttachmentFormats = &color_format;
-    rendering_ci.depthAttachmentFormat   = depth_format;
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = cfg.stages;
-    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
-    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
-    pipeline_ci.pViewportState      = &cfg.viewport_state;
-    pipeline_ci.pRasterizationState = &cfg.rasterizer;
-    pipeline_ci.pMultisampleState   = &cfg.multisample;
-    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
-    pipeline_ci.pColorBlendState    = &cfg.color_blend;
-    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
-    pipeline_ci.layout              = m_water_pipeline_layout;
+    // Same vertex layout as terrain
+    rhi::VertexBindingDesc binding{ 0, sizeof(TerrainVertex), false };
+    rhi::VertexAttributeDesc attrs[5]{
+        { 0, 0, offsetof(TerrainVertex, position),      rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(TerrainVertex, normal),        rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(TerrainVertex, texcoord),      rhi::TextureFormat::R32G32_SFLOAT },
+        { 3, 0, offsetof(TerrainVertex, layer_corners), rhi::TextureFormat::R32_UINT },
+        { 4, 0, offsetof(TerrainVertex, case_info),     rhi::TextureFormat::R32_UINT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 5};
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_water_pipeline) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create water pipeline");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::RasterizerState rs{};
+    rs.cull_mode  = rhi::CullMode::Back;
+    rs.front_face = rhi::FrontFace::CounterClockwise;
 
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = false;  // don't occlude things behind water
+    ds.depth_compare      = rhi::CompareOp::Less;
+
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::SrcAlpha;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_water_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_water_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_water_pipeline.is_valid()) return false;
+
     log::info(TAG, "Water surface pipeline created");
     return true;
 }
@@ -2331,29 +1776,26 @@ bool Renderer::create_skybox_mesh() {
         1,5,6, 6,2,1,  // +X
     };
 
-    VmaAllocator allocator = m_rhi->allocator();
-
-    VkBufferCreateInfo buf_ci{};
-    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buf_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    buf_ci.size  = sizeof(verts);
-
-    VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &m_skybox_mesh.vertex_buffer, &m_skybox_mesh.vertex_alloc, nullptr);
-    void* mapped = nullptr;
-    vmaMapMemory(allocator, m_skybox_mesh.vertex_alloc, &mapped);
-    std::memcpy(mapped, verts, sizeof(verts));
-    vmaUnmapMemory(allocator, m_skybox_mesh.vertex_alloc);
-
-    buf_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    buf_ci.size  = sizeof(idx);
-    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &m_skybox_mesh.index_buffer, &m_skybox_mesh.index_alloc, nullptr);
-    vmaMapMemory(allocator, m_skybox_mesh.index_alloc, &mapped);
-    std::memcpy(mapped, idx, sizeof(idx));
-    vmaUnmapMemory(allocator, m_skybox_mesh.index_alloc);
+    {
+        rhi::BufferDesc d{};
+        d.size   = sizeof(verts);
+        d.usage  = rhi::BufferUsage::Vertex;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        m_skybox_mesh.vertex_buffer = m_rhi->create_buffer(d);
+        if (void* dst = m_rhi->mapped_ptr(m_skybox_mesh.vertex_buffer)) {
+            std::memcpy(dst, verts, sizeof(verts));
+        }
+    }
+    {
+        rhi::BufferDesc d{};
+        d.size   = sizeof(idx);
+        d.usage  = rhi::BufferUsage::Index;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        m_skybox_mesh.index_buffer = m_rhi->create_buffer(d);
+        if (void* dst = m_rhi->mapped_ptr(m_skybox_mesh.index_buffer)) {
+            std::memcpy(dst, idx, sizeof(idx));
+        }
+    }
 
     m_skybox_mesh.index_count = 36;
     m_skybox_mesh.vertex_count = 8;
@@ -2361,126 +1803,90 @@ bool Renderer::create_skybox_mesh() {
 }
 
 bool Renderer::create_skybox_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/skybox.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/skybox.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/skybox.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/skybox.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load skybox shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    // Descriptor set layout: one cubemap sampler
     {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding         = 0;
-        binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount = 1;
-        binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutCreateInfo ci{};
-        ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 1;
-        ci.pBindings    = &binding;
-
-        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &m_skybox_desc_layout) != VK_SUCCESS) {
+        rhi::DescriptorSetLayoutBinding b{};
+        b.binding = 0;
+        b.type    = rhi::DescriptorType::CombinedImageSampler;
+        b.count   = 1;
+        b.stages  = rhi::ShaderStage::Fragment;
+        rhi::DescriptorSetLayoutDesc d{};
+        d.bindings = std::span{&b, 1};
+        m_skybox_desc_layout = m_rhi->create_descriptor_set_layout(d);
+        if (!m_skybox_desc_layout.is_valid()) {
             log::error(TAG, "Failed to create skybox descriptor set layout");
-            vkDestroyShaderModule(device, vert, nullptr);
-            vkDestroyShaderModule(device, frag, nullptr);
+            m_rhi->destroy_shader_module(vert_h);
+            m_rhi->destroy_shader_module(frag_h);
             return false;
         }
     }
 
-    // Vertex input: vec3 position only
-    VkVertexInputBindingDescription binding{};
-    binding.binding   = 0;
-    binding.stride    = sizeof(float) * 3;
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);
 
-    VkVertexInputAttributeDescription attr{};
-    attr.location = 0;
-    attr.binding  = 0;
-    attr.format   = VK_FORMAT_R32G32B32_SFLOAT;
-    attr.offset   = 0;
-
-    auto cfg = make_common_pipeline_state();
-    cfg.multisample.rasterizationSamples = m_rhi->msaa_samples();
-    cfg.vertex_input.pVertexBindingDescriptions      = &binding;
-    cfg.vertex_input.vertexAttributeDescriptionCount  = 1;
-    cfg.vertex_input.pVertexAttributeDescriptions     = &attr;
-
-    // Skybox at z=1.0 (far plane), terrain overwrites with LESS
-    cfg.depth_stencil.depthWriteEnable = VK_TRUE;
-    cfg.depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
-
-    // Cull front faces (we're inside the cube, render back faces)
-    cfg.rasterizer.cullMode = VK_CULL_MODE_NONE;  // inside cube, render all faces
-
-    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    cfg.stages[0].module = vert;
-    cfg.stages[0].pName  = "main";
-    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    cfg.stages[1].module = frag;
-    cfg.stages[1].pName  = "main";
-
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_range.offset     = 0;
-    push_range.size       = sizeof(glm::mat4);
-
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 1;
-    layout_ci.pSetLayouts            = &m_skybox_desc_layout;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
-
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_skybox_pipeline_layout) != VK_SUCCESS) {
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{&m_skybox_desc_layout, 1};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_skybox_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_skybox_pipeline_layout.is_valid()) {
         log::error(TAG, "Failed to create skybox pipeline layout");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkFormat color_format = m_rhi->swapchain_format();
-    VkFormat depth_format = m_rhi->depth_format();
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.colorAttachmentCount    = 1;
-    rendering_ci.pColorAttachmentFormats = &color_format;
-    rendering_ci.depthAttachmentFormat   = depth_format;
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    // Fix pAttachments pointer after copy from make_common_pipeline_state
-    cfg.color_blend.pAttachments = &cfg.blend_attachment;
+    // Vertex input: vec3 position only
+    rhi::VertexBindingDesc binding{ 0, sizeof(float) * 3, false };
+    rhi::VertexAttributeDesc attr{ 0, 0, 0, rhi::TextureFormat::R32G32B32_SFLOAT };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{&attr, 1};
 
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = cfg.stages;
-    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
-    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
-    pipeline_ci.pViewportState      = &cfg.viewport_state;
-    pipeline_ci.pRasterizationState = &cfg.rasterizer;
-    pipeline_ci.pMultisampleState   = &cfg.multisample;
-    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
-    pipeline_ci.pColorBlendState    = &cfg.color_blend;
-    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
-    pipeline_ci.layout              = m_skybox_pipeline_layout;
+    rhi::RasterizerState rs{};
+    rs.cull_mode = rhi::CullMode::None;  // inside cube — render all faces
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_skybox_pipeline) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create skybox pipeline");
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = true;
+    ds.depth_compare      = rhi::CompareOp::LessEqual;  // z=1 far plane, terrain overwrites with LESS
 
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    rhi::BlendAttachmentState ba{};  // opaque
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(m_rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(m_rhi->depth_format());
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_skybox_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_skybox_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_skybox_pipeline.is_valid()) return false;
+
     log::info(TAG, "Skybox pipeline created");
     return true;
 }
@@ -2532,7 +1938,6 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     lm.data = std::move(*result);
 
     // Merge all meshes into one and upload
-    VmaAllocator alloc = m_rhi->allocator();
     if (!lm.data.skinned_meshes.empty() && lm.data.has_skeleton()) {
         // Merge all skinned mesh primitives into one
         asset::SkinnedMeshData merged;
@@ -2544,7 +1949,7 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             }
         }
         u32 bone_count = static_cast<u32>(lm.data.skeleton.bones.size());
-        lm.mesh = upload_skinned_mesh(alloc, merged, bone_count);
+        lm.mesh = upload_skinned_mesh(*m_rhi, merged, bone_count);
         lm.is_skinned = true;
         log::info(TAG, "Loaded skinned model '{}': {} meshes merged, {} verts, {} bones, {} anims",
                   model_path, lm.data.skinned_meshes.size(), lm.mesh.vertex_count,
@@ -2625,139 +2030,109 @@ GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
 // ── Shadow pipeline + resources ────────────────────────────────────────────
 
 bool Renderer::create_shadow_pipeline() {
-    VkDevice device = m_rhi->device();
-
-    VkShaderModule vert = load_shader(device, "engine/shaders/shadow.vert.spv");
-    VkShaderModule frag = load_shader(device, "engine/shaders/shadow.frag.spv");
-    if (!vert || !frag) {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/shadow.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
+    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
         log::error(TAG, "Failed to load shadow shaders");
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    auto cfg = make_common_pipeline_state();
-    cfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    cfg.stages[0].module = vert;
-    cfg.stages[0].pName  = "main";
-    cfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    cfg.stages[1].module = frag;
-    cfg.stages[1].pName  = "main";
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);
 
-    cfg.rasterizer.depthBiasEnable         = VK_TRUE;
-    cfg.rasterizer.depthBiasConstantFactor = 2.0f;
-    cfg.rasterizer.depthBiasSlopeFactor    = 1.5f;
-
-    VkPushConstantRange push_range{};
-    push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    push_range.offset     = 0;
-    push_range.size       = sizeof(glm::mat4);
-
-    VkDescriptorSetLayout shadow_instance_layout[] = {m_bone_desc_layout};  // set 0 = instance SSBO
-    VkPipelineLayoutCreateInfo layout_ci{};
-    layout_ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_ci.setLayoutCount         = 1;
-    layout_ci.pSetLayouts            = shadow_instance_layout;
-    layout_ci.pushConstantRangeCount = 1;
-    layout_ci.pPushConstantRanges    = &push_range;
-
-    if (vkCreatePipelineLayout(device, &layout_ci, nullptr, &m_shadow_pipeline_layout) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{&m_bone_desc_layout, 1};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_shadow_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_shadow_pipeline_layout.is_valid()) {
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
-    VkPipelineRenderingCreateInfo rendering_ci{};
-    rendering_ci.sType                 = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_ci.depthAttachmentFormat = depth_format;
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    cfg.color_blend.attachmentCount = 0;
-    cfg.color_blend.pAttachments    = nullptr;
+    rhi::VertexBindingDesc binding{ 0, sizeof(asset::Vertex), false };
+    rhi::VertexAttributeDesc attrs[3]{
+        { 0, 0, offsetof(asset::Vertex, position), rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(asset::Vertex, normal),   rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(asset::Vertex, texcoord), rhi::TextureFormat::R32G32_SFLOAT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 3};
 
-    VkGraphicsPipelineCreateInfo pipeline_ci{};
-    pipeline_ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_ci.pNext               = &rendering_ci;
-    pipeline_ci.stageCount          = 2;
-    pipeline_ci.pStages             = cfg.stages;
-    pipeline_ci.pVertexInputState   = &cfg.vertex_input;
-    pipeline_ci.pInputAssemblyState = &cfg.input_assembly;
-    pipeline_ci.pViewportState      = &cfg.viewport_state;
-    pipeline_ci.pRasterizationState = &cfg.rasterizer;
-    pipeline_ci.pMultisampleState   = &cfg.multisample;
-    pipeline_ci.pDepthStencilState  = &cfg.depth_stencil;
-    pipeline_ci.pColorBlendState    = &cfg.color_blend;
-    pipeline_ci.pDynamicState       = &cfg.dynamic_state;
-    pipeline_ci.layout              = m_shadow_pipeline_layout;
+    rhi::RasterizerState rs{};
+    rs.cull_mode                 = rhi::CullMode::Back;
+    rs.front_face                = rhi::FrontFace::CounterClockwise;
+    rs.depth_bias_enable         = true;
+    rs.depth_bias_constant_factor = 2.0f;
+    rs.depth_bias_slope_factor    = 1.5f;
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_ci, nullptr, &m_shadow_pipeline) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = true;
+    ds.depth_compare      = rhi::CompareOp::Less;
 
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
+    rhi::MultisampleState ms{};
+    ms.sample_count = 1;
 
-    // Terrain shadow pipeline: same as above but with TerrainVertex layout (48-byte stride)
-    VkShaderModule terrain_vert = load_shader(device, "engine/shaders/terrain_shadow.vert.spv");
-    if (terrain_vert) {
-        VkVertexInputBindingDescription terrain_binding{};
-        terrain_binding.binding   = 0;
-        terrain_binding.stride    = sizeof(TerrainVertex);
-        terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::TextureFormat depth_fmt = rhi::TextureFormat::D32_SFLOAT;
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_shadow_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.multisample       = ms;
+    desc.render.depth_format = depth_fmt;
+    // no color attachments
+
+    m_shadow_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_shadow_pipeline.is_valid()) return false;
+
+    // Terrain shadow pipeline: same as above but with TerrainVertex layout
+    auto terrain_vert_h = load_shader(*m_rhi, "engine/shaders/terrain_shadow.vert.spv");
+    auto terrain_frag_h = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
+    if (m_rhi->resolve(terrain_vert_h)) {
+        rhi::ShaderStageDesc tstages[2]{};
+        tstages[0].stage = rhi::ShaderStage::Vertex;   tstages[0].module = terrain_vert_h;
+        tstages[1].stage = rhi::ShaderStage::Fragment; tstages[1].module = terrain_frag_h;
 
         // Shadow pass only reads vertex position. Listing fewer attrs
         // than the binding stride covers is fine — the shader never
         // touches the remaining bytes. Keeps validation clean by
         // matching the shader's location-0-only declaration.
-        VkVertexInputAttributeDescription terrain_attrs[1]{};
-        terrain_attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(TerrainVertex, position)};
-
-        auto tcfg = make_common_pipeline_state();
-        tcfg.vertex_input.pVertexBindingDescriptions      = &terrain_binding;
-        tcfg.vertex_input.vertexAttributeDescriptionCount  = 1;
-        tcfg.vertex_input.pVertexAttributeDescriptions     = terrain_attrs;
-
-        tcfg.stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        tcfg.stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-        tcfg.stages[0].module = terrain_vert;
-        tcfg.stages[0].pName  = "main";
-        tcfg.stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        tcfg.stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-        tcfg.stages[1].module = load_shader(device, "engine/shaders/shadow.frag.spv");
-        tcfg.stages[1].pName  = "main";
-
-        tcfg.rasterizer.depthBiasEnable         = VK_TRUE;
-        tcfg.rasterizer.depthBiasConstantFactor = 2.0f;
-        tcfg.rasterizer.depthBiasSlopeFactor    = 1.5f;
-        tcfg.color_blend.attachmentCount = 0;
-        tcfg.color_blend.pAttachments    = nullptr;
+        rhi::VertexBindingDesc tbinding{ 0, sizeof(TerrainVertex), false };
+        rhi::VertexAttributeDesc tattr{ 0, 0, offsetof(TerrainVertex, position), rhi::TextureFormat::R32G32B32_SFLOAT };
+        rhi::VertexInputDesc tvi{};
+        tvi.bindings   = std::span{&tbinding, 1};
+        tvi.attributes = std::span{&tattr, 1};
 
         // Reuse shadow pipeline layout (same push constant)
         m_terrain_shadow_pipeline_layout = m_shadow_pipeline_layout;
 
-        VkGraphicsPipelineCreateInfo tpci{};
-        tpci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        tpci.pNext               = &rendering_ci;
-        tpci.stageCount          = 2;
-        tpci.pStages             = tcfg.stages;
-        tpci.pVertexInputState   = &tcfg.vertex_input;
-        tpci.pInputAssemblyState = &tcfg.input_assembly;
-        tpci.pViewportState      = &tcfg.viewport_state;
-        tpci.pRasterizationState = &tcfg.rasterizer;
-        tpci.pMultisampleState   = &tcfg.multisample;
-        tpci.pDepthStencilState  = &tcfg.depth_stencil;
-        tpci.pColorBlendState    = &tcfg.color_blend;
-        tpci.pDynamicState       = &tcfg.dynamic_state;
-        tpci.layout              = m_terrain_shadow_pipeline_layout;
+        rhi::GraphicsPipelineDesc tdesc{};
+        tdesc.layout            = m_terrain_shadow_pipeline_layout;
+        tdesc.stages            = std::span{tstages, 2};
+        tdesc.vertex_input      = tvi;
+        tdesc.rasterizer        = rs;
+        tdesc.depth_stencil     = ds;
+        tdesc.multisample       = ms;
+        tdesc.render.depth_format = depth_fmt;
 
-        vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &tpci, nullptr, &m_terrain_shadow_pipeline);
-        if (tcfg.stages[1].module) vkDestroyShaderModule(device, tcfg.stages[1].module, nullptr);
-        vkDestroyShaderModule(device, terrain_vert, nullptr);
+        m_terrain_shadow_pipeline = m_rhi->create_graphics_pipeline(tdesc);
     }
+    m_rhi->destroy_shader_module(terrain_vert_h);
+    m_rhi->destroy_shader_module(terrain_frag_h);
 
     log::info(TAG, "Shadow pipelines created (depth-only)");
     return true;
@@ -2769,27 +2144,17 @@ bool Renderer::create_shadow_resources() {
 
     // Create environment UBO (persistently mapped)
     {
-        VkBufferCreateInfo buf_ci{};
-        buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buf_ci.size  = sizeof(EnvironmentUBO);
-        buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-
-        VmaAllocationCreateInfo alloc_ci{};
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-        alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        VmaAllocationInfo alloc_info{};
-        if (vmaCreateBuffer(m_rhi->allocator(), &buf_ci, &alloc_ci,
-                            &m_env_ubo_buffer, &m_env_ubo_alloc, &alloc_info) != VK_SUCCESS) {
+        rhi::BufferDesc d{};
+        d.size   = sizeof(EnvironmentUBO);
+        d.usage  = rhi::BufferUsage::Uniform;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        m_env_ubo_buffer = m_rhi->create_buffer(d);
+        if (!m_env_ubo_buffer.is_valid()) {
             log::error(TAG, "Failed to create environment UBO");
             return false;
         }
-        m_env_ubo_mapped = alloc_info.pMappedData;
-
-        // Write default values
         EnvironmentUBO defaults{};
-        std::memcpy(m_env_ubo_mapped, &defaults, sizeof(defaults));
+        std::memcpy(m_rhi->mapped_ptr(m_env_ubo_buffer), &defaults, sizeof(defaults));
     }
 
     // Create default 1x1 cubemap (gray, used when no skybox loaded)
@@ -2797,126 +2162,67 @@ bool Renderer::create_shadow_resources() {
         u8 gray[4] = {128, 128, 140, 255};
         const u8* faces[6] = {gray, gray, gray, gray, gray, gray};
         m_default_cubemap = upload_texture_cubemap(*m_rhi, faces, 1, 1);
-        if (!m_default_cubemap.image) {
+        if (!m_default_cubemap.texture.is_valid()) {
             log::error(TAG, "Failed to create default cubemap");
             return false;
         }
     }
 
     m_shadow_desc_set = allocate_shadow_descriptor();
-    return m_shadow_desc_set != VK_NULL_HANDLE;
+    return m_shadow_desc_set.is_valid();
 }
 
-VkDescriptorSet Renderer::allocate_shadow_descriptor() {
-    VkDevice device = m_rhi->device();
+rhi::DescriptorSetHandle Renderer::allocate_shadow_descriptor() {
+    if (m_shadow_desc_set.is_valid()) m_rhi->free_descriptor_set(m_shadow_desc_set);
+    rhi::DescriptorSetHandle set = m_rhi->allocate_descriptor_set(m_shadow_desc_layout);
+    if (!set.is_valid()) return {};
 
-    VkDescriptorSetAllocateInfo alloc_info{};
-    alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pools.back();
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts        = &m_shadow_desc_layout;
+    const GpuTexture& cube_tex = (m_has_skybox && m_skybox_cubemap.texture.is_valid()) ? m_skybox_cubemap : m_default_cubemap;
 
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
-        alloc_info.descriptorPool = m_descriptor_pools.back();
-        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
-    }
+    rhi::WriteDescriptor ws[4]{};
+    ws[0].binding = 0;
+    ws[0].type    = rhi::DescriptorType::UniformBuffer;
+    ws[0].buffer  = m_shadow_ubo.buffer;
+    ws[0].buffer_range = sizeof(ShadowUBO);
 
-    VkDescriptorBufferInfo buf_info{};
-    buf_info.buffer = m_shadow_ubo.buffer;
-    buf_info.offset = 0;
-    buf_info.range  = sizeof(ShadowUBO);
+    ws[1].binding      = 1;
+    ws[1].type         = rhi::DescriptorType::CombinedImageSampler;
+    ws[1].texture      = m_shadow_map.depth_image;
+    ws[1].sampler      = m_shadow_map.sampler;
+    ws[1].image_layout = rhi::WriteImageLayout::DepthStencilReadOnly;
 
-    VkDescriptorImageInfo img_info{};
-    img_info.sampler     = m_shadow_map.sampler;
-    img_info.imageView   = m_shadow_map.depth_view;
-    img_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    ws[2].binding = 2;
+    ws[2].type    = rhi::DescriptorType::UniformBuffer;
+    ws[2].buffer  = m_env_ubo_buffer;
+    ws[2].buffer_range = sizeof(EnvironmentUBO);
 
-    // Binding 2: environment UBO
-    VkDescriptorBufferInfo env_buf_info{};
-    env_buf_info.buffer = m_env_ubo_buffer;
-    env_buf_info.offset = 0;
-    env_buf_info.range  = sizeof(EnvironmentUBO);
+    ws[3].binding = 3;
+    ws[3].type    = rhi::DescriptorType::CombinedImageSampler;
+    ws[3].texture = cube_tex.texture;
+    ws[3].sampler = cube_tex.sampler;
 
-    // Binding 3: environment cubemap (use default texture as placeholder until cubemap is loaded)
-    VkDescriptorImageInfo cubemap_info{};
-    const GpuTexture& cube_tex = (m_has_skybox && m_skybox_cubemap.image) ? m_skybox_cubemap : m_default_cubemap;
-    cubemap_info.sampler     = cube_tex.sampler;
-    cubemap_info.imageView   = cube_tex.view;
-    cubemap_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet writes[4]{};
-    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = set;
-    writes[0].dstBinding      = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[0].pBufferInfo     = &buf_info;
-
-    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = set;
-    writes[1].dstBinding      = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo      = &img_info;
-
-    writes[2].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet          = set;
-    writes[2].dstBinding      = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[2].pBufferInfo     = &env_buf_info;
-
-    writes[3].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet          = set;
-    writes[3].dstBinding      = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo      = &cubemap_info;
-
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    m_rhi->update_descriptor_set(set, std::span{ws, 4});
     log::info(TAG, "Shadow descriptor set allocated");
     return set;
 }
 
-VkDescriptorSet Renderer::allocate_bone_descriptor(VkBuffer bone_buffer, usize size) {
-    VkDevice device = m_rhi->device();
+rhi::DescriptorSetHandle Renderer::allocate_bone_descriptor(rhi::BufferHandle bone_buffer, usize size) {
+    rhi::DescriptorSetHandle set = m_rhi->allocate_descriptor_set(m_bone_desc_layout);
+    if (!set.is_valid()) return {};
 
-    VkDescriptorSetAllocateInfo alloc_info{};
-    alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool     = m_descriptor_pools.back();
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts        = &m_bone_desc_layout;
-
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) {
-        if (!allocate_or_grow_pool()) return VK_NULL_HANDLE;
-        alloc_info.descriptorPool = m_descriptor_pools.back();
-        if (vkAllocateDescriptorSets(device, &alloc_info, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
-    }
-
-    VkDescriptorBufferInfo buf_info{};
-    buf_info.buffer = bone_buffer;
-    buf_info.offset = 0;
-    buf_info.range  = size;
-
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = set;
-    write.dstBinding      = 0;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.pBufferInfo     = &buf_info;
-
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    rhi::WriteDescriptor w{};
+    w.binding      = 0;
+    w.type         = rhi::DescriptorType::StorageBuffer;
+    w.buffer       = bone_buffer;
+    w.buffer_range = size;
+    m_rhi->update_descriptor_set(set, std::span{&w, 1});
     return set;
 }
 
 // ── Shadow depth pass ─────────────────────────────────────────────────────
 
-void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f32 alpha) {
-    if (!m_shadow_pipeline) return;
+void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world, f32 alpha) {
+    if (!m_shadow_pipeline.is_valid()) return;
 
     glm::vec3 light_dir = m_sun_direction;
     // World is centered on (0, 0). Shadow frustum is anchored at map center;
@@ -2928,28 +2234,26 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f
     glm::mat4 light_vp = compute_light_vp(light_dir, scene_center, scene_radius);
 
     ShadowUBO ubo{light_vp};
-    std::memcpy(m_shadow_ubo.mapped, &ubo, sizeof(ubo));
+    std::memcpy(m_rhi->mapped_ptr(m_shadow_ubo.buffer), &ubo, sizeof(ubo));
 
-    VkImageMemoryBarrier2 to_depth{};
-    to_depth.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    to_depth.srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    to_depth.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    to_depth.dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    to_depth.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    to_depth.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_depth.newLayout     = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    to_depth.image         = m_shadow_map.depth_image;
-    to_depth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    rhi::ImageBarrier to_depth{};
+    to_depth.image      = m_shadow_map.depth_image;
+    to_depth.src_stage  = rhi::PipelineStage::FragmentShader;
+    to_depth.src_access = rhi::AccessFlag::ShaderRead;
+    to_depth.dst_stage  = rhi::PipelineStage::EarlyFragmentTests | rhi::PipelineStage::LateFragmentTests;
+    to_depth.dst_access = rhi::AccessFlag::DepthStencilAttachmentWrite;
+    to_depth.old_layout = rhi::ImageLayout::Undefined;
+    to_depth.new_layout = rhi::ImageLayout::DepthAttachmentOptimal;
+    to_depth.aspect     = rhi::ImageAspect::Depth;
+    cmd.image_barrier(to_depth);
 
-    VkDependencyInfo dep{};
-    dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers    = &to_depth;
-    vkCmdPipelineBarrier2(cmd, &dep);
-
+    // Dynamic-rendering attachment setup still uses raw Vk because the
+    // CommandList abstraction doesn't yet wrap VkRenderingAttachmentInfo
+    // (it needs image views, clear values, etc — out of scope for now).
+    VkCommandBuffer raw_cmd = cmd.raw();
     VkRenderingAttachmentInfo depth_attachment{};
     depth_attachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    depth_attachment.imageView   = m_shadow_map.depth_view;
+    depth_attachment.imageView   = m_rhi->resolve_view(m_shadow_map.depth_image);
     depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth_attachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth_attachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
@@ -2960,46 +2264,38 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f
     rendering.renderArea       = {{0, 0}, {m_shadow_map.size, m_shadow_map.size}};
     rendering.layerCount       = 1;
     rendering.pDepthAttachment = &depth_attachment;
+    vkCmdBeginRendering(raw_cmd, &rendering);
 
-    vkCmdBeginRendering(cmd, &rendering);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
-
-    VkViewport vp{};
-    vp.width    = static_cast<float>(m_shadow_map.size);
-    vp.height   = static_cast<float>(m_shadow_map.size);
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-
-    VkRect2D scissor{{0, 0}, {m_shadow_map.size, m_shadow_map.size}};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    f32 size_f = static_cast<f32>(m_shadow_map.size);
+    cmd.bind_pipeline(m_shadow_pipeline);
+    cmd.set_viewport(0, 0, size_f, size_f);
+    cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
 
     // Terrain shadow (uses terrain shadow pipeline with TerrainVertex stride)
-    if (m_terrain_shadow_pipeline && m_terrain.gpu_mesh.vertex_buffer) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_terrain_shadow_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    if (m_terrain_shadow_pipeline.is_valid() && m_terrain.gpu_mesh.vertex_buffer.is_valid()) {
+        cmd.bind_pipeline(m_terrain_shadow_pipeline);
+        cmd.set_viewport(0, 0, size_f, size_f);
+        cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
 
         glm::mat4 light_mvp = light_vp;
-        vkCmdPushConstants(cmd, m_terrain_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &light_mvp);
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
+        cmd.push_constants(m_terrain_shadow_pipeline_layout, rhi::ShaderStage::Vertex,
+                           0, sizeof(glm::mat4), &light_mvp);
+        cmd.bind_vertex_buffer(0, m_terrain.gpu_mesh.vertex_buffer);
+        cmd.bind_index_buffer(m_terrain.gpu_mesh.index_buffer, 0, rhi::IndexType::U32);
+        cmd.draw_indexed(m_terrain.gpu_mesh.index_count);
     }
 
     // Entities — skinned units use skinned shadow pipeline, others use regular
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
 
-
-    bool has_skinned_shadow = m_skinned_shadow_pipeline != VK_NULL_HANDLE;
+    bool has_skinned_shadow = m_skinned_shadow_pipeline.is_valid();
 
     // Pass A: skinned units
     if (has_skinned_shadow) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skinned_shadow_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        cmd.bind_pipeline(m_skinned_shadow_pipeline);
+        cmd.set_viewport(0, 0, size_f, size_f);
+        cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
 
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
@@ -3014,18 +2310,17 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f
             if (is_fog_hidden(world, id, *transform)) continue;
 
             auto it = m_anim_instances.find(id);
-            if (it == m_anim_instances.end() || !it->second.bone_descriptor) continue;
+            if (it == m_anim_instances.end() || !it->second.bone_descriptor.is_valid()) continue;
 
             // Upload bones (animation already evaluated in draw())
             auto& anim = it->second;
-            if (!anim.bone_matrices.empty() && anim.bone_mapped) {
-                std::memcpy(anim.bone_mapped, anim.bone_matrices.data(),
+            if (void* dst = m_rhi->mapped_ptr(anim.bone_buffer);
+                dst && !anim.bone_matrices.empty()) {
+                std::memcpy(dst, anim.bone_matrices.data(),
                             anim.bone_matrices.size() * sizeof(glm::mat4));
             }
 
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    m_skinned_shadow_pipeline_layout, 0, 1,
-                                    &anim.bone_descriptor, 0, nullptr);
+            cmd.bind_descriptor_set(m_skinned_shadow_pipeline_layout, 0, anim.bone_descriptor);
 
             glm::vec3 vis_pos = lerp_position(*transform, alpha);
             f32 vis_facing = lerp_facing(*transform, alpha);
@@ -3040,12 +2335,11 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f
             model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
 
             glm::mat4 light_mvp = light_vp * model;
-            vkCmdPushConstants(cmd, m_skinned_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+            cmd.push_constants(m_skinned_shadow_pipeline_layout, rhi::ShaderStage::Vertex,
                                0, sizeof(glm::mat4), &light_mvp);
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &lm->mesh.vertex_buffer, &offset);
-            vkCmdBindIndexBuffer(cmd, lm->mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, lm->mesh.index_count, 1, 0, 0, 0);
+            cmd.bind_vertex_buffer(0, lm->mesh.vertex_buffer);
+            cmd.bind_index_buffer(lm->mesh.index_buffer, 0, rhi::IndexType::U32);
+            cmd.draw_indexed(lm->mesh.index_count);
         }
     }
 
@@ -3053,49 +2347,44 @@ void Renderer::draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f
     // Build instance batches (reused by main pass)
     build_static_draw_batches(world, alpha);
 
-    if (m_shadow_pipeline && !m_draw_groups.empty()) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadow_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    if (m_shadow_pipeline.is_valid() && !m_draw_groups.empty()) {
+        cmd.bind_pipeline(m_shadow_pipeline);
+        cmd.set_viewport(0, 0, size_f, size_f);
+        cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
 
-        vkCmdPushConstants(cmd, m_shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+        cmd.push_constants(m_shadow_pipeline_layout, rhi::ShaderStage::Vertex,
                            0, sizeof(glm::mat4), &light_vp);
 
         // Bind mega VB/IB + instance SSBO once
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_mega_vb, &offset);
-        vkCmdBindIndexBuffer(cmd, m_mega_ib, 0, VK_INDEX_TYPE_UINT32);
+        cmd.bind_vertex_buffer(0, m_mega_vb);
+        cmd.bind_index_buffer(m_mega_ib, 0, rhi::IndexType::U32);
         const u32 fi = m_rhi->frame_index();
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_shadow_pipeline_layout, 0, 1, &m_instance_desc_set[fi], 0, nullptr);
+        cmd.bind_descriptor_set(m_shadow_pipeline_layout, 0, m_instance_desc_set[fi]);
 
         // Multi-draw indirect for all static mesh shadows
         u32 draw_count = static_cast<u32>(m_draw_groups.size());
-        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer[fi], 0, draw_count,
-                                 sizeof(VkDrawIndexedIndirectCommand));
+        cmd.draw_indexed_indirect(m_indirect_buffer[fi], 0, draw_count,
+                                  sizeof(VkDrawIndexedIndirectCommand));
     }
 
-    vkCmdEndRendering(cmd);
+    vkCmdEndRendering(raw_cmd);
 
     // Transition shadow map for sampling
-    VkImageMemoryBarrier2 to_read{};
-    to_read.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    to_read.srcStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    to_read.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    to_read.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    to_read.oldLayout     = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    to_read.newLayout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    to_read.image         = m_shadow_map.depth_image;
-    to_read.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-
-    dep.pImageMemoryBarriers = &to_read;
-    vkCmdPipelineBarrier2(cmd, &dep);
+    rhi::ImageBarrier to_read{};
+    to_read.image      = m_shadow_map.depth_image;
+    to_read.src_stage  = rhi::PipelineStage::EarlyFragmentTests | rhi::PipelineStage::LateFragmentTests;
+    to_read.src_access = rhi::AccessFlag::DepthStencilAttachmentWrite;
+    to_read.dst_stage  = rhi::PipelineStage::FragmentShader;
+    to_read.dst_access = rhi::AccessFlag::ShaderRead;
+    to_read.old_layout = rhi::ImageLayout::DepthAttachmentOptimal;
+    to_read.new_layout = rhi::ImageLayout::DepthStencilReadOnlyOptimal;
+    to_read.aspect     = rhi::ImageAspect::Depth;
+    cmd.image_barrier(to_read);
 }
 
 // ── Draw ───────────────────────────────────────────────────────────────────
 
-void Renderer::draw_shadows(VkCommandBuffer cmd, simulation::World& world, f32 alpha) {
+void Renderer::draw_shadows(rhi::CommandList& cmd, simulation::World& world, f32 alpha) {
     draw_shadow_pass(cmd, world, alpha);
 }
 
@@ -3109,7 +2398,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     auto& transforms = world.transforms;
 
 
-    bool has_skinned = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
+    bool has_skinned = m_skinned_mesh_pipeline.is_valid();
     auto frustum = m_camera.frustum();
 
     // Key: mesh geometry identity (offsets into mega buffer) → group index
@@ -3154,7 +2443,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         if (is_fog_hidden(world, id, *transform)) continue;
 
         GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
-        if (!mesh.vertex_buffer || !mesh.index_buffer) continue;
+        if (!mesh.vertex_buffer.is_valid() || !mesh.index_buffer.is_valid()) continue;
 
         // Frustum cull: skip entities whose bounding sphere is entirely off-screen
         {
@@ -3167,7 +2456,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         bool is_corpse = world.dead_states.has(id);
         auto* lm_static = get_or_load_model(renderable.model_path);
         u32 tex_idx;
-        if (is_corpse && !(lm_static && lm_static->diffuse_texture.image != VK_NULL_HANDLE)) {
+        if (is_corpse && !(lm_static && lm_static->diffuse_texture.texture.is_valid())) {
             tex_idx = m_corpse_tex_idx;
         } else if (lm_static) {
             tex_idx = lm_static->texture_index;
@@ -3234,13 +2523,15 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
     const u32 fi = m_rhi->frame_index();
 
-    if (m_static_instance_count > 0 && m_instance_mapped[fi]) {
-        u32 upload_count = std::min(m_static_instance_count, MAX_STATIC_INSTANCES);
-        std::memcpy(m_instance_mapped[fi], instances.data(), upload_count * sizeof(InstanceData));
+    if (m_static_instance_count > 0) {
+        if (void* dst = m_rhi->mapped_ptr(m_instance_buffer[fi])) {
+            u32 upload_count = std::min(m_static_instance_count, MAX_STATIC_INSTANCES);
+            std::memcpy(dst, instances.data(), upload_count * sizeof(InstanceData));
+        }
     }
 
-    if (!m_draw_groups.empty() && m_indirect_mapped[fi]) {
-        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(m_indirect_mapped[fi]);
+    if (void* dst = m_rhi->mapped_ptr(m_indirect_buffer[fi]); dst && !m_draw_groups.empty()) {
+        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(dst);
         for (u32 i = 0; i < m_draw_groups.size(); ++i) {
             auto& dg = m_draw_groups[i];
             cmds[i].indexCount    = dg.index_count;
@@ -3252,7 +2543,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     }
 }
 
-void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& world, f32 alpha,
+void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::World& world, f32 alpha,
                     const std::function<void()>& on_after_terrain) {
     if (extent.width == 0 || extent.height == 0) return;
 
@@ -3269,39 +2560,30 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
     }
 
     // Flush point lights to environment UBO and reset for next frame
-    if (m_env_ubo_mapped) {
-        std::memcpy(m_env_ubo_mapped, &m_env_data, sizeof(m_env_data));
+    if (void* env_mapped = m_rhi->mapped_ptr(m_env_ubo_buffer)) {
+        std::memcpy(env_mapped, &m_env_data, sizeof(m_env_data));
         m_env_data.light_count.x = 0;
     }
 
-    VkViewport viewport{};
-    viewport.width    = static_cast<float>(extent.width);
-    viewport.height   = static_cast<float>(extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-
-    VkRect2D scissor{{0, 0}, extent};
+    f32 vw = static_cast<f32>(extent.width);
+    f32 vh = static_cast<f32>(extent.height);
     glm::mat4 vp = m_camera.view_projection();
 
     // ── Draw skybox (first, at far plane) ───────────────────────────────
-    if (m_has_skybox && m_skybox_pipeline && m_skybox_desc_set) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skybox_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_skybox_pipeline_layout, 0, 1, &m_skybox_desc_set, 0, nullptr);
+    if (m_has_skybox && m_skybox_pipeline.is_valid() && m_skybox_desc_set.is_valid()) {
+        cmd.bind_pipeline(m_skybox_pipeline);
+        cmd.set_viewport(0, 0, vw, vh);
+        cmd.set_scissor(0, 0, extent.width, extent.height);
+        cmd.bind_descriptor_set(m_skybox_pipeline_layout, 0, m_skybox_desc_set);
 
         // Strip translation from view matrix so camera position doesn't affect skybox
         glm::mat4 view_no_translate = glm::mat4(glm::mat3(m_camera.view_matrix()));
         glm::mat4 skybox_vp = m_camera.projection_matrix() * view_no_translate;
-        vkCmdPushConstants(cmd, m_skybox_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+        cmd.push_constants(m_skybox_pipeline_layout, rhi::ShaderStage::Vertex,
                            0, sizeof(glm::mat4), &skybox_vp);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_skybox_mesh.vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, m_skybox_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m_skybox_mesh.index_count, 1, 0, 0, 0);
+        cmd.bind_vertex_buffer(0, m_skybox_mesh.vertex_buffer);
+        cmd.bind_index_buffer(m_skybox_mesh.index_buffer, 0, rhi::IndexType::U32);
+        cmd.draw_indexed(m_skybox_mesh.index_count);
     }
 
     // ── Draw terrain with splatmap pipeline ──────────────────────────────
@@ -3311,14 +2593,13 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         ? glm::vec2{m_terrain_data->world_width(), m_terrain_data->world_height()}
         : glm::vec2{1.0f};
 
-    if (m_terrain_pipeline && m_terrain.gpu_mesh.vertex_buffer && m_terrain_material.descriptor_set) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_terrain_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    if (m_terrain_pipeline.is_valid() && m_terrain.gpu_mesh.vertex_buffer.is_valid() && m_terrain_material.descriptor_set.is_valid()) {
+        cmd.bind_pipeline(m_terrain_pipeline);
+        cmd.set_viewport(0, 0, vw, vh);
+        cmd.set_scissor(0, 0, extent.width, extent.height);
 
-        VkDescriptorSet terrain_sets[] = {m_terrain_material.descriptor_set, m_shadow_desc_set};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_terrain_pipeline_layout, 0, 2, terrain_sets, 0, nullptr);
+        rhi::DescriptorSetHandle terrain_sets[] = { m_terrain_material.descriptor_set, m_shadow_desc_set };
+        cmd.bind_descriptor_sets(m_terrain_pipeline_layout, 0, std::span{terrain_sets, 2});
 
         struct {
             glm::mat4 mvp;
@@ -3332,25 +2613,24 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         terrain_push.world_size = world_size;
         terrain_push.fog_enabled = m_fog_enabled ? 1.0f : 0.0f;
         terrain_push.time = m_elapsed_time;
-        vkCmdPushConstants(cmd, m_terrain_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        cmd.push_constants(m_terrain_pipeline_layout,
+                           rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
                            0, sizeof(terrain_push), &terrain_push);
 
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
+        cmd.bind_vertex_buffer(0, m_terrain.gpu_mesh.vertex_buffer);
+        cmd.bind_index_buffer(m_terrain.gpu_mesh.index_buffer, 0, rhi::IndexType::U32);
+        cmd.draw_indexed(m_terrain.gpu_mesh.index_count);
     }
 
     // ── Draw water surface (transparent overlay on terrain) ─────────────
-    if (m_water_pipeline && m_water_params.water_mask != 0 &&
-        m_terrain.gpu_mesh.vertex_buffer && m_terrain_material.descriptor_set) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_water_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    if (m_water_pipeline.is_valid() && m_water_params.water_mask != 0 &&
+        m_terrain.gpu_mesh.vertex_buffer.is_valid() && m_terrain_material.descriptor_set.is_valid()) {
+        cmd.bind_pipeline(m_water_pipeline);
+        cmd.set_viewport(0, 0, vw, vh);
+        cmd.set_scissor(0, 0, extent.width, extent.height);
 
-        VkDescriptorSet terrain_sets[] = {m_terrain_material.descriptor_set, m_shadow_desc_set};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_water_pipeline_layout, 0, 2, terrain_sets, 0, nullptr);
+        rhi::DescriptorSetHandle terrain_sets[] = { m_terrain_material.descriptor_set, m_shadow_desc_set };
+        cmd.bind_descriptor_sets(m_water_pipeline_layout, 0, std::span{terrain_sets, 2});
 
         struct {
             glm::mat4 mvp;
@@ -3378,14 +2658,14 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         water_push.water_mask = m_water_params.water_mask;
         water_push.deep_mask = m_water_params.deep_mask;
         water_push.camera_pos = glm::vec4(m_camera.position(), 0.0f);
-        vkCmdPushConstants(cmd, m_water_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        cmd.push_constants(m_water_pipeline_layout,
+                           rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
                            0, sizeof(water_push), &water_push);
 
         // Same mesh as terrain — water shader discards non-water fragments
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_terrain.gpu_mesh.vertex_buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, m_terrain.gpu_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m_terrain.gpu_mesh.index_count, 1, 0, 0, 0);
+        cmd.bind_vertex_buffer(0, m_terrain.gpu_mesh.vertex_buffer);
+        cmd.bind_index_buffer(m_terrain.gpu_mesh.index_buffer, 0, rhi::IndexType::U32);
+        cmd.draw_indexed(m_terrain.gpu_mesh.index_count);
     }
 
     // ── Ground decals (selection rings, focus reticles, ...) ────────────
@@ -3396,7 +2676,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
     if (on_after_terrain) on_after_terrain();
 
     // ── Draw entities ────────────────────────────────────────────────────
-    if (!m_mesh_pipeline) return;
+    if (!m_mesh_pipeline.is_valid()) return;
 
     auto& transforms = world.transforms;
     auto& renderables = world.renderables;
@@ -3410,7 +2690,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
     last_time = now;
     m_elapsed_time += frame_dt;
 
-    bool has_skinned_pipeline = m_skinned_mesh_pipeline != VK_NULL_HANDLE;
+    bool has_skinned_pipeline = m_skinned_mesh_pipeline.is_valid();
 
     // Clean up animation instances for entities that no longer exist in the world
     {
@@ -3427,9 +2707,7 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         for (u32 eid : stale) {
             auto it = m_anim_instances.find(eid);
             if (it != m_anim_instances.end()) {
-                if (it->second.bone_buffer) {
-                    vmaDestroyBuffer(m_rhi->allocator(), it->second.bone_buffer, it->second.bone_alloc);
-                }
+                m_rhi->destroy_buffer(it->second.bone_buffer);
                 m_anim_instances.erase(it);
             }
         }
@@ -3546,9 +2824,9 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
 
     // Pass 1: Draw skinned units with skinned pipeline
     if (has_skinned_pipeline) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skinned_mesh_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        cmd.bind_pipeline(m_skinned_mesh_pipeline);
+        cmd.set_viewport(0, 0, vw, vh);
+        cmd.set_scissor(0, 0, extent.width, extent.height);
 
         auto draw_frustum = m_camera.frustum();
         for (u32 i = 0; i < renderables.count(); ++i) {
@@ -3575,23 +2853,26 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
             auto it = m_anim_instances.find(id);
             if (it == m_anim_instances.end()) continue;
             auto& anim = it->second;
-            if (!anim.bone_descriptor) continue;
+            if (!anim.bone_descriptor.is_valid()) continue;
 
             // Upload this entity's bone matrices to its own SSBO
-            if (!anim.bone_matrices.empty() && anim.bone_mapped) {
-                std::memcpy(anim.bone_mapped, anim.bone_matrices.data(),
+            if (void* dst = m_rhi->mapped_ptr(anim.bone_buffer);
+                dst && !anim.bone_matrices.empty()) {
+                std::memcpy(dst, anim.bone_matrices.data(),
                             anim.bone_matrices.size() * sizeof(glm::mat4));
             }
 
             // Use corpse material only for placeholder models (no real texture)
             bool is_corpse = world.dead_states.has(id);
-            bool has_own_texture = lm->diffuse_texture.image != VK_NULL_HANDLE;
+            bool has_own_texture = lm->diffuse_texture.texture.is_valid();
             auto& mat = (is_corpse && !has_own_texture) ? m_corpse_material : lm->material;
-            if (mat.descriptor_set && m_shadow_desc_set) {
-                VkDescriptorSet sets[] = {mat.descriptor_set, m_shadow_desc_set,
-                                          anim.bone_descriptor};
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        m_skinned_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
+            if (mat.descriptor_set.is_valid() && m_shadow_desc_set.is_valid()) {
+                rhi::DescriptorSetHandle sets[] = {
+                    mat.descriptor_set,
+                    m_shadow_desc_set,
+                    anim.bone_descriptor,
+                };
+                cmd.bind_descriptor_sets(m_skinned_mesh_pipeline_layout, 0, std::span{sets, 3});
             }
 
             glm::vec3 vis_pos = lerp_position(*transform, alpha);
@@ -3608,50 +2889,51 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
 
             glm::mat4 mvp = vp * model;
             struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};
-            vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+            cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Vertex,
                                0, sizeof(push), &push);
             f32 alpha_eff = effective_visual_alpha(world, id, renderable);
             if (is_in_fog_memory(world, id)) alpha_eff *= kFoggedMemoryAlpha;
             glm::vec4 visual{alpha_eff, 0.0f, 0.0f, 0.0f};
-            vkCmdPushConstants(cmd, m_skinned_mesh_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+            cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Fragment,
                                sizeof(push), sizeof(visual), &visual);
 
-            VkDeviceSize vb_offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &lm->mesh.vertex_buffer, &vb_offset);
-            vkCmdBindIndexBuffer(cmd, lm->mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, lm->mesh.index_count, 1, 0, 0, 0);
+            cmd.bind_vertex_buffer(0, lm->mesh.vertex_buffer);
+            cmd.bind_index_buffer(lm->mesh.index_buffer, 0, rhi::IndexType::U32);
+            cmd.draw_indexed(lm->mesh.index_count);
         }
     }
 
     // Pass 2: Draw non-skinned entities via mega buffer + bindless + indirect draw (Phase 14b)
-    if (m_mesh_pipeline && !m_draw_groups.empty()) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_mesh_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    if (m_mesh_pipeline.is_valid() && !m_draw_groups.empty()) {
+        cmd.bind_pipeline(m_mesh_pipeline);
+        cmd.set_viewport(0, 0, vw, vh);
+        cmd.set_scissor(0, 0, extent.width, extent.height);
 
         // Push vp matrix (same for all instances)
-        vkCmdPushConstants(cmd, m_mesh_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+        cmd.push_constants(m_mesh_pipeline_layout, rhi::ShaderStage::Vertex,
                            0, sizeof(glm::mat4), &vp);
 
         // Bind mega vertex/index buffers once (all static meshes share them)
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_mega_vb, &offset);
-        vkCmdBindIndexBuffer(cmd, m_mega_ib, 0, VK_INDEX_TYPE_UINT32);
+        cmd.bind_vertex_buffer(0, m_mega_vb);
+        cmd.bind_index_buffer(m_mega_ib, 0, rhi::IndexType::U32);
 
         // Bind all descriptor sets once: bindless textures + shadow + instance SSBO
         const u32 fi = m_rhi->frame_index();
-        VkDescriptorSet sets[] = {m_bindless_set, m_shadow_desc_set, m_instance_desc_set[fi]};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                m_mesh_pipeline_layout, 0, 3, sets, 0, nullptr);
+        rhi::DescriptorSetHandle sets[] = {
+            m_bindless_set,
+            m_shadow_desc_set,
+            m_instance_desc_set[fi],
+        };
+        cmd.bind_descriptor_sets(m_mesh_pipeline_layout, 0, std::span{sets, 3});
 
         // Multi-draw indirect: one command per unique mesh geometry
         u32 draw_count = static_cast<u32>(m_draw_groups.size());
-        vkCmdDrawIndexedIndirect(cmd, m_indirect_buffer[fi], 0, draw_count,
-                                 sizeof(VkDrawIndexedIndirectCommand));
+        cmd.draw_indexed_indirect(m_indirect_buffer[fi], 0, draw_count,
+                                  sizeof(VkDrawIndexedIndirectCommand));
     }
 
     // ── Pass 3: Particles (alpha-blended, drawn last) ────────────────────
-    if (m_particle_pipeline) {
+    if (m_particle_pipeline.is_valid()) {
         // Compute camera right/up from view matrix for billboarding
         glm::mat4 view = m_camera.view_matrix();
         glm::vec3 cam_right{view[0][0], view[1][0], view[2][0]};
@@ -3716,12 +2998,12 @@ void Renderer::draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& w
         m_particles.update(frame_dt);
         m_particles.upload(cam_right, cam_up);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_particle_pipeline);
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        cmd.bind_pipeline(m_particle_pipeline);
+        cmd.set_viewport(0, 0, vw, vh);
+        cmd.set_scissor(0, 0, extent.width, extent.height);
 
         glm::mat4 particle_vp = vp;
-        vkCmdPushConstants(cmd, m_particle_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
+        cmd.push_constants(m_particle_pipeline_layout, rhi::ShaderStage::Vertex,
                            0, sizeof(glm::mat4), &particle_vp);
 
         m_particles.draw(cmd);

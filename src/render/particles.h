@@ -1,6 +1,8 @@
 #pragma once
 
 #include "core/types.h"
+#include "rhi/handles.h"
+#include "rhi/command_list.h"
 
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -8,11 +10,6 @@
 
 #include <span>
 #include <vector>
-
-// Forward declare Vulkan types to avoid pulling vulkan.h into script module
-struct VkBuffer_T; typedef VkBuffer_T* VkBuffer;
-struct VkCommandBuffer_T; typedef VkCommandBuffer_T* VkCommandBuffer;
-struct VmaAllocation_T; typedef VmaAllocation_T* VmaAllocation;
 
 namespace uldum::rhi { class VulkanRhi; }
 
@@ -90,7 +87,7 @@ public:
     void upload(glm::vec3 camera_right, glm::vec3 camera_up);
 
     // Draw all particles. Caller must have bound the particle pipeline.
-    void draw(VkCommandBuffer cmd) const;
+    void draw(rhi::CommandList& cmd) const;
 
     // Drop every live particle and emitter. Used on scene switch /
     // session end so previous-scene particles don't bleed into the
@@ -116,10 +113,8 @@ private:
     u32 m_next_emitter_id = 0;
 
     // GPU vertex buffer (dynamic, updated every frame)
-    VkBuffer      m_vertex_buffer = nullptr;
-    VmaAllocation m_vertex_alloc  = nullptr;
-    void*         m_vertex_mapped = nullptr;
-    u32           m_quad_count    = 0;
+    rhi::BufferHandle m_vertex_buffer{};
+    u32               m_quad_count = 0;
 
     rhi::VulkanRhi* m_rhi = nullptr;
 };

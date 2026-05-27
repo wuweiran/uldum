@@ -92,6 +92,87 @@ void VulkanRhi::shutdown() {
 
     destroy_swapchain();
 
+    // Drop any resources that callers forgot to destroy. In practice
+    // every consumer destroys at end-of-session, so these loops are
+    // normally no-ops — but the safety net matters during the migration
+    // when handle-based teardown coexists with raw cleanup. Order:
+    // samplers and textures (free `vk*`) before VMA destruction; the
+    // allocator owns the underlying memory for buffers and images.
+    // Pipelines / layouts / descriptor sets / descriptor set layouts /
+    // descriptor pools — drop these *before* samplers/textures/buffers
+    // because they reference those (the device-side dependency order
+    // doesn't strictly matter for vkDestroy*, but it makes the cleanup
+    // log easier to reason about if something goes wrong).
+    for (auto& rec : m_pipeline_records) {
+        if (rec.pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(m_device, rec.pipeline, nullptr);
+            rec.pipeline = VK_NULL_HANDLE;
+        }
+    }
+    m_pipeline_records.clear();
+    m_pipeline_free.clear();
+
+    for (auto& rec : m_pl_records) {
+        if (rec.layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(m_device, rec.layout, nullptr);
+            rec.layout = VK_NULL_HANDLE;
+        }
+    }
+    m_pl_records.clear();
+    m_pl_free.clear();
+
+    // Descriptor sets are owned by their pool — freeing the pool below
+    // releases all sets. We don't need to free individually here.
+    m_dset_records.clear();
+    m_dset_free.clear();
+
+    for (auto pool : m_descriptor_pools) {
+        if (pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_device, pool, nullptr);
+    }
+    m_descriptor_pools.clear();
+
+    for (auto& rec : m_dsl_records) {
+        if (rec.layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(m_device, rec.layout, nullptr);
+            rec.layout = VK_NULL_HANDLE;
+        }
+    }
+    m_dsl_records.clear();
+    m_dsl_free.clear();
+
+    for (auto& rec : m_samplers) {
+        if (rec.sampler != VK_NULL_HANDLE) {
+            vkDestroySampler(m_device, rec.sampler, nullptr);
+            rec.sampler = VK_NULL_HANDLE;
+        }
+    }
+    m_samplers.clear();
+    m_samplers_free.clear();
+
+    for (auto& rec : m_textures) {
+        if (rec.view  != VK_NULL_HANDLE) vkDestroyImageView(m_device, rec.view, nullptr);
+        if (rec.image != VK_NULL_HANDLE) vmaDestroyImage(m_allocator, rec.image, rec.alloc);
+        rec.view = VK_NULL_HANDLE; rec.image = VK_NULL_HANDLE; rec.alloc = VK_NULL_HANDLE;
+    }
+    m_textures.clear();
+    m_textures_free.clear();
+
+    for (auto& rec : m_buffers) {
+        if (rec.buffer != VK_NULL_HANDLE) vmaDestroyBuffer(m_allocator, rec.buffer, rec.alloc);
+        rec.buffer = VK_NULL_HANDLE; rec.alloc = VK_NULL_HANDLE; rec.mapped = nullptr;
+    }
+    m_buffers.clear();
+    m_buffers_free.clear();
+
+    for (auto& rec : m_shader_modules) {
+        if (rec.module != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(m_device, rec.module, nullptr);
+            rec.module = VK_NULL_HANDLE;
+        }
+    }
+    m_shader_modules.clear();
+    m_shader_modules_free.clear();
+
     if (m_allocator) { vmaDestroyAllocator(m_allocator); m_allocator = VK_NULL_HANDLE; }
     if (m_device)    { vkDestroyDevice(m_device, nullptr); m_device = VK_NULL_HANDLE; }
     if (m_surface)   { vkDestroySurfaceKHR(m_instance, m_surface, nullptr); m_surface = VK_NULL_HANDLE; }
@@ -764,7 +845,7 @@ void VulkanRhi::handle_resize(u32 width, u32 height) {
     m_swapchain_dirty = true;
 }
 
-VkCommandBuffer VulkanRhi::begin_oneshot() {
+CommandList VulkanRhi::begin_oneshot() {
     VkCommandPool pool = m_command_pools[0];
 
     VkCommandBufferAllocateInfo alloc_info{};
@@ -781,10 +862,11 @@ VkCommandBuffer VulkanRhi::begin_oneshot() {
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &begin_info);
 
-    return cmd;
+    return CommandList(*this, cmd);
 }
 
-void VulkanRhi::end_oneshot(VkCommandBuffer cmd) {
+void VulkanRhi::end_oneshot(CommandList& cl) {
+    VkCommandBuffer cmd = cl.raw();
     vkEndCommandBuffer(cmd);
 
     VkSubmitInfo submit{};
@@ -797,6 +879,866 @@ void VulkanRhi::end_oneshot(VkCommandBuffer cmd) {
 
     vkFreeCommandBuffers(m_device, m_command_pools[0], 1, &cmd);
 }
+
+// ── Resource factories ──────────────────────────────────────────────────
+
+ShaderModuleHandle VulkanRhi::create_shader_module(std::span<const u8> spirv) {
+    if (spirv.empty() || (spirv.size() % 4) != 0) {
+        log::error(TAG, "create_shader_module: empty or non-multiple-of-4 bytecode ({} bytes)", spirv.size());
+        return {};
+    }
+    VkShaderModuleCreateInfo ci{};
+    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    ci.codeSize = spirv.size();
+    ci.pCode    = reinterpret_cast<const uint32_t*>(spirv.data());
+
+    VkShaderModule mod = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(m_device, &ci, nullptr, &mod) != VK_SUCCESS) {
+        log::error(TAG, "vkCreateShaderModule failed");
+        return {};
+    }
+
+    u32 idx;
+    if (!m_shader_modules_free.empty()) {
+        idx = m_shader_modules_free.back();
+        m_shader_modules_free.pop_back();
+    } else {
+        idx = static_cast<u32>(m_shader_modules.size());
+        m_shader_modules.emplace_back();
+    }
+    auto& rec = m_shader_modules[idx];
+    rec.module = mod;
+    // Bump generation, skipping 0 which marks a free slot.
+    rec.generation += 1;
+    if (rec.generation == 0) rec.generation = 1;
+    return ShaderModuleHandle{idx, rec.generation};
+}
+
+void VulkanRhi::destroy_shader_module(ShaderModuleHandle h) {
+    if (!h.is_valid() || h.index >= m_shader_modules.size()) return;
+    auto& rec = m_shader_modules[h.index];
+    if (rec.generation != h.generation) return;  // stale handle
+    if (rec.module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(m_device, rec.module, nullptr);
+        rec.module = VK_NULL_HANDLE;
+    }
+    rec.generation = 0;  // mark slot free
+    m_shader_modules_free.push_back(h.index);
+}
+
+// resolve(ShaderModuleHandle) — inlined in vulkan_rhi.h
+
+// ── Buffer / Texture / Sampler factories ─────────────────────────────────
+
+namespace {
+
+// Tiny generic helper: pick a free index from the recycled list or push
+// a fresh slot. Returns the index; caller fills the record.
+template <typename Rec>
+u32 acquire_slot(std::vector<Rec>& records, std::vector<u32>& free_list) {
+    if (!free_list.empty()) {
+        u32 idx = free_list.back();
+        free_list.pop_back();
+        return idx;
+    }
+    u32 idx = static_cast<u32>(records.size());
+    records.emplace_back();
+    return idx;
+}
+
+// Bump-with-skip-0: generation 0 means "slot free".
+template <typename Rec>
+u32 bump_generation(Rec& rec) {
+    rec.generation += 1;
+    if (rec.generation == 0) rec.generation = 1;
+    return rec.generation;
+}
+
+VkBufferUsageFlags to_vk_buffer_usage(BufferUsage u) {
+    VkBufferUsageFlags f = 0;
+    if (any(u, BufferUsage::Vertex))      f |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if (any(u, BufferUsage::Index))       f |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (any(u, BufferUsage::Uniform))     f |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if (any(u, BufferUsage::Storage))     f |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (any(u, BufferUsage::Indirect))    f |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    if (any(u, BufferUsage::TransferSrc)) f |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (any(u, BufferUsage::TransferDst)) f |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    return f;
+}
+
+VkImageUsageFlags to_vk_image_usage(TextureUsage u) {
+    VkImageUsageFlags f = 0;
+    if (any(u, TextureUsage::Sampled))         f |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (any(u, TextureUsage::ColorAttachment)) f |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (any(u, TextureUsage::DepthAttachment)) f |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (any(u, TextureUsage::Storage))         f |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (any(u, TextureUsage::TransferSrc))     f |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (any(u, TextureUsage::TransferDst))     f |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    return f;
+}
+
+VkFormat to_vk_format(TextureFormat f) {
+    switch (f) {
+        case TextureFormat::R8_UNORM:            return VK_FORMAT_R8_UNORM;
+        case TextureFormat::R8G8B8A8_UNORM:      return VK_FORMAT_R8G8B8A8_UNORM;
+        case TextureFormat::R8G8B8A8_SRGB:       return VK_FORMAT_R8G8B8A8_SRGB;
+        case TextureFormat::B8G8R8A8_UNORM:      return VK_FORMAT_B8G8R8A8_UNORM;
+        case TextureFormat::B8G8R8A8_SRGB:       return VK_FORMAT_B8G8R8A8_SRGB;
+        case TextureFormat::R16_UNORM:           return VK_FORMAT_R16_UNORM;
+        case TextureFormat::R16G16B16A16_SFLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case TextureFormat::R32_SFLOAT:          return VK_FORMAT_R32_SFLOAT;
+        case TextureFormat::D32_SFLOAT:          return VK_FORMAT_D32_SFLOAT;
+        case TextureFormat::R32G32_SFLOAT:       return VK_FORMAT_R32G32_SFLOAT;
+        case TextureFormat::R32G32B32_SFLOAT:    return VK_FORMAT_R32G32B32_SFLOAT;
+        case TextureFormat::R32G32B32A32_SFLOAT: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case TextureFormat::R32_UINT:            return VK_FORMAT_R32_UINT;
+        case TextureFormat::R32G32B32A32_UINT:   return VK_FORMAT_R32G32B32A32_UINT;
+        case TextureFormat::BC1_RGB_UNORM:       return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+        case TextureFormat::BC1_RGB_SRGB:        return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
+        case TextureFormat::BC3_RGBA_UNORM:      return VK_FORMAT_BC3_UNORM_BLOCK;
+        case TextureFormat::BC3_RGBA_SRGB:       return VK_FORMAT_BC3_SRGB_BLOCK;
+        case TextureFormat::BC5_RG_UNORM:        return VK_FORMAT_BC5_UNORM_BLOCK;
+        case TextureFormat::ASTC_4x4_UNORM:      return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+        case TextureFormat::ASTC_4x4_SRGB:       return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+        case TextureFormat::ETC2_RGB8_UNORM:     return VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+        case TextureFormat::ETC2_RGBA8_UNORM:    return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+        case TextureFormat::Undefined:           return VK_FORMAT_UNDEFINED;
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
+VkFilter to_vk_filter(Filter f) {
+    return f == Filter::Linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+}
+VkSamplerMipmapMode to_vk_mipmap_mode(MipmapMode m) {
+    return m == MipmapMode::Linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+}
+VkSamplerAddressMode to_vk_address(AddressMode a) {
+    switch (a) {
+        case AddressMode::Repeat:         return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        case AddressMode::MirroredRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        case AddressMode::ClampToEdge:    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        case AddressMode::ClampToBorder:  return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+}
+VkCompareOp to_vk_compare_op(CompareOp op) {
+    switch (op) {
+        case CompareOp::Never:        return VK_COMPARE_OP_NEVER;
+        case CompareOp::Less:         return VK_COMPARE_OP_LESS;
+        case CompareOp::Equal:        return VK_COMPARE_OP_EQUAL;
+        case CompareOp::LessEqual:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case CompareOp::Greater:      return VK_COMPARE_OP_GREATER;
+        case CompareOp::NotEqual:     return VK_COMPARE_OP_NOT_EQUAL;
+        case CompareOp::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case CompareOp::Always:       return VK_COMPARE_OP_ALWAYS;
+    }
+    return VK_COMPARE_OP_NEVER;
+}
+
+VkBorderColor to_vk_border(BorderColor b) {
+    switch (b) {
+        case BorderColor::TransparentBlack: return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        case BorderColor::OpaqueBlack:      return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        case BorderColor::OpaqueWhite:      return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    }
+    return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+}
+
+VkImageAspectFlags aspect_for_usage(TextureUsage u) {
+    return any(u, TextureUsage::DepthAttachment)
+        ? VK_IMAGE_ASPECT_DEPTH_BIT
+        : VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+} // anonymous
+
+BufferHandle VulkanRhi::create_buffer(const BufferDesc& desc) {
+    if (desc.size == 0 || desc.usage == BufferUsage::None) {
+        log::error(TAG, "create_buffer: invalid desc (size={}, usage=0)", desc.size);
+        return {};
+    }
+
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size  = desc.size;
+    bci.usage = to_vk_buffer_usage(desc.usage);
+
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    switch (desc.memory) {
+        case MemoryUsage::GpuOnly:
+            break;
+        case MemoryUsage::HostSequential:
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                      | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            break;
+        case MemoryUsage::HostRandom:
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                      | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            break;
+    }
+
+    VkBuffer       buf  = VK_NULL_HANDLE;
+    VmaAllocation  alloc = VK_NULL_HANDLE;
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(m_allocator, &bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) {
+        log::error(TAG, "vmaCreateBuffer failed (size={})", desc.size);
+        return {};
+    }
+
+    u32 idx = acquire_slot(m_buffers, m_buffers_free);
+    auto& rec = m_buffers[idx];
+    rec.buffer = buf;
+    rec.alloc  = alloc;
+    rec.mapped = info.pMappedData;  // null when not persistently mapped
+    rec.size   = desc.size;
+    u32 gen    = bump_generation(rec);
+    return BufferHandle{idx, gen};
+}
+
+void VulkanRhi::destroy_buffer(BufferHandle h) {
+    if (!h.is_valid() || h.index >= m_buffers.size()) return;
+    auto& rec = m_buffers[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(m_allocator, rec.buffer, rec.alloc);
+        rec.buffer = VK_NULL_HANDLE;
+        rec.alloc  = VK_NULL_HANDLE;
+        rec.mapped = nullptr;
+    }
+    rec.generation = 0;
+    m_buffers_free.push_back(h.index);
+}
+
+// resolve(BufferHandle) — inlined in vulkan_rhi.h
+
+VmaAllocation VulkanRhi::alloc_of(BufferHandle h) const {
+    if (!h.is_valid() || h.index >= m_buffers.size()) return VK_NULL_HANDLE;
+    const auto& rec = m_buffers[h.index];
+    if (rec.generation != h.generation) return VK_NULL_HANDLE;
+    return rec.alloc;
+}
+
+void* VulkanRhi::mapped_ptr(BufferHandle h) const {
+    if (!h.is_valid() || h.index >= m_buffers.size()) return nullptr;
+    const auto& rec = m_buffers[h.index];
+    if (rec.generation != h.generation) return nullptr;
+    return rec.mapped;
+}
+
+TextureHandle VulkanRhi::create_texture(const TextureDesc& desc) {
+    if (desc.width == 0 || desc.height == 0 || desc.format == TextureFormat::Undefined) {
+        log::error(TAG, "create_texture: invalid desc ({}x{}, format=undefined?)",
+                   desc.width, desc.height);
+        return {};
+    }
+
+    VkImageCreateInfo ici{};
+    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.format        = to_vk_format(desc.format);
+    ici.extent        = { desc.width, desc.height, desc.depth };
+    ici.mipLevels     = desc.mip_levels;
+    ici.arrayLayers   = desc.array_layers;
+    ici.samples       = static_cast<VkSampleCountFlagBits>(desc.sample_count);
+    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage         = to_vk_image_usage(desc.usage);
+    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    switch (desc.type) {
+        case TextureType::Texture2D:   ici.imageType = VK_IMAGE_TYPE_2D; break;
+        case TextureType::TextureCube: ici.imageType = VK_IMAGE_TYPE_2D;
+                                       ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                                       break;
+        case TextureType::Texture3D:   ici.imageType = VK_IMAGE_TYPE_3D; break;
+    }
+
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+
+    VkImage       img   = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    if (vmaCreateImage(m_allocator, &ici, &aci, &img, &alloc, nullptr) != VK_SUCCESS) {
+        log::error(TAG, "vmaCreateImage failed ({}x{})", desc.width, desc.height);
+        return {};
+    }
+
+    // Default view: covers all mips/layers, dim derived from texture type.
+    VkImageViewCreateInfo vci{};
+    vci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image    = img;
+    vci.format   = ici.format;
+    switch (desc.type) {
+        case TextureType::Texture2D:
+            vci.viewType = (desc.array_layers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                   : VK_IMAGE_VIEW_TYPE_2D;
+            break;
+        case TextureType::TextureCube: vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE; break;
+        case TextureType::Texture3D:   vci.viewType = VK_IMAGE_VIEW_TYPE_3D;   break;
+    }
+    vci.subresourceRange.aspectMask     = aspect_for_usage(desc.usage);
+    vci.subresourceRange.baseMipLevel   = 0;
+    vci.subresourceRange.levelCount     = desc.mip_levels;
+    vci.subresourceRange.baseArrayLayer = 0;
+    vci.subresourceRange.layerCount     = desc.array_layers;
+
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(m_device, &vci, nullptr, &view) != VK_SUCCESS) {
+        log::error(TAG, "vkCreateImageView failed");
+        vmaDestroyImage(m_allocator, img, alloc);
+        return {};
+    }
+
+    u32 idx = acquire_slot(m_textures, m_textures_free);
+    auto& rec = m_textures[idx];
+    rec.image = img;
+    rec.view  = view;
+    rec.alloc = alloc;
+    u32 gen = bump_generation(rec);
+    return TextureHandle{idx, gen};
+}
+
+void VulkanRhi::destroy_texture(TextureHandle h) {
+    if (!h.is_valid() || h.index >= m_textures.size()) return;
+    auto& rec = m_textures[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.view  != VK_NULL_HANDLE) vkDestroyImageView(m_device, rec.view, nullptr);
+    if (rec.image != VK_NULL_HANDLE) vmaDestroyImage(m_allocator, rec.image, rec.alloc);
+    rec.view = VK_NULL_HANDLE; rec.image = VK_NULL_HANDLE; rec.alloc = VK_NULL_HANDLE;
+    rec.generation = 0;
+    m_textures_free.push_back(h.index);
+}
+
+// resolve(TextureHandle) / resolve_view — inlined in vulkan_rhi.h
+
+VmaAllocation VulkanRhi::alloc_of(TextureHandle h) const {
+    if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
+    const auto& rec = m_textures[h.index];
+    if (rec.generation != h.generation) return VK_NULL_HANDLE;
+    return rec.alloc;
+}
+
+SamplerHandle VulkanRhi::create_sampler(const SamplerDesc& desc) {
+    VkSamplerCreateInfo sci{};
+    sci.sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter        = to_vk_filter(desc.mag_filter);
+    sci.minFilter        = to_vk_filter(desc.min_filter);
+    sci.mipmapMode       = to_vk_mipmap_mode(desc.mipmap_mode);
+    sci.addressModeU     = to_vk_address(desc.address_u);
+    sci.addressModeV     = to_vk_address(desc.address_v);
+    sci.addressModeW     = to_vk_address(desc.address_w);
+    sci.mipLodBias       = desc.mip_lod_bias;
+    sci.anisotropyEnable = (desc.max_anisotropy > 1.0f) ? VK_TRUE : VK_FALSE;
+    sci.maxAnisotropy    = desc.max_anisotropy;
+    sci.compareEnable    = desc.compare_enable ? VK_TRUE : VK_FALSE;
+    sci.compareOp        = to_vk_compare_op(desc.compare_op);
+    sci.minLod           = desc.min_lod;
+    sci.maxLod           = desc.max_lod;
+    sci.borderColor      = to_vk_border(desc.border_color);
+
+    VkSampler sampler = VK_NULL_HANDLE;
+    if (vkCreateSampler(m_device, &sci, nullptr, &sampler) != VK_SUCCESS) {
+        log::error(TAG, "vkCreateSampler failed");
+        return {};
+    }
+
+    u32 idx = acquire_slot(m_samplers, m_samplers_free);
+    auto& rec = m_samplers[idx];
+    rec.sampler = sampler;
+    u32 gen = bump_generation(rec);
+    return SamplerHandle{idx, gen};
+}
+
+void VulkanRhi::destroy_sampler(SamplerHandle h) {
+    if (!h.is_valid() || h.index >= m_samplers.size()) return;
+    auto& rec = m_samplers[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(m_device, rec.sampler, nullptr);
+        rec.sampler = VK_NULL_HANDLE;
+    }
+    rec.generation = 0;
+    m_samplers_free.push_back(h.index);
+}
+
+// resolve(SamplerHandle) — inlined in vulkan_rhi.h
+
+// ── Pipeline / descriptor enum translation ──────────────────────────────
+
+namespace {
+
+VkDescriptorType to_vk_descriptor_type(DescriptorType t) {
+    switch (t) {
+        case DescriptorType::UniformBuffer:        return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        case DescriptorType::StorageBuffer:        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        case DescriptorType::SampledImage:         return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        case DescriptorType::CombinedImageSampler: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    }
+    return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+}
+
+VkShaderStageFlags to_vk_shader_stage(ShaderStage s) {
+    VkShaderStageFlags f = 0;
+    if (any(s, ShaderStage::Vertex))   f |= VK_SHADER_STAGE_VERTEX_BIT;
+    if (any(s, ShaderStage::Fragment)) f |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    return f;
+}
+
+VkPrimitiveTopology to_vk_topology(PrimitiveTopology t) {
+    switch (t) {
+        case PrimitiveTopology::TriangleList:  return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        case PrimitiveTopology::TriangleStrip: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+        case PrimitiveTopology::LineList:      return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    }
+    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
+VkCullModeFlags to_vk_cull(CullMode c) {
+    switch (c) {
+        case CullMode::None:  return VK_CULL_MODE_NONE;
+        case CullMode::Front: return VK_CULL_MODE_FRONT_BIT;
+        case CullMode::Back:  return VK_CULL_MODE_BACK_BIT;
+    }
+    return VK_CULL_MODE_BACK_BIT;
+}
+
+VkFrontFace to_vk_front_face(FrontFace f) {
+    return f == FrontFace::CounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+}
+
+VkPolygonMode to_vk_polygon_mode(PolygonMode m) {
+    return m == PolygonMode::Line ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+}
+
+VkBlendFactor to_vk_blend_factor(BlendFactor f) {
+    switch (f) {
+        case BlendFactor::Zero:             return VK_BLEND_FACTOR_ZERO;
+        case BlendFactor::One:              return VK_BLEND_FACTOR_ONE;
+        case BlendFactor::SrcColor:         return VK_BLEND_FACTOR_SRC_COLOR;
+        case BlendFactor::OneMinusSrcColor: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case BlendFactor::DstColor:         return VK_BLEND_FACTOR_DST_COLOR;
+        case BlendFactor::OneMinusDstColor: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        case BlendFactor::SrcAlpha:         return VK_BLEND_FACTOR_SRC_ALPHA;
+        case BlendFactor::OneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case BlendFactor::DstAlpha:         return VK_BLEND_FACTOR_DST_ALPHA;
+        case BlendFactor::OneMinusDstAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+    }
+    return VK_BLEND_FACTOR_ZERO;
+}
+
+VkBlendOp to_vk_blend_op(BlendOp o) {
+    switch (o) {
+        case BlendOp::Add:             return VK_BLEND_OP_ADD;
+        case BlendOp::Subtract:        return VK_BLEND_OP_SUBTRACT;
+        case BlendOp::ReverseSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+        case BlendOp::Min:             return VK_BLEND_OP_MIN;
+        case BlendOp::Max:             return VK_BLEND_OP_MAX;
+    }
+    return VK_BLEND_OP_ADD;
+}
+
+VkVertexInputRate to_vk_input_rate(bool per_instance) {
+    return per_instance ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+}
+
+} // anonymous
+
+// ── Descriptor set layouts ──────────────────────────────────────────────
+
+DescriptorSetLayoutHandle VulkanRhi::create_descriptor_set_layout(const DescriptorSetLayoutDesc& desc) {
+    std::vector<VkDescriptorSetLayoutBinding> vk_bindings(desc.bindings.size());
+    std::vector<VkDescriptorBindingFlags>     vk_flags(desc.bindings.size(), 0);
+    bool any_bindless = false;
+
+    for (usize i = 0; i < desc.bindings.size(); ++i) {
+        const auto& b = desc.bindings[i];
+        vk_bindings[i] = {};
+        vk_bindings[i].binding         = b.binding;
+        vk_bindings[i].descriptorType  = to_vk_descriptor_type(b.type);
+        vk_bindings[i].descriptorCount = b.count;
+        vk_bindings[i].stageFlags      = to_vk_shader_stage(b.stages);
+
+        VkDescriptorBindingFlags f = 0;
+        if (b.partially_bound)   { f |= VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT; any_bindless = true; }
+        if (b.variable_count)    { f |= VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT; any_bindless = true; }
+        if (b.update_after_bind) { f |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT; any_bindless = true; }
+        vk_flags[i] = f;
+    }
+
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci{};
+    flags_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    flags_ci.bindingCount  = static_cast<u32>(vk_flags.size());
+    flags_ci.pBindingFlags = vk_flags.data();
+
+    VkDescriptorSetLayoutCreateInfo ci{};
+    ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    ci.bindingCount = static_cast<u32>(vk_bindings.size());
+    ci.pBindings    = vk_bindings.data();
+    if (any_bindless) {
+        ci.pNext = &flags_ci;
+        ci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    }
+
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(m_device, &ci, nullptr, &layout) != VK_SUCCESS) {
+        log::error(TAG, "vkCreateDescriptorSetLayout failed");
+        return {};
+    }
+
+    u32 idx = acquire_slot(m_dsl_records, m_dsl_free);
+    auto& rec = m_dsl_records[idx];
+    rec.layout = layout;
+    u32 gen = bump_generation(rec);
+    return DescriptorSetLayoutHandle{idx, gen};
+}
+
+void VulkanRhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
+    if (!h.is_valid() || h.index >= m_dsl_records.size()) return;
+    auto& rec = m_dsl_records[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.layout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(m_device, rec.layout, nullptr);
+        rec.layout = VK_NULL_HANDLE;
+    }
+    rec.generation = 0;
+    m_dsl_free.push_back(h.index);
+}
+
+// resolve(DescriptorSetLayoutHandle) — inlined in vulkan_rhi.h
+
+// ── Descriptor pool growth ──────────────────────────────────────────────
+
+bool VulkanRhi::grow_descriptor_pool() {
+    // Generous fixed-size pool — supports the engine's largest descriptor
+    // workload (bindless + per-frame + per-entity + UI) for one session
+    // before needing to grow. Each call appends a fresh pool to the ring.
+    VkDescriptorPoolSize sizes[] = {
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 512 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         128 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         128 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          64  },
+    };
+    VkDescriptorPoolCreateInfo ci{};
+    ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+                     | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+    ci.maxSets       = 256;
+    ci.poolSizeCount = static_cast<u32>(std::size(sizes));
+    ci.pPoolSizes    = sizes;
+
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(m_device, &ci, nullptr, &pool) != VK_SUCCESS) {
+        log::error(TAG, "Failed to create descriptor pool");
+        return false;
+    }
+    m_descriptor_pools.push_back(pool);
+    return true;
+}
+
+DescriptorSetHandle VulkanRhi::allocate_descriptor_set(DescriptorSetLayoutHandle layout_h,
+                                                       u32 variable_count) {
+    VkDescriptorSetLayout layout = resolve(layout_h);
+    if (layout == VK_NULL_HANDLE) return {};
+
+    if (m_descriptor_pools.empty() && !grow_descriptor_pool()) return {};
+
+    VkDescriptorSetVariableDescriptorCountAllocateInfo var_ai{};
+    var_ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    var_ai.descriptorSetCount = 1;
+    var_ai.pDescriptorCounts  = &variable_count;
+
+    auto try_alloc = [&](VkDescriptorPool pool, VkDescriptorSet& out) -> VkResult {
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.pNext              = (variable_count > 0) ? &var_ai : nullptr;
+        ai.descriptorPool     = pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &layout;
+        return vkAllocateDescriptorSets(m_device, &ai, &out);
+    };
+
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkDescriptorPool current = m_descriptor_pools.back();
+    VkResult r = try_alloc(current, set);
+    if (r != VK_SUCCESS) {
+        if (!grow_descriptor_pool()) return {};
+        current = m_descriptor_pools.back();
+        r = try_alloc(current, set);
+        if (r != VK_SUCCESS) {
+            log::error(TAG, "vkAllocateDescriptorSets failed even after pool grow ({})",
+                       static_cast<int>(r));
+            return {};
+        }
+    }
+
+    u32 idx = acquire_slot(m_dset_records, m_dset_free);
+    auto& rec = m_dset_records[idx];
+    rec.set    = set;
+    rec.source = current;
+    u32 gen = bump_generation(rec);
+    return DescriptorSetHandle{idx, gen};
+}
+
+void VulkanRhi::update_descriptor_set(DescriptorSetHandle h, std::span<const WriteDescriptor> writes) {
+    VkDescriptorSet set = resolve(h);
+    if (set == VK_NULL_HANDLE || writes.empty()) return;
+
+    std::vector<VkDescriptorBufferInfo> buf_infos(writes.size());
+    std::vector<VkDescriptorImageInfo>  img_infos(writes.size());
+    std::vector<VkWriteDescriptorSet>   vk_writes(writes.size());
+
+    for (usize i = 0; i < writes.size(); ++i) {
+        const auto& w = writes[i];
+        vk_writes[i] = {};
+        vk_writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vk_writes[i].dstSet          = set;
+        vk_writes[i].dstBinding      = w.binding;
+        vk_writes[i].dstArrayElement = w.array_element;
+        vk_writes[i].descriptorCount = 1;
+        vk_writes[i].descriptorType  = to_vk_descriptor_type(w.type);
+
+        switch (w.type) {
+            case DescriptorType::UniformBuffer:
+            case DescriptorType::StorageBuffer: {
+                buf_infos[i].buffer = resolve(w.buffer);
+                buf_infos[i].offset = w.buffer_offset;
+                buf_infos[i].range  = (w.buffer_range == ~0ull) ? VK_WHOLE_SIZE : w.buffer_range;
+                vk_writes[i].pBufferInfo = &buf_infos[i];
+                break;
+            }
+            case DescriptorType::SampledImage:
+            case DescriptorType::CombinedImageSampler: {
+                VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                switch (w.image_layout) {
+                    case WriteImageLayout::ShaderReadOnly:       layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; break;
+                    case WriteImageLayout::DepthStencilReadOnly: layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; break;
+                    case WriteImageLayout::DepthReadOnly:        layout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; break;
+                    case WriteImageLayout::General:              layout = VK_IMAGE_LAYOUT_GENERAL; break;
+                }
+                img_infos[i].imageLayout = layout;
+                img_infos[i].imageView   = resolve_view(w.texture);
+                img_infos[i].sampler     = resolve(w.sampler);
+                vk_writes[i].pImageInfo  = &img_infos[i];
+                break;
+            }
+        }
+    }
+
+    vkUpdateDescriptorSets(m_device, static_cast<u32>(vk_writes.size()), vk_writes.data(), 0, nullptr);
+}
+
+void VulkanRhi::free_descriptor_set(DescriptorSetHandle h) {
+    if (!h.is_valid() || h.index >= m_dset_records.size()) return;
+    auto& rec = m_dset_records[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.set != VK_NULL_HANDLE && rec.source != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(m_device, rec.source, 1, &rec.set);
+    }
+    rec.set = VK_NULL_HANDLE;
+    rec.source = VK_NULL_HANDLE;
+    rec.generation = 0;
+    m_dset_free.push_back(h.index);
+}
+
+// resolve(DescriptorSetHandle) — inlined in vulkan_rhi.h
+
+// ── Pipeline layout ─────────────────────────────────────────────────────
+
+PipelineLayoutHandle VulkanRhi::create_pipeline_layout(const PipelineLayoutDesc& desc) {
+    std::vector<VkDescriptorSetLayout> vk_layouts(desc.set_layouts.size());
+    for (usize i = 0; i < desc.set_layouts.size(); ++i) {
+        vk_layouts[i] = resolve(desc.set_layouts[i]);
+    }
+    std::vector<VkPushConstantRange> vk_pcs(desc.push_constants.size());
+    for (usize i = 0; i < desc.push_constants.size(); ++i) {
+        vk_pcs[i].stageFlags = to_vk_shader_stage(desc.push_constants[i].stages);
+        vk_pcs[i].offset     = desc.push_constants[i].offset;
+        vk_pcs[i].size       = desc.push_constants[i].size;
+    }
+
+    VkPipelineLayoutCreateInfo ci{};
+    ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    ci.setLayoutCount         = static_cast<u32>(vk_layouts.size());
+    ci.pSetLayouts            = vk_layouts.empty() ? nullptr : vk_layouts.data();
+    ci.pushConstantRangeCount = static_cast<u32>(vk_pcs.size());
+    ci.pPushConstantRanges    = vk_pcs.empty() ? nullptr : vk_pcs.data();
+
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(m_device, &ci, nullptr, &layout) != VK_SUCCESS) {
+        log::error(TAG, "vkCreatePipelineLayout failed");
+        return {};
+    }
+
+    u32 idx = acquire_slot(m_pl_records, m_pl_free);
+    auto& rec = m_pl_records[idx];
+    rec.layout = layout;
+    u32 gen = bump_generation(rec);
+    return PipelineLayoutHandle{idx, gen};
+}
+
+void VulkanRhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
+    if (!h.is_valid() || h.index >= m_pl_records.size()) return;
+    auto& rec = m_pl_records[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(m_device, rec.layout, nullptr);
+        rec.layout = VK_NULL_HANDLE;
+    }
+    rec.generation = 0;
+    m_pl_free.push_back(h.index);
+}
+
+// resolve(PipelineLayoutHandle) — inlined in vulkan_rhi.h
+
+// ── Graphics pipeline ───────────────────────────────────────────────────
+
+PipelineHandle VulkanRhi::create_graphics_pipeline(const GraphicsPipelineDesc& desc) {
+    // Stages
+    std::vector<VkPipelineShaderStageCreateInfo> vk_stages(desc.stages.size());
+    for (usize i = 0; i < desc.stages.size(); ++i) {
+        vk_stages[i] = {};
+        vk_stages[i].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vk_stages[i].stage  = static_cast<VkShaderStageFlagBits>(to_vk_shader_stage(desc.stages[i].stage));
+        vk_stages[i].module = resolve(desc.stages[i].module);
+        vk_stages[i].pName  = desc.stages[i].entry;
+    }
+
+    // Vertex input
+    std::vector<VkVertexInputBindingDescription>   vk_bindings(desc.vertex_input.bindings.size());
+    std::vector<VkVertexInputAttributeDescription> vk_attrs(desc.vertex_input.attributes.size());
+    for (usize i = 0; i < desc.vertex_input.bindings.size(); ++i) {
+        vk_bindings[i] = {};
+        vk_bindings[i].binding   = desc.vertex_input.bindings[i].binding;
+        vk_bindings[i].stride    = desc.vertex_input.bindings[i].stride;
+        vk_bindings[i].inputRate = to_vk_input_rate(desc.vertex_input.bindings[i].per_instance);
+    }
+    for (usize i = 0; i < desc.vertex_input.attributes.size(); ++i) {
+        vk_attrs[i] = {};
+        vk_attrs[i].location = desc.vertex_input.attributes[i].location;
+        vk_attrs[i].binding  = desc.vertex_input.attributes[i].binding;
+        vk_attrs[i].offset   = desc.vertex_input.attributes[i].offset;
+        vk_attrs[i].format   = to_vk_format(desc.vertex_input.attributes[i].format);
+    }
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount   = static_cast<u32>(vk_bindings.size());
+    vi.pVertexBindingDescriptions      = vk_bindings.empty() ? nullptr : vk_bindings.data();
+    vi.vertexAttributeDescriptionCount = static_cast<u32>(vk_attrs.size());
+    vi.pVertexAttributeDescriptions    = vk_attrs.empty() ? nullptr : vk_attrs.data();
+
+    // Input assembly
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = to_vk_topology(desc.topology);
+
+    // Viewport/scissor — always dynamic in this engine
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount  = 1;
+
+    // Rasterizer
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode             = to_vk_polygon_mode(desc.rasterizer.polygon_mode);
+    rs.cullMode                = to_vk_cull(desc.rasterizer.cull_mode);
+    rs.frontFace               = to_vk_front_face(desc.rasterizer.front_face);
+    rs.depthBiasEnable         = desc.rasterizer.depth_bias_enable ? VK_TRUE : VK_FALSE;
+    rs.depthBiasConstantFactor = desc.rasterizer.depth_bias_constant_factor;
+    rs.depthBiasSlopeFactor    = desc.rasterizer.depth_bias_slope_factor;
+    rs.lineWidth               = desc.rasterizer.line_width;
+
+    // Multisample
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = static_cast<VkSampleCountFlagBits>(desc.multisample.sample_count);
+
+    // Depth/stencil
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable  = desc.depth_stencil.depth_test_enable ? VK_TRUE : VK_FALSE;
+    ds.depthWriteEnable = desc.depth_stencil.depth_write_enable ? VK_TRUE : VK_FALSE;
+    ds.depthCompareOp   = to_vk_compare_op(desc.depth_stencil.depth_compare);
+
+    // Blend
+    std::vector<VkPipelineColorBlendAttachmentState> vk_blend(desc.blend_attachments.size());
+    for (usize i = 0; i < desc.blend_attachments.size(); ++i) {
+        const auto& a = desc.blend_attachments[i];
+        vk_blend[i] = {};
+        vk_blend[i].blendEnable         = a.blend_enable ? VK_TRUE : VK_FALSE;
+        vk_blend[i].srcColorBlendFactor = to_vk_blend_factor(a.src_color_factor);
+        vk_blend[i].dstColorBlendFactor = to_vk_blend_factor(a.dst_color_factor);
+        vk_blend[i].colorBlendOp        = to_vk_blend_op(a.color_op);
+        vk_blend[i].srcAlphaBlendFactor = to_vk_blend_factor(a.src_alpha_factor);
+        vk_blend[i].dstAlphaBlendFactor = to_vk_blend_factor(a.dst_alpha_factor);
+        vk_blend[i].alphaBlendOp        = to_vk_blend_op(a.alpha_op);
+        vk_blend[i].colorWriteMask      = static_cast<VkColorComponentFlags>(a.write_mask);
+    }
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = static_cast<u32>(vk_blend.size());
+    cb.pAttachments    = vk_blend.empty() ? nullptr : vk_blend.data();
+
+    // Dynamic state (always viewport + scissor)
+    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dyn{};
+    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = static_cast<u32>(std::size(dyn_states));
+    dyn.pDynamicStates    = dyn_states;
+
+    // Dynamic rendering
+    std::vector<VkFormat> color_formats(desc.render.color_formats.size());
+    for (usize i = 0; i < color_formats.size(); ++i) {
+        color_formats[i] = to_vk_format(desc.render.color_formats[i]);
+    }
+    VkPipelineRenderingCreateInfo render_ci{};
+    render_ci.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    render_ci.colorAttachmentCount    = static_cast<u32>(color_formats.size());
+    render_ci.pColorAttachmentFormats = color_formats.empty() ? nullptr : color_formats.data();
+    render_ci.depthAttachmentFormat   = to_vk_format(desc.render.depth_format);
+
+    VkGraphicsPipelineCreateInfo pci{};
+    pci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pci.pNext               = &render_ci;
+    pci.stageCount          = static_cast<u32>(vk_stages.size());
+    pci.pStages             = vk_stages.data();
+    pci.pVertexInputState   = &vi;
+    pci.pInputAssemblyState = &ia;
+    pci.pViewportState      = &vp;
+    pci.pRasterizationState = &rs;
+    pci.pMultisampleState   = &ms;
+    pci.pDepthStencilState  = &ds;
+    pci.pColorBlendState    = &cb;
+    pci.pDynamicState       = &dyn;
+    pci.layout              = resolve(desc.layout);
+
+    VkPipeline pipe = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipe) != VK_SUCCESS) {
+        log::error(TAG, "vkCreateGraphicsPipelines failed");
+        return {};
+    }
+
+    u32 idx = acquire_slot(m_pipeline_records, m_pipeline_free);
+    auto& rec = m_pipeline_records[idx];
+    rec.pipeline = pipe;
+    u32 gen = bump_generation(rec);
+    return PipelineHandle{idx, gen};
+}
+
+void VulkanRhi::destroy_pipeline(PipelineHandle h) {
+    if (!h.is_valid() || h.index >= m_pipeline_records.size()) return;
+    auto& rec = m_pipeline_records[h.index];
+    if (rec.generation != h.generation) return;
+    if (rec.pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_device, rec.pipeline, nullptr);
+        rec.pipeline = VK_NULL_HANDLE;
+    }
+    rec.generation = 0;
+    m_pipeline_free.push_back(h.index);
+}
+
+// resolve(PipelineHandle) — inlined in vulkan_rhi.h
 
 VkCommandBuffer VulkanRhi::begin_frame() {
     vkWaitForFences(m_device, 1, &m_in_flight[m_frame_index], VK_TRUE, UINT64_MAX);

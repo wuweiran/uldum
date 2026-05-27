@@ -10,60 +10,35 @@ namespace uldum::render {
 static constexpr const char* TAG = "Shadow";
 
 bool create_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm) {
-    VkDevice device = rhi.device();
-    VmaAllocator allocator = rhi.allocator();
     sm.size = SHADOW_MAP_SIZE;
 
-    // Create depth image
-    VkImageCreateInfo img_ci{};
-    img_ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    img_ci.imageType     = VK_IMAGE_TYPE_2D;
-    img_ci.format        = VK_FORMAT_D32_SFLOAT;
-    img_ci.extent        = {sm.size, sm.size, 1};
-    img_ci.mipLevels     = 1;
-    img_ci.arrayLayers   = 1;
-    img_ci.samples       = VK_SAMPLE_COUNT_1_BIT;
-    img_ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    img_ci.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-    if (vmaCreateImage(allocator, &img_ci, &alloc_ci, &sm.depth_image, &sm.depth_alloc, nullptr) != VK_SUCCESS) {
+    rhi::TextureDesc td{};
+    td.width  = sm.size;
+    td.height = sm.size;
+    td.format = rhi::TextureFormat::D32_SFLOAT;
+    td.usage  = rhi::TextureUsage::DepthAttachment | rhi::TextureUsage::Sampled;
+    sm.depth_image = rhi.create_texture(td);
+    if (!sm.depth_image.is_valid()) {
         log::error(TAG, "Failed to create shadow map image");
         return false;
     }
 
-    // Create depth image view
-    VkImageViewCreateInfo view_ci{};
-    view_ci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    view_ci.image    = sm.depth_image;
-    view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_ci.format   = VK_FORMAT_D32_SFLOAT;
-    view_ci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-
-    if (vkCreateImageView(device, &view_ci, nullptr, &sm.depth_view) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create shadow map image view");
-        return false;
-    }
-
-    // Create comparison sampler for PCF shadow sampling
-    VkSamplerCreateInfo sampler_ci{};
-    sampler_ci.sType         = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sampler_ci.magFilter     = VK_FILTER_LINEAR;
-    sampler_ci.minFilter     = VK_FILTER_LINEAR;
-    sampler_ci.addressModeU  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    sampler_ci.addressModeV  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    sampler_ci.addressModeW  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    sampler_ci.borderColor   = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;  // no shadow outside map
-    sampler_ci.compareEnable = VK_TRUE;
-    sampler_ci.compareOp     = VK_COMPARE_OP_LESS;
-
-    if (vkCreateSampler(device, &sampler_ci, nullptr, &sm.sampler) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create shadow map sampler");
-        return false;
+    // Comparison sampler for PCF shadow sampling. ClampToBorder + opaque
+    // white = fragments outside the light's frustum read as "fully lit"
+    // (1.0 compare-LESS ref_depth is true for any ref_depth < 1).
+    {
+        rhi::SamplerDesc sd{};
+        sd.address_u      = rhi::AddressMode::ClampToBorder;
+        sd.address_v      = rhi::AddressMode::ClampToBorder;
+        sd.address_w      = rhi::AddressMode::ClampToBorder;
+        sd.compare_enable = true;
+        sd.compare_op     = rhi::CompareOp::Less;
+        sd.border_color   = rhi::BorderColor::OpaqueWhite;
+        sm.sampler = rhi.create_sampler(sd);
+        if (!sm.sampler.is_valid()) {
+            log::error(TAG, "Failed to create shadow map sampler");
+            return false;
+        }
     }
 
     log::info(TAG, "Shadow map created: {}x{}", sm.size, sm.size);
@@ -71,37 +46,26 @@ bool create_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm) {
 }
 
 void destroy_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm) {
-    VkDevice device = rhi.device();
-    VmaAllocator allocator = rhi.allocator();
-
-    if (sm.sampler)     vkDestroySampler(device, sm.sampler, nullptr);
-    if (sm.depth_view)  vkDestroyImageView(device, sm.depth_view, nullptr);
-    if (sm.depth_image) vmaDestroyImage(allocator, sm.depth_image, sm.depth_alloc);
+    rhi.destroy_sampler(sm.sampler);
+    rhi.destroy_texture(sm.depth_image);
     sm = {};
 }
 
 bool create_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb) {
-    VkBufferCreateInfo buf_ci{};
-    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buf_ci.size  = sizeof(ShadowUBO);
-    buf_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-
-    VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    VmaAllocationInfo alloc_info{};
-    if (vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci, &sb.buffer, &sb.alloc, &alloc_info) != VK_SUCCESS) {
+    rhi::BufferDesc d{};
+    d.size   = sizeof(ShadowUBO);
+    d.usage  = rhi::BufferUsage::Uniform;
+    d.memory = rhi::MemoryUsage::HostSequential;
+    sb.buffer = rhi.create_buffer(d);
+    if (!sb.buffer.is_valid()) {
         log::error(TAG, "Failed to create shadow UBO");
         return false;
     }
-    sb.mapped = alloc_info.pMappedData;
     return true;
 }
 
 void destroy_shadow_buffer(rhi::VulkanRhi& rhi, ShadowBuffer& sb) {
-    if (sb.buffer) vmaDestroyBuffer(rhi.allocator(), sb.buffer, sb.alloc);
+    rhi.destroy_buffer(sb.buffer);
     sb = {};
 }
 

@@ -29,25 +29,17 @@ bool ParticleSystem::init(rhi::VulkanRhi& rhi) {
     m_rhi = &rhi;
 
     // Create dynamic vertex buffer (persistently mapped)
-    usize buf_size = MAX_PARTICLES * 6 * sizeof(ParticleVertex);  // 6 verts per quad (2 triangles)
-
-    VkBufferCreateInfo buf_ci{};
-    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buf_ci.size  = buf_size;
-    buf_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-
-    VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-    VmaAllocationInfo info{};
-    if (vmaCreateBuffer(rhi.allocator(), &buf_ci, &alloc_ci,
-                        &m_vertex_buffer, &m_vertex_alloc, &info) != VK_SUCCESS) {
-        log::error(TAG, "Failed to create particle vertex buffer");
-        return false;
+    {
+        rhi::BufferDesc d{};
+        d.size   = MAX_PARTICLES * 6 * sizeof(ParticleVertex);  // 6 verts per quad
+        d.usage  = rhi::BufferUsage::Vertex;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        m_vertex_buffer = rhi.create_buffer(d);
+        if (!m_vertex_buffer.is_valid()) {
+            log::error(TAG, "Failed to create particle vertex buffer");
+            return false;
+        }
     }
-    m_vertex_mapped = info.pMappedData;
 
     m_particles.reserve(1024);
     log::info(TAG, "Particle system initialized (max {} particles, procedural shapes)", MAX_PARTICLES);
@@ -55,10 +47,8 @@ bool ParticleSystem::init(rhi::VulkanRhi& rhi) {
 }
 
 void ParticleSystem::shutdown() {
-    if (m_vertex_buffer && m_rhi) {
-        vmaDestroyBuffer(m_rhi->allocator(), m_vertex_buffer, m_vertex_alloc);
-    }
-    m_vertex_buffer = VK_NULL_HANDLE;
+    if (m_rhi) m_rhi->destroy_buffer(m_vertex_buffer);
+    m_vertex_buffer = {};
     m_particles.clear();
     m_emitters.clear();
     m_rhi = nullptr;
@@ -194,9 +184,9 @@ void ParticleSystem::update(f32 dt) {
 
 void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
     m_quad_count = 0;
-    if (m_particles.empty() || !m_vertex_mapped) return;
-
-    auto* verts = static_cast<ParticleVertex*>(m_vertex_mapped);
+    if (m_particles.empty()) return;
+    auto* verts = static_cast<ParticleVertex*>(m_rhi->mapped_ptr(m_vertex_buffer));
+    if (!verts) return;
     u32 max_quads = std::min(static_cast<u32>(m_particles.size()), MAX_PARTICLES);
 
     for (u32 i = 0; i < max_quads; ++i) {
@@ -230,12 +220,10 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
     m_quad_count = max_quads;
 }
 
-void ParticleSystem::draw(VkCommandBuffer cmd) const {
-    if (m_quad_count == 0 || !m_vertex_buffer) return;
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &m_vertex_buffer, &offset);
-    vkCmdDraw(cmd, m_quad_count * 6, 1, 0, 0);
+void ParticleSystem::draw(rhi::CommandList& cmd) const {
+    if (m_quad_count == 0 || !m_vertex_buffer.is_valid()) return;
+    cmd.bind_vertex_buffer(0, m_vertex_buffer);
+    cmd.draw(m_quad_count * 6);
 }
 
 } // namespace uldum::render

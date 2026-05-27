@@ -78,7 +78,7 @@ private:
     bool init_imgui();
     void shutdown_imgui();
     void imgui_new_frame();
-    void imgui_render(VkCommandBuffer cmd);
+    void imgui_render(rhi::CommandList& cmd);
     void draw_ui();
     void draw_overlays();  // grid lines, brush circle (via ImGui draw list)
 

@@ -6,6 +6,8 @@
 #include <glm/glm.hpp>
 
 #include "core/types.h"
+#include "rhi/handles.h"
+#include "rhi/command_list.h"
 
 #include <unordered_map>
 
@@ -38,7 +40,7 @@ public:
 
     // Set the active cmd buffer + viewport for this frame. Called by
     // Shell::render immediately before Context::Render().
-    void begin_frame(VkCommandBuffer cmd, VkExtent2D extent);
+    void begin_frame(rhi::CommandList& cmd, VkExtent2D extent);
 
     // ── Rml::RenderInterface ─────────────────────────────────────────────
     Rml::CompiledGeometryHandle CompileGeometry(
@@ -61,17 +63,13 @@ public:
 
 private:
     struct Geometry {
-        VkBuffer      vb         = VK_NULL_HANDLE;
-        VmaAllocation vb_alloc   = VK_NULL_HANDLE;
-        VkBuffer      ib         = VK_NULL_HANDLE;
-        VmaAllocation ib_alloc   = VK_NULL_HANDLE;
-        u32           index_count = 0;
+        rhi::BufferHandle vb{};
+        rhi::BufferHandle ib{};
+        u32               index_count = 0;
     };
     struct Texture {
-        VkImage         image  = VK_NULL_HANDLE;
-        VmaAllocation   alloc  = VK_NULL_HANDLE;
-        VkImageView     view   = VK_NULL_HANDLE;
-        VkDescriptorSet set    = VK_NULL_HANDLE;
+        rhi::TextureHandle       handle{};
+        rhi::DescriptorSetHandle set{};
     };
 
     // Creation helpers
@@ -81,7 +79,7 @@ private:
     bool create_pipeline_layout();
     bool create_pipeline();
     bool create_white_texture();
-    VkDescriptorSet allocate_texture_set(VkImageView view);
+    rhi::DescriptorSetHandle allocate_texture_set(rhi::TextureHandle tex);
     Texture create_texture_from_rgba(const u8* rgba, u32 w, u32 h);
     void    destroy_texture(Texture& tex);
     void    destroy_geometry(Geometry& g);
@@ -89,13 +87,12 @@ private:
     // Lazy-bind pipeline + viewport once per frame (first RenderGeometry call).
     void ensure_pipeline_bound();
 
-    rhi::VulkanRhi&       m_rhi;
-    VkDescriptorSetLayout m_desc_layout     = VK_NULL_HANDLE;
-    VkDescriptorPool      m_desc_pool       = VK_NULL_HANDLE;
-    VkPipelineLayout      m_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline            m_pipeline        = VK_NULL_HANDLE;
-    VkSampler             m_sampler         = VK_NULL_HANDLE;
-    Texture               m_white;
+    rhi::VulkanRhi&                m_rhi;
+    rhi::DescriptorSetLayoutHandle m_desc_layout{};
+    rhi::PipelineLayoutHandle      m_pipeline_layout{};
+    rhi::PipelineHandle            m_pipeline{};
+    rhi::SamplerHandle             m_sampler{};
+    Texture                        m_white;
 
     std::unordered_map<Rml::CompiledGeometryHandle, Geometry> m_geometries;
     std::unordered_map<Rml::TextureHandle, Texture>           m_textures;
@@ -103,7 +100,7 @@ private:
     Rml::TextureHandle          m_next_tex  = 1;
 
     // Per-frame state
-    VkCommandBuffer m_cmd             = VK_NULL_HANDLE;
+    rhi::CommandList* m_cmd           = nullptr;
     VkExtent2D      m_extent          = {0, 0};
     bool            m_pipeline_bound  = false;
     bool            m_scissor_enabled = false;

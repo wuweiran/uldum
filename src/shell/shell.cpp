@@ -209,10 +209,9 @@ void Shell::update(f32 /*dt*/) {
     if (m_impl->context) m_impl->context->Update();
 }
 
-void Shell::render(void* cmd_buf, u32 width, u32 height) {
+void Shell::render(rhi::CommandList& cmd, u32 width, u32 height) {
     auto& impl = *m_impl;
     if (!impl.context) return;
-    VkCommandBuffer cmd = static_cast<VkCommandBuffer>(cmd_buf);
     VkExtent2D extent{width, height};
     impl.render->begin_frame(cmd, extent);
     impl.context->Render();

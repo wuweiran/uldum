@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.h"
+#include "rhi/command_list.h"
 
 #include <functional>
 #include <memory>
@@ -44,12 +45,10 @@ public:
 
     // Per-frame:
     void update(f32 dt);
-    // `cmd_buf` is a VkCommandBuffer (erased to opaque pointer here to avoid
-    // pulling vulkan.h into every translation unit that includes shell.h;
-    // shell.cpp / render_interface.cpp cast it back internally). Call this
-    // inside an active render pass on the same cmd buffer the 3D scene draws
-    // into — Shell renders into the same color attachment as an overlay.
-    void render(void* cmd_buf, u32 width, u32 height);
+    // Call this inside an active render pass on the same cmd buffer the 3D
+    // scene draws into — Shell renders into the same color attachment as
+    // an overlay.
+    void render(rhi::CommandList& cmd, u32 width, u32 height);
 
     // Input plumbing — platform layer forwards events here. Positions in
     // window-pixel coords.

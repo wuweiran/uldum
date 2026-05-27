@@ -22,8 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
+#include "rhi/handles.h"
 
 namespace uldum::rhi { class VulkanRhi; }
 
@@ -64,8 +63,8 @@ public:
     // succeed; minimal Linux installs may fail and need a game-supplied
     // fallback via load_fallback / load_fallback_os_path.
     bool init_from_system(rhi::VulkanRhi& rhi,
-                          VkDescriptorSetLayout desc_layout,
-                          VkSampler sampler);
+                          rhi::DescriptorSetLayoutHandle desc_layout,
+                          rhi::SamplerHandle sampler);
 
     // Add an extra fallback face after `init_from_system`. Optional
     // entry point for game-supplied fonts (consistency across platforms,
@@ -96,12 +95,12 @@ public:
     // scale factor: on_screen_px = em_units * (target_px / em_pixels()).
     u32 em_pixels() const { return m_em_pixels; }
 
-    VkDescriptorSet atlas_descriptor() const { return m_atlas_set; }
+    rhi::DescriptorSetHandle atlas_descriptor() const { return m_atlas_set; }
 
     bool valid() const { return m_font != nullptr; }
 
 private:
-    bool create_atlas(VkDescriptorSetLayout desc_layout, VkSampler sampler);
+    bool create_atlas(rhi::DescriptorSetLayoutHandle desc_layout, rhi::SamplerHandle sampler);
     bool rasterize_glyph(u32 codepoint, Glyph& out);
     bool rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out);
     bool upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y);
@@ -109,8 +108,8 @@ private:
     bool init_primary_from_bytes(rhi::VulkanRhi& rhi,
                                   std::string bytes,
                                   std::string_view origin,
-                                  VkDescriptorSetLayout desc_layout,
-                                  VkSampler sampler);
+                                  rhi::DescriptorSetLayoutHandle desc_layout,
+                                  rhi::SamplerHandle sampler);
 
     rhi::VulkanRhi* m_rhi = nullptr;
 
@@ -141,11 +140,8 @@ private:
     // ── Atlas ────────────────────────────────────────────────────────────
     static constexpr u32 kAtlasSize = 1024;
 
-    VkImage         m_atlas_image = VK_NULL_HANDLE;
-    VmaAllocation   m_atlas_alloc = VK_NULL_HANDLE;
-    VkImageView     m_atlas_view  = VK_NULL_HANDLE;
-    VkDescriptorPool m_atlas_pool = VK_NULL_HANDLE;
-    VkDescriptorSet m_atlas_set   = VK_NULL_HANDLE;
+    rhi::TextureHandle       m_atlas{};
+    rhi::DescriptorSetHandle m_atlas_set{};
 
     // Shelf packer state.
     struct Shelf { u32 y; u32 height; u32 next_x; };

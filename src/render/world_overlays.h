@@ -21,10 +21,11 @@
 // at a path declared in hud.json; the consumer code stays unchanged.
 //
 // All draws share one pipeline (`engine/shaders/world_overlay.{vert,frag}`)
-// and one VBO; the per-draw texture switch is a `vkCmdBindDescriptorSets`
-// call between draws.
+// and one VBO; the per-draw texture switch is a descriptor-set bind
+// between draws.
 
 #include "core/types.h"
+#include "rhi/command_list.h"
 #include "simulation/handle_types.h"
 
 #include <glm/vec3.hpp>
@@ -34,8 +35,6 @@
 #include <span>
 #include <string_view>
 #include <vector>
-
-typedef struct VkCommandBuffer_T* VkCommandBuffer;
 
 namespace uldum::rhi { class VulkanRhi; }
 
@@ -142,7 +141,7 @@ public:
     // Issue draws into `cmd` against `view_projection`. Call inside
     // the active render pass, after the 3D scene draws and before the
     // HUD. No-op if the draw list is empty.
-    void draw(VkCommandBuffer cmd, const glm::mat4& view_projection);
+    void draw(rhi::CommandList& cmd, const glm::mat4& view_projection);
 
     // Opaque state — declared in world_overlays.cpp so this header
     // stays free of vulkan.h / VMA.

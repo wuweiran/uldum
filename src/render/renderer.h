@@ -13,9 +13,8 @@
 #include "asset/model.h"
 
 #include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/command_list.h"
 
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
 #include <glm/mat4x4.hpp>
 
 #include <functional>
@@ -95,13 +94,13 @@ public:
     void set_local_player(u32 player_id) { m_local_player_id = player_id; }
 
     // Upload the fog texture to GPU. Must be called outside a render pass.
-    void upload_fog(VkCommandBuffer cmd);
+    void upload_fog(rhi::CommandList& cmd);
 
     // Record shadow depth pass (must be called before begin_rendering).
     // alpha: interpolation factor between previous and current tick (0..1).
     // `world` is non-const because the renderer advances
     // World::anim_queues as script-driven clips finish.
-    void draw_shadows(VkCommandBuffer cmd, simulation::World& world, f32 alpha = 1.0f);
+    void draw_shadows(rhi::CommandList& cmd, simulation::World& world, f32 alpha = 1.0f);
 
     // Record main pass draw commands into the given command buffer.
     // Reads Transform + Renderable components from the world.
@@ -111,7 +110,7 @@ public:
     // before any unit mesh — ground decals like selection rings record
     // their draws here so meshes (including alpha-blended ones)
     // composite *over* them rather than being depth-occluded by them.
-    void draw(VkCommandBuffer cmd, VkExtent2D extent, simulation::World& world,
+    void draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::World& world,
               f32 alpha = 1.0f,
               const std::function<void()>& on_after_terrain = {});
 
@@ -142,12 +141,12 @@ private:
     bool create_terrain_textures();
     LoadedModel* get_or_load_model(const std::string& model_path);
     GpuMesh& get_or_upload_mesh(const std::string& model_path);
-    VkDescriptorSet allocate_mesh_descriptor(const GpuTexture& diffuse);
-    VkDescriptorSet allocate_terrain_descriptor(const TerrainMaterial& mat);
-    VkDescriptorSet allocate_shadow_descriptor();
-    VkDescriptorSet allocate_bone_descriptor(VkBuffer bone_buffer, usize size);
+    rhi::DescriptorSetHandle allocate_mesh_descriptor(const GpuTexture& diffuse);
+    rhi::DescriptorSetHandle allocate_terrain_descriptor(const TerrainMaterial& mat);
+    rhi::DescriptorSetHandle allocate_shadow_descriptor();
+    rhi::DescriptorSetHandle allocate_bone_descriptor(rhi::BufferHandle bone_buffer, usize size);
 
-    void draw_shadow_pass(VkCommandBuffer cmd, simulation::World& world, f32 alpha);
+    void draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world, f32 alpha);
 
     // Returns true if an entity should be hidden by fog of war (enemy in non-visible tile).
     bool is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const;
@@ -162,37 +161,34 @@ private:
     std::string     m_map_root;  // map root for resolving model paths
 
     // Descriptor infrastructure
-    VkDescriptorSetLayout m_mesh_desc_layout    = VK_NULL_HANDLE;  // set 0: 1 diffuse sampler
-    VkDescriptorSetLayout m_terrain_desc_layout = VK_NULL_HANDLE;  // set 0: 4 layers + 1 splatmap
-    VkDescriptorSetLayout m_shadow_desc_layout  = VK_NULL_HANDLE;  // set 1: UBO + shadow map
-    // Growable descriptor pool — allocates new pools on demand
-    std::vector<VkDescriptorPool> m_descriptor_pools;
-    VkDescriptorPool allocate_or_grow_pool();
+    rhi::DescriptorSetLayoutHandle m_mesh_desc_layout{};    // set 0: 1 diffuse sampler
+    rhi::DescriptorSetLayoutHandle m_terrain_desc_layout{}; // set 0: 4 layers + 1 splatmap
+    rhi::DescriptorSetLayoutHandle m_shadow_desc_layout{};  // set 1: UBO + shadow map
 
     // Mesh pipeline (set 0 = material, set 1 = shadow)
-    VkPipelineLayout m_mesh_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_mesh_pipeline        = VK_NULL_HANDLE;
+    rhi::PipelineLayoutHandle m_mesh_pipeline_layout{};
+    rhi::PipelineHandle       m_mesh_pipeline{};
 
     // Terrain pipeline (set 0 = terrain material, set 1 = shadow)
-    VkPipelineLayout m_terrain_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_terrain_pipeline        = VK_NULL_HANDLE;
+    rhi::PipelineLayoutHandle m_terrain_pipeline_layout{};
+    rhi::PipelineHandle       m_terrain_pipeline{};
 
     // Water surface pipeline (transparent overlay, same mesh as terrain)
-    VkPipelineLayout m_water_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_water_pipeline        = VK_NULL_HANDLE;
+    rhi::PipelineLayoutHandle m_water_pipeline_layout{};
+    rhi::PipelineHandle       m_water_pipeline{};
 
     // Skinned mesh pipeline (set 0 = material, set 1 = shadow, set 2 = bones SSBO)
-    VkDescriptorSetLayout m_bone_desc_layout          = VK_NULL_HANDLE;  // set 2: 1 SSBO
-    VkPipelineLayout m_skinned_mesh_pipeline_layout   = VK_NULL_HANDLE;
-    VkPipeline       m_skinned_mesh_pipeline          = VK_NULL_HANDLE;
-    VkPipelineLayout m_skinned_shadow_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_skinned_shadow_pipeline        = VK_NULL_HANDLE;
+    rhi::DescriptorSetLayoutHandle m_bone_desc_layout{};   // set 2: 1 SSBO
+    rhi::PipelineLayoutHandle      m_skinned_mesh_pipeline_layout{};
+    rhi::PipelineHandle            m_skinned_mesh_pipeline{};
+    rhi::PipelineLayoutHandle      m_skinned_shadow_pipeline_layout{};
+    rhi::PipelineHandle            m_skinned_shadow_pipeline{};
 
     // Skybox pipeline (set 0 = cubemap, push constant = VP without translation)
-    VkDescriptorSetLayout m_skybox_desc_layout = VK_NULL_HANDLE;
-    VkPipelineLayout m_skybox_pipeline_layout  = VK_NULL_HANDLE;
-    VkPipeline       m_skybox_pipeline         = VK_NULL_HANDLE;
-    VkDescriptorSet  m_skybox_desc_set         = VK_NULL_HANDLE;
+    rhi::DescriptorSetLayoutHandle m_skybox_desc_layout{};
+    rhi::PipelineLayoutHandle      m_skybox_pipeline_layout{};
+    rhi::PipelineHandle            m_skybox_pipeline{};
+    rhi::DescriptorSetHandle       m_skybox_desc_set{};
     GpuTexture       m_skybox_cubemap{};
     GpuMesh          m_skybox_mesh{};
     bool             m_has_skybox = false;
@@ -200,15 +196,15 @@ private:
     bool create_skybox_mesh();
 
     // Shadow depth pass pipeline (push constant = light MVP, depth-only)
-    VkPipelineLayout m_shadow_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_shadow_pipeline        = VK_NULL_HANDLE;
-    VkPipelineLayout m_terrain_shadow_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_terrain_shadow_pipeline        = VK_NULL_HANDLE;
+    rhi::PipelineLayoutHandle m_shadow_pipeline_layout{};
+    rhi::PipelineHandle       m_shadow_pipeline{};
+    rhi::PipelineLayoutHandle m_terrain_shadow_pipeline_layout{};
+    rhi::PipelineHandle       m_terrain_shadow_pipeline{};
 
     // Shadow map resources
-    ShadowMap       m_shadow_map{};
-    ShadowBuffer    m_shadow_ubo{};
-    VkDescriptorSet m_shadow_desc_set = VK_NULL_HANDLE;
+    ShadowMap                m_shadow_map{};
+    ShadowBuffer             m_shadow_ubo{};
+    rhi::DescriptorSetHandle m_shadow_desc_set{};
 
     // Environment lighting (UBO at set 1 binding 2, cubemap at set 1 binding 3)
     static constexpr u32 MAX_POINT_LIGHTS = 8;
@@ -226,9 +222,7 @@ private:
         glm::ivec4 light_count{0, 0, 0, 0};                 // x = active point light count
         PointLight lights[MAX_POINT_LIGHTS]{};
     };
-    VkBuffer      m_env_ubo_buffer = VK_NULL_HANDLE;
-    VmaAllocation m_env_ubo_alloc  = VK_NULL_HANDLE;
-    void*         m_env_ubo_mapped = nullptr;
+    rhi::BufferHandle m_env_ubo_buffer{};
     GpuTexture    m_default_cubemap{};  // 1x1 fallback when no skybox
     glm::vec3     m_sun_direction{-0.4f, -0.5f, 0.8f};  // cached for shadow pass
     EnvironmentUBO m_env_data{};  // cached, updated with point lights each frame
@@ -283,38 +277,29 @@ private:
     // Mega vertex/index buffers — all static meshes share one VB+IB (Phase 14b)
     static constexpr u32 MEGA_MAX_VERTICES = 512 * 1024;
     static constexpr u32 MEGA_MAX_INDICES  = 2 * 1024 * 1024;
-    VkBuffer        m_mega_vb        = VK_NULL_HANDLE;
-    VmaAllocation   m_mega_vb_alloc  = VK_NULL_HANDLE;
-    void*           m_mega_vb_mapped = nullptr;
-    u32             m_mega_vb_used   = 0;   // next free vertex slot
-    VkBuffer        m_mega_ib        = VK_NULL_HANDLE;
-    VmaAllocation   m_mega_ib_alloc  = VK_NULL_HANDLE;
-    void*           m_mega_ib_mapped = nullptr;
-    u32             m_mega_ib_used   = 0;   // next free index slot
+    rhi::BufferHandle m_mega_vb{};
+    u32               m_mega_vb_used = 0;   // next free vertex slot
+    rhi::BufferHandle m_mega_ib{};
+    u32               m_mega_ib_used = 0;   // next free index slot
     GpuMesh upload_to_mega(const asset::MeshData& mesh);
 
     // Bindless texture array (Phase 14b)
     static constexpr u32 MAX_BINDLESS_TEXTURES = 256;
-    VkDescriptorSetLayout m_bindless_layout  = VK_NULL_HANDLE;
-    VkDescriptorPool      m_bindless_pool    = VK_NULL_HANDLE;
-    VkDescriptorSet       m_bindless_set     = VK_NULL_HANDLE;
-    u32                   m_bindless_count    = 0;
-    u32                   m_default_tex_idx  = 0;
-    u32                   m_corpse_tex_idx   = 0;
+    rhi::DescriptorSetLayoutHandle m_bindless_layout{};
+    rhi::DescriptorSetHandle       m_bindless_set{};
+    u32                            m_bindless_count   = 0;
+    u32                            m_default_tex_idx  = 0;
+    u32                            m_corpse_tex_idx   = 0;
     bool create_bindless_resources();
     u32  register_bindless_texture(const GpuTexture& tex);
 
     // Ring-buffered by frame_index() — CPU writes frame N+1 while the GPU
     // reads frame N. Without this, layout shifts on entity culling alias
     // one mesh's instance slot onto another's.
-    VkBuffer        m_instance_buffer  [rhi::MAX_FRAMES_IN_FLIGHT] = {};
-    VmaAllocation   m_instance_alloc   [rhi::MAX_FRAMES_IN_FLIGHT] = {};
-    void*           m_instance_mapped  [rhi::MAX_FRAMES_IN_FLIGHT] = {};
-    VkDescriptorSet m_instance_desc_set[rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    rhi::BufferHandle        m_instance_buffer  [rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    rhi::DescriptorSetHandle m_instance_desc_set[rhi::MAX_FRAMES_IN_FLIGHT] = {};
 
-    VkBuffer        m_indirect_buffer[rhi::MAX_FRAMES_IN_FLIGHT] = {};
-    VmaAllocation   m_indirect_alloc [rhi::MAX_FRAMES_IN_FLIGHT] = {};
-    void*           m_indirect_mapped[rhi::MAX_FRAMES_IN_FLIGHT] = {};
+    rhi::BufferHandle m_indirect_buffer[rhi::MAX_FRAMES_IN_FLIGHT] = {};
 
     // Draw group: one indirect draw per unique mesh geometry
     struct DrawGroup {
@@ -330,14 +315,12 @@ private:
     void build_static_draw_batches(const simulation::World& world, f32 alpha);
 
     // Particle pipeline (alpha-blended, depth test on, depth write off)
-    VkPipelineLayout m_particle_pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline       m_particle_pipeline        = VK_NULL_HANDLE;
+    rhi::PipelineLayoutHandle m_particle_pipeline_layout{};
+    rhi::PipelineHandle       m_particle_pipeline{};
 
     // Fog of war texture (R8, tiles_x * tiles_y, updated per frame)
     GpuTexture  m_fog_texture{};
-    VkBuffer    m_fog_staging_buffer = VK_NULL_HANDLE;
-    VmaAllocation m_fog_staging_alloc = VK_NULL_HANDLE;
-    void*       m_fog_staging_mapped = nullptr;
+    rhi::BufferHandle m_fog_staging_buffer{};
     u32         m_fog_width = 0;
     u32         m_fog_height = 0;
     bool        m_fog_enabled = false;

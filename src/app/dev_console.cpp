@@ -771,9 +771,9 @@ void DevConsole::draw_disconnected_overlay() {
     ImGui::End();
 }
 
-void DevConsole::render(VkCommandBuffer cmd) {
+void DevConsole::render(rhi::CommandList& cmd) {
     if (!m_initialized) return;
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd.raw());
 }
 
 DevConsole::Action DevConsole::poll_action() {

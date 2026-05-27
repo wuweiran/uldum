@@ -1,9 +1,8 @@
 #pragma once
 
 #include "core/types.h"
+#include "rhi/handles.h"
 
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
 #include <glm/mat4x4.hpp>
 
 namespace uldum::rhi { class VulkanRhi; }
@@ -14,11 +13,9 @@ static constexpr u32 SHADOW_MAP_SIZE = 2048;
 
 // Shadow map resources: depth texture rendered from the light's perspective.
 struct ShadowMap {
-    VkImage       depth_image  = VK_NULL_HANDLE;
-    VmaAllocation depth_alloc  = VK_NULL_HANDLE;
-    VkImageView   depth_view   = VK_NULL_HANDLE;
-    VkSampler     sampler      = VK_NULL_HANDLE;  // comparison sampler for PCF
-    u32           size         = SHADOW_MAP_SIZE;
+    rhi::TextureHandle depth_image{};
+    rhi::SamplerHandle sampler{};  // comparison sampler for PCF
+    u32                size = SHADOW_MAP_SIZE;
 };
 
 // Uniform buffer for shadow data passed to main-pass shaders.
@@ -27,9 +24,9 @@ struct ShadowUBO {
 };
 
 struct ShadowBuffer {
-    VkBuffer      buffer = VK_NULL_HANDLE;
-    VmaAllocation alloc  = VK_NULL_HANDLE;
-    void*         mapped = nullptr;  // persistently mapped
+    rhi::BufferHandle buffer{};
+    // Persistent map lives inside the RHI's record; query via
+    // `rhi.mapped_ptr(buffer)` when writing.
 };
 
 bool create_shadow_map(rhi::VulkanRhi& rhi, ShadowMap& sm);

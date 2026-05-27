@@ -13,14 +13,13 @@
 // sets. Keep it lean: the editor's overlay language is line art.
 
 #include "core/types.h"
+#include "rhi/command_list.h"
 
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
 #include <span>
-
-typedef struct VkCommandBuffer_T* VkCommandBuffer;
 
 namespace uldum::rhi { class VulkanRhi; }
 
@@ -51,7 +50,7 @@ public:
     // Emit the batched lines into `cmd` against `view_projection`.
     // Call inside the active render pass; safe to call when nothing
     // has been queued (no-op).
-    void draw(VkCommandBuffer cmd, const glm::mat4& view_projection);
+    void draw(rhi::CommandList& cmd, const glm::mat4& view_projection);
 
     struct Impl;
 private:

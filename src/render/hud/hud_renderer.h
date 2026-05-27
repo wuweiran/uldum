@@ -20,10 +20,9 @@
 
 #include "core/types.h"
 #include "hud/hud.h"  // Rect, Color, rgba — public POD types
+#include "rhi/command_list.h"
 
 #include <string_view>
-
-typedef struct VkCommandBuffer_T* VkCommandBuffer;
 
 namespace uldum::rhi { class VulkanRhi; }
 
@@ -86,7 +85,7 @@ public:
     // Upload batches, bind pipelines, issue draws. Call inside the
     // render pass; invalidates `frame_open` so subsequent draw_* calls
     // are silent no-ops until the next begin_frame.
-    void render(VkCommandBuffer cmd);
+    void render(rhi::CommandList& cmd);
 
     // Bound Hud — read-only accessor. Tree-walking node draws need it
     // to query local_player / locale_manager. Overrides HudRenderInterface.

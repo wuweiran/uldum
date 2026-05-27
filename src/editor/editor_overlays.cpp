@@ -57,20 +57,18 @@ u32 pack_premul_rgba(glm::vec4 c) {
 struct EditorOverlays::Impl {
     rhi::VulkanRhi* rhi = nullptr;
 
-    VkPipelineLayout      pipeline_layout = VK_NULL_HANDLE;
-    VkPipeline            pipeline        = VK_NULL_HANDLE;
-    VkDescriptorSetLayout desc_layout     = VK_NULL_HANDLE;
-    VkDescriptorPool      desc_pool       = VK_NULL_HANDLE;
-    VkDescriptorSet       desc_set        = VK_NULL_HANDLE;
+    rhi::PipelineLayoutHandle      pipeline_layout{};
+    rhi::PipelineHandle            pipeline{};
+    rhi::DescriptorSetLayoutHandle desc_layout{};
+    rhi::DescriptorSetHandle       desc_set{};
 
     // 1x1 white texture stand-in so the shared fragment shader's
     // sample is identity for line draws.
     render::GpuTexture    white_tex{};
 
     struct Frame {
-        VkBuffer      vb     = VK_NULL_HANDLE;
-        VmaAllocation alloc  = VK_NULL_HANDLE;
-        Vertex*       mapped = nullptr;
+        rhi::BufferHandle vb{};
+        Vertex*           mapped = nullptr;
     };
     std::array<Frame, rhi::MAX_FRAMES_IN_FLIGHT> frames{};
 
@@ -79,234 +77,160 @@ struct EditorOverlays::Impl {
 
 // ── Pipeline ─────────────────────────────────────────────────────────────
 
-static VkShaderModule load_shader(VkDevice device, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
-    if (!mgr) return VK_NULL_HANDLE;
+    if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
     if (bytes.empty()) {
         log::error(TAG, "shader not found: '{}'", path);
-        return VK_NULL_HANDLE;
+        return {};
     }
-    VkShaderModuleCreateInfo ci{};
-    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = bytes.size();
-    ci.pCode    = reinterpret_cast<const uint32_t*>(bytes.data());
-    VkShaderModule mod = VK_NULL_HANDLE;
-    vkCreateShaderModule(device, &ci, nullptr, &mod);
-    return mod;
+    return rhi.create_shader_module(bytes);
 }
 
 static bool create_descriptors(EditorOverlays::Impl& s) {
-    VkDescriptorSetLayoutBinding b{};
-    b.binding         = 0;
-    b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    b.descriptorCount = 1;
-    b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo lci{};
-    lci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    lci.bindingCount = 1;
-    lci.pBindings    = &b;
-    if (vkCreateDescriptorSetLayout(s.rhi->device(), &lci, nullptr, &s.desc_layout) != VK_SUCCESS) {
-        return false;
-    }
-
-    VkDescriptorPoolSize sz{};
-    sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sz.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo pci{};
-    pci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pci.maxSets       = 1;
-    pci.poolSizeCount = 1;
-    pci.pPoolSizes    = &sz;
-    if (vkCreateDescriptorPool(s.rhi->device(), &pci, nullptr, &s.desc_pool) != VK_SUCCESS) {
-        return false;
-    }
-    return true;
+    rhi::DescriptorSetLayoutBinding b{};
+    b.binding = 0;
+    b.type    = rhi::DescriptorType::CombinedImageSampler;
+    b.count   = 1;
+    b.stages  = rhi::ShaderStage::Fragment;
+    rhi::DescriptorSetLayoutDesc desc{};
+    desc.bindings = std::span{&b, 1};
+    s.desc_layout = s.rhi->create_descriptor_set_layout(desc);
+    return s.desc_layout.is_valid();
 }
 
 static bool create_white_texture(EditorOverlays::Impl& s) {
     const u8 white[4] = { 255, 255, 255, 255 };
     s.white_tex = render::upload_texture_rgba(*s.rhi, white, 1, 1,
                                               /*srgb=*/false, /*clamp=*/true);
-    if (s.white_tex.image == VK_NULL_HANDLE) return false;
+    if (!s.white_tex.texture.is_valid()) return false;
 
-    VkDescriptorSetAllocateInfo dsai{};
-    dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool     = s.desc_pool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts        = &s.desc_layout;
-    if (vkAllocateDescriptorSets(s.rhi->device(), &dsai, &s.desc_set) != VK_SUCCESS) {
-        return false;
-    }
-    VkDescriptorImageInfo info{};
-    info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    info.imageView   = s.white_tex.view;
-    info.sampler     = s.white_tex.sampler;
-    VkWriteDescriptorSet wr{};
-    wr.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wr.dstSet          = s.desc_set;
-    wr.dstBinding      = 0;
-    wr.descriptorCount = 1;
-    wr.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    wr.pImageInfo      = &info;
-    vkUpdateDescriptorSets(s.rhi->device(), 1, &wr, 0, nullptr);
+    s.desc_set = s.rhi->allocate_descriptor_set(s.desc_layout);
+    if (!s.desc_set.is_valid()) return false;
+
+    rhi::WriteDescriptor w{};
+    w.binding = 0;
+    w.type    = rhi::DescriptorType::CombinedImageSampler;
+    w.texture = s.white_tex.texture;
+    w.sampler = s.white_tex.sampler;
+    s.rhi->update_descriptor_set(s.desc_set, std::span{&w, 1});
     return true;
 }
 
+// Helper to map the RHI's VkFormat accessors to the rhi:: enum. Until the
+// RHI exposes swapchain_format() / depth_format() as rhi::TextureFormat,
+// this conversion lives in consumer code.
+static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8_UNORM:            return rhi::TextureFormat::R8_UNORM;
+        case VK_FORMAT_R8G8B8A8_UNORM:      return rhi::TextureFormat::R8G8B8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:       return rhi::TextureFormat::R8G8B8A8_SRGB;
+        case VK_FORMAT_B8G8R8A8_UNORM:      return rhi::TextureFormat::B8G8R8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB:       return rhi::TextureFormat::B8G8R8A8_SRGB;
+        case VK_FORMAT_D32_SFLOAT:          return rhi::TextureFormat::D32_SFLOAT;
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return rhi::TextureFormat::R16G16B16A16_SFLOAT;
+        case VK_FORMAT_R32_SFLOAT:          return rhi::TextureFormat::R32_SFLOAT;
+        default: break;
+    }
+    return rhi::TextureFormat::Undefined;
+}
+
 static bool create_pipeline(EditorOverlays::Impl& s) {
-    VkDevice device = s.rhi->device();
-
-    VkShaderModule vert = load_shader(device, kVertSpv);
-    VkShaderModule frag = load_shader(device, kFragSpv);
-    if (!vert || !frag) {
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+    auto vert_h = load_shader(*s.rhi, kVertSpv);
+    auto frag_h = load_shader(*s.rhi, kFragSpv);
+    if (!s.rhi->resolve(vert_h) || !s.rhi->resolve(frag_h)) {
+        s.rhi->destroy_shader_module(vert_h);
+        s.rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pc.offset     = 0;
-    pc.size       = sizeof(PushConstants);
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.offset = 0;
+    pc.size   = sizeof(PushConstants);
 
-    VkPipelineLayoutCreateInfo plci{};
-    plci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plci.setLayoutCount         = 1;
-    plci.pSetLayouts            = &s.desc_layout;
-    plci.pushConstantRangeCount = 1;
-    plci.pPushConstantRanges    = &pc;
-    if (vkCreatePipelineLayout(device, &plci, nullptr, &s.pipeline_layout) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-        return false;
-    }
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.set_layouts    = std::span{&s.desc_layout, 1};
+    pl_desc.push_constants = std::span{&pc, 1};
+    s.pipeline_layout = s.rhi->create_pipeline_layout(pl_desc);
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
-    stages[0].pName  = "main";
-    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
-    stages[1].pName  = "main";
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;
+    stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment;
+    stages[1].module = frag_h;
 
-    VkVertexInputBindingDescription binding{};
-    binding.binding   = 0;
-    binding.stride    = sizeof(Vertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::VertexBindingDesc binding{};
+    binding.binding = 0;
+    binding.stride  = sizeof(Vertex);
 
-    VkVertexInputAttributeDescription attrs[3]{};
+    rhi::VertexAttributeDesc attrs[3]{};
     attrs[0].location = 0; attrs[0].binding = 0;
-    attrs[0].format   = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].format   = rhi::TextureFormat::R32G32B32_SFLOAT;
     attrs[0].offset   = offsetof(Vertex, x);
     attrs[1].location = 1; attrs[1].binding = 0;
-    attrs[1].format   = VK_FORMAT_R32G32_SFLOAT;
+    attrs[1].format   = rhi::TextureFormat::R32G32_SFLOAT;
     attrs[1].offset   = offsetof(Vertex, u);
     attrs[2].location = 2; attrs[2].binding = 0;
-    attrs[2].format   = VK_FORMAT_R8G8B8A8_UNORM;
+    attrs[2].format   = rhi::TextureFormat::R8G8B8A8_UNORM;
     attrs[2].offset   = offsetof(Vertex, rgba);
 
-    VkPipelineVertexInputStateCreateInfo vi{};
-    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vi.vertexBindingDescriptionCount   = 1;
-    vi.pVertexBindingDescriptions      = &binding;
-    vi.vertexAttributeDescriptionCount = 3;
-    vi.pVertexAttributeDescriptions    = attrs;
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 3};
 
-    VkPipelineInputAssemblyStateCreateInfo ia{};
-    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    rhi::RasterizerState rs{};
+    rs.cull_mode = rhi::CullMode::None;
 
-    VkPipelineViewportStateCreateInfo vp{};
-    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vp.viewportCount = 1; vp.scissorCount = 1;
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = false;
+    ds.depth_compare      = rhi::CompareOp::LessEqual;
 
-    VkPipelineRasterizationStateCreateInfo rs{};
-    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_NONE;
-    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth   = 1.0f;  // wider needs the wideLines device feature
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::One;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::OneMinusSrcAlpha;
 
-    VkPipelineMultisampleStateCreateInfo ms{};
-    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = s.rhi->msaa_samples();
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(s.rhi->msaa_samples());
 
-    VkPipelineDepthStencilStateCreateInfo ds{};
-    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    ds.depthTestEnable  = VK_TRUE;
-    ds.depthWriteEnable = VK_FALSE;
-    ds.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(s.rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(s.rhi->depth_format());
 
-    // Premultiplied-alpha blend — matches the world_overlay shader's
-    // output expectation, so the colors we pack must also be
-    // premultiplied (see pack_premul_rgba).
-    VkPipelineColorBlendAttachmentState ba{};
-    ba.blendEnable         = VK_TRUE;
-    ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ba.colorBlendOp        = VK_BLEND_OP_ADD;
-    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ba.alphaBlendOp        = VK_BLEND_OP_ADD;
-    ba.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                           | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = s.pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::LineList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
 
-    VkPipelineColorBlendStateCreateInfo cb{};
-    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments    = &ba;
+    s.pipeline = s.rhi->create_graphics_pipeline(desc);
 
-    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
-    dyn.pDynamicStates    = dyn_states;
-
-    VkFormat color_format = s.rhi->swapchain_format();
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount    = 1;
-    rendering.pColorAttachmentFormats = &color_format;
-    rendering.depthAttachmentFormat   = s.rhi->depth_format();
-
-    VkGraphicsPipelineCreateInfo ci{};
-    ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    ci.pNext               = &rendering;
-    ci.stageCount          = 2;
-    ci.pStages             = stages;
-    ci.pVertexInputState   = &vi;
-    ci.pInputAssemblyState = &ia;
-    ci.pViewportState      = &vp;
-    ci.pRasterizationState = &rs;
-    ci.pMultisampleState   = &ms;
-    ci.pDepthStencilState  = &ds;
-    ci.pColorBlendState    = &cb;
-    ci.pDynamicState       = &dyn;
-    ci.layout              = s.pipeline_layout;
-
-    VkResult r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &s.pipeline);
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
-    return r == VK_SUCCESS;
+    s.rhi->destroy_shader_module(vert_h);
+    s.rhi->destroy_shader_module(frag_h);
+    return s.pipeline.is_valid();
 }
 
 static bool create_buffers(EditorOverlays::Impl& s) {
     VkDeviceSize bytes = static_cast<VkDeviceSize>(kMaxVerts) * sizeof(Vertex);
     for (auto& f : s.frames) {
-        VkBufferCreateInfo bci{};
-        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bci.size  = bytes;
-        bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        VmaAllocationCreateInfo aci{};
-        aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo info{};
-        if (vmaCreateBuffer(s.rhi->allocator(), &bci, &aci, &f.vb, &f.alloc, &info) != VK_SUCCESS) {
-            return false;
-        }
-        f.mapped = static_cast<Vertex*>(info.pMappedData);
+        rhi::BufferDesc d{};
+        d.size   = bytes;
+        d.usage  = rhi::BufferUsage::Vertex;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        f.vb = s.rhi->create_buffer(d);
+        if (!f.vb.is_valid()) return false;
+        f.mapped = static_cast<Vertex*>(s.rhi->mapped_ptr(f.vb));
+        if (!f.mapped) return false;
     }
     return true;
 }
@@ -334,12 +258,12 @@ void EditorOverlays::shutdown() {
         vkDeviceWaitIdle(device);
         render::destroy_texture(*m_impl->rhi, m_impl->white_tex);
         for (auto& f : m_impl->frames) {
-            if (f.vb) vmaDestroyBuffer(m_impl->rhi->allocator(), f.vb, f.alloc);
+            m_impl->rhi->destroy_buffer(f.vb);
         }
-        if (m_impl->pipeline)        vkDestroyPipeline(device, m_impl->pipeline, nullptr);
-        if (m_impl->pipeline_layout) vkDestroyPipelineLayout(device, m_impl->pipeline_layout, nullptr);
-        if (m_impl->desc_pool)       vkDestroyDescriptorPool(device, m_impl->desc_pool, nullptr);
-        if (m_impl->desc_layout)     vkDestroyDescriptorSetLayout(device, m_impl->desc_layout, nullptr);
+        m_impl->rhi->destroy_pipeline(m_impl->pipeline);
+        m_impl->rhi->destroy_pipeline_layout(m_impl->pipeline_layout);
+        m_impl->rhi->free_descriptor_set(m_impl->desc_set);
+        m_impl->rhi->destroy_descriptor_set_layout(m_impl->desc_layout);
     }
     delete m_impl;
     m_impl = nullptr;
@@ -353,28 +277,24 @@ void EditorOverlays::begin_frame() {
 }
 
 void EditorOverlays::add_line(glm::vec3 a, glm::vec3 b, glm::vec4 color) {
-    if (!m_impl || !m_impl->pipeline) return;
+    if (!m_impl || !m_impl->pipeline.is_valid()) return;
     if (m_impl->next_vertex + 2 > kMaxVerts) return;
-    u32 slot = m_impl->rhi->frame_index();
-    auto& f = m_impl->frames[slot];
-    if (!f.mapped) return;
+    Vertex* mapped = m_impl->frames[m_impl->rhi->frame_index()].mapped;
     u32 rgba = pack_premul_rgba(color);
-    f.mapped[m_impl->next_vertex++] = { a.x, a.y, a.z + kZBias, 0.0f, 0.0f, rgba };
-    f.mapped[m_impl->next_vertex++] = { b.x, b.y, b.z + kZBias, 0.0f, 0.0f, rgba };
+    mapped[m_impl->next_vertex++] = { a.x, a.y, a.z + kZBias, 0.0f, 0.0f, rgba };
+    mapped[m_impl->next_vertex++] = { b.x, b.y, b.z + kZBias, 0.0f, 0.0f, rgba };
 }
 
 void EditorOverlays::add_polyline(std::span<const glm::vec3> samples,
                                   glm::vec4 color, bool closed) {
-    if (!m_impl || !m_impl->pipeline || samples.size() < 2) return;
+    if (!m_impl || !m_impl->pipeline.is_valid() || samples.size() < 2) return;
     u32 segs = static_cast<u32>(samples.size() - 1) + (closed ? 1u : 0u);
     if (m_impl->next_vertex + segs * 2 > kMaxVerts) return;
-    u32 slot = m_impl->rhi->frame_index();
-    auto& f = m_impl->frames[slot];
-    if (!f.mapped) return;
+    Vertex* mapped = m_impl->frames[m_impl->rhi->frame_index()].mapped;
     u32 rgba = pack_premul_rgba(color);
     u32 cursor = m_impl->next_vertex;
     auto write = [&](glm::vec3 p) {
-        f.mapped[cursor++] = { p.x, p.y, p.z + kZBias, 0.0f, 0.0f, rgba };
+        mapped[cursor++] = { p.x, p.y, p.z + kZBias, 0.0f, 0.0f, rgba };
     };
     for (usize i = 0; i + 1 < samples.size(); ++i) {
         write(samples[i]);
@@ -389,37 +309,25 @@ void EditorOverlays::add_polyline(std::span<const glm::vec3> samples,
 
 // ── Draw ─────────────────────────────────────────────────────────────────
 
-void EditorOverlays::draw(VkCommandBuffer cmd, const glm::mat4& view_projection) {
-    if (!m_impl || !m_impl->pipeline || m_impl->next_vertex == 0) return;
+void EditorOverlays::draw(rhi::CommandList& cmd, const glm::mat4& view_projection) {
+    if (!m_impl || !m_impl->pipeline.is_valid() || m_impl->next_vertex == 0) return;
     u32 slot = m_impl->rhi->frame_index();
     auto& f = m_impl->frames[slot];
-    if (!f.mapped) return;
+    if (!f.vb.is_valid()) return;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_impl->pipeline);
-    VkExtent2D ex = m_impl->rhi->extent();
-    VkViewport vp{};
-    vp.width    = static_cast<f32>(ex.width);
-    vp.height   = static_cast<f32>(ex.height);
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D scissor{{0, 0}, ex};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_impl->pipeline_layout, 0, 1,
-                            &m_impl->desc_set, 0, nullptr);
-
-    VkDeviceSize zero = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &f.vb, &zero);
+    cmd.bind_pipeline(m_impl->pipeline);
+    rhi::Extent2D ex = m_impl->rhi->extent();
+    cmd.set_viewport(0, 0, static_cast<f32>(ex.width), static_cast<f32>(ex.height));
+    cmd.set_scissor(0, 0, ex.width, ex.height);
+    cmd.bind_descriptor_set(m_impl->pipeline_layout, 0, m_impl->desc_set);
+    cmd.bind_vertex_buffer(0, f.vb);
 
     PushConstants pc{};
     pc.mvp  = view_projection;
     pc.tint = glm::vec4(1.0f);
-    vkCmdPushConstants(cmd, m_impl->pipeline_layout,
-                       VK_SHADER_STAGE_VERTEX_BIT,
+    cmd.push_constants(m_impl->pipeline_layout, rhi::ShaderStage::Vertex,
                        0, sizeof(PushConstants), &pc);
-    vkCmdDraw(cmd, m_impl->next_vertex, 1, 0, 0);
+    cmd.draw(m_impl->next_vertex);
 }
 
 } // namespace uldum::editor

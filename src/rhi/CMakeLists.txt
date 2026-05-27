@@ -1,5 +1,6 @@
 add_library(uldum_rhi STATIC
     vulkan/vulkan_rhi.cpp
+    vulkan/command_list.cpp
 )
 
 target_include_directories(uldum_rhi PUBLIC ${ULDUM_SRC})

@@ -60,19 +60,13 @@ struct Vertex {
 static_assert(sizeof(Vertex) == 20, "HUD Vertex layout must stay tightly packed");
 
 struct RingBuffer {
-    VkBuffer      vb = VK_NULL_HANDLE;
-    VmaAllocation vb_alloc = VK_NULL_HANDLE;
-    void*         vb_mapped = nullptr;
-    VkBuffer      ib = VK_NULL_HANDLE;
-    VmaAllocation ib_alloc = VK_NULL_HANDLE;
-    void*         ib_mapped = nullptr;
+    rhi::BufferHandle vb{};
+    rhi::BufferHandle ib{};
 };
 
 struct HudImage {
-    VkImage         image = VK_NULL_HANDLE;
-    VmaAllocation   alloc = VK_NULL_HANDLE;
-    VkImageView     view  = VK_NULL_HANDLE;
-    VkDescriptorSet set   = VK_NULL_HANDLE;
+    rhi::TextureHandle       handle{};
+    rhi::DescriptorSetHandle set{};
     u32 w = 0;
     u32 h = 0;
 };
@@ -80,26 +74,23 @@ struct HudImage {
 enum PipelineKind : u32 { PIPE_SOLID = 0, PIPE_TEXT = 1 };
 
 struct Batch {
-    PipelineKind    pipeline    = PIPE_SOLID;
-    VkDescriptorSet desc_set    = VK_NULL_HANDLE;
-    u32             index_start = 0;
-    u32             index_count = 0;
+    PipelineKind             pipeline    = PIPE_SOLID;
+    rhi::DescriptorSetHandle desc_set{};
+    u32                      index_start = 0;
+    u32                      index_count = 0;
 };
 
 struct HudRenderer::Impl {
     rhi::VulkanRhi* rhi = nullptr;
 
-    VkDescriptorSetLayout desc_layout   = VK_NULL_HANDLE;
-    VkDescriptorPool      desc_pool     = VK_NULL_HANDLE;
-    VkSampler             sampler       = VK_NULL_HANDLE;
-    VkPipelineLayout      pipe_layout   = VK_NULL_HANDLE;
-    VkPipeline            pipe_solid    = VK_NULL_HANDLE;
-    VkPipeline            pipe_text     = VK_NULL_HANDLE;
+    rhi::DescriptorSetLayoutHandle desc_layout{};
+    rhi::SamplerHandle             sampler{};
+    rhi::PipelineLayoutHandle      pipe_layout{};
+    rhi::PipelineHandle            pipe_solid{};
+    rhi::PipelineHandle            pipe_text{};
 
-    VkImage         white_image = VK_NULL_HANDLE;
-    VmaAllocation   white_alloc = VK_NULL_HANDLE;
-    VkImageView     white_view  = VK_NULL_HANDLE;
-    VkDescriptorSet white_set   = VK_NULL_HANDLE;
+    rhi::TextureHandle       white_image{};
+    rhi::DescriptorSetHandle white_set{};
 
     std::array<RingBuffer, rhi::MAX_FRAMES_IN_FLIGHT> rings{};
 
@@ -114,450 +105,273 @@ struct HudRenderer::Impl {
 };
 
 // ── Shader loading helper ─────────────────────────────────────────────────
-static VkShaderModule load_shader(VkDevice device, std::string_view path) {
+static rhi::ShaderModuleHandle load_shader(rhi::VulkanRhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
-    if (!mgr) return VK_NULL_HANDLE;
+    if (!mgr) return {};
     auto bytes = mgr->read_file_bytes(path);
     if (bytes.empty()) {
         log::error(TAG, "HUD shader not found: '{}'", path);
-        return VK_NULL_HANDLE;
+        return {};
     }
-    VkShaderModuleCreateInfo ci{};
-    ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = bytes.size();
-    ci.pCode    = reinterpret_cast<const uint32_t*>(bytes.data());
-    VkShaderModule mod = VK_NULL_HANDLE;
-    vkCreateShaderModule(device, &ci, nullptr, &mod);
-    return mod;
+    return rhi.create_shader_module(bytes);
 }
 
 // ── Setup helpers ─────────────────────────────────────────────────────────
 
-static bool create_descriptor_layout(HudRenderer::Impl& r) {
-    VkDescriptorSetLayoutBinding b{};
-    b.binding         = 0;
-    b.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    b.descriptorCount = 1;
-    b.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-    VkDescriptorSetLayoutCreateInfo ci{};
-    ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    ci.bindingCount = 1;
-    ci.pBindings    = &b;
-    return vkCreateDescriptorSetLayout(r.rhi->device(), &ci, nullptr, &r.desc_layout) == VK_SUCCESS;
+static rhi::TextureFormat vk_format_to_rhi(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8G8B8A8_UNORM: return rhi::TextureFormat::R8G8B8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:  return rhi::TextureFormat::R8G8B8A8_SRGB;
+        case VK_FORMAT_B8G8R8A8_UNORM: return rhi::TextureFormat::B8G8R8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB:  return rhi::TextureFormat::B8G8R8A8_SRGB;
+        case VK_FORMAT_D32_SFLOAT:     return rhi::TextureFormat::D32_SFLOAT;
+        default: break;
+    }
+    return rhi::TextureFormat::Undefined;
 }
 
-static bool create_descriptor_pool(HudRenderer::Impl& r) {
-    VkDescriptorPoolSize sz{};
-    sz.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sz.descriptorCount = 64;
-
-    VkDescriptorPoolCreateInfo ci{};
-    ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    ci.maxSets       = 64;
-    ci.poolSizeCount = 1;
-    ci.pPoolSizes    = &sz;
-    return vkCreateDescriptorPool(r.rhi->device(), &ci, nullptr, &r.desc_pool) == VK_SUCCESS;
+static bool create_descriptor_layout(HudRenderer::Impl& r) {
+    rhi::DescriptorSetLayoutBinding b{};
+    b.binding = 0;
+    b.type    = rhi::DescriptorType::CombinedImageSampler;
+    b.count   = 1;
+    b.stages  = rhi::ShaderStage::Fragment;
+    rhi::DescriptorSetLayoutDesc desc{};
+    desc.bindings = std::span{&b, 1};
+    r.desc_layout = r.rhi->create_descriptor_set_layout(desc);
+    return r.desc_layout.is_valid();
 }
 
 static bool create_sampler(HudRenderer::Impl& r) {
-    VkSamplerCreateInfo ci{};
-    ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    ci.magFilter    = VK_FILTER_LINEAR;
-    ci.minFilter    = VK_FILTER_LINEAR;
-    ci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    return vkCreateSampler(r.rhi->device(), &ci, nullptr, &r.sampler) == VK_SUCCESS;
+    rhi::SamplerDesc sd{};
+    sd.address_u = rhi::AddressMode::ClampToEdge;
+    sd.address_v = rhi::AddressMode::ClampToEdge;
+    sd.address_w = rhi::AddressMode::ClampToEdge;
+    r.sampler = r.rhi->create_sampler(sd);
+    return r.sampler.is_valid();
 }
 
 static bool create_pipeline_layout(HudRenderer::Impl& r) {
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pc.offset     = 0;
-    pc.size       = sizeof(glm::mat4);
-
-    VkPipelineLayoutCreateInfo ci{};
-    ci.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    ci.setLayoutCount         = 1;
-    ci.pSetLayouts            = &r.desc_layout;
-    ci.pushConstantRangeCount = 1;
-    ci.pPushConstantRanges    = &pc;
-    return vkCreatePipelineLayout(r.rhi->device(), &ci, nullptr, &r.pipe_layout) == VK_SUCCESS;
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);
+    rhi::PipelineLayoutDesc d{};
+    d.set_layouts    = std::span{&r.desc_layout, 1};
+    d.push_constants = std::span{&pc, 1};
+    r.pipe_layout = r.rhi->create_pipeline_layout(d);
+    return r.pipe_layout.is_valid();
 }
 
-static bool create_pipeline_variant(HudRenderer::Impl& r, std::string_view frag_path, VkPipeline& out) {
-    VkDevice device = r.rhi->device();
-    VkShaderModule vert = load_shader(device, "engine/shaders/hud.vert.spv");
-    VkShaderModule frag = load_shader(device, frag_path);
-    if (!vert || !frag) {
-        if (vert) vkDestroyShaderModule(device, vert, nullptr);
-        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+static bool create_pipeline_variant(HudRenderer::Impl& r, std::string_view frag_path, rhi::PipelineHandle& out) {
+    auto vert_h = load_shader(*r.rhi, "engine/shaders/hud.vert.spv");
+    auto frag_h = load_shader(*r.rhi, frag_path);
+    if (!r.rhi->resolve(vert_h) || !r.rhi->resolve(frag_h)) {
+        r.rhi->destroy_shader_module(vert_h);
+        r.rhi->destroy_shader_module(frag_h);
         return false;
     }
 
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
-    stages[0].pName  = "main";
-    stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
-    stages[1].pName  = "main";
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
-    VkVertexInputBindingDescription binding{};
-    binding.binding   = 0;
-    binding.stride    = sizeof(Vertex);
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    rhi::VertexBindingDesc binding{ 0, sizeof(Vertex), false };
+    rhi::VertexAttributeDesc attrs[3]{
+        { 0, 0, offsetof(Vertex, pos),   rhi::TextureFormat::R32G32_SFLOAT  },
+        { 1, 0, offsetof(Vertex, color), rhi::TextureFormat::R8G8B8A8_UNORM },
+        { 2, 0, offsetof(Vertex, uv),    rhi::TextureFormat::R32G32_SFLOAT  },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 3};
 
-    VkVertexInputAttributeDescription attrs[3]{};
-    attrs[0].location = 0; attrs[0].binding = 0;
-    attrs[0].format   = VK_FORMAT_R32G32_SFLOAT;
-    attrs[0].offset   = offsetof(Vertex, pos);
-    attrs[1].location = 1; attrs[1].binding = 0;
-    attrs[1].format   = VK_FORMAT_R8G8B8A8_UNORM;
-    attrs[1].offset   = offsetof(Vertex, color);
-    attrs[2].location = 2; attrs[2].binding = 0;
-    attrs[2].format   = VK_FORMAT_R32G32_SFLOAT;
-    attrs[2].offset   = offsetof(Vertex, uv);
+    rhi::RasterizerState rs{};
+    rs.cull_mode = rhi::CullMode::None;
 
-    VkPipelineVertexInputStateCreateInfo vi{};
-    vi.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vi.vertexBindingDescriptionCount   = 1;
-    vi.pVertexBindingDescriptions      = &binding;
-    vi.vertexAttributeDescriptionCount = 3;
-    vi.pVertexAttributeDescriptions    = attrs;
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = false;
+    ds.depth_write_enable = false;
 
-    VkPipelineInputAssemblyStateCreateInfo ia{};
-    ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::One;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::OneMinusSrcAlpha;
 
-    VkPipelineViewportStateCreateInfo vp{};
-    vp.sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vp.viewportCount = 1;
-    vp.scissorCount  = 1;
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(r.rhi->msaa_samples());
 
-    VkPipelineRasterizationStateCreateInfo rs{};
-    rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_NONE;
-    rs.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth   = 1.0f;
+    rhi::TextureFormat color_fmt = vk_format_to_rhi(r.rhi->swapchain_format());
+    rhi::TextureFormat depth_fmt = vk_format_to_rhi(r.rhi->depth_format());
 
-    VkPipelineMultisampleStateCreateInfo ms{};
-    ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = r.rhi->msaa_samples();
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = r.pipe_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::TriangleList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
 
-    VkPipelineDepthStencilStateCreateInfo ds{};
-    ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    ds.depthTestEnable  = VK_FALSE;
-    ds.depthWriteEnable = VK_FALSE;
-
-    VkPipelineColorBlendAttachmentState ba{};
-    ba.blendEnable         = VK_TRUE;
-    ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ba.colorBlendOp        = VK_BLEND_OP_ADD;
-    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ba.alphaBlendOp        = VK_BLEND_OP_ADD;
-    ba.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                           | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-    VkPipelineColorBlendStateCreateInfo cb{};
-    cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments    = &ba;
-
-    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dyn{};
-    dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
-    dyn.pDynamicStates    = dyn_states;
-
-    VkFormat color_format = r.rhi->swapchain_format();
-    VkPipelineRenderingCreateInfo rendering{};
-    rendering.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount    = 1;
-    rendering.pColorAttachmentFormats = &color_format;
-    rendering.depthAttachmentFormat   = r.rhi->depth_format();
-
-    VkGraphicsPipelineCreateInfo ci{};
-    ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    ci.pNext               = &rendering;
-    ci.stageCount          = 2;
-    ci.pStages             = stages;
-    ci.pVertexInputState   = &vi;
-    ci.pInputAssemblyState = &ia;
-    ci.pViewportState      = &vp;
-    ci.pRasterizationState = &rs;
-    ci.pMultisampleState   = &ms;
-    ci.pDepthStencilState  = &ds;
-    ci.pColorBlendState    = &cb;
-    ci.pDynamicState       = &dyn;
-    ci.layout              = r.pipe_layout;
-
-    VkResult res = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &out);
-    vkDestroyShaderModule(device, vert, nullptr);
-    vkDestroyShaderModule(device, frag, nullptr);
-    if (res != VK_SUCCESS) {
-        log::error(TAG, "vkCreateGraphicsPipelines failed: {}", static_cast<int>(res));
-        return false;
-    }
-    return true;
+    out = r.rhi->create_graphics_pipeline(desc);
+    r.rhi->destroy_shader_module(vert_h);
+    r.rhi->destroy_shader_module(frag_h);
+    return out.is_valid();
 }
 
 static bool create_ring_buffers(HudRenderer::Impl& r) {
     for (auto& ring : r.rings) {
-        VkBufferCreateInfo bci{};
-        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bci.size  = MAX_VERTS * sizeof(Vertex);
-        bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-
-        VmaAllocationCreateInfo aci{};
-        aci.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
-        aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        VmaAllocationInfo info{};
-        if (vmaCreateBuffer(r.rhi->allocator(), &bci, &aci, &ring.vb, &ring.vb_alloc, &info) != VK_SUCCESS) {
-            log::error(TAG, "ring VB create failed");
-            return false;
+        {
+            rhi::BufferDesc d{};
+            d.size   = MAX_VERTS * sizeof(Vertex);
+            d.usage  = rhi::BufferUsage::Vertex;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            ring.vb = r.rhi->create_buffer(d);
+            if (!ring.vb.is_valid()) { log::error(TAG, "ring VB create failed"); return false; }
         }
-        ring.vb_mapped = info.pMappedData;
-
-        bci.size  = MAX_INDS * sizeof(u16);
-        bci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        if (vmaCreateBuffer(r.rhi->allocator(), &bci, &aci, &ring.ib, &ring.ib_alloc, &info) != VK_SUCCESS) {
-            log::error(TAG, "ring IB create failed");
-            return false;
+        {
+            rhi::BufferDesc d{};
+            d.size   = MAX_INDS * sizeof(u16);
+            d.usage  = rhi::BufferUsage::Index;
+            d.memory = rhi::MemoryUsage::HostSequential;
+            ring.ib = r.rhi->create_buffer(d);
+            if (!ring.ib.is_valid()) { log::error(TAG, "ring IB create failed"); return false; }
         }
-        ring.ib_mapped = info.pMappedData;
     }
     return true;
 }
 
 static bool create_white_texture(HudRenderer::Impl& r) {
     const u8 pixel[4] = {255, 255, 255, 255};
-    VkDeviceSize size = 4;
+    constexpr u64 size = 4;
 
-    VkBufferCreateInfo bci{};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size  = size;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-    aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    VkBuffer      stage = VK_NULL_HANDLE;
-    VmaAllocation stage_alloc = VK_NULL_HANDLE;
-    VmaAllocationInfo stage_info{};
-    if (vmaCreateBuffer(r.rhi->allocator(), &bci, &aci, &stage, &stage_alloc, &stage_info) != VK_SUCCESS) {
-        return false;
-    }
-    std::memcpy(stage_info.pMappedData, pixel, size);
+    rhi::BufferDesc bd{};
+    bd.size   = size;
+    bd.usage  = rhi::BufferUsage::TransferSrc;
+    bd.memory = rhi::MemoryUsage::HostSequential;
+    auto stage = r.rhi->create_buffer(bd);
+    if (!stage.is_valid()) return false;
+    std::memcpy(r.rhi->mapped_ptr(stage), pixel, size);
 
-    VkImageCreateInfo ici{};
-    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-    ici.extent        = { 1, 1, 1 };
-    ici.mipLevels     = 1;
-    ici.arrayLayers   = 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo img_aci{};
-    img_aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-    if (vmaCreateImage(r.rhi->allocator(), &ici, &img_aci, &r.white_image, &r.white_alloc, nullptr) != VK_SUCCESS) {
-        vmaDestroyBuffer(r.rhi->allocator(), stage, stage_alloc);
-        return false;
-    }
-
-    VkCommandBuffer cmd = r.rhi->begin_oneshot();
     {
-        VkImageMemoryBarrier to_xfer{};
-        to_xfer.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_xfer.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        to_xfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_xfer.srcAccessMask       = 0;
-        to_xfer.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_xfer.image               = r.white_image;
-        to_xfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_xfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_xfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_xfer);
+        rhi::TextureDesc td{};
+        td.width  = 1;
+        td.height = 1;
+        td.format = rhi::TextureFormat::R8G8B8A8_UNORM;
+        td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
+        r.white_image = r.rhi->create_texture(td);
+        if (!r.white_image.is_valid()) {
+            r.rhi->destroy_buffer(stage);
+            return false;
+        }
+    }
+    rhi::CommandList cmd = r.rhi->begin_oneshot();
+    {
+        rhi::ImageBarrier b{};
+        b.image      = r.white_image;
+        b.src_stage  = rhi::PipelineStage::TopOfPipe;
+        b.dst_stage  = rhi::PipelineStage::Transfer;
+        b.dst_access = rhi::AccessFlag::TransferWrite;
+        b.old_layout = rhi::ImageLayout::Undefined;
+        b.new_layout = rhi::ImageLayout::TransferDstOptimal;
+        cmd.image_barrier(b);
 
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent      = { 1, 1, 1 };
-        vkCmdCopyBufferToImage(cmd, stage, r.white_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        rhi::BufferImageCopy copy{};
+        cmd.copy_buffer_to_image(stage, r.white_image, std::span{&copy, 1});
 
-        VkImageMemoryBarrier to_read{};
-        to_read.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_read.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_read.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        to_read.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_read.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        to_read.image               = r.white_image;
-        to_read.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_read);
+        rhi::ImageBarrier b2{};
+        b2.image      = r.white_image;
+        b2.src_stage  = rhi::PipelineStage::Transfer;
+        b2.src_access = rhi::AccessFlag::TransferWrite;
+        b2.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b2.dst_access = rhi::AccessFlag::ShaderRead;
+        b2.old_layout = rhi::ImageLayout::TransferDstOptimal;
+        b2.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b2);
     }
     r.rhi->end_oneshot(cmd);
-    vmaDestroyBuffer(r.rhi->allocator(), stage, stage_alloc);
+    r.rhi->destroy_buffer(stage);
 
-    VkImageViewCreateInfo vci{};
-    vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image            = r.white_image;
-    vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format           = VK_FORMAT_R8G8B8A8_UNORM;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(r.rhi->device(), &vci, nullptr, &r.white_view) != VK_SUCCESS) {
-        return false;
-    }
-
-    VkDescriptorSetAllocateInfo dsai{};
-    dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool     = r.desc_pool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts        = &r.desc_layout;
-    if (vkAllocateDescriptorSets(r.rhi->device(), &dsai, &r.white_set) != VK_SUCCESS) {
-        return false;
-    }
-    VkDescriptorImageInfo img{};
-    img.sampler     = r.sampler;
-    img.imageView   = r.white_view;
-    img.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet w{};
-    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet          = r.white_set;
-    w.dstBinding      = 0;
-    w.descriptorCount = 1;
-    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo      = &img;
-    vkUpdateDescriptorSets(r.rhi->device(), 1, &w, 0, nullptr);
+    r.white_set = r.rhi->allocate_descriptor_set(r.desc_layout);
+    if (!r.white_set.is_valid()) return false;
+    rhi::WriteDescriptor wd{};
+    wd.binding = 0;
+    wd.type    = rhi::DescriptorType::CombinedImageSampler;
+    wd.texture = r.white_image;
+    wd.sampler = r.sampler;
+    r.rhi->update_descriptor_set(r.white_set, std::span{&wd, 1});
     return true;
 }
 
 // ── Image cache ───────────────────────────────────────────────────────────
 
 static bool create_hud_image(HudRenderer::Impl& r, const u8* rgba, u32 w, u32 h, HudImage& out) {
-    VkDevice device = r.rhi->device();
-    VkDeviceSize size = static_cast<VkDeviceSize>(w) * h * 4;
+    u64 size = static_cast<u64>(w) * h * 4;
 
-    VkBufferCreateInfo bci{};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size  = size;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-    aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    VkBuffer      stage = VK_NULL_HANDLE;
-    VmaAllocation stage_alloc = VK_NULL_HANDLE;
-    VmaAllocationInfo stage_info{};
-    if (vmaCreateBuffer(r.rhi->allocator(), &bci, &aci, &stage, &stage_alloc, &stage_info) != VK_SUCCESS) {
-        return false;
-    }
-    std::memcpy(stage_info.pMappedData, rgba, size);
+    rhi::BufferDesc bd{};
+    bd.size   = size;
+    bd.usage  = rhi::BufferUsage::TransferSrc;
+    bd.memory = rhi::MemoryUsage::HostSequential;
+    auto stage = r.rhi->create_buffer(bd);
+    if (!stage.is_valid()) return false;
+    std::memcpy(r.rhi->mapped_ptr(stage), rgba, size);
 
-    VkImageCreateInfo ici{};
-    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ici.imageType     = VK_IMAGE_TYPE_2D;
-    ici.format        = VK_FORMAT_R8G8B8A8_SRGB;
-    ici.extent        = { w, h, 1 };
-    ici.mipLevels     = 1;
-    ici.arrayLayers   = 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo img_aci{};
-    img_aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-    if (vmaCreateImage(r.rhi->allocator(), &ici, &img_aci, &out.image, &out.alloc, nullptr) != VK_SUCCESS) {
-        vmaDestroyBuffer(r.rhi->allocator(), stage, stage_alloc);
-        return false;
-    }
-
-    VkCommandBuffer cmd = r.rhi->begin_oneshot();
     {
-        VkImageMemoryBarrier to_xfer{};
-        to_xfer.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_xfer.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        to_xfer.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_xfer.srcAccessMask       = 0;
-        to_xfer.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_xfer.image               = out.image;
-        to_xfer.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_xfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_xfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_xfer);
+        rhi::TextureDesc td{};
+        td.width  = w;
+        td.height = h;
+        td.format = rhi::TextureFormat::R8G8B8A8_SRGB;
+        td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
+        out.handle = r.rhi->create_texture(td);
+        if (!out.handle.is_valid()) {
+            r.rhi->destroy_buffer(stage);
+            return false;
+        }
+    }
+    rhi::CommandList cmd = r.rhi->begin_oneshot();
+    {
+        rhi::ImageBarrier b{};
+        b.image      = out.handle;
+        b.src_stage  = rhi::PipelineStage::TopOfPipe;
+        b.dst_stage  = rhi::PipelineStage::Transfer;
+        b.dst_access = rhi::AccessFlag::TransferWrite;
+        b.old_layout = rhi::ImageLayout::Undefined;
+        b.new_layout = rhi::ImageLayout::TransferDstOptimal;
+        cmd.image_barrier(b);
 
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent      = { w, h, 1 };
-        vkCmdCopyBufferToImage(cmd, stage, out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        rhi::BufferImageCopy copy{};
+        copy.image_extent_w = w;
+        copy.image_extent_h = h;
+        cmd.copy_buffer_to_image(stage, out.handle, std::span{&copy, 1});
 
-        VkImageMemoryBarrier to_read{};
-        to_read.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        to_read.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        to_read.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        to_read.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        to_read.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        to_read.image               = out.image;
-        to_read.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &to_read);
+        rhi::ImageBarrier b2{};
+        b2.image      = out.handle;
+        b2.src_stage  = rhi::PipelineStage::Transfer;
+        b2.src_access = rhi::AccessFlag::TransferWrite;
+        b2.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b2.dst_access = rhi::AccessFlag::ShaderRead;
+        b2.old_layout = rhi::ImageLayout::TransferDstOptimal;
+        b2.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b2);
     }
     r.rhi->end_oneshot(cmd);
-    vmaDestroyBuffer(r.rhi->allocator(), stage, stage_alloc);
+    r.rhi->destroy_buffer(stage);
 
-    VkImageViewCreateInfo vci{};
-    vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image            = out.image;
-    vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format           = VK_FORMAT_R8G8B8A8_SRGB;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(device, &vci, nullptr, &out.view) != VK_SUCCESS) {
-        vmaDestroyImage(r.rhi->allocator(), out.image, out.alloc);
-        out.image = VK_NULL_HANDLE;
+    out.set = r.rhi->allocate_descriptor_set(r.desc_layout);
+    if (!out.set.is_valid()) {
+        r.rhi->destroy_texture(out.handle);
         return false;
     }
-
-    VkDescriptorSetAllocateInfo dsai{};
-    dsai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool     = r.desc_pool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts        = &r.desc_layout;
-    if (vkAllocateDescriptorSets(device, &dsai, &out.set) != VK_SUCCESS) {
-        vkDestroyImageView(device, out.view, nullptr);
-        vmaDestroyImage(r.rhi->allocator(), out.image, out.alloc);
-        out.image = VK_NULL_HANDLE;
-        out.view  = VK_NULL_HANDLE;
-        return false;
-    }
-    VkDescriptorImageInfo img{};
-    img.sampler     = r.sampler;
-    img.imageView   = out.view;
-    img.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet wr{};
-    wr.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wr.dstSet          = out.set;
-    wr.dstBinding      = 0;
-    wr.descriptorCount = 1;
-    wr.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    wr.pImageInfo      = &img;
-    vkUpdateDescriptorSets(device, 1, &wr, 0, nullptr);
+    rhi::WriteDescriptor wd{};
+    wd.binding = 0;
+    wd.type    = rhi::DescriptorType::CombinedImageSampler;
+    wd.texture = out.handle;
+    wd.sampler = r.sampler;
+    r.rhi->update_descriptor_set(out.set, std::span{&wd, 1});
 
     out.w = w;
     out.h = h;
@@ -566,12 +380,10 @@ static bool create_hud_image(HudRenderer::Impl& r, const u8* rgba, u32 w, u32 h,
 
 static void destroy_hud_images(HudRenderer::Impl& r) {
     if (!r.rhi) { r.images.clear(); return; }
-    VkDevice device = r.rhi->device();
     for (auto& [path, img] : r.images) {
         if (!img) continue;
-        if (img->set)   vkFreeDescriptorSets(device, r.desc_pool, 1, &img->set);
-        if (img->view)  vkDestroyImageView(device, img->view, nullptr);
-        if (img->image) vmaDestroyImage(r.rhi->allocator(), img->image, img->alloc);
+        if (img->set.is_valid()) r.rhi->free_descriptor_set(img->set);
+        r.rhi->destroy_texture(img->handle);
     }
     r.images.clear();
 }
@@ -608,7 +420,7 @@ static HudImage* get_or_load_image(HudRenderer::Impl& r, std::string_view path) 
 
 // ── Batcher helpers ──────────────────────────────────────────────────────
 
-static void ensure_batch(HudRenderer::Impl& r, PipelineKind pipe, VkDescriptorSet set) {
+static void ensure_batch(HudRenderer::Impl& r, PipelineKind pipe, rhi::DescriptorSetHandle set) {
     if (!r.batches.empty()) {
         Batch& last = r.batches.back();
         if (last.pipeline == pipe && last.desc_set == set) return;
@@ -2035,7 +1847,6 @@ bool HudRenderer::init(Hud& hud, rhi::VulkanRhi& rhi) {
     r.inds.reserve(MAX_INDS);
 
     if (!create_descriptor_layout(r)) { log::error(TAG, "desc layout create failed");   return false; }
-    if (!create_descriptor_pool(r))   { log::error(TAG, "desc pool create failed");     return false; }
     if (!create_sampler(r))           { log::error(TAG, "sampler create failed");       return false; }
     if (!create_pipeline_layout(r))   { log::error(TAG, "pipeline layout create failed"); return false; }
     if (!create_pipeline_variant(r, "engine/shaders/hud.frag.spv", r.pipe_solid)) {
@@ -2058,29 +1869,28 @@ void HudRenderer::shutdown() {
     if (!m_impl) return;
     auto& r = *m_impl;
     if (r.font) { r.font->shutdown(); r.font.reset(); }
-    VkDevice device = r.rhi ? r.rhi->device() : VK_NULL_HANDLE;
-    if (device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device);
-        for (auto& ring : r.rings) {
-            if (ring.vb) vmaDestroyBuffer(r.rhi->allocator(), ring.vb, ring.vb_alloc);
-            if (ring.ib) vmaDestroyBuffer(r.rhi->allocator(), ring.ib, ring.ib_alloc);
+    if (r.rhi) {
+        VkDevice device = r.rhi->device();
+        if (device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device);
+            for (auto& ring : r.rings) {
+                r.rhi->destroy_buffer(ring.vb);
+                r.rhi->destroy_buffer(ring.ib);
+            }
+            for (auto& [path, img] : r.images) {
+                if (!img) continue;
+                if (img->set.is_valid()) r.rhi->free_descriptor_set(img->set);
+                r.rhi->destroy_texture(img->handle);
+            }
+            r.images.clear();
+            if (r.white_set.is_valid()) r.rhi->free_descriptor_set(r.white_set);
+            r.rhi->destroy_texture(r.white_image);
+            r.rhi->destroy_pipeline(r.pipe_text);
+            r.rhi->destroy_pipeline(r.pipe_solid);
+            r.rhi->destroy_pipeline_layout(r.pipe_layout);
+            r.rhi->destroy_sampler(r.sampler);
+            r.rhi->destroy_descriptor_set_layout(r.desc_layout);
         }
-        for (auto& [path, img] : r.images) {
-            if (!img) continue;
-            if (img->set)   vkFreeDescriptorSets(device, r.desc_pool, 1, &img->set);
-            if (img->view)  vkDestroyImageView(device, img->view, nullptr);
-            if (img->image) vmaDestroyImage(r.rhi->allocator(), img->image, img->alloc);
-        }
-        r.images.clear();
-        if (r.white_set)   vkFreeDescriptorSets(device, r.desc_pool, 1, &r.white_set);
-        if (r.white_view)  vkDestroyImageView(device, r.white_view, nullptr);
-        if (r.white_image) vmaDestroyImage(r.rhi->allocator(), r.white_image, r.white_alloc);
-        if (r.pipe_text)   vkDestroyPipeline(device, r.pipe_text, nullptr);
-        if (r.pipe_solid)  vkDestroyPipeline(device, r.pipe_solid, nullptr);
-        if (r.pipe_layout)   vkDestroyPipelineLayout(device, r.pipe_layout, nullptr);
-        if (r.sampler)       vkDestroySampler(device, r.sampler, nullptr);
-        if (r.desc_pool)     vkDestroyDescriptorPool(device, r.desc_pool, nullptr);
-        if (r.desc_layout)   vkDestroyDescriptorSetLayout(device, r.desc_layout, nullptr);
     }
     delete m_impl;
     m_impl = nullptr;
@@ -2236,7 +2046,7 @@ void HudRenderer::draw_world_overlays(f32 alpha) {
     draw_text_tags(r, s, *s.world_ctx, alpha);
 }
 
-void HudRenderer::render(VkCommandBuffer cmd) {
+void HudRenderer::render(rhi::CommandList& cmd) {
     if (!m_impl || !m_hud) return;
     auto& r = *m_impl;
     if (!r.frame_open) return;
@@ -2250,48 +2060,35 @@ void HudRenderer::render(VkCommandBuffer cmd) {
 
     u32 slot = r.rhi->frame_index();
     RingBuffer& ring = r.rings[slot];
-    std::memcpy(ring.vb_mapped, r.verts.data(), r.verts.size() * sizeof(Vertex));
-    std::memcpy(ring.ib_mapped, r.inds.data(),  r.inds.size()  * sizeof(u16));
+    std::memcpy(r.rhi->mapped_ptr(ring.vb), r.verts.data(), r.verts.size() * sizeof(Vertex));
+    std::memcpy(r.rhi->mapped_ptr(ring.ib), r.inds.data(),  r.inds.size()  * sizeof(u16));
 
-    VkViewport vp{};
-    vp.x        = 0.0f;
-    vp.y        = 0.0f;
-    vp.width    = static_cast<f32>(s.physical_w);
-    vp.height   = static_cast<f32>(s.physical_h);
-    vp.minDepth = 0.0f;
-    vp.maxDepth = 1.0f;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = { s.physical_w, s.physical_h };
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    cmd.set_viewport(0, 0, static_cast<f32>(s.physical_w), static_cast<f32>(s.physical_h));
+    cmd.set_scissor(0, 0, s.physical_w, s.physical_h);
 
     glm::mat4 mvp = glm::ortho(0.0f, static_cast<f32>(s.screen_w),
                                0.0f, static_cast<f32>(s.screen_h),
                                -1.0f, 1.0f);
-    vkCmdPushConstants(cmd, r.pipe_layout, VK_SHADER_STAGE_VERTEX_BIT,
+    cmd.push_constants(r.pipe_layout, rhi::ShaderStage::Vertex,
                        0, sizeof(glm::mat4), glm::value_ptr(mvp));
 
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &ring.vb, &offset);
-    vkCmdBindIndexBuffer(cmd, ring.ib, 0, VK_INDEX_TYPE_UINT16);
+    cmd.bind_vertex_buffer(0, ring.vb);
+    cmd.bind_index_buffer(ring.ib, 0, rhi::IndexType::U16);
 
-    VkPipeline      last_pipe = VK_NULL_HANDLE;
-    VkDescriptorSet last_set  = VK_NULL_HANDLE;
+    rhi::PipelineHandle      last_pipe{};
+    rhi::DescriptorSetHandle last_set{};
     for (const Batch& b : r.batches) {
         if (b.index_count == 0) continue;
-        VkPipeline pipe = (b.pipeline == PIPE_TEXT) ? r.pipe_text : r.pipe_solid;
+        rhi::PipelineHandle pipe = (b.pipeline == PIPE_TEXT) ? r.pipe_text : r.pipe_solid;
         if (pipe != last_pipe) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            cmd.bind_pipeline(pipe);
             last_pipe = pipe;
         }
         if (b.desc_set != last_set) {
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    r.pipe_layout, 0, 1, &b.desc_set, 0, nullptr);
+            cmd.bind_descriptor_set(r.pipe_layout, 0, b.desc_set);
             last_set = b.desc_set;
         }
-        vkCmdDrawIndexed(cmd, b.index_count, 1, b.index_start, 0, 0);
+        cmd.draw_indexed(b.index_count, 1, b.index_start, 0, 0);
     }
 }
 

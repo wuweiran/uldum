@@ -11,8 +11,8 @@
 #include <string_view>
 #include <vector>
 
-// Vulkan + platform forward-decls
-typedef struct VkCommandBuffer_T* VkCommandBuffer;
+#include "rhi/command_list.h"
+
 namespace uldum::rhi      { class VulkanRhi; }
 namespace uldum::platform { class Platform; }
 
@@ -75,7 +75,7 @@ public:
     // DevConsole reads the lobby / pause view / mode / etc. from the
     // NetworkManager directly; App just passes it through.
     void update(f32 dt, AppState state, network::NetworkManager& net);
-    void render(VkCommandBuffer cmd);
+    void render(rhi::CommandList& cmd);
 
     // Consume the most-recent action request. Returns {None} when there is
     // nothing pending.

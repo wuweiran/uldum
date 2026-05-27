@@ -1,11 +1,10 @@
 #include "render/terrain.h"
 #include "render/gpu_mesh.h"
+#include "rhi/vulkan/vulkan_rhi.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
 
 #include <algorithm>
 #include <cstring>
@@ -13,7 +12,7 @@
 
 namespace uldum::render {
 
-TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& td) {
+TerrainMesh build_terrain_mesh(rhi::VulkanRhi& rhi, const map::TerrainData& td) {
     if (!td.is_valid()) {
         log::error("Terrain", "Cannot build mesh from invalid TerrainData");
         return {};
@@ -664,30 +663,30 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
     TerrainMesh result;
     auto& mesh = result.gpu_mesh;
 
-    VkDeviceSize vb_size = vertices.size() * sizeof(TerrainVertex);
-    VkDeviceSize ib_size = indices.size() * sizeof(u32);
+    u64 vb_size = vertices.size() * sizeof(TerrainVertex);
+    u64 ib_size = indices.size() * sizeof(u32);
 
-    VkBufferCreateInfo buf_ci{};
-    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buf_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    buf_ci.size  = vb_size;
+    {
+        rhi::BufferDesc d{};
+        d.size   = vb_size;
+        d.usage  = rhi::BufferUsage::Vertex;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        mesh.vertex_buffer = rhi.create_buffer(d);
+    }
+    if (void* dst = rhi.mapped_ptr(mesh.vertex_buffer)) {
+        std::memcpy(dst, vertices.data(), vb_size);
+    }
 
-    VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &mesh.vertex_buffer, &mesh.vertex_alloc, nullptr);
-    void* mapped = nullptr;
-    vmaMapMemory(allocator, mesh.vertex_alloc, &mapped);
-    std::memcpy(mapped, vertices.data(), vb_size);
-    vmaUnmapMemory(allocator, mesh.vertex_alloc);
-
-    buf_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    buf_ci.size  = ib_size;
-    vmaCreateBuffer(allocator, &buf_ci, &alloc_ci, &mesh.index_buffer, &mesh.index_alloc, nullptr);
-    vmaMapMemory(allocator, mesh.index_alloc, &mapped);
-    std::memcpy(mapped, indices.data(), ib_size);
-    vmaUnmapMemory(allocator, mesh.index_alloc);
+    {
+        rhi::BufferDesc d{};
+        d.size   = ib_size;
+        d.usage  = rhi::BufferUsage::Index;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        mesh.index_buffer = rhi.create_buffer(d);
+    }
+    if (void* dst = rhi.mapped_ptr(mesh.index_buffer)) {
+        std::memcpy(dst, indices.data(), ib_size);
+    }
 
     mesh.index_count  = static_cast<u32>(indices.size());
     mesh.vertex_count = static_cast<u32>(vertices.size());
@@ -698,8 +697,8 @@ TerrainMesh build_terrain_mesh(VmaAllocator allocator, const map::TerrainData& t
     return result;
 }
 
-void destroy_terrain_mesh(VmaAllocator allocator, TerrainMesh& mesh) {
-    destroy_mesh(allocator, mesh.gpu_mesh);
+void destroy_terrain_mesh(rhi::VulkanRhi& rhi, TerrainMesh& mesh) {
+    destroy_mesh(rhi, mesh.gpu_mesh);
     mesh = {};
 }
 
