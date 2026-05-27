@@ -487,6 +487,13 @@ bool Font::rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out) {
     }
 
     shape.normalize();
+    // Re-orient to non-zero winding rule. CJK fonts (notably NotoSansCJK
+    // on Android/Linux) ship glyphs encoded for the even-odd fill rule —
+    // inner contours have the same winding as outers — and msdfgen would
+    // otherwise treat the glyph body as "outside" and the holes as
+    // "inside", producing knockout-text. Idempotent on already-oriented
+    // shapes (Microsoft's CJK fonts), so safe to call unconditionally.
+    shape.orientContours();
     msdfgen::edgeColoringSimple(shape, 3.0);
 
     // Bounds in em units → pixel footprint. Scale such that 1 em maps to
