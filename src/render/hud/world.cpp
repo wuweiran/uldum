@@ -71,9 +71,14 @@ static bool project_to_screen(const glm::mat4& vp, glm::vec3 world,
     if (clip.w <= 0.001f) return false;  // behind camera
     f32 ndc_x = clip.x / clip.w;
     f32 ndc_y = clip.y / clip.w;
-    // Vulkan NDC: [-1, 1] with y down. Map to viewport pixels with y down.
+    // Vulkan NDC: [-1, 1] with y down. GLES NDC: y up. Map both into
+    // viewport pixels (y=0 at the top).
     out_x = (ndc_x * 0.5f + 0.5f) * static_cast<f32>(screen_w);
+#if defined(ULDUM_BACKEND_GLES)
+    out_y = (0.5f - ndc_y * 0.5f) * static_cast<f32>(screen_h);
+#else
     out_y = (ndc_y * 0.5f + 0.5f) * static_cast<f32>(screen_h);
+#endif
     // Reject anything fully outside the viewport — saves the batcher work.
     if (out_x < -100.0f || out_x > static_cast<f32>(screen_w) + 100.0f) return false;
     if (out_y < -100.0f || out_y > static_cast<f32>(screen_h) + 100.0f) return false;

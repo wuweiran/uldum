@@ -1,7 +1,7 @@
 #include "render/world_overlays.h"
 
 #include "render/gpu_texture.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "asset/asset.h"
 #include "asset/texture.h"
 #include "core/log.h"
@@ -94,7 +94,15 @@ struct WorldOverlays::Impl {
 static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
+#if defined(ULDUM_BACKEND_GLES)
+    std::string resolved(path);
+    if (resolved.size() >= 4 && resolved.substr(resolved.size() - 4) == ".spv") {
+        resolved.replace(resolved.size() - 4, 4, ".glsl");
+    }
+    auto bytes = mgr->read_file_bytes(resolved);
+#else
     auto bytes = mgr->read_file_bytes(path);
+#endif
     if (bytes.empty()) { log::error(TAG, "shader not found: '{}'", path); return {}; }
     return rhi.create_shader_module(bytes);
 }
@@ -115,7 +123,7 @@ static bool create_descriptor_layout(WorldOverlays::Impl& s) {
 static bool create_pipeline(WorldOverlays::Impl& s) {
     auto vert_h = load_shader(*s.rhi, kVertSpv);
     auto frag_h = load_shader(*s.rhi, kFragSpv);
-    if (!s.rhi->resolve(vert_h) || !s.rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         s.rhi->destroy_shader_module(vert_h);
         s.rhi->destroy_shader_module(frag_h);
         return false;
@@ -224,11 +232,10 @@ bool WorldOverlays::init(rhi::Rhi& rhi) {
 
 void WorldOverlays::reset_session_state() {
     if (!m_impl || !m_impl->rhi) return;
-    VkDevice device = m_impl->rhi->device();
     // Wait for any in-flight frame to stop sampling these images
     // before we destroy them. Called rarely (once per session end),
     // so the stall is acceptable.
-    vkDeviceWaitIdle(device);
+    m_impl->rhi->wait_idle();
     for (auto& d : m_impl->decals) {
         m_impl->rhi->free_descriptor_set(d.set);
         d.set = {};
@@ -241,9 +248,8 @@ void WorldOverlays::reset_session_state() {
 
 void WorldOverlays::shutdown() {
     if (!m_impl) return;
-    VkDevice device = m_impl->rhi ? m_impl->rhi->device() : VK_NULL_HANDLE;
-    if (device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device);
+    if (m_impl->rhi) {
+        m_impl->rhi->wait_idle();
         for (auto& d : m_impl->decals) {
             m_impl->rhi->free_descriptor_set(d.set);
             destroy_texture(*m_impl->rhi, d.tex);

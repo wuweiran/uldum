@@ -1760,7 +1760,7 @@ void Rhi::destroy_pipeline(PipelineHandle h) {
 
 // resolve(PipelineHandle) — inlined in vulkan_rhi.h
 
-VkCommandBuffer Rhi::begin_frame() {
+CommandList Rhi::begin_frame() {
     vkWaitForFences(m_device, 1, &m_in_flight[m_frame_index], VK_TRUE, UINT64_MAX);
 
     VkResult result = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
@@ -1785,7 +1785,7 @@ VkCommandBuffer Rhi::begin_frame() {
         if (m_swapchain_extent.width == 0 || m_swapchain_extent.height == 0) {
             m_swapchain_dirty = true;  // retry next frame
         }
-        return VK_NULL_HANDLE;
+        return CommandList{};  // invalid — caller skips the frame
     }
 
     // Wait if a different frame-in-flight is still using this swapchain image
@@ -1848,7 +1848,7 @@ VkCommandBuffer Rhi::begin_frame() {
     vkCmdPipelineBarrier2(cmd, &dep);
 
     m_frame_active = true;
-    return cmd;
+    return CommandList{*this, cmd};
 }
 
 void Rhi::begin_rendering() {

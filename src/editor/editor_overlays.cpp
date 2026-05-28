@@ -121,7 +121,7 @@ static bool create_white_texture(EditorOverlays::Impl& s) {
 static bool create_pipeline(EditorOverlays::Impl& s) {
     auto vert_h = load_shader(*s.rhi, kVertSpv);
     auto frag_h = load_shader(*s.rhi, kFragSpv);
-    if (!s.rhi->resolve(vert_h) || !s.rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         s.rhi->destroy_shader_module(vert_h);
         s.rhi->destroy_shader_module(frag_h);
         return false;
@@ -235,9 +235,8 @@ bool EditorOverlays::init(rhi::Rhi& rhi) {
 
 void EditorOverlays::shutdown() {
     if (!m_impl) return;
-    VkDevice device = m_impl->rhi ? m_impl->rhi->device() : VK_NULL_HANDLE;
-    if (device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device);
+    if (m_impl->rhi) {
+        m_impl->rhi->wait_idle();
         render::destroy_texture(*m_impl->rhi, m_impl->white_tex);
         for (auto& f : m_impl->frames) {
             m_impl->rhi->destroy_buffer(f.vb);

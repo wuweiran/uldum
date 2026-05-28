@@ -75,9 +75,11 @@ FetchContent_Declare(sol2
 FetchContent_MakeAvailable(sol2)
 
 # ── Dear ImGui (dev console + editor) ─────────────────────────────────────
-# Used by uldum_editor and the dev console (uldum_dev on desktop, dev APK
-# on Android via Phase 16d-i). Only the Vulkan backend is portable; the
-# Win32 backend is desktop-only and excluded on Android.
+# Used by uldum_editor (desktop, Vulkan) and uldum_dev (desktop Vulkan +
+# Android GLES). The renderer backend is picked at compile time:
+#   • Vulkan target → imgui_impl_vulkan.cpp
+#   • GLES target   → imgui_impl_opengl3.cpp (works on GLES 3.x via
+#                     IMGUI_IMPL_OPENGL_ES3 — set by the dev console).
 message(STATUS "Fetching Dear ImGui...")
 FetchContent_Declare(imgui
     URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
@@ -90,15 +92,28 @@ set(IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
 )
+if(ULDUM_BACKEND_VULKAN)
+    list(APPEND IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+endif()
+if(ULDUM_BACKEND_GLES)
+    list(APPEND IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+endif()
 if(WIN32)
     list(APPEND IMGUI_SOURCES ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
 endif()
 
 add_library(imgui STATIC ${IMGUI_SOURCES})
 target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+if(ULDUM_BACKEND_VULKAN)
+    target_link_libraries(imgui PUBLIC Vulkan::Vulkan)
+endif()
+if(ULDUM_BACKEND_GLES)
+    # GLES backend reads through GLAD2 / native GLES headers; imgui's
+    # OpenGL3 backend autodetects via macros, but be explicit for GLES 3.x.
+    target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_ES3)
+    target_link_libraries(imgui PUBLIC GLESv3)
+endif()
 if(MSVC)
     target_compile_options(imgui PRIVATE /W0)
 endif()
@@ -119,17 +134,21 @@ if(MSVC)
 endif()
 
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
-message(STATUS "Fetching VMA...")
-FetchContent_Declare(vma
-    URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
-)
-FetchContent_Populate(vma)
+# Only consumed by the Vulkan RHI backend (rhi/vulkan/vulkan_rhi.cpp). Skip
+# on builds that select a different backend (e.g. Android GLES).
+if(ULDUM_BACKEND_VULKAN)
+    message(STATUS "Fetching VMA...")
+    FetchContent_Declare(vma
+        URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
+    )
+    FetchContent_Populate(vma)
 
-add_library(vma STATIC vma_impl.cpp)
-target_include_directories(vma SYSTEM PUBLIC ${vma_SOURCE_DIR}/include)
-target_link_libraries(vma PUBLIC Vulkan::Vulkan)
-if(MSVC)
-    target_compile_options(vma PRIVATE /W0)
+    add_library(vma STATIC vma_impl.cpp)
+    target_include_directories(vma SYSTEM PUBLIC ${vma_SOURCE_DIR}/include)
+    target_link_libraries(vma PUBLIC Vulkan::Vulkan)
+    if(MSVC)
+        target_compile_options(vma PRIVATE /W0)
+    endif()
 endif()
 
 # ── ENet (UDP networking) ─────────────────────────────────────────────────

@@ -38,10 +38,11 @@ public:
     bool init(const Config& config, platform::Platform& platform);
     void shutdown();
 
-    // begin_frame acquires swapchain image, returns command buffer to record into.
-    // Returns null if swapchain needs recreate (caller should skip the frame).
+    // begin_frame acquires swapchain image, returns command list to record into.
+    // Returns an invalid CommandList if swapchain needs recreate (caller should
+    // skip the frame; check with cmd.is_valid()).
     // Call begin_rendering() after any pre-render passes (e.g. shadow) to start the main pass.
-    VkCommandBuffer begin_frame();
+    CommandList begin_frame();
     void begin_rendering();  // starts main color+depth rendering scope
     void end_frame();
 

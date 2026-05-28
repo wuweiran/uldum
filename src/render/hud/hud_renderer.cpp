@@ -6,7 +6,7 @@
 #include "hud/node.h"
 #include "hud/text_tag.h"
 
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "asset/asset.h"
 #include "asset/texture.h"
 #include "simulation/world.h"
@@ -19,9 +19,6 @@
 #include "simulation/selection.h"
 #include "render/camera.h"
 #include "core/log.h"
-
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -108,7 +105,15 @@ struct HudRenderer::Impl {
 static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
+#if defined(ULDUM_BACKEND_GLES)
+    std::string resolved(path);
+    if (resolved.size() >= 4 && resolved.substr(resolved.size() - 4) == ".spv") {
+        resolved.replace(resolved.size() - 4, 4, ".glsl");
+    }
+    auto bytes = mgr->read_file_bytes(resolved);
+#else
     auto bytes = mgr->read_file_bytes(path);
+#endif
     if (bytes.empty()) {
         log::error(TAG, "HUD shader not found: '{}'", path);
         return {};
@@ -153,7 +158,7 @@ static bool create_pipeline_layout(HudRenderer::Impl& r) {
 static bool create_pipeline_variant(HudRenderer::Impl& r, std::string_view frag_path, rhi::PipelineHandle& out) {
     auto vert_h = load_shader(*r.rhi, "engine/shaders/hud.vert.spv");
     auto frag_h = load_shader(*r.rhi, frag_path);
-    if (!r.rhi->resolve(vert_h) || !r.rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         r.rhi->destroy_shader_module(vert_h);
         r.rhi->destroy_shader_module(frag_h);
         return false;
@@ -1757,7 +1762,14 @@ static bool project_world_for_tag(const glm::mat4& vp, const glm::vec3& world,
     f32 ndc_x = clip.x / clip.w;
     f32 ndc_y = clip.y / clip.w;
     sx = (ndc_x * 0.5f + 0.5f) * static_cast<f32>(screen_w);
+    // Vulkan's projection bakes a Y-flip so NDC -1 is the top of the
+    // screen; GLES doesn't, so NDC +1 is the top. Map both into HUD
+    // screen-space (y=0 at top).
+#if defined(ULDUM_BACKEND_GLES)
+    sy = (0.5f - ndc_y * 0.5f) * static_cast<f32>(screen_h);
+#else
     sy = (ndc_y * 0.5f + 0.5f) * static_cast<f32>(screen_h);
+#endif
     return true;
 }
 
@@ -1858,9 +1870,8 @@ void HudRenderer::shutdown() {
     auto& r = *m_impl;
     if (r.font) { r.font->shutdown(); r.font.reset(); }
     if (r.rhi) {
-        VkDevice device = r.rhi->device();
-        if (device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device);
+        r.rhi->wait_idle();
+        {
             for (auto& ring : r.rings) {
                 r.rhi->destroy_buffer(ring.vb);
                 r.rhi->destroy_buffer(ring.ib);
@@ -2054,9 +2065,20 @@ void HudRenderer::render(rhi::CommandList& cmd) {
     cmd.set_viewport(0, 0, static_cast<f32>(s.physical_w), static_cast<f32>(s.physical_h));
     cmd.set_scissor(0, 0, s.physical_w, s.physical_h);
 
+    // glm::ortho follows the GL convention (+Y up). On Vulkan that's
+    // accidentally correct because Vulkan's NDC has +Y down, so the GL-
+    // convention matrix maps screen y=0 (HUD top-left origin) to NDC -1
+    // which is the top of the Vulkan viewport. On GLES the same matrix
+    // would flip the HUD upside-down, so swap top/bottom there.
+#if defined(ULDUM_BACKEND_GLES)
+    glm::mat4 mvp = glm::ortho(0.0f, static_cast<f32>(s.screen_w),
+                               static_cast<f32>(s.screen_h), 0.0f,
+                               -1.0f, 1.0f);
+#else
     glm::mat4 mvp = glm::ortho(0.0f, static_cast<f32>(s.screen_w),
                                0.0f, static_cast<f32>(s.screen_h),
                                -1.0f, 1.0f);
+#endif
     cmd.push_constants(r.pipe_layout, rhi::ShaderStage::Vertex,
                        0, sizeof(glm::mat4), glm::value_ptr(mvp));
 

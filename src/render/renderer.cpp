@@ -1,5 +1,5 @@
 #include "render/renderer.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "map/terrain_data.h"
 #include "map/map.h"
 #include "asset/asset.h"
@@ -10,6 +10,10 @@
 #include "simulation/type_registry.h"
 #include "asset/model.h"
 #include "core/log.h"
+
+#if defined(ULDUM_BACKEND_GLES)
+#  include <stb_image_resize2.h>
+#endif
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -58,7 +62,19 @@ static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path)
         log::error(TAG, "Shader load without AssetManager: '{}'", path);
         return {};
     }
+#if defined(ULDUM_BACKEND_GLES)
+    // GLES backend reads tagged GLSL ES blobs, not SPIR-V. The Android
+    // Gradle build emits both `.spv` (Vulkan) and `.glsl` (GLES) into
+    // engine.uldpak; consumer code names the .spv path uniformly, and we
+    // swap the extension here.
+    std::string resolved(path);
+    if (resolved.size() >= 4 && resolved.substr(resolved.size() - 4) == ".spv") {
+        resolved.replace(resolved.size() - 4, 4, ".glsl");
+    }
+    auto bytes = mgr->read_file_bytes(resolved);
+#else
     auto bytes = mgr->read_file_bytes(path);
+#endif
     if (bytes.empty()) {
         log::error(TAG, "Shader not found in any package: '{}'", path);
         return {};
@@ -122,8 +138,18 @@ bool Renderer::init(rhi::Rhi& rhi) {
     if (!create_terrain_textures()) return false;
     if (!create_transition_noise()) return false;
     if (!create_water_normal()) return false;
-    if (!create_mesh_pipeline()) return false;
-    if (!create_skinned_mesh_pipeline()) return false;
+    // Mesh / skinned-mesh pipelines are non-fatal: the bindless static-mesh
+    // path uses `GL_EXT_nonuniform_qualifier`, which spirv-cross can't
+    // translate to GLSL ES, so on the GLES backend these pipelines stay
+    // invalid and unit rendering is skipped. The rest of the renderer
+    // (terrain, water, particles, HUD, overlays) still comes up so we can
+    // see the world. Vulkan path always succeeds and warning never fires.
+    if (!create_mesh_pipeline()) {
+        log::warn(TAG, "mesh pipeline unavailable — static unit meshes won't render");
+    }
+    if (!create_skinned_mesh_pipeline()) {
+        log::warn(TAG, "skinned-mesh pipeline unavailable — animated units won't render");
+    }
     if (!m_particles.init(rhi)) return false;  // must be before particle pipeline (creates desc layout)
     if (!create_particle_pipeline()) return false;
     if (!create_terrain_pipeline()) return false;
@@ -172,7 +198,7 @@ bool Renderer::init(rhi::Rhi& rhi) {
 
         {
             rhi::BufferDesc d{};
-            d.size   = MAX_STATIC_INSTANCES * sizeof(VkDrawIndexedIndirectCommand);
+            d.size   = MAX_STATIC_INSTANCES * sizeof(rhi::DrawIndexedIndirectCommand);
             d.usage  = rhi::BufferUsage::Indirect;
             d.memory = rhi::MemoryUsage::HostSequential;
             m_indirect_buffer[f] = rhi.create_buffer(d);
@@ -288,9 +314,7 @@ void Renderer::end_session() {
 
 void Renderer::shutdown() {
     if (!m_rhi) return;
-    VkDevice device = m_rhi->device();
-
-    vkDeviceWaitIdle(device);
+    m_rhi->wait_idle();
 
     m_particles.shutdown();
     destroy_terrain_mesh(*m_rhi, m_terrain);
@@ -327,6 +351,10 @@ void Renderer::shutdown() {
     // Destroy bindless resources
     if (m_bindless_set.is_valid()) m_rhi->free_descriptor_set(m_bindless_set);
     m_rhi->destroy_descriptor_set_layout(m_bindless_layout);
+#if defined(ULDUM_BACKEND_GLES)
+    if (m_unit_tex_sampler.is_valid()) m_rhi->destroy_sampler(m_unit_tex_sampler);
+    if (m_unit_tex_array.is_valid())   m_rhi->destroy_texture(m_unit_tex_array);
+#endif
 
     // Destroy fog resources
     if (m_fog_texture.texture.is_valid()) destroy_texture(*m_rhi, m_fog_texture);
@@ -959,7 +987,64 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
 // ── Bindless texture array (Phase 14b) ───────────────────────────────────
 
 bool Renderer::create_bindless_resources() {
-    // Descriptor set layout: variable-size sampler2D array
+#if defined(ULDUM_BACKEND_GLES)
+    // GLES has no bindless sampler[] array (EXT_bindless_texture is rare on
+    // Android). Use a single sampler2DArray of fixed-size layers instead.
+    rhi::DescriptorSetLayoutBinding b{};
+    b.binding = 0;
+    b.type    = rhi::DescriptorType::CombinedImageSampler;
+    b.count   = 1;
+    b.stages  = rhi::ShaderStage::Fragment;
+    rhi::DescriptorSetLayoutDesc desc{};
+    desc.bindings = std::span{&b, 1};
+    m_bindless_layout = m_rhi->create_descriptor_set_layout(desc);
+    if (!m_bindless_layout.is_valid()) {
+        log::error(TAG, "Failed to create unit-texture-array descriptor set layout");
+        return false;
+    }
+    m_bindless_set = m_rhi->allocate_descriptor_set(m_bindless_layout);
+    if (!m_bindless_set.is_valid()) {
+        log::error(TAG, "Failed to allocate unit-texture-array descriptor set");
+        return false;
+    }
+
+    rhi::TextureDesc td{};
+    td.width        = UNIT_TEX_SIZE;
+    td.height       = UNIT_TEX_SIZE;
+    td.array_layers = UNIT_TEX_LAYERS;
+    td.format       = rhi::TextureFormat::R8G8B8A8_SRGB;
+    td.usage        = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
+    m_unit_tex_array = m_rhi->create_texture(td);
+    if (!m_unit_tex_array.is_valid()) {
+        log::error(TAG, "Failed to create unit texture array ({}x{}x{} SRGB)",
+                   UNIT_TEX_SIZE, UNIT_TEX_SIZE, UNIT_TEX_LAYERS);
+        return false;
+    }
+
+    rhi::SamplerDesc sd{};
+    sd.address_u = rhi::AddressMode::ClampToEdge;
+    sd.address_v = rhi::AddressMode::ClampToEdge;
+    sd.address_w = rhi::AddressMode::ClampToEdge;
+    sd.max_lod   = 0.0f;
+    m_unit_tex_sampler = m_rhi->create_sampler(sd);
+    if (!m_unit_tex_sampler.is_valid()) {
+        log::error(TAG, "Failed to create unit texture array sampler");
+        return false;
+    }
+
+    rhi::WriteDescriptor w{};
+    w.binding       = 0;
+    w.array_element = 0;
+    w.type          = rhi::DescriptorType::CombinedImageSampler;
+    w.texture       = m_unit_tex_array;
+    w.sampler       = m_unit_tex_sampler;
+    m_rhi->update_descriptor_set(m_bindless_set, std::span{&w, 1});
+
+    log::info(TAG, "Unit texture array created ({}x{} x {} layers)",
+              UNIT_TEX_SIZE, UNIT_TEX_SIZE, UNIT_TEX_LAYERS);
+    return true;
+#else
+    // Vulkan: descriptor set layout: variable-size sampler2D array
     rhi::DescriptorSetLayoutBinding b{};
     b.binding             = 0;
     b.type                = rhi::DescriptorType::CombinedImageSampler;
@@ -986,16 +1071,89 @@ bool Renderer::create_bindless_resources() {
 
     log::info(TAG, "Bindless texture array created (max {} textures)", MAX_BINDLESS_TEXTURES);
     return true;
+#endif
 }
 
-u32 Renderer::register_bindless_texture(const GpuTexture& tex) {
-    if (m_bindless_count >= MAX_BINDLESS_TEXTURES) {
-        log::error(TAG, "Bindless texture array full ({}/{})", m_bindless_count, MAX_BINDLESS_TEXTURES);
-        return 0;  // fallback to default texture
+u32 Renderer::register_unit_texture(const GpuTexture& tex, const u8* pixels, u32 width, u32 height) {
+#if defined(ULDUM_BACKEND_GLES)
+    (void)tex;
+    if (m_bindless_count >= UNIT_TEX_LAYERS) {
+        log::error(TAG, "Unit texture array full ({}/{})", m_bindless_count, UNIT_TEX_LAYERS);
+        return 0;
     }
-
+    if (!pixels || width == 0 || height == 0) {
+        log::error(TAG, "register_unit_texture: missing pixel data");
+        return 0;
+    }
     u32 idx = m_bindless_count++;
 
+    // Resize to UNIT_TEX_SIZE × UNIT_TEX_SIZE so the layer fits the array.
+    // stb_image_resize2 is a single-call bilinear/Mitchell resize. Source
+    // is RGBA8 SRGB.
+    std::vector<u8> resized;
+    const u8* upload_pixels = pixels;
+    if (width != UNIT_TEX_SIZE || height != UNIT_TEX_SIZE) {
+        resized.resize(static_cast<usize>(UNIT_TEX_SIZE) * UNIT_TEX_SIZE * 4);
+        stbir_resize_uint8_srgb(pixels,        static_cast<int>(width),         static_cast<int>(height),         0,
+                                 resized.data(), static_cast<int>(UNIT_TEX_SIZE), static_cast<int>(UNIT_TEX_SIZE), 0,
+                                 STBIR_RGBA);
+        upload_pixels = resized.data();
+    }
+
+    // Stage via a one-shot upload buffer + copy_buffer_to_image.
+    const u64 layer_bytes = static_cast<u64>(UNIT_TEX_SIZE) * UNIT_TEX_SIZE * 4;
+    rhi::BufferDesc bd{};
+    bd.size   = layer_bytes;
+    bd.usage  = rhi::BufferUsage::TransferSrc;
+    bd.memory = rhi::MemoryUsage::HostSequential;
+    auto staging = m_rhi->create_buffer(bd);
+    if (!staging.is_valid()) {
+        log::error(TAG, "register_unit_texture: staging buffer alloc failed");
+        return 0;
+    }
+    std::memcpy(m_rhi->mapped_ptr(staging), upload_pixels, layer_bytes);
+
+    rhi::CommandList cmd = m_rhi->begin_oneshot();
+    rhi::ImageBarrier to_xfer{};
+    to_xfer.image       = m_unit_tex_array;
+    to_xfer.src_stage   = rhi::PipelineStage::TopOfPipe;
+    to_xfer.dst_stage   = rhi::PipelineStage::Transfer;
+    to_xfer.dst_access  = rhi::AccessFlag::TransferWrite;
+    to_xfer.old_layout  = rhi::ImageLayout::Undefined;
+    to_xfer.new_layout  = rhi::ImageLayout::TransferDstOptimal;
+    to_xfer.base_layer  = idx;
+    to_xfer.layer_count = 1;
+    cmd.image_barrier(to_xfer);
+
+    rhi::BufferImageCopy region{};
+    region.image_extent_w   = UNIT_TEX_SIZE;
+    region.image_extent_h   = UNIT_TEX_SIZE;
+    region.base_array_layer = idx;
+    region.layer_count      = 1;
+    cmd.copy_buffer_to_image(staging, m_unit_tex_array, std::span{&region, 1});
+
+    rhi::ImageBarrier to_shader{};
+    to_shader.image       = m_unit_tex_array;
+    to_shader.src_stage   = rhi::PipelineStage::Transfer;
+    to_shader.src_access  = rhi::AccessFlag::TransferWrite;
+    to_shader.dst_stage   = rhi::PipelineStage::FragmentShader;
+    to_shader.dst_access  = rhi::AccessFlag::ShaderRead;
+    to_shader.old_layout  = rhi::ImageLayout::TransferDstOptimal;
+    to_shader.new_layout  = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    to_shader.base_layer  = idx;
+    to_shader.layer_count = 1;
+    cmd.image_barrier(to_shader);
+    m_rhi->end_oneshot(cmd);
+
+    m_rhi->destroy_buffer(staging);
+    return idx;
+#else
+    (void)pixels; (void)width; (void)height;
+    if (m_bindless_count >= MAX_BINDLESS_TEXTURES) {
+        log::error(TAG, "Bindless texture array full ({}/{})", m_bindless_count, MAX_BINDLESS_TEXTURES);
+        return 0;
+    }
+    u32 idx = m_bindless_count++;
     rhi::WriteDescriptor w{};
     w.binding       = 0;
     w.array_element = idx;
@@ -1004,6 +1162,7 @@ u32 Renderer::register_bindless_texture(const GpuTexture& tex) {
     w.sampler       = tex.sampler;
     m_rhi->update_descriptor_set(m_bindless_set, std::span{&w, 1});
     return idx;
+#endif
 }
 
 // ── Default + terrain textures ────────────────────────────────────────────
@@ -1017,8 +1176,8 @@ bool Renderer::create_default_texture() {
     m_default_material.diffuse = m_default_texture;
     m_default_material.descriptor_set = allocate_mesh_descriptor(m_default_texture);
 
-    // Register in bindless array
-    m_default_tex_idx = register_bindless_texture(m_default_texture);
+    // Register in bindless (Vulkan) / unit-texture-array (GLES)
+    m_default_tex_idx = register_unit_texture(m_default_texture, pixels.data(), 4, 4);
 
     // Corpse texture (dark gray)
     auto corpse_pixels = generate_solid_texture(4, 50, 50, 50);
@@ -1027,8 +1186,7 @@ bool Renderer::create_default_texture() {
     m_corpse_material.diffuse = m_corpse_texture;
     m_corpse_material.descriptor_set = allocate_mesh_descriptor(m_corpse_texture);
 
-    // Register in bindless array
-    m_corpse_tex_idx = register_bindless_texture(m_corpse_texture);
+    m_corpse_tex_idx = register_unit_texture(m_corpse_texture, corpse_pixels.data(), 4, 4);
 
     log::info(TAG, "Default + corpse textures created (bindless idx: {}, {})",
               m_default_tex_idx, m_corpse_tex_idx);
@@ -1284,7 +1442,7 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
 bool Renderer::create_mesh_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/mesh.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/mesh.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load mesh shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -1372,7 +1530,7 @@ bool Renderer::create_mesh_pipeline() {
 bool Renderer::create_skinned_mesh_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/skinned_mesh.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/skinned_mesh.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load skinned mesh shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -1463,7 +1621,7 @@ bool Renderer::create_skinned_mesh_pipeline() {
 
     // Skinned shadow pipeline — depth-only, set 0 = bones SSBO, push = mat4 light_mvp
     auto shadow_vert_h = load_shader(*m_rhi, "engine/shaders/skinned_shadow.vert.spv");
-    if (m_rhi->resolve(shadow_vert_h)) {
+    if (shadow_vert_h.is_valid()) {
         rhi::PushConstantRange spc{};
         spc.stages = rhi::ShaderStage::Vertex;
         spc.size   = sizeof(glm::mat4);
@@ -1507,7 +1665,7 @@ bool Renderer::create_skinned_mesh_pipeline() {
 bool Renderer::create_particle_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/particle.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/particle.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load particle shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -1586,7 +1744,7 @@ bool Renderer::create_particle_pipeline() {
 bool Renderer::create_terrain_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/terrain.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/terrain.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load terrain shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -1665,7 +1823,7 @@ bool Renderer::create_terrain_pipeline() {
 bool Renderer::create_water_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/water.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/water.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load water shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -1794,7 +1952,7 @@ bool Renderer::create_skybox_mesh() {
 bool Renderer::create_skybox_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/skybox.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/skybox.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load skybox shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -1972,9 +2130,13 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             lm.data.textures[0].height);
         lm.material.diffuse = lm.diffuse_texture;
         lm.material.descriptor_set = allocate_mesh_descriptor(lm.diffuse_texture);
-        // Register in bindless array for static pipeline
-        lm.texture_index = register_bindless_texture(lm.diffuse_texture);
-        log::info(TAG, "  Texture: {}x{} (bindless idx: {})",
+        // Register in bindless (Vulkan) / unit-texture-array (GLES) for the
+        // static mesh pipeline.
+        lm.texture_index = register_unit_texture(lm.diffuse_texture,
+                                                 lm.data.textures[0].pixels.data(),
+                                                 lm.data.textures[0].width,
+                                                 lm.data.textures[0].height);
+        log::info(TAG, "  Texture: {}x{} (unit array idx: {})",
                   lm.data.textures[0].width, lm.data.textures[0].height, lm.texture_index);
     } else {
         lm.material = m_default_material;
@@ -2021,7 +2183,7 @@ GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
 bool Renderer::create_shadow_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/shadow.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
-    if (!m_rhi->resolve(vert_h) || !m_rhi->resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         log::error(TAG, "Failed to load shadow shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
@@ -2091,7 +2253,7 @@ bool Renderer::create_shadow_pipeline() {
     // Terrain shadow pipeline: same as above but with TerrainVertex layout
     auto terrain_vert_h = load_shader(*m_rhi, "engine/shaders/terrain_shadow.vert.spv");
     auto terrain_frag_h = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
-    if (m_rhi->resolve(terrain_vert_h)) {
+    if (terrain_vert_h.is_valid()) {
         rhi::ShaderStageDesc tstages[2]{};
         tstages[0].stage = rhi::ShaderStage::Vertex;   tstages[0].module = terrain_vert_h;
         tstages[1].stage = rhi::ShaderStage::Fragment; tstages[1].module = terrain_frag_h;
@@ -2347,7 +2509,7 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
         // Multi-draw indirect for all static mesh shadows
         u32 draw_count = static_cast<u32>(m_draw_groups.size());
         cmd.draw_indexed_indirect(m_indirect_buffer[fi], 0, draw_count,
-                                  sizeof(VkDrawIndexedIndirectCommand));
+                                  sizeof(rhi::DrawIndexedIndirectCommand));
     }
 
     cmd.end_rendering();
@@ -2514,7 +2676,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     }
 
     if (void* dst = m_rhi->mapped_ptr(m_indirect_buffer[fi]); dst && !m_draw_groups.empty()) {
-        auto* cmds = static_cast<VkDrawIndexedIndirectCommand*>(dst);
+        auto* cmds = static_cast<rhi::DrawIndexedIndirectCommand*>(dst);
         for (u32 i = 0; i < m_draw_groups.size(); ++i) {
             auto& dg = m_draw_groups[i];
             cmds[i].indexCount    = dg.index_count;
@@ -2912,7 +3074,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         // Multi-draw indirect: one command per unique mesh geometry
         u32 draw_count = static_cast<u32>(m_draw_groups.size());
         cmd.draw_indexed_indirect(m_indirect_buffer[fi], 0, draw_count,
-                                  sizeof(VkDrawIndexedIndirectCommand));
+                                  sizeof(rhi::DrawIndexedIndirectCommand));
     }
 
     // ── Pass 3: Particles (alpha-blended, drawn last) ────────────────────

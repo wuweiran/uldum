@@ -51,9 +51,9 @@ extern "C" void android_main(struct android_app* app) {
     }
 
     // Default LaunchArgs are correct for both Android flavors: App
-    // boots into Menu, then either the dev console (dev flavor) or
-    // the project's Shell UI (game flavor) drives map selection.
-    // Native side has no opinion.
+    // boots into Menu, then either the dev console (dev flavor — ImGui
+    // via the GL or Vulkan backend) or the project's Shell UI (game
+    // flavor) drives map selection. Native side has no opinion.
     uldum::LaunchArgs args;
 
     uldum::App game;
@@ -66,6 +66,12 @@ extern "C" void android_main(struct android_app* app) {
 
     game.run();
     game.shutdown();
+
+    // GameActivity stays alive in the foreground after android_main returns
+    // unless we explicitly finish the Activity. Without this, in-app quit
+    // (e.g. the dev console's Quit button) shuts down the engine but leaves
+    // the user staring at a frozen surface until they hit Back.
+    GameActivity_finish(app->activity);
 
     uldum::log::info("App", "android_main exiting");
 }

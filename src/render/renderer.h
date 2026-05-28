@@ -12,7 +12,7 @@
 #include "core/handle.h"
 #include "asset/model.h"
 
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "rhi/command_list.h"
 
 #include <glm/mat4x4.hpp>
@@ -291,7 +291,25 @@ private:
     u32                            m_default_tex_idx  = 0;
     u32                            m_corpse_tex_idx   = 0;
     bool create_bindless_resources();
-    u32  register_bindless_texture(const GpuTexture& tex);
+    // Backend-aware unit-texture registration. Vulkan path writes the
+    // descriptor at array_element = next index (bindless sampler array).
+    // GLES path resizes pixels to UNIT_TEX_SIZE and uploads them to the
+    // next layer of m_unit_tex_array (a 2D texture array sampled in
+    // mesh.frag.gles via material_index). One of `tex` / `pixels` is the
+    // authoritative input per backend; the other can be defaulted.
+    u32  register_unit_texture(const GpuTexture& tex, const u8* pixels, u32 width, u32 height);
+
+#if defined(ULDUM_BACKEND_GLES)
+    // GLES sampler2DArray that replaces the Vulkan bindless sampler[]
+    // array. All unit textures get resized to UNIT_TEX_SIZE×UNIT_TEX_SIZE
+    // and uploaded as layers; mesh.frag samples with material_index as
+    // the layer coordinate. Capped at 64 layers — enough for typical
+    // unit / doodad rosters without burning 64MB of VRAM.
+    static constexpr u32 UNIT_TEX_SIZE   = 256;
+    static constexpr u32 UNIT_TEX_LAYERS = 64;
+    rhi::TextureHandle m_unit_tex_array{};
+    rhi::SamplerHandle m_unit_tex_sampler{};
+#endif
 
     // Ring-buffered by frame_index() — CPU writes frame N+1 while the GPU
     // reads frame N. Without this, layout shifts on entity culling alias

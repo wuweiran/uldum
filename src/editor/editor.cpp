@@ -457,9 +457,8 @@ void Editor::run() {
         // Render. Minimized window → cmd is null / extent is zero; we still
         // need to balance the ImGui::NewFrame() above with EndFrame() so
         // next loop iteration doesn't assert on a stale frame.
-        VkCommandBuffer raw_cmd = m_rhi.begin_frame();
-        if (raw_cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-            rhi::CommandList cmd(m_rhi, raw_cmd);
+        rhi::CommandList cmd = m_rhi.begin_frame();
+        if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
             m_renderer.draw_shadows(cmd, m_simulation.world());
             m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());

@@ -6,7 +6,6 @@
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/EventListener.h>
-#include <vulkan/vulkan.h>
 
 #if defined(_WIN32)
   #ifndef WIN32_LEAN_AND_MEAN
@@ -212,7 +211,7 @@ void Shell::update(f32 /*dt*/) {
 void Shell::render(rhi::CommandList& cmd, u32 width, u32 height) {
     auto& impl = *m_impl;
     if (!impl.context) return;
-    VkExtent2D extent{width, height};
+    rhi::Extent2D extent{width, height};
     impl.render->begin_frame(cmd, extent);
     impl.context->Render();
 }

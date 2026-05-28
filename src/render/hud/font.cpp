@@ -1,6 +1,6 @@
 #include "render/hud/font.h"
 
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "asset/asset.h"
 #include "core/log.h"
 
@@ -260,13 +260,10 @@ void Font::shutdown() {
     m_ttf_bytes.clear();
 
     if (m_rhi) {
-        VkDevice device = m_rhi->device();
-        if (device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device);
-            if (m_atlas_set.is_valid()) { m_rhi->free_descriptor_set(m_atlas_set); m_atlas_set = {}; }
-            m_rhi->destroy_texture(m_atlas);
-            m_atlas = {};
-        }
+        m_rhi->wait_idle();
+        if (m_atlas_set.is_valid()) { m_rhi->free_descriptor_set(m_atlas_set); m_atlas_set = {}; }
+        m_rhi->destroy_texture(m_atlas);
+        m_atlas = {};
     }
 
     m_glyphs.clear();

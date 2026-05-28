@@ -1,5 +1,5 @@
 #include "render/gpu_texture.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "asset/texture.h"
 #include "core/log.h"
 

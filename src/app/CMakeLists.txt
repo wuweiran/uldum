@@ -50,6 +50,11 @@ if(ANDROID)
     # controls) so engine work on a real device matches the desktop
     # uldum_dev experience. Game-flavor APKs skip this — they use the
     # game project's Shell UI / RmlUi for menus instead.
+    #
+    # ImGui's Vulkan backend is the only one wired into the engine, so
+    # The dev console works on both backends: ImGui's Vulkan backend on
+    # Vulkan builds, its OpenGL3 backend (GLES 3.x compatible) on GLES
+    # builds. dev_console.cpp picks the right one via ULDUM_BACKEND_*.
     if(ULDUM_ANDROID_DEV)
         target_compile_definitions(uldum PRIVATE ULDUM_DEV_UI)
         target_sources(uldum PRIVATE dev_console.cpp)
@@ -170,7 +175,7 @@ elseif(ULDUM_GAME_PROJECT_DIR)
         target_compile_definitions(uldum_game PRIVATE ULDUM_SHELL_UI)
     endif()
     compile_shaders(uldum_game
-        ${ULDUM_ROOT}/engine/shaders
+        ${ULDUM_SRC}/render/shaders/vulkan
         ${ULDUM_ENGINE_STAGING}/shaders
     )
     add_dependencies(pack_game_assets uldum_pack uldum_game_shaders)
@@ -203,7 +208,7 @@ else()
         target_compile_definitions(uldum_dev PRIVATE ULDUM_DEV_UI)
     endif()
     compile_shaders(uldum_dev
-        ${ULDUM_ROOT}/engine/shaders
+        ${ULDUM_SRC}/render/shaders/vulkan
         ${ULDUM_ENGINE_STAGING}/shaders
     )
 

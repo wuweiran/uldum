@@ -1,12 +1,17 @@
 #include "app/dev_console.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "platform/platform.h"
 #include "asset/asset.h"
 #include "asset/upk.h"
 #include "core/log.h"
 
 #include <imgui.h>
-#include <imgui_impl_vulkan.h>
+#if defined(ULDUM_BACKEND_VULKAN)
+#  include "rhi/vulkan/vulkan_rhi.h"
+#  include <imgui_impl_vulkan.h>
+#elif defined(ULDUM_BACKEND_GLES)
+#  include <imgui_impl_opengl3.h>
+#endif
 #include <nlohmann/json.hpp>
 
 #ifdef _WIN32
@@ -29,6 +34,7 @@ bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
     m_rhi      = &rhi;
     m_platform = &platform;
 
+#if defined(ULDUM_BACKEND_VULKAN)
     // Descriptor pool — ImGui needs one slot per font texture and per custom
     // image; 100 is far more than we need for dev widgets.
     VkDescriptorPoolSize pool_sizes[] = {
@@ -47,6 +53,7 @@ bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
         return false;
     }
     m_imgui_pool = pool;
+#endif
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -85,6 +92,7 @@ bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
     }
 #endif
 
+#if defined(ULDUM_BACKEND_VULKAN)
     ImGui_ImplVulkan_InitInfo init_info{};
     init_info.Instance       = rhi.instance();
     init_info.PhysicalDevice = rhi.physical_device();
@@ -106,6 +114,16 @@ bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat  = depth_format;
 
     ImGui_ImplVulkan_Init(&init_info);
+#elif defined(ULDUM_BACKEND_GLES)
+    // OpenGL3 backend autodetects loader / version from the bound context
+    // (we set IMGUI_IMPL_OPENGL_ES3 at the imgui library level). The
+    // glsl_version string must be exactly "#version 300 es" — ImGui's
+    // version selector only recognizes 300 for the ES shader path; any
+    // other ES version (310, 320) falls through to the desktop glsl_130
+    // shaders which won't compile on a GLES context. 300 es is forward-
+    // compatible with our ES 3.1 context.
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+#endif
 
     rescan_map_list();
 
@@ -117,16 +135,22 @@ bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
 void DevConsole::shutdown() {
     if (!m_initialized) return;
     m_rhi->wait_idle();
+#if defined(ULDUM_BACKEND_VULKAN)
     ImGui_ImplVulkan_Shutdown();
+#elif defined(ULDUM_BACKEND_GLES)
+    ImGui_ImplOpenGL3_Shutdown();
+#endif
 #ifdef _WIN32
     ImGui_ImplWin32_Shutdown();
 #endif
     ImGui::DestroyContext();
+#if defined(ULDUM_BACKEND_VULKAN)
     if (m_imgui_pool) {
         vkDestroyDescriptorPool(m_rhi->device(),
                                 static_cast<VkDescriptorPool>(m_imgui_pool), nullptr);
         m_imgui_pool = nullptr;
     }
+#endif
     m_initialized = false;
 }
 
@@ -258,7 +282,11 @@ void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::Networ
     if (!m_initialized) return;
     m_state = state;
 
+#if defined(ULDUM_BACKEND_VULKAN)
     ImGui_ImplVulkan_NewFrame();
+#elif defined(ULDUM_BACKEND_GLES)
+    ImGui_ImplOpenGL3_NewFrame();
+#endif
 #ifdef _WIN32
     ImGui_ImplWin32_NewFrame();
 #else
@@ -773,8 +801,16 @@ void DevConsole::draw_disconnected_overlay() {
 
 void DevConsole::render(rhi::CommandList& cmd) {
     if (!m_initialized) return;
+#if defined(ULDUM_BACKEND_VULKAN)
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(),
                                     static_cast<VkCommandBuffer>(cmd.backend_handle()));
+#elif defined(ULDUM_BACKEND_GLES)
+    // GLES path: cmd is implicit (the bound GL context). ImGui's OpenGL3
+    // backend issues its own draws directly. ImGui::Render() was already
+    // called at the end of update() (see Vulkan path).
+    (void)cmd;
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#endif
 }
 
 DevConsole::Action DevConsole::poll_action() {

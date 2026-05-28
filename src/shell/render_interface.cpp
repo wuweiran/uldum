@@ -1,5 +1,5 @@
 #include "shell/render_interface.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "asset/asset.h"
 #include "core/log.h"
 
@@ -19,7 +19,15 @@ static_assert(sizeof(Rml::Vertex) == 20, "Rml::Vertex layout changed");
 static rhi::ShaderModuleHandle load_shader(rhi::Rhi& rhi, std::string_view path) {
     auto* mgr = asset::AssetManager::instance();
     if (!mgr) return {};
+#if defined(ULDUM_BACKEND_GLES)
+    std::string resolved(path);
+    if (resolved.size() >= 4 && resolved.substr(resolved.size() - 4) == ".spv") {
+        resolved.replace(resolved.size() - 4, 4, ".glsl");
+    }
+    auto bytes = mgr->read_file_bytes(resolved);
+#else
     auto bytes = mgr->read_file_bytes(path);
+#endif
     if (bytes.empty()) {
         log::error(TAG, "UI shader not found: '{}'", path);
         return {};
@@ -41,9 +49,7 @@ bool RenderInterface::init() {
 }
 
 void RenderInterface::shutdown() {
-    VkDevice device = m_rhi.device();
-    if (device == VK_NULL_HANDLE) return;
-    vkDeviceWaitIdle(device);
+    m_rhi.wait_idle();
 
     for (auto& [h, g] : m_geometries) destroy_geometry(g);
     m_geometries.clear();
@@ -100,7 +106,7 @@ bool RenderInterface::create_pipeline_layout() {
 bool RenderInterface::create_pipeline() {
     auto vert_h = load_shader(m_rhi, "engine/shaders/ui_shell.vert.spv");
     auto frag_h = load_shader(m_rhi, "engine/shaders/ui_shell.frag.spv");
-    if (!m_rhi.resolve(vert_h) || !m_rhi.resolve(frag_h)) {
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
         m_rhi.destroy_shader_module(vert_h);
         m_rhi.destroy_shader_module(frag_h);
         return false;
@@ -312,7 +318,7 @@ void RenderInterface::ensure_pipeline_bound() {
     m_cmd->set_viewport(0, 0, static_cast<f32>(m_extent.width), static_cast<f32>(m_extent.height));
 
     // Default scissor covers full viewport until SetScissorRegion overrides.
-    m_scissor         = { {0, 0}, m_extent };
+    m_scissor         = { 0, 0, m_extent.width, m_extent.height };
     m_scissor_enabled = false;
     m_cmd->set_scissor(0, 0, m_extent.width, m_extent.height);
 }
@@ -328,20 +334,26 @@ void RenderInterface::RenderGeometry(Rml::CompiledGeometryHandle geometry,
     ensure_pipeline_bound();
 
     // MVP = ortho * transform * translate(translation).
-    // Vulkan's NDC has +Y down; glm::ortho is OpenGL-convention (+Y up), so
-    // we swap bottom/top to make Y=0 map to the top of the screen and Y=H
-    // to the bottom — matching RmlUi's window-pixel coordinates.
+    // glm::ortho is GL convention (+Y up). On Vulkan that lines up with
+    // Vulkan's +Y-down NDC so RmlUi's top-left-origin coords land right
+    // side up. On GLES, swap top/bottom to get the same screen-to-NDC
+    // mapping.
+#if defined(ULDUM_BACKEND_GLES)
+    glm::mat4 ortho = glm::ortho(0.0f, static_cast<float>(m_extent.width),
+                                 static_cast<float>(m_extent.height), 0.0f,
+                                 -1.0f, 1.0f);
+#else
     glm::mat4 ortho = glm::ortho(0.0f, static_cast<float>(m_extent.width),
                                  0.0f, static_cast<float>(m_extent.height),
                                  -1.0f, 1.0f);
+#endif
     glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(translation.x, translation.y, 0.0f));
     glm::mat4 mvp = ortho * m_transform * t;
     m_cmd->push_constants(m_pipeline_layout, rhi::ShaderStage::Vertex,
                           0, sizeof(glm::mat4), glm::value_ptr(mvp));
 
     // Apply scissor (track state to avoid rebinding when unchanged).
-    m_cmd->set_scissor(m_scissor.offset.x, m_scissor.offset.y,
-                       m_scissor.extent.width, m_scissor.extent.height);
+    m_cmd->set_scissor(m_scissor.x, m_scissor.y, m_scissor.w, m_scissor.h);
 
     rhi::DescriptorSetHandle tex_set = m_white.set;
     if (texture != 0) {
@@ -425,14 +437,14 @@ void RenderInterface::ReleaseTexture(Rml::TextureHandle texture) {
 
 void RenderInterface::EnableScissorRegion(bool enable) {
     m_scissor_enabled = enable;
-    if (!enable) m_scissor = { {0, 0}, m_extent };
+    if (!enable) m_scissor = { 0, 0, m_extent.width, m_extent.height };
 }
 
 void RenderInterface::SetScissorRegion(Rml::Rectanglei region) {
-    m_scissor.offset.x      = region.Left();
-    m_scissor.offset.y      = region.Top();
-    m_scissor.extent.width  = static_cast<u32>(region.Width());
-    m_scissor.extent.height = static_cast<u32>(region.Height());
+    m_scissor.x = region.Left();
+    m_scissor.y = region.Top();
+    m_scissor.w = static_cast<u32>(region.Width());
+    m_scissor.h = static_cast<u32>(region.Height());
 }
 
 void RenderInterface::SetTransform(const Rml::Matrix4f* transform) {
@@ -448,12 +460,12 @@ void RenderInterface::SetTransform(const Rml::Matrix4f* transform) {
 
 // ── Frame setup ──────────────────────────────────────────────────────────
 
-void RenderInterface::begin_frame(rhi::CommandList& cmd, VkExtent2D extent) {
+void RenderInterface::begin_frame(rhi::CommandList& cmd, rhi::Extent2D extent) {
     m_cmd              = &cmd;
     m_extent           = extent;
     m_pipeline_bound   = false;
     m_scissor_enabled  = false;
-    m_scissor          = { {0, 0}, extent };
+    m_scissor          = { 0, 0, extent.width, extent.height };
     m_transform        = glm::mat4(1.0f);
 }
 

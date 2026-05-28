@@ -43,11 +43,11 @@ android {
     }
 
     defaultConfig {
-        // minSdk 33 (Android 13) is what the NDK's libvulkan.so stub needs to
-        // export the Vulkan 1.3 entry points the engine uses (dynamic
-        // rendering, synchronization2, maintenance4 — all 1.3 core, not
-        // available as linkable symbols in the API 29/30/31/32 stubs).
-        minSdk = 33
+        // minSdk 26 (Android 8.0 Oreo) — covers >98% of active devices and
+        // is the floor for guaranteed OpenGL ES 3.2 support across vendors.
+        // The engine's GLES backend targets ES 3.2 core and uses extensions
+        // where present (EXT_buffer_storage, KHR_debug).
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
 
@@ -60,7 +60,7 @@ android {
             cmake {
                 arguments += listOf(
                     "-DANDROID_STL=c++_static",
-                    "-DANDROID_PLATFORM=android-33",
+                    "-DANDROID_PLATFORM=android-26",
                 )
                 cppFlags += "-std=c++23"
             }
@@ -189,24 +189,32 @@ fun resolveGlslc(): File {
 
 val compileEngineShaders by tasks.registering {
     description = "Compile engine GLSL shaders (.vert/.frag/.comp) to SPIR-V via glslc"
-    val shaderSrcDir = engineSrcDir.resolve("shaders")
+    // Shader sources live with the renderer code (src/render/shaders/), not
+    // in engine/ — they're engine source code, not user-overridable assets.
+    // Vulkan sources are the canonical authoring; GLES variants are hand-
+    // written siblings used only on the GLES backend.
+    val vulkanShaderSrcDir = projectRoot.resolve("src/render/shaders/vulkan")
+    val glesShaderSrcDir   = projectRoot.resolve("src/render/shaders/gles")
     val shaderOutDir = layout.buildDirectory.dir("dev_engine_shaders").get().asFile
 
     doFirst {
-        if (!shaderSrcDir.isDirectory) {
-            throw GradleException("Engine shaders dir missing: $shaderSrcDir")
+        if (!vulkanShaderSrcDir.isDirectory) {
+            throw GradleException("Vulkan shader sources missing: $vulkanShaderSrcDir")
         }
         val glslc = resolveGlslc()
         shaderOutDir.deleteRecursively()
         shaderOutDir.mkdirs()
 
-        val shaderFiles = shaderSrcDir.listFiles { f ->
+        val shaderFiles = vulkanShaderSrcDir.listFiles { f ->
             f.isFile && (f.name.endsWith(".vert") || f.name.endsWith(".frag") || f.name.endsWith(".comp"))
         } ?: emptyArray()
         if (shaderFiles.isEmpty()) {
-            throw GradleException("No shader sources (*.vert, *.frag, *.comp) in $shaderSrcDir")
+            throw GradleException("No shader sources (*.vert, *.frag, *.comp) in $vulkanShaderSrcDir")
         }
 
+        // Pass 1: GLSL → SPIR-V via glslc. The .spv files are kept around
+        // so Vulkan-target builds can still consume them; on Android the
+        // .glsl variants produced below are what the GLES backend reads.
         shaderFiles.forEach { shader ->
             val spvOut = shaderOutDir.resolve("${shader.name}.spv")
             val proc = ProcessBuilder(
@@ -221,6 +229,43 @@ val compileEngineShaders by tasks.registering {
                     "Check VULKAN_SDK is set or glslc.exe is on PATH."
                 )
             }
+        }
+
+        // Pass 2: stage the GLES variants. Each Vulkan shader that needs to
+        // run on GLES has a hand-written sibling at src/render/shaders/gles/
+        // (authored as GLSL ES 3.10 against the engine's flat binding scheme:
+        // `set * 16 + binding`, push-constant UBO at binding 30). We do a
+        // dumb copy with a one-byte stage tag prepended so the GLES Rhi's
+        // create_shader_module knows VS vs. FS without a separate manifest.
+        //
+        // SPIR-V → GLSL ES auto-translation via spirv-cross was tried and
+        // rejected: glslc strips unused push-constant / UBO members per
+        // stage, producing struct mismatches that GL refuses to link; bindless
+        // texture arrays and Vulkan-only tokens don't round-trip cleanly; and
+        // every regex band-aid grew another head. Hand-authored sources are
+        // the cheaper, more legible option.
+        //
+        // A Vulkan shader without a GLES sibling is fine — the corresponding
+        // pipeline simply stays inactive on GLES (Renderer::init logs a warn
+        // and continues; world rendering paths are gated on pipeline validity).
+        val skipped = mutableListOf<String>()
+        shaderFiles.forEach { shader ->
+            val tag = when {
+                shader.name.endsWith(".vert") -> "V"
+                shader.name.endsWith(".frag") -> "F"
+                else -> return@forEach  // skip .comp until GLES compute is wired
+            }
+            val glesIn  = glesShaderSrcDir.resolve(shader.name)
+            val glslOut = shaderOutDir.resolve("${shader.name}.glsl")
+            if (!glesIn.isFile) {
+                skipped.add(shader.name)
+                return@forEach
+            }
+            glslOut.writeText("$tag\n${glesIn.readText()}")
+        }
+        if (skipped.isNotEmpty()) {
+            logger.warn("No GLES sibling for ${skipped.size} shader(s) — pipelines will be inactive on Android:")
+            skipped.forEach { logger.warn("  - $it") }
         }
     }
 }

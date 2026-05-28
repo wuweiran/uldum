@@ -2137,9 +2137,8 @@ void App::run() {
             auto& world = active_world();
             f32 alpha = is_client ? 1.0f : (accumulator / TICK_DT);
             auto r0 = std::chrono::steady_clock::now();
-            VkCommandBuffer raw_cmd = m_rhi.begin_frame();
-            if (raw_cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-                rhi::CommandList cmd(m_rhi, raw_cmd);
+            rhi::CommandList cmd = m_rhi.begin_frame();
+            if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_renderer.upload_fog(cmd);
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
@@ -2539,9 +2538,8 @@ void App::run() {
             // the Shell UI still renders. Open the render pass, draw only
             // Shell. Once a main menu wires up start_session, Menu state is
             // reachable before/between sessions.
-            VkCommandBuffer raw_cmd = m_rhi.begin_frame();
-            if (raw_cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-                rhi::CommandList cmd(m_rhi, raw_cmd);
+            rhi::CommandList cmd = m_rhi.begin_frame();
+            if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_rhi.begin_rendering();
                 m_shell->update(frame_dt);
                 m_shell->render(cmd, m_rhi.extent().width, m_rhi.extent().height);
@@ -2553,9 +2551,8 @@ void App::run() {
         else if (m_dev_console) {
             // Non-Playing states in dev build: render the dev console menu
             // on a cleared background so the user can pick a map, host, etc.
-            VkCommandBuffer raw_cmd = m_rhi.begin_frame();
-            if (raw_cmd && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-                rhi::CommandList cmd(m_rhi, raw_cmd);
+            rhi::CommandList cmd = m_rhi.begin_frame();
+            if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_rhi.begin_rendering();
                 m_dev_console->render(cmd);
                 m_rhi.end_frame();

@@ -1,5 +1,5 @@
 #include "render/shadow.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "core/log.h"
 
 #include <glm/ext/matrix_clip_space.hpp>
@@ -80,14 +80,22 @@ glm::mat4 compute_light_vp(const glm::vec3& light_dir, const glm::vec3& scene_ce
     }
 
     glm::mat4 light_view = glm::lookAt(light_pos, scene_center, up);
-    // Use ZO (zero-to-one) depth range for Vulkan
+#if defined(ULDUM_BACKEND_GLES)
+    // GLES NDC: y-up, z in [-1, +1]. NO (-1..+1) variant, no Y flip.
+    glm::mat4 light_proj = glm::orthoRH_NO(
+        -scene_radius, scene_radius,
+        -scene_radius, scene_radius,
+        0.1f, scene_radius * 2.5f
+    );
+#else
+    // Vulkan: ZO (0..1) depth, Y flip.
     glm::mat4 light_proj = glm::orthoRH_ZO(
         -scene_radius, scene_radius,
         -scene_radius, scene_radius,
         0.1f, scene_radius * 2.5f
     );
-    // Flip Y for Vulkan
     light_proj[1][1] *= -1.0f;
+#endif
 
     return light_proj * light_view;
 }

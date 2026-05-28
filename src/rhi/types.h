@@ -322,6 +322,19 @@ struct Extent2D {
     u32 height = 0;
 };
 
+// Backend-agnostic indirect-draw command. Layout matches Vulkan's
+// VkDrawIndexedIndirectCommand so renderer code can populate the buffer
+// directly. (`vertex_offset` is signed in Vulkan; we never use negative
+// offsets, so a u32 round-trips safely to GL's DrawElementsIndirectCommand
+// which has an unsigned baseVertex.)
+struct DrawIndexedIndirectCommand {
+    u32 indexCount;
+    u32 instanceCount;
+    u32 firstIndex;
+    i32 vertexOffset;
+    u32 firstInstance;
+};
+
 struct GraphicsPipelineDesc {
     PipelineLayoutHandle                 layout;
     std::span<const ShaderStageDesc>     stages;

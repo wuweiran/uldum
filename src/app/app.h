@@ -1,7 +1,7 @@
 #pragma once
 
 #include "platform/platform.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "asset/asset.h"
 #include "render/renderer.h"
 #include "render/camera_controller.h"

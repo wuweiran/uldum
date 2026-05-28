@@ -18,13 +18,12 @@
 //   • DX12 — Windows native
 //   • Metal — macOS, iOS
 
-#if defined(ULDUM_BACKEND_VULKAN) || !defined(ULDUM_BACKEND_GLES) \
-    && !defined(ULDUM_BACKEND_DX12) && !defined(ULDUM_BACKEND_METAL)
-#  include "rhi/vulkan/vulkan_rhi.h"
-#elif defined(ULDUM_BACKEND_GLES)
+#if defined(ULDUM_BACKEND_GLES)
 #  include "rhi/gles/gles_rhi.h"
 #elif defined(ULDUM_BACKEND_DX12)
 #  include "rhi/dx12/dx12_rhi.h"
 #elif defined(ULDUM_BACKEND_METAL)
 #  include "rhi/metal/metal_rhi.h"
+#else  // default: Vulkan
+#  include "rhi/vulkan/vulkan_rhi.h"
 #endif

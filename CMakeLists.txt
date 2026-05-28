@@ -17,13 +17,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Vulkan: on desktop we need glslc from the Vulkan SDK to compile shaders at
-# build time. On Android the NDK ships Vulkan headers + libvulkan.so but no
-# glslc — shaders are pre-compiled on desktop and shipped inside engine.uldpak,
-# so the Android build skips shader compilation entirely.
-if(ANDROID)
-    find_package(Vulkan REQUIRED)
-else()
+# Vulkan SDK is required:
+#   • on Windows for the Vulkan backend implementation + glslc shader compiler;
+#   • on every desktop build (even GLES-target packaging) for glslc, since
+#     shaders are authored as GLSL and compiled to SPIR-V at desktop build
+#     time, then optionally cross-compiled to GLSL ES for the Android bundle.
+# Android-only builds (compiled with the NDK) never link Vulkan; the GLES
+# runtime comes from libGLESv3 / libEGL.
+if(NOT ANDROID)
     find_package(Vulkan REQUIRED COMPONENTS glslc)
 endif()
 
@@ -49,6 +50,9 @@ function(compile_shaders TARGET SHADER_DIR OUTPUT_DIR)
     endforeach()
     add_custom_target(${TARGET}_shaders ALL DEPENDS ${SPV_OUTPUTS})
     add_dependencies(${TARGET} ${TARGET}_shaders)
+    # GLSL ES translation for the Android bundle is handled by the Android
+    # Gradle build (see platforms/android/app/build.gradle.kts), not by
+    # desktop CMake. Desktop builds only target Vulkan and don't need .glsl.
 endfunction()
 
 # Platform defines
@@ -57,6 +61,40 @@ if(WIN32)
     add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
 elseif(ANDROID)
     add_compile_definitions(ULDUM_PLATFORM_ANDROID)
+endif()
+
+# RHI backend selection. Each backend ships its own implementation of the
+# `rhi::Rhi` class with an identical public interface. Consumer code is
+# backend-agnostic — only the build system picks one.
+#
+# Platform mapping:
+#   • Android  → OpenGL ES 3.1 (lets us hit lower minSdk than Vulkan would)
+#   • Windows / Linux / macOS → Vulkan 1.3
+#
+# To force a non-default backend for testing, override on the command line
+# (e.g. `cmake -DULDUM_BACKEND_VULKAN=ON -DULDUM_BACKEND_GLES=OFF` for a
+# Vulkan-on-Android experiment).
+if(ANDROID)
+    set(ULDUM_BACKEND_VULKAN OFF CACHE BOOL "Enable Vulkan RHI backend")
+    set(ULDUM_BACKEND_GLES   ON  CACHE BOOL "Enable OpenGL ES 3.1 RHI backend")
+else()
+    set(ULDUM_BACKEND_VULKAN ON  CACHE BOOL "Enable Vulkan RHI backend")
+    set(ULDUM_BACKEND_GLES   OFF CACHE BOOL "Enable OpenGL ES 3.1 RHI backend")
+endif()
+
+if(ULDUM_BACKEND_GLES AND NOT ANDROID)
+    message(WARNING "ULDUM_BACKEND_GLES is Android-only; ignored on this platform")
+    set(ULDUM_BACKEND_GLES OFF)
+endif()
+if(ULDUM_BACKEND_GLES AND ULDUM_BACKEND_VULKAN)
+    message(FATAL_ERROR "ULDUM_BACKEND_GLES and ULDUM_BACKEND_VULKAN are mutually exclusive")
+endif()
+if(ULDUM_BACKEND_GLES)
+    add_compile_definitions(ULDUM_BACKEND_GLES)
+elseif(ULDUM_BACKEND_VULKAN)
+    add_compile_definitions(ULDUM_BACKEND_VULKAN)
+else()
+    message(FATAL_ERROR "No RHI backend selected. Enable ULDUM_BACKEND_VULKAN or ULDUM_BACKEND_GLES.")
 endif()
 
 # Debug defines

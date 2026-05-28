@@ -1,13 +1,12 @@
 #pragma once
 
 #include <RmlUi/Core/RenderInterface.h>
-#include <vulkan/vulkan.h>
-#include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
 
 #include "core/types.h"
 #include "rhi/handles.h"
 #include "rhi/command_list.h"
+#include "rhi/types.h"  // Extent2D
 
 #include <unordered_map>
 
@@ -40,7 +39,7 @@ public:
 
     // Set the active cmd buffer + viewport for this frame. Called by
     // Shell::render immediately before Context::Render().
-    void begin_frame(rhi::CommandList& cmd, VkExtent2D extent);
+    void begin_frame(rhi::CommandList& cmd, rhi::Extent2D extent);
 
     // ── Rml::RenderInterface ─────────────────────────────────────────────
     Rml::CompiledGeometryHandle CompileGeometry(
@@ -101,10 +100,11 @@ private:
 
     // Per-frame state
     rhi::CommandList* m_cmd           = nullptr;
-    VkExtent2D      m_extent          = {0, 0};
+    rhi::Extent2D   m_extent          = {0, 0};
     bool            m_pipeline_bound  = false;
     bool            m_scissor_enabled = false;
-    VkRect2D        m_scissor         = {};
+    struct Rect { i32 x = 0, y = 0; u32 w = 0, h = 0; };
+    Rect            m_scissor         = {};
     glm::mat4       m_transform       = glm::mat4(1.0f);
 };
 

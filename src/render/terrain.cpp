@@ -1,6 +1,6 @@
 #include "render/terrain.h"
 #include "render/gpu_mesh.h"
-#include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/rhi.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 

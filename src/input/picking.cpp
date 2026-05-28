@@ -44,10 +44,22 @@ glm::vec3 Picker::ray_origin(f32 sx, f32 sy) const {
     f32 w = static_cast<f32>(m_screen_w);
     f32 h = static_cast<f32>(m_screen_h);
     f32 ndc_x = (2.0f * sx / w) - 1.0f;
+    // Vulkan: view_projection bakes a Y-flip, so screen top (sy=0) maps to
+    // NDC y=-1 directly. GLES: no flip, so we invert here to keep the
+    // screen-top-origin convention.
+#if defined(ULDUM_BACKEND_GLES)
+    f32 ndc_y = 1.0f - (2.0f * sy / h);
+#else
     f32 ndc_y = (2.0f * sy / h) - 1.0f;
+#endif
 
     glm::mat4 inv_vp = glm::inverse(m_camera->view_projection());
-    glm::vec4 near_clip{ndc_x, ndc_y, 0.0f, 1.0f};
+    // Vulkan NDC z: [0,1] (0=near). GLES NDC z: [-1,+1] (-1=near).
+#if defined(ULDUM_BACKEND_GLES)
+    glm::vec4 near_clip{ndc_x, ndc_y, -1.0f, 1.0f};
+#else
+    glm::vec4 near_clip{ndc_x, ndc_y,  0.0f, 1.0f};
+#endif
     glm::vec4 near_world = inv_vp * near_clip;
     near_world /= near_world.w;
     return glm::vec3(near_world);
@@ -57,11 +69,20 @@ glm::vec3 Picker::screen_to_ray(f32 sx, f32 sy) const {
     f32 w = static_cast<f32>(m_screen_w);
     f32 h = static_cast<f32>(m_screen_h);
     f32 ndc_x = (2.0f * sx / w) - 1.0f;
+#if defined(ULDUM_BACKEND_GLES)
+    f32 ndc_y = 1.0f - (2.0f * sy / h);
+#else
     f32 ndc_y = (2.0f * sy / h) - 1.0f;
+#endif
 
     glm::mat4 inv_vp = glm::inverse(m_camera->view_projection());
-    glm::vec4 near_clip{ndc_x, ndc_y, 0.0f, 1.0f};
-    glm::vec4 far_clip{ndc_x, ndc_y, 1.0f, 1.0f};
+#if defined(ULDUM_BACKEND_GLES)
+    glm::vec4 near_clip{ndc_x, ndc_y, -1.0f, 1.0f};
+    glm::vec4 far_clip {ndc_x, ndc_y,  1.0f, 1.0f};
+#else
+    glm::vec4 near_clip{ndc_x, ndc_y,  0.0f, 1.0f};
+    glm::vec4 far_clip {ndc_x, ndc_y,  1.0f, 1.0f};
+#endif
 
     glm::vec4 near_world = inv_vp * near_clip;
     glm::vec4 far_world  = inv_vp * far_clip;
@@ -264,11 +285,18 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
         auto* transform = transforms.get(id);
         if (!transform) continue;
 
-        // Project world position to screen
+        // Project world position to screen.
+        // Vulkan's projection has a baked Y-flip, so clip.y matches the
+        // screen's top-left origin directly. GLES doesn't flip in the
+        // projection, so we invert here to land in screen-space.
         glm::vec4 clip = vp * glm::vec4(transform->position, 1.0f);
         if (clip.w <= 0) continue;
         f32 sx = (clip.x / clip.w + 1.0f) * hw;
-        f32 sy = (clip.y / clip.w + 1.0f) * hh;  // Vulkan: Y not flipped in projection
+#if defined(ULDUM_BACKEND_GLES)
+        f32 sy = (1.0f - clip.y / clip.w) * hh;
+#else
+        f32 sy = (clip.y / clip.w + 1.0f) * hh;
+#endif
 
         if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) {
             simulation::Unit u;

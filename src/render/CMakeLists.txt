@@ -17,4 +17,5 @@ add_library(uldum_render STATIC
 )
 
 target_include_directories(uldum_render PUBLIC ${ULDUM_SRC})
-target_link_libraries(uldum_render PUBLIC uldum_core uldum_rhi uldum_asset uldum_simulation uldum_map uldum_hud glm::glm vma freetype msdfgen::msdfgen msdfgen::msdfgen-ext)
+target_link_libraries(uldum_render PUBLIC uldum_core uldum_rhi uldum_asset uldum_simulation uldum_map uldum_hud glm::glm freetype msdfgen::msdfgen msdfgen::msdfgen-ext)
+# vma is pulled in transitively via uldum_rhi when ULDUM_BACKEND_VULKAN is on.

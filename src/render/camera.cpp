@@ -101,8 +101,16 @@ void Camera::recalculate() {
     glm::vec3 eye = position();
     glm::vec3 up{0.0f, 0.0f, 1.0f};
     m_view = glm::lookAt(eye, m_target, up);
+#if defined(ULDUM_BACKEND_GLES)
+    // GLES NDC: y-up, z in [-1, +1]. Use the NO (-1..+1 depth) variant
+    // and don't flip Y — that flip is a Vulkan-only correction (Vulkan
+    // NDC has y-down).
+    m_proj = glm::perspectiveRH_NO(m_fov, m_aspect, m_near, m_far);
+#else
+    // Vulkan NDC: y-down, z in [0, 1]. Flip Y to match.
     m_proj = glm::perspectiveRH_ZO(m_fov, m_aspect, m_near, m_far);
-    m_proj[1][1] *= -1.0f;   // Vulkan clip-space Y flip
+    m_proj[1][1] *= -1.0f;
+#endif
     m_dirty = false;
 }
 
