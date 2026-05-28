@@ -4,8 +4,8 @@
 #include "asset/asset.h"
 #include "core/log.h"
 
-#include <msdfgen.h>
-#include <msdfgen-ext.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
 
 #include <algorithm>
 #include <cmath>
@@ -25,14 +25,49 @@ namespace uldum::hud {
 
 static constexpr const char* TAG = "HUD.Font";
 
-// Clamp a float (from MSDF output, nominally in ~[0, 1]) into a u8. MSDF
-// values can land slightly outside [0, 1] near edges — clamping is safer
-// than relying on the shader to cope.
-static inline u8 to_u8(float f) {
-    if (f < 0.0f) f = 0.0f;
-    if (f > 1.0f) f = 1.0f;
-    return static_cast<u8>(f * 255.0f + 0.5f);
+// Map a BCP47 locale code to the marker NotoSansCJK uses in family-name
+// strings ("Noto Sans CJK SC", "...JP", "...KR", "...TC"). Empty result =
+// no CJK preference, pick face 0.
+static const char* cjk_marker_for_locale(std::string_view bcp47) {
+    auto starts = [&](std::string_view p) {
+        return bcp47.size() >= p.size() && bcp47.compare(0, p.size(), p) == 0;
+    };
+    auto contains = [&](std::string_view needle) {
+        return bcp47.find(needle) != std::string_view::npos;
+    };
+    if (starts("ja"))            return "JP";
+    if (starts("ko"))            return "KR";
+    if (starts("zh")) {
+        // Default zh → Simplified unless an explicit Traditional region.
+        if (contains("Hant") || contains("TW") || contains("HK") || contains("MO"))
+            return "TC";
+        return "SC";
+    }
+    return "";
 }
+
+// Pick the face index in a TTC that best matches `cjk_marker`. Opens each
+// face transiently, checks family_name, picks the first that contains the
+// marker substring. Returns 0 if nothing matches or the file isn't a TTC.
+static FT_Long pick_ttc_face_for_marker(FT_Library lib, const u8* data, FT_Long size,
+                                        const char* cjk_marker) {
+    if (!cjk_marker || !*cjk_marker) return 0;
+    FT_Face probe = nullptr;
+    if (FT_New_Memory_Face(lib, data, size, 0, &probe) != 0 || !probe) return 0;
+    FT_Long num = probe->num_faces;
+    FT_Done_Face(probe);
+    if (num <= 1) return 0;
+    for (FT_Long i = 0; i < num; ++i) {
+        FT_Face f = nullptr;
+        if (FT_New_Memory_Face(lib, data, size, i, &f) != 0 || !f) continue;
+        const char* fam = f->family_name ? f->family_name : "";
+        bool match = std::strstr(fam, cjk_marker) != nullptr;
+        FT_Done_Face(f);
+        if (match) return i;
+    }
+    return 0;
+}
+
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -51,8 +86,8 @@ static std::string read_os_file(std::string_view filesystem_path) {
 }
 
 // Initialize the primary face from a byte buffer + create the atlas.
-// Shared between asset-path and OS-path init paths so the FreeType /
-// msdfgen plumbing lives in one place.
+// Shared between asset-path and OS-path init paths so the FreeType
+// plumbing lives in one place.
 bool Font::init_primary_from_bytes(rhi::Rhi& rhi,
                                      std::string bytes,
                                      std::string_view origin,
@@ -61,28 +96,36 @@ bool Font::init_primary_from_bytes(rhi::Rhi& rhi,
     m_rhi = &rhi;
     m_ttf_bytes = std::move(bytes);
 
-    auto* ft = msdfgen::initializeFreetype();
-    if (!ft) { log::error(TAG, "msdfgen FreeType init failed"); return false; }
+    FT_Library ft = nullptr;
+    if (FT_Init_FreeType(&ft) != 0) {
+        log::error(TAG, "FT_Init_FreeType failed");
+        return false;
+    }
     m_ft = ft;
 
-    auto* font = msdfgen::loadFontData(ft,
-                    reinterpret_cast<const msdfgen::byte*>(m_ttf_bytes.data()),
-                    static_cast<int>(m_ttf_bytes.size()));
-    if (!font) {
-        log::error(TAG, "msdfgen loadFontData failed for '{}'", origin);
-        msdfgen::deinitializeFreetype(ft);
+    FT_Face face = nullptr;
+    FT_Error err = FT_New_Memory_Face(ft,
+                                       reinterpret_cast<const FT_Byte*>(m_ttf_bytes.data()),
+                                       static_cast<FT_Long>(m_ttf_bytes.size()),
+                                       0, &face);
+    if (err != 0 || !face) {
+        log::error(TAG, "FT_New_Memory_Face failed for '{}' (err={})", origin, err);
+        FT_Done_FreeType(ft);
         m_ft = nullptr;
         m_ttf_bytes.clear();
         return false;
     }
-    m_font = font;
+    if (FT_Set_Pixel_Sizes(face, 0, m_em_pixels) != 0) {
+        log::warn(TAG, "FT_Set_Pixel_Sizes({}) failed for '{}'", m_em_pixels, origin);
+    }
+    m_font = face;
 
-    msdfgen::FontMetrics fm{};
-    msdfgen::getFontMetrics(fm, font, msdfgen::FONT_SCALING_EM_NORMALIZED);
-    m_em_size     = static_cast<f32>(fm.emSize);
-    m_ascent      = static_cast<f32>(fm.ascenderY);
-    m_descent     = static_cast<f32>(fm.descenderY);
-    m_line_height = static_cast<f32>(fm.lineHeight);
+    // FreeType reports metrics in 26.6 fixed-point pixels at the active
+    // size. Convert to em-normalized: divide by (64 * em_pixels).
+    const f32 inv_em_64 = 1.0f / (64.0f * static_cast<f32>(m_em_pixels));
+    m_ascent      =  static_cast<f32>(face->size->metrics.ascender)  * inv_em_64;
+    m_descent     = -static_cast<f32>(face->size->metrics.descender) * inv_em_64;
+    m_line_height =  static_cast<f32>(face->size->metrics.height)    * inv_em_64;
 
     if (!create_atlas(desc_layout, sampler)) {
         log::error(TAG, "atlas create failed");
@@ -90,8 +133,8 @@ bool Font::init_primary_from_bytes(rhi::Rhi& rhi,
         return false;
     }
 
-    log::info(TAG, "primary font '{}' loaded (em={:.2f}, ascent={:.2f}, line_h={:.2f})",
-              origin, m_em_size, m_ascent, m_line_height);
+    log::info(TAG, "primary font '{}' loaded (em_px={}, ascent={:.2f}, line_h={:.2f})",
+              origin, m_em_pixels, m_ascent, m_line_height);
     return true;
 }
 
@@ -236,27 +279,42 @@ bool Font::load_fallback_from_bytes(std::string bytes, std::string_view origin) 
     Fallback fb;
     fb.ttf_bytes = std::move(bytes);
 
-    auto* ft = static_cast<msdfgen::FreetypeHandle*>(m_ft);
-    auto* font = msdfgen::loadFontData(ft,
-                    reinterpret_cast<const msdfgen::byte*>(fb.ttf_bytes.data()),
-                    static_cast<int>(fb.ttf_bytes.size()));
-    if (!font) {
-        log::warn(TAG, "msdfgen loadFontData failed for fallback '{}'", origin);
+    auto* ft = static_cast<FT_Library>(m_ft);
+    // If this is a TTC and the active locale wants a specific CJK variant,
+    // pick that face instead of face 0 (which on NotoSansCJK is Japanese).
+    const FT_Long face_idx = pick_ttc_face_for_marker(
+        ft,
+        reinterpret_cast<const FT_Byte*>(fb.ttf_bytes.data()),
+        static_cast<FT_Long>(fb.ttf_bytes.size()),
+        cjk_marker_for_locale(m_cjk_lang_hint));
+
+    FT_Face face = nullptr;
+    FT_Error err = FT_New_Memory_Face(ft,
+                                       reinterpret_cast<const FT_Byte*>(fb.ttf_bytes.data()),
+                                       static_cast<FT_Long>(fb.ttf_bytes.size()),
+                                       face_idx, &face);
+    if (err != 0 || !face) {
+        log::warn(TAG, "FT_New_Memory_Face failed for fallback '{}' (err={})", origin, err);
         return false;
     }
-    fb.handle = font;
+    if (FT_Set_Pixel_Sizes(face, 0, m_em_pixels) != 0) {
+        log::warn(TAG, "FT_Set_Pixel_Sizes({}) failed for fallback '{}'", m_em_pixels, origin);
+    }
+    fb.handle = face;
+    const char* fam = face->family_name ? face->family_name : "?";
     m_fallbacks.push_back(std::move(fb));
-    log::info(TAG, "loaded fallback font '{}' (fallback #{})", origin, m_fallbacks.size());
+    log::info(TAG, "loaded fallback font '{}' face {} \"{}\" (#{} in chain)",
+              origin, face_idx, fam, m_fallbacks.size());
     return true;
 }
 
 void Font::shutdown() {
     for (auto& fb : m_fallbacks) {
-        if (fb.handle) msdfgen::destroyFont(static_cast<msdfgen::FontHandle*>(fb.handle));
+        if (fb.handle) FT_Done_Face(static_cast<FT_Face>(fb.handle));
     }
     m_fallbacks.clear();
-    if (m_font) { msdfgen::destroyFont(static_cast<msdfgen::FontHandle*>(m_font)); m_font = nullptr; }
-    if (m_ft)   { msdfgen::deinitializeFreetype(static_cast<msdfgen::FreetypeHandle*>(m_ft)); m_ft = nullptr; }
+    if (m_font) { FT_Done_Face(static_cast<FT_Face>(m_font)); m_font = nullptr; }
+    if (m_ft)   { FT_Done_FreeType(static_cast<FT_Library>(m_ft)); m_ft = nullptr; }
     m_ttf_bytes.clear();
 
     if (m_rhi) {
@@ -275,15 +333,15 @@ void Font::shutdown() {
 // ── Atlas creation ────────────────────────────────────────────────────────
 
 bool Font::create_atlas(rhi::DescriptorSetLayoutHandle desc_layout, rhi::SamplerHandle sampler) {
-    // Atlas image: R8G8B8A8 — R/G/B = MSDF channels, A = unused (could hold
-    // coverage for MTSDF later). Starts zeroed (UNDEFINED) and stays in
+    // Atlas image: single-channel R8 holding 8-bit grayscale coverage from
+    // FreeType's normal renderer. Starts zeroed (UNDEFINED) and stays in
     // SHADER_READ_ONLY_OPTIMAL once the first glyph is uploaded; subsequent
     // uploads transition per-copy via begin_oneshot / end_oneshot.
     {
         rhi::TextureDesc td{};
         td.width  = kAtlasSize;
         td.height = kAtlasSize;
-        td.format = rhi::TextureFormat::R8G8B8A8_UNORM;
+        td.format = rhi::TextureFormat::R8_UNORM;
         td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
         m_atlas = m_rhi->create_texture(td);
         if (!m_atlas.is_valid()) return false;
@@ -332,16 +390,16 @@ bool Font::create_atlas(rhi::DescriptorSetLayoutHandle desc_layout, rhi::Sampler
 
 // ── Glyph rasterization ───────────────────────────────────────────────────
 
-bool Font::upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y) {
-    // Staging buffer.
-    u64 size = static_cast<u64>(w) * h * 4;
+bool Font::upload_to_atlas(const u8* alpha, u32 w, u32 h, u32 dst_x, u32 dst_y) {
+    // Staging buffer — 1 byte per pixel (R8).
+    u64 size = static_cast<u64>(w) * h;
     rhi::BufferDesc bd{};
     bd.size   = size;
     bd.usage  = rhi::BufferUsage::TransferSrc;
     bd.memory = rhi::MemoryUsage::HostSequential;
     auto stage = m_rhi->create_buffer(bd);
     if (!stage.is_valid()) return false;
-    std::memcpy(m_rhi->mapped_ptr(stage), rgba, size);
+    std::memcpy(m_rhi->mapped_ptr(stage), alpha, size);
 
     rhi::CommandList cmd = m_rhi->begin_oneshot();
     {
@@ -377,6 +435,78 @@ bool Font::upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y) {
     return true;
 }
 
+void Font::set_locale(std::string_view bcp47) {
+    if (!m_ft) return;
+    const char* old_marker = cjk_marker_for_locale(m_cjk_lang_hint);
+    const char* new_marker = cjk_marker_for_locale(bcp47);
+    bool marker_changed = std::strcmp(old_marker ? old_marker : "",
+                                      new_marker ? new_marker : "") != 0;
+    m_cjk_lang_hint.assign(bcp47.data(), bcp47.size());
+    if (!marker_changed) return;
+
+    // Reopen each TTC fallback at the face index matching the new marker.
+    // Single-face fonts (Roboto on Android, Segoe UI on Windows) yield
+    // pick_ttc_face_for_marker == 0, which is what they already had.
+    auto* ft = static_cast<FT_Library>(m_ft);
+    for (auto& fb : m_fallbacks) {
+        if (!fb.handle) continue;
+        const FT_Long idx = pick_ttc_face_for_marker(
+            ft,
+            reinterpret_cast<const FT_Byte*>(fb.ttf_bytes.data()),
+            static_cast<FT_Long>(fb.ttf_bytes.size()),
+            new_marker);
+        FT_Done_Face(static_cast<FT_Face>(fb.handle));
+        FT_Face face = nullptr;
+        FT_Error err = FT_New_Memory_Face(ft,
+                                          reinterpret_cast<const FT_Byte*>(fb.ttf_bytes.data()),
+                                          static_cast<FT_Long>(fb.ttf_bytes.size()),
+                                          idx, &face);
+        if (err != 0 || !face) {
+            log::warn(TAG, "set_locale: reopen failed (err={})", err);
+            fb.handle = nullptr;
+            continue;
+        }
+        FT_Set_Pixel_Sizes(face, 0, m_em_pixels);
+        fb.handle = face;
+        log::info(TAG, "set_locale: fallback re-opened at face {} \"{}\"",
+                  idx, face->family_name ? face->family_name : "?");
+    }
+
+    // Old glyphs were rasterized from the previous face's outlines; their
+    // pixels in the atlas are now misleading. Wipe cache + shelves so the
+    // next frame re-rasterizes against the new face. The atlas texture
+    // itself doesn't strictly need clearing (overwritten lazily as new
+    // glyphs land), but reset to zero so stale pixels can't leak through
+    // bilinear-edge sampling.
+    if (m_rhi) {
+        m_rhi->wait_idle();
+        rhi::CommandList cmd = m_rhi->begin_oneshot();
+        rhi::ImageBarrier b{};
+        b.image      = m_atlas;
+        b.src_stage  = rhi::PipelineStage::FragmentShader;
+        b.src_access = rhi::AccessFlag::ShaderRead;
+        b.dst_stage  = rhi::PipelineStage::Transfer;
+        b.dst_access = rhi::AccessFlag::TransferWrite;
+        b.old_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        b.new_layout = rhi::ImageLayout::TransferDstOptimal;
+        cmd.image_barrier(b);
+        cmd.clear_color_image(m_atlas, 0.0f, 0.0f, 0.0f, 0.0f);
+        rhi::ImageBarrier b2{};
+        b2.image      = m_atlas;
+        b2.src_stage  = rhi::PipelineStage::Transfer;
+        b2.src_access = rhi::AccessFlag::TransferWrite;
+        b2.dst_stage  = rhi::PipelineStage::FragmentShader;
+        b2.dst_access = rhi::AccessFlag::ShaderRead;
+        b2.old_layout = rhi::ImageLayout::TransferDstOptimal;
+        b2.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+        cmd.image_barrier(b2);
+        m_rhi->end_oneshot(cmd);
+    }
+    m_glyphs.clear();
+    m_shelves.clear();
+    m_atlas_full = false;
+}
+
 bool Font::rasterize_glyph(u32 codepoint, Glyph& out) {
     // Walk the chain: primary first, then each registered fallback.
     // First face with a glyph for `codepoint` wins. Whitespace glyphs (no
@@ -389,65 +519,40 @@ bool Font::rasterize_glyph(u32 codepoint, Glyph& out) {
     return false;
 }
 
-bool Font::rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out) {
-    if (!font_handle) return false;
+bool Font::rasterize_glyph_from(void* face_handle, u32 codepoint, Glyph& out) {
+    if (!face_handle) return false;
+    auto face = static_cast<FT_Face>(face_handle);
 
-    auto* font = static_cast<msdfgen::FontHandle*>(font_handle);
+    // Reject codepoints the face doesn't cover so the fallback chain can
+    // walk past. FT_Get_Char_Index returns 0 for missing glyphs (which is
+    // also the index of .notdef — we don't want to render the tofu box
+    // from the primary face when a fallback might have the real glyph).
+    FT_UInt gidx = FT_Get_Char_Index(face, codepoint);
+    if (gidx == 0) return false;
 
-    // Check the codepoint actually exists in this face BEFORE asking
-    // msdfgen for a glyph. `msdfgen::loadGlyph` silently loads .notdef
-    // (the tofu box) when a codepoint is missing from the font and
-    // returns *true* — which would prevent the fallback chain from ever
-    // walking past the primary. `getGlyphIndex` returns false when the
-    // FT_Get_Char_Index lookup yields 0, which is the correct signal.
-    msdfgen::GlyphIndex glyph_idx;
-    if (!msdfgen::getGlyphIndex(glyph_idx, font,
-                                  static_cast<msdfgen::unicode_t>(codepoint))) {
-        return false;
-    }
+    if (FT_Load_Glyph(face, gidx, FT_LOAD_DEFAULT) != 0) return false;
+    FT_GlyphSlot slot = face->glyph;
 
-    double advance = 0.0;
-    msdfgen::Shape shape;
-    if (!msdfgen::loadGlyph(shape, font, glyph_idx,
-                            msdfgen::FONT_SCALING_EM_NORMALIZED, &advance)) {
-        return false;
-    }
-    out.advance = static_cast<f32>(advance);
+    // advance is in 26.6 fixed-point pixels at the current pixel size;
+    // divide by 64 to get pixels, then by em_pixels for em-normalized.
+    const f32 inv_em_64 = 1.0f / (64.0f * static_cast<f32>(m_em_pixels));
+    out.advance = static_cast<f32>(slot->advance.x) * inv_em_64;
 
-    if (!shape.validate() || shape.contours.empty()) {
-        // Whitespace / combining mark — no quad to rasterize. Legal and
-        // common (space U+0020 has an advance but no outline). Caller just
-        // emits no quad for this codepoint.
+    if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL) != 0) return false;
+    const FT_Bitmap& bm = slot->bitmap;
+    const u32 bw = static_cast<u32>(bm.width);
+    const u32 bh = static_cast<u32>(bm.rows);
+    if (bw == 0 || bh == 0) {
+        // Whitespace / combining mark — has an advance but no pixels.
+        // Caller emits no quad for this codepoint.
         out.rasterized = true;
         return true;
     }
 
-    shape.normalize();
-    // Re-orient to non-zero winding rule. CJK fonts (notably NotoSansCJK
-    // on Android/Linux) ship glyphs encoded for the even-odd fill rule —
-    // inner contours have the same winding as outers — and msdfgen would
-    // otherwise treat the glyph body as "outside" and the holes as
-    // "inside", producing knockout-text. Idempotent on already-oriented
-    // shapes (Microsoft's CJK fonts), so safe to call unconditionally.
-    shape.orientContours();
-    msdfgen::edgeColoringSimple(shape, 3.0);
-
-    // Bounds in em units → pixel footprint. Scale such that 1 em maps to
-    // m_em_pixels, then add m_msdf_padding on each side for the distance
-    // field to fade into.
-    auto b = shape.getBounds();
-    f32 em_w = static_cast<f32>(b.r - b.l);
-    f32 em_h = static_cast<f32>(b.t - b.b);
-    if (em_w <= 0.0f || em_h <= 0.0f) { out.rasterized = true; return true; }
-
-    u32 bw = static_cast<u32>(std::ceil(em_w * m_em_pixels)) + 2u * m_msdf_padding;
-    u32 bh = static_cast<u32>(std::ceil(em_h * m_em_pixels)) + 2u * m_msdf_padding;
-
     // Shelf-pack into atlas. Choose an existing shelf whose height accepts
-    // this glyph; else open a new one. We leave kCellGap pixels of empty
-    // space around each cell so bilinear sampling at cell-UV edges fetches
-    // from cleared atlas pixels (coverage = 0) instead of the neighbor's
-    // distance field.
+    // this glyph; else open a new one. kCellGap pixels of empty space
+    // around each cell prevent bilinear sampling at cell-UV edges from
+    // bleeding into a neighbor.
     constexpr u32 kCellGap = 1;
     u32 dst_x = 0, dst_y = 0;
     bool placed = false;
@@ -464,54 +569,38 @@ bool Font::rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out) {
                                        : (m_shelves.back().y + m_shelves.back().height + kCellGap);
         if (next_y + bh > kAtlasSize) {
             // Atlas full. Drop further rasterization requests — eviction
-            // is deferred to Stage C+ (LRU or rebuild).
+            // is deferred (LRU or rebuild).
             m_atlas_full = true;
             log::warn(TAG, "glyph atlas full — codepoint {} skipped", codepoint);
             return false;
         }
         m_shelves.push_back({ next_y, bh, bw + kCellGap });
         dst_x = 0; dst_y = next_y;
-        placed = true;
     }
 
-    // Generate MSDF. Projection maps em-space → bitmap-space:
-    //   - scale = m_em_pixels (em → pixels)
-    //   - translate shifts (bounds.l, bounds.b) to (padding, padding)
-    msdfgen::Vector2 scale(m_em_pixels, m_em_pixels);
-    msdfgen::Vector2 translate(-b.l + m_msdf_padding / scale.x,
-                               -b.b + m_msdf_padding / scale.y);
-    // Range is expressed in em units here (coordinate of the Projection);
-    // 2 pixels each side is a reasonable default for crisp UI text.
-    msdfgen::Range range(4.0 / m_em_pixels);
-
-    msdfgen::Bitmap<float, 3> msdf(static_cast<int>(bw), static_cast<int>(bh));
-    msdfgen::generateMSDF(msdf, shape,
-                          msdfgen::SDFTransformation(msdfgen::Projection(scale, translate), range));
-
-    // Convert float RGB → u8 RGBA (A always 255 — unused channel for plain MSDF).
-    std::vector<u8> rgba(static_cast<size_t>(bw) * bh * 4);
-    for (u32 y = 0; y < bh; ++y) {
-        for (u32 x = 0; x < bw; ++x) {
-            // msdfgen bitmap rows are bottom-to-top. Flip vertically so
-            // the atlas upload matches our screen-coord UV convention.
-            const float* px = msdf(static_cast<int>(x), static_cast<int>(bh - 1 - y));
-            size_t idx = (static_cast<size_t>(y) * bw + x) * 4;
-            rgba[idx + 0] = to_u8(px[0]);
-            rgba[idx + 1] = to_u8(px[1]);
-            rgba[idx + 2] = to_u8(px[2]);
-            rgba[idx + 3] = 255;
+    // Pack pixels tightly (FT bitmap may have padding rows via `pitch`).
+    // FT pitch is positive for top-down (the default for FT_PIXEL_MODE_GRAY).
+    std::vector<u8> pixels(static_cast<size_t>(bw) * bh);
+    const int pitch = bm.pitch;
+    if (pitch == static_cast<int>(bw)) {
+        std::memcpy(pixels.data(), bm.buffer, pixels.size());
+    } else {
+        for (u32 y = 0; y < bh; ++y) {
+            std::memcpy(pixels.data() + static_cast<size_t>(y) * bw,
+                        bm.buffer + static_cast<ptrdiff_t>(y) * pitch,
+                        bw);
         }
     }
-    if (!upload_to_atlas(rgba.data(), bw, bh, dst_x, dst_y)) return false;
+    if (!upload_to_atlas(pixels.data(), bw, bh, dst_x, dst_y)) return false;
 
-    // Fill glyph metrics. plane_* is the quad in em units; bearing_* places
-    // it relative to the pen. Subtract/add the padding (in em units) so
-    // the quad matches only the glyph, not the distance-field margin.
-    f32 pad_em = static_cast<f32>(m_msdf_padding) / m_em_pixels;
-    out.bearing_x = static_cast<f32>(b.l) - pad_em;
-    out.bearing_y = static_cast<f32>(b.t) + pad_em;  // ascent-positive
-    out.plane_w   = em_w + 2.0f * pad_em;
-    out.plane_h   = em_h + 2.0f * pad_em;
+    // Glyph metrics in em-normalized units. FT bitmap_left / bitmap_top are
+    // in integer pixels — bitmap_top is the distance from the baseline up
+    // to the top of the bitmap (ascent-positive), matching our convention.
+    const f32 inv_em = 1.0f / static_cast<f32>(m_em_pixels);
+    out.bearing_x = static_cast<f32>(slot->bitmap_left) * inv_em;
+    out.bearing_y = static_cast<f32>(slot->bitmap_top)  * inv_em;
+    out.plane_w   = static_cast<f32>(bw) * inv_em;
+    out.plane_h   = static_cast<f32>(bh) * inv_em;
 
     out.uv0[0] = static_cast<f32>(dst_x) / kAtlasSize;
     out.uv0[1] = static_cast<f32>(dst_y) / kAtlasSize;

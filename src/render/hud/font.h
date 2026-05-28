@@ -1,19 +1,20 @@
 #pragma once
 
 // Internal header — not part of hud.h's public API. Included by hud.cpp to
-// load the default UI font, rasterize glyphs on demand into an MSDF atlas,
-// and expose a descriptor set the text pipeline can bind.
+// load the default UI font, rasterize glyphs on demand into an alpha-only
+// atlas, and expose a descriptor set the text pipeline can bind.
 //
 // One Font instance wraps:
-//   - msdfgen FreetypeHandle + FontHandle for glyph outline extraction
-//   - a single 1024×1024 R8G8B8A8 atlas (GPU image + descriptor set)
+//   - a FreeType library + FT_Face for the primary font and each fallback
+//   - a single 1024×1024 R8_UNORM atlas (GPU image + descriptor set)
 //   - a shelf-packer for variable-sized glyph cells
 //   - a codepoint → glyph-info cache
 //
-// MSDF is resolution-independent, so glyphs are rasterized once at a chosen
-// authored pixel size (kEmPixels) and scaled in the shader to the requested
-// draw size. Smaller than kEmPixels = blurry; much larger = still crisp but
-// edge artifacts emerge. 32 is a reasonable middle for UI sizes 14-72.
+// Glyphs are rasterized once at `m_em_pixels` via FreeType's normal renderer
+// (8-bit grayscale alpha, full hinting). The shader samples the R channel as
+// coverage. Quality is sharpest when on-screen size ≈ em_pixels; scaling
+// down stays crisp via bilinear; scaling up softens. 32 is a reasonable
+// middle for UI sizes 14–48.
 
 #include "core/types.h"
 
@@ -30,9 +31,10 @@ namespace uldum::hud {
 
 class Font {
 public:
-    // Cached glyph metrics + atlas UV. All units in em-normalized space
-    // (from msdfgen FONT_SCALING_EM_NORMALIZED) except uv, which is [0,1]
-    // in the atlas texture.
+    // Cached glyph metrics + atlas UV. All distance units are em-normalized
+    // (divided by `m_em_pixels`) so the consumer can scale by the desired
+    // on-screen pixel size: `on_screen_px = em_units * px_size`. uv is
+    // [0, 1] in the atlas texture.
     struct Glyph {
         f32 uv0[2]      = {0, 0};   // atlas UV top-left
         f32 uv1[2]      = {0, 0};   // atlas UV bottom-right
@@ -41,7 +43,7 @@ public:
         f32 plane_w     = 0;        // em: glyph quad width
         f32 plane_h     = 0;        // em: glyph quad height
         f32 advance     = 0;        // em: pen advance after this glyph
-        bool rasterized = false;    // true once an MSDF bitmap is in the atlas
+        bool rasterized = false;    // true once an alpha bitmap is in the atlas
     };
 
     Font();
@@ -65,6 +67,16 @@ public:
     bool init_from_system(rhi::Rhi& rhi,
                           rhi::DescriptorSetLayoutHandle desc_layout,
                           rhi::SamplerHandle sampler);
+
+    // Update the CJK locale hint used when opening TrueType Collections
+    // (NotoSansCJK packs Japanese / Korean / Simplified Chinese /
+    // Traditional Chinese as separate faces sharing the same Unicode
+    // codepoints — Han unification means 门 / 直 / 説 / 真 have
+    // different glyph forms per locale). If the marker (JP/KR/SC/TC)
+    // changes, reopens TTC fallback faces at the right index and clears
+    // the glyph atlas so already-cached glyphs get re-rasterized.
+    // Empty = no preference (face 0 from each .ttc).
+    void set_locale(std::string_view bcp47);
 
     // Add an extra fallback face after `init_from_system`. Optional
     // entry point for game-supplied fonts (consistency across platforms,
@@ -102,8 +114,8 @@ public:
 private:
     bool create_atlas(rhi::DescriptorSetLayoutHandle desc_layout, rhi::SamplerHandle sampler);
     bool rasterize_glyph(u32 codepoint, Glyph& out);
-    bool rasterize_glyph_from(void* font_handle, u32 codepoint, Glyph& out);
-    bool upload_to_atlas(const u8* rgba, u32 w, u32 h, u32 dst_x, u32 dst_y);
+    bool rasterize_glyph_from(void* face_handle, u32 codepoint, Glyph& out);
+    bool upload_to_atlas(const u8* alpha, u32 w, u32 h, u32 dst_x, u32 dst_y);
     bool load_fallback_from_bytes(std::string bytes, std::string_view origin);
     bool init_primary_from_bytes(rhi::Rhi& rhi,
                                   std::string bytes,
@@ -113,26 +125,32 @@ private:
 
     rhi::Rhi* m_rhi = nullptr;
 
-    // msdfgen handles — declared as void* to keep msdfgen includes out of
-    // this header. Cast back in font.cpp.
-    void* m_ft   = nullptr;   // msdfgen::FreetypeHandle*
-    void* m_font = nullptr;   // msdfgen::FontHandle* — primary face
+    // FreeType handles — declared as void* so consumers of font.h don't
+    // pull in <ft2build.h>. Cast back in font.cpp.
+    void* m_ft   = nullptr;   // FT_Library
+    void* m_font = nullptr;   // FT_Face — primary face
     std::string m_ttf_bytes;  // primary font data kept alive for FT_Face lifetime
 
     // Fallback chain — consulted per-codepoint when the primary face has
-    // no glyph for it. Each entry owns its FontHandle + the underlying
-    // byte buffer (msdfgen keeps a pointer into it).
+    // no glyph for it. Each entry owns its FT_Face + the underlying byte
+    // buffer (FT_New_Memory_Face holds a pointer into it).
     struct Fallback {
-        void*       handle = nullptr;   // msdfgen::FontHandle*
+        void*       handle = nullptr;   // FT_Face
         std::string ttf_bytes;
     };
     std::vector<Fallback> m_fallbacks;
 
-    u32 m_em_pixels = 32;     // authored rasterization size (MSDF cell em)
-    i32 m_msdf_padding = 4;   // pixels of distance-field padding per side
+    // Authored rasterization size — every face is configured to this
+    // pixel-per-em via FT_Set_Pixel_Sizes before rendering. Consumers
+    // multiply em-normalized metrics by the requested on-screen px_size
+    // to get the final quad dimensions.
+    u32 m_em_pixels = 32;
+
+    // BCP47 hint used by load_fallback_*_path to pick the right face from
+    // CJK TrueType Collections. Empty = no preference (face 0).
+    std::string m_cjk_lang_hint;
 
     // Font metrics (em-normalized).
-    f32 m_em_size      = 1.0f;
     f32 m_ascent       = 0.0f;
     f32 m_descent      = 0.0f;
     f32 m_line_height  = 0.0f;

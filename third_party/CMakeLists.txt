@@ -263,41 +263,6 @@ if(TARGET freetype AND NOT TARGET Freetype::Freetype)
     add_library(Freetype::Freetype ALIAS freetype)
 endif()
 
-# ── msdfgen (MSDF glyph rasterization, used by uldum_hud) ────────────────
-# Generates multi-channel signed distance fields from font glyph outlines.
-# Uses FreeType (above) for font loading. We disable SVG/PNG/Skia because
-# we only feed it FT_Face / FT_GlyphSlot outlines and consume the result
-# as a raw bitmap.
-
-# msdfgen v1.12 hard-checks VCPKG_ROOT on non-Windows even when its
-# optional deps (PNG/SVG/Skia) are disabled. Stub the env var so the
-# check passes — we're not actually using vcpkg anyway.
-if(NOT WIN32 AND NOT DEFINED ENV{VCPKG_ROOT})
-    set(ENV{VCPKG_ROOT} "_uldum_skip_vcpkg")
-endif()
-
-message(STATUS "Fetching msdfgen...")
-set(MSDFGEN_DISABLE_SVG      ON  CACHE BOOL   "" FORCE)
-set(MSDFGEN_DISABLE_PNG      ON  CACHE BOOL   "" FORCE)
-set(MSDFGEN_USE_SKIA         OFF CACHE BOOL   "" FORCE)
-set(MSDFGEN_BUILD_STANDALONE OFF CACHE BOOL   "" FORCE)
-set(MSDFGEN_CORE_ONLY        OFF CACHE BOOL   "" FORCE)
-set(MSDFGEN_INSTALL          OFF CACHE BOOL   "" FORCE)
-set(MSDFGEN_DYNAMIC_RUNTIME  ON  CACHE BOOL   "" FORCE)  # /MD to match the rest of the project
-FetchContent_Declare(msdfgen
-    GIT_REPOSITORY https://github.com/Chlumsky/msdfgen.git
-    GIT_TAG        v1.12
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(msdfgen)
-if(MSVC)
-    foreach(T msdfgen-core msdfgen-ext msdfgen)
-        if(TARGET ${T})
-            target_compile_options(${T} PRIVATE /W0)
-        endif()
-    endforeach()
-endif()
-
 # The engine ships no fonts. `Font::init_from_system` discovers the
 # platform's curated chain at runtime (Windows: Segoe UI + msyh + emoji;
 # macOS: Helvetica + PingFang + Apple Color Emoji; Android: Roboto +

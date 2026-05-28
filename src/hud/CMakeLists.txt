@@ -3,7 +3,7 @@
 # + runtimes, text-tag pool, focus target, input routing, hud.json
 # loader. The Vulkan-bound renderer lives next door in uldum_render
 # (src/render/hud/hud_renderer.{cpp,h}); this lib has no rhi / render /
-# vma / freetype / msdfgen dependency.
+# vma / freetype dependency.
 #
 # node.cpp moved to src/render/hud/node.cpp because Node::draw consumes
 # the renderer; only the headers (POD data) live here.

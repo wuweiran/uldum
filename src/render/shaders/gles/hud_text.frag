@@ -9,14 +9,7 @@ layout(binding = 0) uniform sampler2D u_tex;
 
 layout(location = 0) out vec4 out_color;
 
-float median3(float r, float g, float b) {
-    return max(min(r, g), min(max(r, g), b));
-}
-
 void main() {
-    vec3 msdf = texture(u_tex, in_uv).rgb;
-    float sd = median3(msdf.r, msdf.g, msdf.b) - 0.5;
-    float px = fwidth(sd);
-    float coverage = smoothstep(-px, px, sd);
+    float coverage = texture(u_tex, in_uv).r;
     out_color = in_color * coverage;
 }

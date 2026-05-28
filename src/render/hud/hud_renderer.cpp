@@ -1865,6 +1865,11 @@ bool HudRenderer::init(Hud& hud, rhi::Rhi& rhi) {
     return true;
 }
 
+void HudRenderer::set_locale(std::string_view bcp47) {
+    if (!m_impl || !m_impl->font) return;
+    m_impl->font->set_locale(bcp47);
+}
+
 void HudRenderer::shutdown() {
     if (!m_impl) return;
     auto& r = *m_impl;

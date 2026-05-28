@@ -41,6 +41,15 @@ public:
     // HudRenderer. Creates pipelines, descriptor pool, ring buffers,
     // 1×1 white texture, and loads the system font.
     bool init(Hud& hud, rhi::Rhi& rhi);
+
+    // Update the locale hint used for CJK TTC face selection
+    // (NotoSansCJK on Android packs JP / KR / SC / TC variants in one
+    // file; the right face depends on the language of the text being
+    // rendered, which comes from the engine's active LocaleManager).
+    // Reopens the CJK fallback face if the marker (JP/KR/SC/TC) changes
+    // and clears the glyph atlas so old UVs aren't reused. Safe to call
+    // any time after init.
+    void set_locale(std::string_view bcp47);
     void shutdown();
 
     // Drop the per-session image cache. HUD icons are looked up by

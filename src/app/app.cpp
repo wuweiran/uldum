@@ -338,6 +338,11 @@ bool App::init(const LaunchArgs& args) {
             return;
         }
         m_i18n.set_active(*code);
+        // Re-pick CJK TTC face so they render in the
+        // matching script (NotoSansCJK on Android contains JP / KR / SC /
+        // TC variants — face 0 is Japanese, which is wrong for zh-CN
+        // users).
+        m_hud_renderer.set_locale(*code);
     });
     // Apply CLI flag (highest priority), else stay on default "en".
     if (!m_args.locale.empty()) {

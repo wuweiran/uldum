@@ -299,6 +299,13 @@ bool Rhi::init(const Config& config, platform::Platform& platform) {
     glGenVertexArrays(1, &m_default_vao);
     glBindVertexArray(m_default_vao);
 
+    // Default pixel unpack alignment is 4 — fine for RGBA8 but corrupts
+    // R8 / RG8 uploads whose row width isn't a multiple of 4 (the font
+    // atlas is one such consumer: glyph bitmaps come in arbitrary widths).
+    // Our staging buffers are tight-packed (no row padding) so alignment
+    // 1 is the right value across the board.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     log::info(TAG, "GLES context created: {}x{}, version={}, vendor={}, renderer={}",
               width, height,
               reinterpret_cast<const char*>(glGetString(GL_VERSION)),
