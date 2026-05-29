@@ -21,7 +21,7 @@ scripts\build_editor.ps1
 scripts\build_server.ps1
 ```
 
-**Output:** `build\bin\` — `uldum_dev.exe`, `uldum_editor.exe`, `uldum_worker.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and every `maps\*.uldmap\` from the engine repo packed into `build\bin\maps\`. **No `uldum_game.exe`** — that target only appears in per-project game builds (below). `uldum_server.exe` (orchestrator) is Phase 24 work, not yet produced.
+**Output:** `build\bin\` — `uldum_dev.exe`, `uldum_editor.exe`, `uldum_worker.exe`, `uldum_server.exe`, `uldum_pack.exe`, `basisu.exe`, plus `engine.uldpak` and every `maps\*.uldmap\` from the engine repo packed into `build\bin\maps\`. **No `uldum_game.exe`** — that target only appears in per-project game builds (below).
 
 Run `uldum_dev.exe` from `build\bin\` to iterate. Loads `maps/test_map.uldmap` by default; `--map <path>` picks a different one.
 
@@ -30,8 +30,10 @@ Run `uldum_dev.exe` from `build\bin\` to iterate. Loads `maps/test_map.uldmap` b
 ```powershell
 scripts\build_game.ps1                       # sample_game, Debug  -> dist\UldumSample-debug\
 scripts\build_game.ps1 -Release              # sample_game, Release -> dist\UldumSample\
-scripts\build_game.ps1 ..\my-game -Release   # external game project
+scripts\build_game.ps1 ..\my-game -Release   # any game project, by path
 ```
+
+See [build-targets.md](build-targets.md#game-projects) for the full game project layout and how to start a new one.
 
 Produces a self-contained `dist\<GameName>[-debug]\` folder: `<GameName>.exe` (renamed from uldum_game, icon embedded from `<project>/branding/icon.ico`), `engine.uldpak`, only the maps listed in `game.json.maps[]`, and `game.json`. Zip it up for itch.io or point Steam's depot builder at the folder — no Windows installer generation yet (that's post-15d).
 

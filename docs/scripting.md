@@ -78,8 +78,8 @@ cleaned up automatically.
 local trig = CreateTrigger()
 
 -- Register events (what causes the trigger to fire)
-TriggerRegisterEvent(trig, "on_death")
-TriggerRegisterTimerEvent(trig, 1.0, true)
+TriggerRegisterEvent(trig, EVENT_GLOBAL_DEATH)
+TriggerRegisterTimerEvent(trig, 1.0, true)  -- every 1s, repeating
 
 -- Condition (optional — if returns false, action is skipped)
 TriggerAddCondition(trig, function()
@@ -89,10 +89,8 @@ end)
 -- Action (what happens when the trigger fires and conditions pass)
 TriggerAddAction(trig, function()
     local event = GetTriggerEvent()
-    if event == "on_death" then
+    if event == EVENT_GLOBAL_DEATH then
         Log("Someone died: " .. GetUnitTypeId(GetTriggerUnit()))
-    elseif event == "timer" then
-        Log("Timer tick")
     end
 end)
 
@@ -105,46 +103,38 @@ DestroyTrigger(trig)
 
 ### Scoped Registration (avoid boilerplate)
 
+Every event comes in a **global** form (fires for any subject) and a **scoped** form (fires only for one subject). Scoped registrations let the action skip its own filtering.
+
 ```lua
--- Global event: fires for ANY unit death
-TriggerRegisterEvent(trig, "on_death")
+-- Global: fires for ANY unit death
+TriggerRegisterEvent(trig, EVENT_GLOBAL_DEATH)
 
 -- Unit-scoped: fires only when THIS unit dies
-TriggerRegisterUnitEvent(trig, my_hero, "on_death")
+TriggerRegisterUnitEvent(trig, my_hero, EVENT_UNIT_DEATH)
 
--- Unit+ability scoped: fires only for THIS unit's THIS ability
-TriggerRegisterUnitAbilityEvent(trig, my_hero, "holy_light", "on_ability_effect")
+-- Player-scoped: fires for any order issued by THIS player
+TriggerRegisterPlayerEvent(trig, player, EVENT_PLAYER_ORDER)
 
--- Player-scoped: fires for any unit owned by this player
-TriggerRegisterPlayerEvent(trig, player, "on_unit_created")
+-- Projectile-scoped: fires when THIS projectile hits or expires
+TriggerRegisterProjectileEvent(trig, proj, EVENT_PROJECTILE_HIT)
+
+-- Region: fires when any unit enters / leaves
+TriggerRegisterEnterRegion(trig, region)
+TriggerRegisterLeaveRegion(trig, region)
+
+-- Timer: fires on an interval (one-shot or repeating)
+TriggerRegisterTimerEvent(trig, 1.0, true)  -- every 1s, repeating
 ```
 
-With scoped registration, actions don't need to filter manually:
-
-```lua
--- Without scoping (verbose):
-TriggerRegisterEvent(trig, "on_ability_effect")
-TriggerAddAction(trig, function()
-    if GetTriggerUnit() == my_hero and GetTriggerAbilityId() == "holy_light" then
-        HealUnit(my_hero, GetSpellTargetUnit(), 200)
-    end
-end)
-
--- With scoping (clean):
-TriggerRegisterUnitAbilityEvent(trig, my_hero, "holy_light", "on_ability_effect")
-TriggerAddAction(trig, function()
-    HealUnit(my_hero, GetSpellTargetUnit(), 200)
-end)
-```
+Inside the action, `GetTriggerEvent()` returns the event name string; `GetTriggerUnit()` / `GetTriggerPlayer()` / etc. return the subject.
 
 ### Trigger Lifecycle
 
-Triggers are destroyed manually via `DestroyTrigger`. If you want cleanup on unit death
-or ability removal, register an event and destroy the trigger in the handler:
+Triggers are destroyed manually via `DestroyTrigger`. If you want cleanup on unit death or ability removal, register an event and destroy the trigger in the handler:
 
 ```lua
 local trig = CreateTrigger()
-TriggerRegisterUnitEvent(trig, my_hero, "on_death")
+TriggerRegisterUnitEvent(trig, my_hero, EVENT_UNIT_DEATH)
 TriggerAddAction(trig, function()
     -- hero died, clean up related triggers
     DestroyTrigger(buff_trigger)
@@ -174,61 +164,79 @@ GetDamageAmount() → number
 SetDamageAmount(amount)              -- modify damage before it's applied
 GetKillingUnit() → unit
 GetAttacker() → unit
-GetAttackTarget() → unit
-```
 
-### RegisterEvent (shorthand)
+-- Items
+GetTriggerItem() → item              -- the item involved (pickup/drop)
 
-For simple cases where you don't need trigger lifecycle, `RegisterEvent` is sugar:
-
-```lua
--- Shorthand (creates a trigger internally)
-local handle = RegisterEvent("on_damage", function(source, target, amount, context) ... end)
-UnregisterEvent(handle)
-
--- Equivalent to:
-local trig = CreateTrigger()
-TriggerRegisterEvent(trig, "on_damage")
-TriggerAddAction(trig, function() ... end)
-DestroyTrigger(trig)  -- to unregister
+-- HUD / orders
+GetTriggerNode() → string            -- node id for HUD events
+GetTriggerOrderType() → string       -- order type for issued-order events
 ```
 
 ### Event List
 
-#### Ability Events
+Event-name constants live in `engine/scripts/constants.lua`. Every event comes in a **global** flavor (registered via `TriggerRegisterEvent`) and most also have a **unit-scoped** flavor (registered via `TriggerRegisterUnitEvent(trig, unit, ...)`).
 
-| Event | Arguments | Notes |
-|-------|-----------|-------|
-| `on_ability_cast_filter` | caster, ability_id, target → bool | Return false to block cast |
-| `on_ability_target_filter` | caster, ability_id, target → bool | Return false to reject target |
-| `on_ability_effect` | caster, ability_id, target_or_point | Effect fires (cast point / projectile impact) |
-| `on_ability_cast` | caster, ability_id, target | Full cast cycle completed |
-| `on_toggle_activate` | caster, ability_id | |
-| `on_toggle_deactivate` | caster, ability_id | |
-| `on_channel_start` | caster, ability_id | |
-| `on_channel_end` | caster, ability_id, completed | completed = true if finished normally |
+#### Combat events
 
-#### Combat Events
+| Global | Unit-scoped | Subject (`GetTriggerUnit`) | Notes |
+|---|---|---|---|
+| `EVENT_GLOBAL_DAMAGE` | `EVENT_UNIT_DAMAGE` | the victim | `GetDamageSource/Target/Amount/Type`; `SetDamageAmount` modifies |
+| `EVENT_GLOBAL_DYING` | `EVENT_UNIT_DYING` | the victim | Fires before death is finalized |
+| `EVENT_GLOBAL_DEATH` | `EVENT_UNIT_DEATH` | the victim | `GetKillingUnit` returns the killer |
+| `EVENT_GLOBAL_HEAL` | `EVENT_UNIT_HEAL` | the healed unit | |
+| `EVENT_GLOBAL_ATTACKED` | `EVENT_UNIT_ATTACKED` | the target | `GetAttacker` returns the attacker |
 
-| Event | Arguments | Notes |
-|-------|-----------|-------|
-| `on_damage` | source, target, amount, context | Context has attack_type, armor_type, etc. Map can modify amount |
-| `on_death` | unit, killer | |
-| `on_attack` | attacker, target | Normal attack lands |
+#### Ability events
 
-#### Unit Lifecycle Events
+| Global | Unit-scoped | Notes |
+|---|---|---|
+| `EVENT_GLOBAL_ABILITY_EFFECT` | `EVENT_UNIT_ABILITY_EFFECT` | The ability's effect resolves (cast-point fire / impact). `GetTriggerAbilityId`, `GetSpellTargetUnit/Point` |
+| `EVENT_GLOBAL_ABILITY_ENDCAST` | `EVENT_UNIT_ABILITY_ENDCAST` | Full cast cycle finished (incl. backswing) |
+| `EVENT_GLOBAL_ABILITY_CHANNEL` | `EVENT_UNIT_ABILITY_CHANNEL` | Channelled ability state changed |
 
-| Event | Arguments | Notes |
-|-------|-----------|-------|
-| `on_unit_created` | unit | After entity creation |
-| `on_unit_removed` | unit | Before entity cleanup |
+#### Unit lifecycle
 
-#### Game Events
+| Global | Notes |
+|---|---|
+| `EVENT_GLOBAL_UNIT_CREATED` | After entity creation |
+| `EVENT_GLOBAL_UNIT_REMOVED` | Before entity cleanup |
 
-| Event | Arguments | Notes |
-|-------|-----------|-------|
-| `on_game_start` | | After map fully loaded, before first tick |
-| `on_game_tick` | dt | Every simulation tick (use sparingly) |
+#### Orders + selection
+
+| Global | Unit-scoped | Notes |
+|---|---|---|
+| `EVENT_GLOBAL_ISSUED_ORDER` | `EVENT_UNIT_ISSUED_ORDER` | `GetOrderType`, `GetOrderTargetX/Y`, `GetOrderTargetUnit`, `GetOrderPlayer` |
+| `EVENT_GLOBAL_SELECT` | — | Selection changed. `GetSelectedUnits`, `GetSelectedUnitCount` |
+
+#### Items
+
+| Global | Unit-scoped | Notes |
+|---|---|---|
+| `EVENT_GLOBAL_ITEM_PICKED_UP` | `EVENT_UNIT_ITEM_PICKED_UP` | `GetTriggerItem` returns the item |
+| `EVENT_GLOBAL_ITEM_DROPPED` | `EVENT_UNIT_ITEM_DROPPED` | |
+
+#### Projectiles
+
+| Global | Projectile-scoped | Notes |
+|---|---|---|
+| `EVENT_GLOBAL_PROJECTILE_HIT` | `EVENT_PROJECTILE_HIT` | `GetTriggerProjectile`; `GetTriggerUnit` returns the target |
+| `EVENT_GLOBAL_PROJECTILE_DESTROYED` | `EVENT_PROJECTILE_DESTROYED` | Fires when a projectile expires without hitting |
+
+#### Session + player
+
+| Constant | Notes |
+|---|---|
+| `EVENT_GLOBAL_GAME_END` | Fires after `EndGame()` is called |
+| `EVENT_GLOBAL_DISCONNECT` | A peer connection dropped |
+| `EVENT_GLOBAL_LEAVE` | A player intentionally left |
+| `EVENT_PLAYER_ORDER` / `EVENT_PLAYER_DISCONNECT` / `EVENT_PLAYER_LEAVE` | Player-scoped variants — registered via `TriggerRegisterPlayerEvent` |
+
+#### HUD
+
+| Constant | Notes |
+|---|---|
+| `EVENT_BUTTON_PRESSED` | Button click on a HUD node. Registered via `TriggerRegisterNodeEvent(trig, node, EVENT_BUTTON_PRESSED)`. `GetTriggerNode`, `GetTriggerPlayer` |
 
 ## Timer System
 
@@ -326,9 +334,8 @@ RemoveAbility(unit, ability_id)
 ApplyPassiveAbility(target, ability_id, source, duration)
 HasAbility(unit, ability_id) → bool
 GetAbilityLevel(unit, ability_id) → int
-SetAbilityLevel(unit, ability_id, level)
+SetUnitAbilityLevel(unit, ability_id, level)
 GetAbilityStackCount(unit, ability_id) → int
-RefreshAbilityDuration(unit, ability_id, duration?)
 GetAbilitySource(unit, ability_id) → unit
 GetAbilityCooldown(unit, ability_id) → float
 ResetAbilityCooldown(unit, ability_id)
@@ -366,7 +373,6 @@ IsPlayerEnemy(player1, player2) → bool
 -- Filter table: { owner=player, enemy_of=player, classifications={"ground"}, alive_only=true }
 GetUnitsInRange(x, y, radius, filter?) → unit[]
 GetUnitsInRect(x, y, width, height, filter?) → unit[]
-GetNearestUnit(x, y, radius, filter?) → unit or nil
 ```
 
 ### Timer API

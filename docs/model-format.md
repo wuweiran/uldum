@@ -69,7 +69,7 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **State transitions**: 0.15s crossfade blend between states
 - **Playback**: Animations run at render framerate (not simulation tick rate). The engine reads simulation state each frame to determine which clip to play
 - **Attack timing**: The `attack` clip is uniformly scaled to fit `attack_cooldown`. The `animation.dmg_pt` fraction (from `units.json`) defines where the visual hit lands in the clip. The engine uses `combat.dmg_time` and `combat.backsw_time` (seconds) for gameplay timing
-- **Spell timing**: The `spell` clip uses two-phase scaling. The `animation.cast_pt` fraction defines where the visual cast fires. The ability's `cast_point` and `backswing` (seconds) control gameplay timing
+- **Spell timing**: The `spell` clip uses two-phase scaling. The `animation.cast_pt` fraction defines where the visual cast fires. The ability's `cast_time` and `backsw_time` (seconds) control gameplay timing
 
 ### glTF Example
 

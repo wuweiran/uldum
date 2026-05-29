@@ -17,7 +17,7 @@ TerrainData
 └── Per-vertex data — (tiles_x+1) * (tiles_y+1) entries
     ├── heightmap: f32[]    — smooth height offset within cliff layer
     ├── cliff_level: u8[]   — discrete elevation layer (0-15)
-    ├── tile_layer: u8[]    — terrain type index (0-255, into tileset layers)
+    ├── tile_layer: u8[]    — texture-layer index per vertex (0-3, into the tileset's 4 sampled layers)
     └── pathing: u8[]       — flag bits (walkable, flyable, ramp)
 ```
 

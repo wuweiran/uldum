@@ -326,13 +326,13 @@ reactions, not for last-mile validation.
 
 ```lua
 local trig = CreateTrigger()
-TriggerRegisterEvent(trig, "on_order")
+TriggerRegisterEvent(trig, EVENT_GLOBAL_ISSUED_ORDER)
 TriggerAddAction(trig, function()
     local order_type = GetOrderType()      -- "move", "attack", "stop", etc.
     local player     = GetOrderPlayer()
     local tx, ty     = GetOrderTargetX(), GetOrderTargetY()
     local target     = GetOrderTargetUnit()
-    local units      = GetOrderUnits()
+    local unit       = GetTriggerUnit()    -- the unit receiving the order
 
     -- Reactions, not gating: count orders, play SFX, log telemetry,
     -- chain a follow-up IssueOrder, etc.
@@ -348,7 +348,7 @@ Fired after selection changes. Not cancellable.
 
 ```lua
 local trig = CreateTrigger()
-TriggerRegisterEvent(trig, "on_select")
+TriggerRegisterEvent(trig, EVENT_GLOBAL_SELECT)
 TriggerAddAction(trig, function()
     local units = GetSelectedUnits()
     local count = GetSelectedUnitCount()

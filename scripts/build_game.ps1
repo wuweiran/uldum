@@ -26,7 +26,7 @@ but dist output gets a '-debug' suffix so you can't accidentally ship it.
 .EXAMPLE
 scripts\build_game.ps1                       # sample_game, Debug -> dist\UldumSample-debug\
 scripts\build_game.ps1 -Release              # sample_game, Release -> dist\UldumSample\
-scripts\build_game.ps1 ..\my-game -Release   # external project, Release
+scripts\build_game.ps1 ..\my-game -Release   # any game project, by path
 #>
 #Requires -Version 5.1
 [CmdletBinding()]

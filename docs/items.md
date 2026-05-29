@@ -69,8 +69,8 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
 
 Transitions:
 
-- **PickUp**: smart right-click on a ground item issues `Order::PickUp(item_handle)`. Unit walks to within `pickup_radius` of the item, on arrival moves into the first free slot. Fires `EVENT_ITEM_PICKED_UP`. Failure modes: target-filter rejection (e.g. another player's hero), inventory full → drop the order with a log line.
-- **Drop**: `UnitDropItemFromSlot(unit, slot)` from Lua or HUD drag-out. Item appears at unit's position. Fires `EVENT_ITEM_DROPPED`.
+- **PickUp**: smart right-click on a ground item issues `Order::PickUp(item_handle)`. Unit walks to within `pickup_radius` of the item, on arrival moves into the first free slot. Fires `EVENT_UNIT_ITEM_PICKED_UP` (unit-scoped) and `EVENT_GLOBAL_ITEM_PICKED_UP` (global). Failure modes: target-filter rejection (e.g. another player's hero), inventory full → drop the order with a log line.
+- **Drop**: `UnitDropItemFromSlot(unit, slot)` from Lua or HUD drag-out. Item appears at unit's position. Fires `EVENT_UNIT_ITEM_DROPPED` / `EVENT_GLOBAL_ITEM_DROPPED`.
 - **Use** (active items): same path as `Order::Cast`. Cast pipeline tracks "this cast originated from item X" so the cast event payload carries `source_item`, surfaced via `GetTriggerItem()` inside trigger actions. **The engine never decrements `charges` or destroys the item** — map Lua does.
 - **Death**: no engine policy. Maps wanting drop-on-death write a single trigger.
 
@@ -86,7 +86,7 @@ That's it. No auto-decrement on cast, no destroy-at-zero, no level-up formula. A
 
 ```lua
 local trig = CreateTrigger()
-TriggerRegisterAnyUnitEvent(trig, EVENT_ABILITY_CAST_FINISHED)
+TriggerRegisterEvent(trig, EVENT_GLOBAL_ABILITY_ENDCAST)
 TriggerAddAction(trig, function()
     local item = GetTriggerItem()         -- nil if cast wasn't from an item
     if not item then return end
@@ -140,9 +140,9 @@ GetItemOwner(item)                            -- carrying Unit, or nil if on gro
 GetItemPosition(item)                         -- world position (carrier's pos if carried)
 
 -- Events
-TriggerRegisterUnitEvent(t, hero, EVENT_ITEM_PICKED_UP)
-TriggerRegisterUnitEvent(t, hero, EVENT_ITEM_DROPPED)
-TriggerRegisterAnyUnitEvent(t, EVENT_ABILITY_CAST_FINISHED)
+TriggerRegisterUnitEvent(t, hero, EVENT_UNIT_ITEM_PICKED_UP)
+TriggerRegisterUnitEvent(t, hero, EVENT_UNIT_ITEM_DROPPED)
+TriggerRegisterEvent(t, EVENT_GLOBAL_ABILITY_ENDCAST)
 GetTriggerItem()                              -- nil if event isn't item-related
 ```
 

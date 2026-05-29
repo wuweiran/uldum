@@ -14,7 +14,7 @@
 | Remove an ability | `RemoveAbility(unit, ability_id)` | Removes **all** instances of that id on the unit. |
 | Check if unit has an ability | `HasAbility(unit, ability_id) -> bool` | True if at least one instance is present. |
 | Get ability level | `GetAbilityLevel(unit, ability_id)` | 0 = not learned. |
-| Set ability level | `SetAbilityLevel(unit, ability_id, level)` | Recalculates modifiers. |
+| Set ability level | `SetUnitAbilityLevel(unit, ability_id, level)` | Recalculates modifiers. |
 
 The Lua surface deliberately omits a `source` parameter and any per-instance handles. Auras attribute their applications internally; from a map script's perspective every `AddAbility` call is "the engine added this." Stack counts and per-instance source queries are intentionally not exposed — if you need them later, add a query then.
 
@@ -456,37 +456,30 @@ is registered, the engine just runs the mechanical part (modifiers, timing, etc.
 
 ### Event Registration
 
-```lua
--- One system for everything
-RegisterEvent(event_name, handler_fn)
-```
+Ability scripts hook engine events via the trigger system — see [docs/scripting.md](scripting.md) for the full trigger API. The relevant constants for ability work:
 
-### Events
+| Constant | Fires when |
+|---|---|
+| `EVENT_GLOBAL_ABILITY_EFFECT` / `EVENT_UNIT_ABILITY_EFFECT` | The ability's effect resolves (cast-point fire / projectile impact) |
+| `EVENT_GLOBAL_ABILITY_ENDCAST` / `EVENT_UNIT_ABILITY_ENDCAST` | Full cast cycle finished (including backswing) |
+| `EVENT_GLOBAL_ABILITY_CHANNEL` / `EVENT_UNIT_ABILITY_CHANNEL` | Channelled ability state changed |
+| `EVENT_GLOBAL_DAMAGE` / `EVENT_UNIT_DAMAGE` | Damage dealt. `GetDamageSource/Target/Amount/Type`; `SetDamageAmount` modifies |
+| `EVENT_GLOBAL_DEATH` / `EVENT_UNIT_DEATH` | Unit dies. `GetKillingUnit` returns the killer |
+| `EVENT_GLOBAL_ATTACKED` / `EVENT_UNIT_ATTACKED` | A normal attack lands. `GetAttacker` returns the attacker |
 
-| Event | Fires when | Arguments |
-|-------|-----------|-----------|
-| `on_ability_cast_filter` | Before cast (after engine checks) | caster, ability_id, target → return bool |
-| `on_ability_target_filter` | Target validation (after engine filter) | caster, ability_id, target → return bool |
-| `on_ability_effect` | Effect fires (cast point / projectile impact) | caster, ability_id, target_or_point |
-| `on_ability_cast` | Active ability finishes full cast cycle | caster, ability_id, target |
-| `on_channel_start` | Channel begins | caster, ability_id |
-| `on_channel_end` | Channel finished/interrupted | caster, ability_id, completed |
-| `on_damage` | Damage dealt | source, target, amount, context |
-| `on_death` | Unit dies | unit, killer |
-| `on_attack` | Attack hits | attacker, target |
+Inside the action, use `GetTriggerAbilityId()` to find out which ability fired, `GetSpellTargetUnit()` / `GetSpellTargetPoint()` for the target.
 
-No `on_ability_added` / `on_ability_removed` lifecycle events — buffs are pure data (modifiers, flags, duration). The engine applies and removes them, including natural duration-expiry, with no script involvement. If a buff needs a per-tick side effect (DoT damage, periodic visual), that should be expressed as a property of the buff definition rather than as a Lua trigger attached to add/remove events.
+No `on_ability_added` / `on_ability_removed` lifecycle events — buffs are pure data (modifiers, flags, duration). The engine applies and removes them, including natural duration-expiry, with no script involvement. If a buff needs a per-tick side effect (DoT damage, periodic visual), express it as a property of the buff definition rather than a Lua trigger attached to add/remove events.
 
 ### Examples
 
-Using the trigger system (see docs/scripting.md for full trigger API):
-
 ```lua
--- Holy Light: heal on effect (scoped to specific unit + ability)
+-- Holy Light: heal on effect, scoped to a specific hero
 function SetupHolyLight(hero)
     local trig = CreateTrigger()
-    TriggerRegisterUnitAbilityEvent(trig, hero, "holy_light", "on_ability_effect")
+    TriggerRegisterUnitEvent(trig, hero, EVENT_UNIT_ABILITY_EFFECT)
     TriggerAddAction(trig, function()
+        if GetTriggerAbilityId() ~= "holy_light" then return end
         local target = GetSpellTargetUnit()
         local heal = 200 * GetAbilityLevel(hero, "holy_light")
         HealUnit(hero, target, heal)
@@ -498,17 +491,6 @@ end
 ### Stacking API
 
 Only `HasAbility(unit, ability_id) -> bool` is exposed. Stack count and per-instance source are deliberately not part of the Lua surface; the engine handles stacking via the buff's `stackable` field and refresh-on-add semantics, so map scripts don't need to inspect instances. If a future ability genuinely needs a stack count, add the query then.
-
-## Engine Events for Scripts
-
-Global events that map scripts can hook (via trigger system in Phase 8).
-These are fire-and-forget — they notify, they don't control.
-
-| Event | Fires when | Context |
-|-------|-----------|---------|
-| `on_ability_cast` | An active ability finishes casting | caster, ability_id, target |
-
-Buff add / remove / expiry deliberately do not fire script events — buffs are pure data and the engine owns their full lifecycle. Stacking is handled by the engine via the buff's `stackable` field; map scripts do not inspect or react to instance lifecycle.
 
 ## Script Binding Design
 

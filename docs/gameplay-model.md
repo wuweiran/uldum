@@ -135,7 +135,7 @@ Every game object in the world has these components (stored internally, indexed 
 ```
 Transform {
     vec3  position
-    f32   facing        // rotation around Z axis (up), in radians. 0 = facing +Y
+    f32   facing        // rotation around Z axis (up), in radians. 0 = facing +X (WC3 convention)
     f32   scale         // uniform scale, default 1.0
 }
 

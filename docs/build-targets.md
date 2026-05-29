@@ -77,49 +77,160 @@ What end users run. Parameterized by a game project at build time:
 - Bundled assets → `engine.uldpak` + the maps listed in `game.json.maps` + the project's `shell/` (RML/RCSS) + branding
 - No dev console, no debug overlay, no map switching
 
-## Game project folder layout
+## Game projects
 
-A game project is a self-contained folder. The engine builds against it; the engine doesn't care where it lives on disk. Per-platform settings (Windows exe name, Android `applicationId`) are all config fields in `game.json` — there's no `windows/` or `android/` subfolder; folders only exist where there's actual content to hold.
+A game project is a self-contained folder that the engine builds into a shippable product. The engine doesn't care where the folder lives — it can sit next to the engine repo on disk, inside it (as `sample_game/` does), inside another repo as a git submodule, or anywhere reachable by an absolute path. `sample_game/` is one example of a game project, not a special case.
 
-This repo's `sample_game/` is the reference:
+### Required files
+
+Two files are mandatory. Everything else is optional and added only when the game needs it.
+
+| File | Purpose |
+|---|---|
+| `game.json` | Runtime config — name, window, maps, Android package id |
+| `game.cmake` | Build manifest — game C++ sources, include dirs, App class |
+
+A game project with just those two and an empty `App` builds and runs (boots to a black screen — no UI). Real games add more.
+
+### Common layout
 
 ```
-sample_game/
-  game.json                  product config — name, window, maps[], default_map, android{}
+my_game/
+  game.json                product config (required)
+  game.cmake               build manifest (required)
+  src/
+    my_game_app.h          the project's App implementation
+    my_game_app.cpp
+    ...                    other game C++ files
+  shell/                   RmlUi screens — main_menu.rml, options.rml, ...
+  maps/                    *.uldmap/ folders the game ships with
   branding/
-    icon.png                 1024×1024, becomes .ico for Windows and Android launcher icons
-  maps/                      only the maps that ship with this product
-  keystore.properties        Android release-signing secrets (gitignored)
+    icon.png               1024×1024 source — becomes .ico on Windows
+    icon.ico               Windows icon (embedded into the .exe)
+    android/
+      mipmap-*/ic_launcher.png   Android launcher icons
+  keystore.properties      Android release-signing secrets (gitignored)
   keystore.properties.example  committed template
+  CLAUDE.md                optional, helps Claude Code find the engine
 ```
-
-`shell/` holds the RML + RCSS for the menus, lobby, settings, and results screens. The game project's `App` (e.g. `SampleGameApp`) loads these and binds their buttons via `engine.shell()`.
 
 ### `game.json` fields
 
 ```json
 {
-    "name": "Uldum Sample",
+    "name": "My Game",
     "version": "0.1.0",
     "window": {
-        "title": "Uldum Sample",
+        "title": "My Game",
         "width": 1920,
         "height": 1080
     },
     "default_port": 7777,
-    "maps": ["simple_map"],
-    "default_map": "maps/simple_map.uldmap",
+    "maps": ["intro", "level_one"],
+    "default_map": "maps/intro.uldmap",
     "android": {
-        "package_id": "com.m1knight.uldum-sample",
-        "app_name": "Uldum Sample"
+        "package_id": "com.studio.my_game",
+        "app_name": "My Game"
     }
 }
 ```
 
-- `maps` — list of map IDs. Each resolves to `<project>/maps/<id>.uldmap/`. Build script packs only these into the dist.
-- `default_map` — exe-relative path to the initial map at runtime. Relative to the shipped `.exe`'s working directory (always `maps/<id>.uldmap`).
-- `android.package_id` — the `com.m1knight.<name>` published identifier.
-- `android.app_name` — the app label shown on the Android launcher / task switcher.
+- `name` — display name. Whitespace gets stripped to form the exe name (`My Game` → `MyGame.exe`).
+- `maps` — map IDs. Each resolves to `<project>/maps/<id>.uldmap/`. The build packs only listed maps into the dist.
+- `default_map` — exe-relative path to the initial map at runtime.
+- `android.package_id` — published Android `applicationId`.
+- `android.app_name` — label shown on the Android launcher.
+
+### `game.cmake` fields
+
+```cmake
+set(ULDUM_GAME_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/src/my_game_app.cpp
+    # add more .cpp files here as the game grows
+)
+set(ULDUM_GAME_INCLUDE_DIRS
+    ${CMAKE_CURRENT_LIST_DIR}/src
+)
+set(ULDUM_APP_HEADER "my_game_app.h")
+set(ULDUM_APP_CLASS  MyGameApp)
+```
+
+- `ULDUM_GAME_SOURCES` — every `.cpp` the engine should compile into the binary.
+- `ULDUM_GAME_INCLUDE_DIRS` — added to the engine target's include path so `#include ULDUM_APP_HEADER` resolves.
+- `ULDUM_APP_HEADER` / `ULDUM_APP_CLASS` — what the engine instantiates as `m_app`. The class must inherit `uldum::App` (see [engine-model.md](engine-model.md)).
+
+`CMAKE_CURRENT_LIST_DIR` resolves to this file's directory — paths stay project-relative without needing to know where the project is checked out.
+
+### Building
+
+The build script accepts any path to a game project, relative or absolute:
+
+```powershell
+# Game inside the engine repo (like sample_game)
+scripts\build_game.ps1 sample_game -Release
+
+# Game alongside the engine repo
+scripts\build_game.ps1 ..\my_game -Release
+
+# Game anywhere
+scripts\build_game.ps1 C:\code\my_game -Release
+```
+
+Output: `dist\<GameName>\<GameName>.exe` (Release) or `dist\<GameName>-debug\<GameName>-debug.exe` (Debug), with `engine.uldpak`, packed maps, `game.json`, and `shell/` alongside.
+
+Android equivalent:
+
+```powershell
+scripts\build_android_game.ps1 ..\my_game
+```
+
+Output: `dist\<GameName>.apk`.
+
+### Starting a new game project
+
+Quickest path: copy `sample_game/` to your target location and edit:
+
+1. Change `game.json` — new name, package id, app name, maps list.
+2. Rename `src/sample_game_app.{h,cpp}` to match your game; update the class name to `MyGameApp` (or whatever).
+3. Edit `game.cmake` to reflect the new filename and class.
+4. Replace `branding/icon.png` and `icon.ico`.
+5. Replace `shell/*.rml` and `maps/*.uldmap` as the game develops.
+6. Build: `cd <uldum-engine> && scripts\build_game.ps1 <your-game-dir>`.
+
+Working from a separate game repo is just the same command with a different path — there's no "external project" mode in the engine.
+
+### Working with Claude Code
+
+A game project sitting outside the engine repo means Claude Code in that repo's working directory can't see engine files by default. The smoothest workflow:
+
+1. Open Claude Code at a workspace root containing both repos (engine + your game as siblings), so one session sees everything. Useful when work crosses the engine ↔ game boundary.
+2. Or open Claude Code at the game repo and add a `CLAUDE.md` that tells it where the engine lives:
+
+```markdown
+# My Game
+
+A game built on the Uldum engine.
+
+## Engine
+
+The Uldum engine lives at `../uldum/`. When you need engine context:
+
+- `../uldum/docs/engine-model.md` — Engine architecture, App pattern, public surface
+- `../uldum/docs/build-targets.md` — Build pipeline, game project layout
+- `../uldum/CLAUDE.md` — Engine conventions
+- `../uldum/engine/scripts/api.lua` — Lua API surface for map scripts
+
+## Build
+
+From the engine directory:
+
+    cd ../uldum
+    scripts\build_game.ps1 ../my_game -Release
+
+Output: `../uldum/dist/MyGame/MyGame.exe`
+```
+
+Claude Code reads `CLAUDE.md` on session start, so it knows where to look without being told each turn.
 
 ## Scripts
 

@@ -206,17 +206,14 @@ SetImageSource(node, "icons/skull.ktx2")
 SetBarFill(node, 0.73)
 SetButtonEnabled(node, false)
 
--- Custom nodes: create / destroy
-local popup = CreateNode{
-    type = "panel",
-    style = { bg = "#202028E0" },
-    anchor = "mc", w = 320, h = 120,
-    children = {
-        { type = "label", id = "popup_text", text = "Tutorial: press Q to attack" }
-    }
-}
-ShowNode(popup)
-DestroyNode(popup)
+-- Custom nodes: instantiate a template defined in the map's hud.json
+-- `nodes` block. The template carries the structure (type, style,
+-- content, children); Lua picks placement and audience.
+local id = CreateNode("tutorial_popup", {
+    anchor = "mc", x = 0, y = 0, w = 320, h = 120,
+    players = me,                  -- optional; omit for broadcast
+})
+DestroyNode(id)
 
 -- Button events via trigger system
 local trig = CreateTrigger()
