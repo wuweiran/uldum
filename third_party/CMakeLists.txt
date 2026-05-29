@@ -82,7 +82,7 @@ FetchContent_MakeAvailable(sol2)
 #                     IMGUI_IMPL_OPENGL_ES3 — set by the dev console).
 message(STATUS "Fetching Dear ImGui...")
 FetchContent_Declare(imgui
-    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.7.tar.gz
+    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.8.tar.gz
 )
 FetchContent_Populate(imgui)
 
@@ -183,14 +183,16 @@ if(ANDROID)
     )
 endif()
 
-# ── cpp-httplib (HTTP server for uldum_server orchestrator — Phase 24) ────
-# Single-header C++ HTTP server. We use it in plain-HTTP mode; TLS
-# termination is the reverse proxy's job in production. Desktop-only —
-# the orchestrator is a backend daemon, never built for Android.
+# ── cpp-httplib (HTTP for uldum_server orchestrator + dev CLI) ────────────
+# Single-header C++ HTTP server + client. uldum_server hosts the
+# `POST /sessions` API; uldum_dev acts as a backend stand-in when run
+# with `--server <url>`. We use it in plain-HTTP mode; TLS termination
+# is the reverse proxy's job in production. Desktop-only — the
+# orchestrator is a backend daemon, never built for Android.
 if(NOT ANDROID)
     message(STATUS "Fetching cpp-httplib...")
     FetchContent_Declare(httplib
-        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.18.7.tar.gz
+        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.46.0.tar.gz
     )
     FetchContent_Populate(httplib)
     add_library(httplib INTERFACE)
@@ -249,7 +251,7 @@ set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
 set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
 FetchContent_Declare(freetype
     GIT_REPOSITORY https://github.com/freetype/freetype.git
-    GIT_TAG        VER-2-13-3
+    GIT_TAG        VER-2-14-3
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(freetype)
@@ -294,7 +296,7 @@ if(ULDUM_SHELL_UI)
     set(RMLUI_FONT_ENGINE   "freetype" CACHE STRING "" FORCE)
     FetchContent_Declare(rmlui
         GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
-        GIT_TAG        6.1
+        GIT_TAG        6.2
         GIT_SHALLOW    TRUE
     )
     FetchContent_MakeAvailable(rmlui)
