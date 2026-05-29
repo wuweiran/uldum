@@ -67,11 +67,13 @@ public:
     // gameplay.
     void hide_current_document();
 
-    // Install a handler that fires when the user clicks any RML element
-    // with an id — the handler receives that id (e.g. "play", "quit").
-    // Buttons on RML use id attributes; this is the minimal event API.
-    using ClickHandler = std::function<void(std::string_view id)>;
-    void set_click_handler(ClickHandler handler);
+    // Register a handler invoked when an element with the given id is
+    // clicked. Each call replaces any prior binding for that id. The
+    // entire binding table clears on `load_document` — every screen
+    // owns its own button bindings and doesn't have to worry about
+    // stale closures from a screen it transitioned away from.
+    using ClickClosure = std::function<void()>;
+    void bind(std::string_view id, ClickClosure on_click);
 
     // Update the text content of an element by id in the current document.
     // Used for settings screens where a button label reflects state

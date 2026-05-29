@@ -1,4 +1,4 @@
-#include "app/app.h"
+#include "app/engine.h"
 #include "core/log.h"
 #include "hud/node.h"
 #include "hud/hud_loader.h"
@@ -13,8 +13,14 @@
 #include <nlohmann/json.hpp>
 #endif
 
+#include "app/app.h"
+// The concrete App class for this binary. CMake sets ULDUM_APP_HEADER
+// (string) and ULDUM_APP_CLASS (identifier) per target — DevApp for
+// dev builds, NullApp for game builds without their own App, the
+// project's own class for converted game projects.
+#include ULDUM_APP_HEADER
 #ifdef ULDUM_DEV_UI
-#include "app/dev_console.h"
+#include "app/dev_app.h"  // for the DevApp static_cast in the locale subscriber
 #endif
 
 #include <glm/trigonometric.hpp>   // glm::radians
@@ -27,61 +33,27 @@
 
 namespace uldum {
 
-App::App()  = default;
-App::~App() = default;
+Engine::Engine()  = default;
+Engine::~Engine() = default;
 
 static constexpr const char* TAG = "App";
 static constexpr float TICK_RATE = 32.0f;  // real-time ticks per second (always constant)
 static constexpr float TICK_DT  = 1.0f / TICK_RATE;  // real-time interval between ticks
 
-simulation::World& App::active_world() {
+simulation::World& Engine::active_world() {
     if (m_args.net_mode == network::Mode::Client)
         return m_network.client_world();
     return m_server.simulation().world();
 }
 
-#ifdef ULDUM_SHELL_UI
-void App::update_shell_for_state() {
-    if (!m_shell) return;
-    // First call: snapshot current state without firing a transition,
-    // because App::init has already loaded main_menu.rml manually.
-    if (!m_shell_state_initialized) {
-        m_shell_state = m_state;
-        m_shell_state_initialized = true;
-        return;
-    }
-    if (m_state == m_shell_state) return;
-    AppState prev = m_shell_state;
-    m_shell_state = m_state;
-
-    // Options is a sub-screen of Menu — it's loaded by the Options
-    // button click handler, not by AppState. So when re-entering Menu
-    // (e.g. from Results → back) we always reload main_menu.rml,
-    // regardless of whether Options was the previously-shown doc.
-    switch (m_state) {
-        case AppState::Menu:
-            m_shell->load_document("shell/main_menu.rml");
-            break;
-        case AppState::Lobby:
-            m_shell->load_document("shell/lobby.rml");
-            break;
-        case AppState::Loading:
-            m_shell->load_document("shell/loading.rml");
-            break;
-        case AppState::Playing:
-            // 3D scene + HUD own the screen during play.
-            m_shell->hide_current_document();
-            break;
-        case AppState::Results:
-            m_shell->load_document("shell/results.rml");
-            break;
-    }
-    log::info(TAG, "Shell screen: {} -> {}",
-              static_cast<int>(prev), static_cast<int>(m_state));
+void Engine::set_state(AppState s) {
+    if (s == m_state) return;
+    AppState prev = m_state;
+    m_state = s;
+    if (m_app) m_app->on_state_changed(prev, s);
 }
-#endif
 
-void App::refresh_safe_insets() {
+void Engine::refresh_safe_insets() {
     if (!m_platform) return;
     auto cur = m_platform->safe_insets();
     if (cur.left   == m_last_pushed_insets.left  &&
@@ -96,7 +68,7 @@ void App::refresh_safe_insets() {
     });
 }
 
-bool App::init(const LaunchArgs& args) {
+bool Engine::init(const LaunchArgs& args) {
     m_args = args;
     log::info(TAG, "=== Initializing Uldum Engine ===");
 
@@ -207,7 +179,7 @@ bool App::init(const LaunchArgs& args) {
     }
 
     // HUD nodes are loaded from each map's `hud.json` at session start
-    // (see start_session). App::init leaves the HUD tree empty.
+    // (see start_session). Engine::init leaves the HUD tree empty.
 
     // Audio
     if (!m_audio.init()) {
@@ -249,77 +221,23 @@ bool App::init(const LaunchArgs& args) {
     m_network.set_player_name("Player");
 #endif
 
-#ifdef ULDUM_DEV_UI
-    // Dev console — engine-dev iteration UI. Replaces the CLI-driven
-    // auto-start with an ImGui map picker + session controls.
-    m_dev_console = std::make_unique<DevConsole>();
-    if (!m_dev_console->init(m_rhi, *m_platform)) {
-        log::error(TAG, "Dev console init failed");
-        return false;
-    }
-#endif
-
 #ifdef ULDUM_SHELL_UI
-    // Shell UI — game builds only. Loads the main menu and routes its
-    // button clicks into the App state machine.
+    // Shell UI — game builds only. Built BEFORE the App so the App's
+    // on_init can call engine.shell().load_document(...) for its
+    // starting screen. Screen-specific bindings + RML loads now all
+    // live in the App; engine.cpp no longer hosts a click dispatcher.
     m_shell = std::make_unique<shell::Shell>();
     if (!m_shell->init(m_rhi, m_platform->width(), m_platform->height())) {
         log::error(TAG, "Shell UI init failed");
         return false;
     }
-
-    // Click dispatch — each RML button's `id=` maps to an app action.
-    // Commands (verbs) are handled directly; settings toggles go through
-    // the settings store so subsystems react via their subscriptions.
-    m_shell->set_click_handler([this](std::string_view id) {
-        if (id == "play") {
-            if (m_state == AppState::Menu) {
-                // Menu → Lobby → Loading → Playing → Results. Lobby
-                // currently auto-advances offline (no lobby UI here);
-                // update_shell_for_state() drives RML loads on each
-                // AppState transition.
-                m_args.map_path = "maps/simple_map.uldmap";
-                m_args.net_mode = network::Mode::Offline;
-                if (!enter_lobby()) {
-                    log::error(TAG, "Shell: enter_lobby failed");
-                    return;
-                }
-                log::info(TAG, "Shell: 'play' -> Lobby");
-                m_state = AppState::Lobby;
-            }
-        } else if (id == "quit") {
-            log::info(TAG, "Shell: 'quit'");
-            m_wants_quit = true;
-        } else if (id == "options") {
-            // Options is a sub-screen of Menu (no AppState change), so
-            // it loads the document directly. update_shell_for_state
-            // doesn't fire because m_state stays Menu.
-            m_shell->load_document("shell/options.rml");
-            bool snd = m_settings.get_bool("audio.master_enabled", true);
-            m_shell->set_element_text("sound_toggle", snd ? "Sound: ON" : "Sound: OFF");
-        } else if (id == "back") {
-            // Back from Options (still in Menu state) or Results (state
-            // change). For Results we transition to Menu; the next
-            // update_shell_for_state will load main_menu.rml. For
-            // Options we load it explicitly because state didn't change.
-            if (m_state == AppState::Results) {
-                m_state = AppState::Menu;
-            } else {
-                m_shell->load_document("shell/main_menu.rml");
-            }
-        } else if (id == "sound_toggle") {
-            bool cur = m_settings.get_bool("audio.master_enabled", true);
-            bool now = !cur;
-            m_settings.set("audio.master_enabled", now);  // fires audio listener
-            m_shell->set_element_text("sound_toggle", now ? "Sound: ON" : "Sound: OFF");
-        }
-    });
-
-    // Initial menu shown explicitly — update_shell_for_state's first
-    // call snapshots m_state without firing a transition, so without
-    // this load nothing would render until the first state change.
-    m_shell->load_document("shell/main_menu.rml");
 #endif
+
+    // Construct the App and run its on_init. The concrete class is
+    // picked at compile time via the ULDUM_APP_CLASS macro CMake set
+    // for this target — engine code stays agnostic of which it is.
+    m_app = std::make_unique<ULDUM_APP_CLASS>();
+    m_app->on_init(*this);
 
     // I18n: active locale comes from CLI (`--locale`) → settings store →
     // default "en". The engine ships no locale registry; game projects own
@@ -351,7 +269,10 @@ bool App::init(const LaunchArgs& args) {
         m_settings.set("i18n.locale", std::string(m_i18n.active()));
     }
 #ifdef ULDUM_DEV_UI
-    if (m_dev_console) m_dev_console->set_active_locale(std::string(m_i18n.active()));
+    if (m_app) {
+        static_cast<DevApp*>(m_app.get())
+            ->set_active_locale(std::string(m_i18n.active()));
+    }
 #endif
     // Shell pool stays empty in engine builds — game projects load their
     // own shell strings from <project>/strings/<locale>/shell.json when
@@ -412,7 +333,7 @@ bool App::init(const LaunchArgs& args) {
 
 // ── Per-session lifecycle ─────────────────────────────────────────────────
 
-bool App::enter_lobby() {
+bool Engine::enter_lobby() {
     log::info(TAG, "=== Entering lobby: {} ===", m_args.map_path);
 
     // init_host needs a Simulation reference to accept C_ORDER mid-game,
@@ -490,7 +411,7 @@ bool App::enter_lobby() {
     return true;
 }
 
-void App::leave_lobby() {
+void Engine::leave_lobby() {
     if (!m_lobby_active) return;
     log::info(TAG, "=== Leaving lobby (not started) ===");
     m_renderer.set_simulation(nullptr);
@@ -502,7 +423,7 @@ void App::leave_lobby() {
     m_lobby_active = false;
 }
 
-bool App::start_session() {
+bool Engine::start_session() {
     if (!m_lobby_active) {
         log::error(TAG, "start_session called without a prepared lobby");
         return false;
@@ -981,7 +902,7 @@ bool App::start_session() {
             }
             m_last_elapsed_seconds = elapsed;
 #endif
-            m_state = AppState::Results;
+            set_state(AppState::Results);
         });
         // Lua-driven scene swap. The actual heavy lift (entity reset,
         // script reload, main() rerun) happens in perform_scene_switch
@@ -1189,7 +1110,7 @@ bool App::start_session() {
     return true;
 }
 
-void App::end_session() {
+void Engine::end_session() {
     if (!m_session_active) return;
     log::info(TAG, "=== Ending session ===");
 
@@ -1270,7 +1191,7 @@ void App::end_session() {
 // collapses to "apply locally for whatever bit is set" (typically the
 // host's own slot).
 
-void App::route_camera_apply_setup(u32 players_mask,
+void Engine::route_camera_apply_setup(u32 players_mask,
                                     f32 tx, f32 ty, f32 tz, f32 distance,
                                     f32 pitch_rad, f32 yaw_rad, f32 duration) {
     if (players_mask & (1u << m_args.local_slot)) {
@@ -1285,7 +1206,7 @@ void App::route_camera_apply_setup(u32 players_mask,
     }
 }
 
-void App::route_camera_set_target_position(u32 players_mask,
+void Engine::route_camera_set_target_position(u32 players_mask,
                                             f32 x, f32 y, f32 z, f32 duration) {
     if (players_mask & (1u << m_args.local_slot)) {
         m_camera_controller.set_target_position(x, y, z, duration);
@@ -1298,7 +1219,7 @@ void App::route_camera_set_target_position(u32 players_mask,
     }
 }
 
-void App::route_camera_set_source_distance(u32 players_mask,
+void Engine::route_camera_set_source_distance(u32 players_mask,
                                             f32 distance, f32 duration) {
     if (players_mask & (1u << m_args.local_slot)) {
         m_camera_controller.set_source_distance(distance, duration);
@@ -1311,7 +1232,7 @@ void App::route_camera_set_source_distance(u32 players_mask,
     }
 }
 
-void App::route_camera_shake(u32 players_mask, f32 intensity, f32 duration) {
+void Engine::route_camera_shake(u32 players_mask, f32 intensity, f32 duration) {
     if (players_mask & (1u << m_args.local_slot)) {
         m_camera_controller.shake(intensity, duration);
     }
@@ -1323,7 +1244,7 @@ void App::route_camera_shake(u32 players_mask, f32 intensity, f32 duration) {
     }
 }
 
-void App::route_camera_set_target_controller(u32 players_mask, simulation::Unit unit) {
+void Engine::route_camera_set_target_controller(u32 players_mask, simulation::Unit unit) {
     if (players_mask & (1u << m_args.local_slot)) {
         if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
         else                       m_camera_controller.lock_unit(unit);
@@ -1336,7 +1257,7 @@ void App::route_camera_set_target_controller(u32 players_mask, simulation::Unit 
     }
 }
 
-void App::register_script_camera_callbacks() {
+void Engine::register_script_camera_callbacks() {
     auto& script = m_server.script();
     script.set_camera_apply_setup_fn([this](u32 mask, f32 tx, f32 ty, f32 tz,
                                             f32 d, f32 pr, f32 yr, f32 dur) {
@@ -1364,7 +1285,7 @@ void App::register_script_camera_callbacks() {
 // point), so this helper does NOT load placements or run main(). For
 // the host's offline + post-barrier path, scene_switch_run_main()
 // finishes the job.
-void App::scene_switch_local_teardown(const std::string& scene_name) {
+void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     log::info(TAG, "Scene switch teardown → '{}'", scene_name);
 
     auto& sim = m_server.simulation();
@@ -1444,7 +1365,7 @@ void App::scene_switch_local_teardown(const std::string& scene_name) {
 // reset the Lua VM, re-wire callbacks, and run main(). Per the design
 // contract, Lua state does not survive a scene swap; maps carry data
 // across scenes via SaveData / LoadData.
-void App::scene_switch_run_main(const std::string& scene_name) {
+void Engine::scene_switch_run_main(const std::string& scene_name) {
     auto& sim    = m_server.simulation();
     auto& script = m_server.script();
 
@@ -1496,7 +1417,7 @@ void App::scene_switch_run_main(const std::string& scene_name) {
 #else
         (void)stats;
 #endif
-        m_state = AppState::Results;
+        set_state(AppState::Results);
     });
     script.set_scene_switch_fn([this](std::string_view scene) {
         m_pending_scene_switch.assign(scene);
@@ -1547,7 +1468,7 @@ void App::scene_switch_run_main(const std::string& scene_name) {
 // the entity-spawn burst until every client has acked C_LOAD_DONE.
 // Clients never call this directly — they react to S_SCENE_SWITCH
 // via the recv_fn registered in start_session.
-void App::perform_scene_switch(const std::string& scene_name) {
+void Engine::perform_scene_switch(const std::string& scene_name) {
     if (m_args.net_mode == network::Mode::Client) return;
 
     log::info(TAG, "Scene switch → '{}'", scene_name);
@@ -1572,7 +1493,7 @@ void App::perform_scene_switch(const std::string& scene_name) {
 
 // Host MP only. Called from the main loop once every peer has acked
 // C_LOAD_DONE for the in-flight scene swap.
-void App::finalize_scene_switch() {
+void Engine::finalize_scene_switch() {
     std::string scene = std::move(m_pending_scene_switch_finalize);
     m_pending_scene_switch_finalize.clear();
 
@@ -1586,14 +1507,14 @@ void App::finalize_scene_switch() {
 
 // ── Main loop ─────────────────────────────────────────────────────────────
 
-void App::run() {
+void Engine::run() {
     log::info(TAG, "Entering main loop (tick rate: {} Hz)", TICK_RATE);
 
     auto previous_time = std::chrono::high_resolution_clock::now();
     float accumulator = 0.0f;
     u32 tick_counter = 0;
 
-    m_state = AppState::Menu;
+    set_state(AppState::Menu);
     log::info(TAG, "Entered Menu state");
 
     // Auto-start path: only taken when the CLI asked for it (`--map` on
@@ -1667,78 +1588,10 @@ void App::run() {
         }
 #endif
 
-#ifdef ULDUM_DEV_UI
-        // Run the dev console's ImGui step outside the render pass, then
-        // consume any action the user requested this frame.
-        if (m_dev_console) {
-            m_dev_console->update(frame_dt, m_state, m_network);
-            auto action = m_dev_console->poll_action();
-            using A = DevConsole::ActionType;
-            if (action.type == A::EnterLobbyOffline && m_state == AppState::Menu) {
-                m_args.map_path = action.map_path;
-                m_args.net_mode = network::Mode::Offline;
-                if (enter_lobby()) {
-                    m_state = AppState::Lobby;
-                    log::info(TAG, "Dev console: EnterLobby Offline '{}'", m_args.map_path);
-                } else {
-                    log::error(TAG, "enter_lobby failed");
-                    leave_lobby();
-                }
-            } else if (action.type == A::EnterLobbyHost && m_state == AppState::Menu) {
-                m_args.map_path = action.map_path;
-                m_args.net_mode = network::Mode::Host;
-                m_args.port     = action.port;
-                if (enter_lobby()) {
-                    m_state = AppState::Lobby;
-                    log::info(TAG, "Dev console: EnterLobby Host '{}' port {}", m_args.map_path, m_args.port);
-                } else {
-                    leave_lobby();
-                }
-            } else if (action.type == A::EnterLobbyClient && m_state == AppState::Menu) {
-                // 16b-ii: client still loads the map locally by path. 16b-iii
-                // will negotiate the map (and slot table) with the server.
-                m_args.map_path        = action.map_path;
-                m_args.net_mode        = network::Mode::Client;
-                m_args.connect_address = action.connect_address;
-                m_args.port            = action.port;
-                if (enter_lobby()) {
-                    m_state = AppState::Lobby;
-                    log::info(TAG, "Dev console: EnterLobby Client {}:{}", m_args.connect_address, m_args.port);
-                } else {
-                    leave_lobby();
-                }
-            } else if (action.type == A::ClaimSlot && m_state == AppState::Lobby) {
-                m_network.send_claim_slot(action.slot);
-            } else if (action.type == A::ReleaseSlot && m_state == AppState::Lobby) {
-                m_network.send_release_slot(action.slot);
-            } else if (action.type == A::StartGame && m_state == AppState::Lobby) {
-                // Host-authority action. Commit lobby → Loading. Host broadcasts
-                // S_LOBBY_COMMIT so all clients also enter Loading. Then every
-                // peer loads map content in parallel and acks via C_LOAD_DONE.
-                u32 my_peer = (m_args.net_mode == network::Mode::Client)
-                    ? m_network.client_peer_id() : network::LOCAL_PEER;
-                u32 my_slot = network::lobby_slot_for_peer(m_network.lobby_state(), my_peer);
-                m_args.local_slot = (my_slot == UINT32_MAX) ? 0 : my_slot;
-                if (m_args.net_mode == network::Mode::Host) {
-                    m_network.host_commit_start();
-                }
-                m_state = AppState::Loading;
-                log::info(TAG, "Dev console: StartGame (local slot {})", m_args.local_slot);
-            } else if (action.type == A::LeaveLobby && m_state == AppState::Lobby) {
-                leave_lobby();
-                m_state = AppState::Menu;
-            } else if (action.type == A::EndSession && m_session_active) {
-                end_session();
-                m_state = AppState::Menu;
-            } else if (action.type == A::Quit) {
-                m_wants_quit = true;
-            } else if (action.type == A::SetLocale && !action.locale_code.empty()) {
-                // Push into settings; subscriber routes to LocaleManager
-                // (and refuses mid-session changes).
-                m_settings.set("i18n.locale", action.locale_code);
-            }
-        }
-#endif
+        // App's per-frame hook. DevApp uses it for ImGui frame setup
+        // + dev-console action translation; NullApp / Shell-UI Apps
+        // typically leave it empty.
+        m_app->on_update(frame_dt);
 
         switch (m_state) {
         case AppState::Menu:
@@ -1747,7 +1600,7 @@ void App::run() {
                 // CLI `--map <path>` path: enter the lobby and let the Lobby
                 // case auto-advance to Loading because m_args.auto_start is set.
                 if (enter_lobby()) {
-                    m_state = AppState::Lobby;
+                    set_state(AppState::Lobby);
                     log::info(TAG, "Auto-start → Lobby");
                 } else {
                     log::error(TAG, "Auto-start: enter_lobby failed");
@@ -1765,7 +1618,7 @@ void App::run() {
                 u32 my_slot = network::lobby_slot_for_peer(
                     m_network.lobby_state(), m_network.client_peer_id());
                 m_args.local_slot = (my_slot == UINT32_MAX) ? 0 : my_slot;
-                m_state = AppState::Loading;
+                set_state(AppState::Loading);
                 log::info(TAG, "Client: S_LOBBY_COMMIT → Loading (slot {})", m_args.local_slot);
             }
             // Auto-advance Lobby → Loading when:
@@ -1782,7 +1635,7 @@ void App::run() {
                     u32 my_slot = network::lobby_slot_for_peer(
                         m_network.lobby_state(), network::LOCAL_PEER);
                     m_args.local_slot = (my_slot == UINT32_MAX) ? 0 : my_slot;
-                    m_state = AppState::Loading;
+                    set_state(AppState::Loading);
                     log::info(TAG, "Lobby (auto) → Loading (slot {})", m_args.local_slot);
                 }
             }
@@ -1796,7 +1649,7 @@ void App::run() {
                 if (!start_session()) {
                     log::error(TAG, "Session failed to start → Menu");
                     end_session();
-                    m_state = AppState::Menu;
+                    set_state(AppState::Menu);
                     break;
                 }
                 // Signal "I'm loaded". Host marks self locally; Client sends
@@ -1824,7 +1677,7 @@ void App::run() {
             }
 
             if (ready_to_play) {
-                m_state = AppState::Playing;
+                set_state(AppState::Playing);
                 accumulator = 0; tick_counter = 0;
                 log::info(TAG, "Loading complete → Playing");
             }
@@ -1851,7 +1704,7 @@ void App::run() {
             }
 
             if (is_client && m_network.client_game_ended()) {
-                m_state = AppState::Results;
+                set_state(AppState::Results);
                 break;
             }
 
@@ -2107,9 +1960,9 @@ void App::run() {
         case AppState::Results:
 #ifdef ULDUM_SHELL_UI
             // Game build: end the session immediately (tear down sim /
-            // audio / network) on first entry. update_shell_for_state()
-            // (called below) loads results.rml on the state transition;
-            // we just patch in the elapsed-time label after the load.
+            // audio / network) on first entry. The App's
+            // on_state_changed has already loaded results.rml and
+            // populated the elapsed-time label.
             if (m_session_active) {
                 end_session();
             }
@@ -2118,23 +1971,14 @@ void App::run() {
             // auto-start will kick the next session off on the following frame.
             log::info(TAG, "Session complete → ending session → Menu");
             end_session();
-            m_state = AppState::Menu;
+            set_state(AppState::Menu);
 #endif
             break;
         }
 
-#ifdef ULDUM_SHELL_UI
-        // Sync Shell document with the AppState. Loads / hides on
-        // transitions only, no-op on steady state. Patch dynamic
-        // results data after the document loads.
-        bool was_results = (m_shell_state == AppState::Results);
-        update_shell_for_state();
-        if (m_shell && m_state == AppState::Results && !was_results) {
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "Time: %.1f s", m_last_elapsed_seconds);
-            m_shell->set_element_text("time_label", buf);
-        }
-#endif
+        // Shell document / button bindings / results data are all the
+        // App's responsibility now. Engine just fires
+        // App::on_state_changed via set_state and stays out of the way.
 
         bool have_world = (m_state == AppState::Playing && m_session_active);
         if (have_world) {
@@ -2531,9 +2375,7 @@ void App::run() {
                     m_shell->render(cmd, m_rhi.extent().width, m_rhi.extent().height);
                 }
 #endif
-#ifdef ULDUM_DEV_UI
-                if (m_dev_console) m_dev_console->render(cmd);
-#endif
+                m_app->on_render(cmd);
                 m_rhi.end_frame();
             }
         }
@@ -2552,30 +2394,31 @@ void App::run() {
             }
         }
 #endif
-#ifdef ULDUM_DEV_UI
-        else if (m_dev_console) {
-            // Non-Playing states in dev build: render the dev console menu
-            // on a cleared background so the user can pick a map, host, etc.
+        else {
+            // Non-Playing states with no Shell UI: open the render pass
+            // on a cleared background and let the App draw whatever it
+            // wants. Dev builds (DevApp) draw the dev console menu here;
+            // NullApp builds end up with just the clear. Either way the
+            // begin/end_frame pair stays balanced.
             rhi::CommandList cmd = m_rhi.begin_frame();
             if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_rhi.begin_rendering();
-                m_dev_console->render(cmd);
+                m_app->on_render(cmd);
                 m_rhi.end_frame();
             }
         }
-#endif
     }
 
     if (m_session_active) end_session();
     log::info(TAG, "Exiting main loop");
 }
 
-void App::shutdown() {
+void Engine::shutdown() {
     log::info(TAG, "=== Shutting down engine subsystems ===");
     if (m_session_active) end_session();
-#ifdef ULDUM_DEV_UI
-    if (m_dev_console) { m_dev_console->shutdown(); m_dev_console.reset(); }
-#endif
+    // App's destructor handles whatever subsystems it owns (DevApp
+    // tears down its DevConsole here, etc.).
+    m_app.reset();
 #ifdef ULDUM_SHELL_UI
     if (m_shell) m_shell.reset();
 #endif

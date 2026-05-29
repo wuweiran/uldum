@@ -1,4 +1,4 @@
-#include "app/app.h"
+#include "app/engine.h"
 #include "core/log.h"
 
 #include <httplib.h>
@@ -177,13 +177,13 @@ int main(int argc, char* argv[]) {
     }
     // else: no auto-start flags — drop into the dev console.
 
-    uldum::App app;
-    if (!app.init(args)) {
+    uldum::Engine engine;
+    if (!engine.init(args)) {
         uldum::log::error("Main", "Engine initialization failed");
         return 1;
     }
 
-    app.run();
-    app.shutdown();
+    engine.run();
+    engine.shutdown();
     return 0;
 }

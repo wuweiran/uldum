@@ -16,6 +16,7 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace uldum::shell {
@@ -76,18 +77,20 @@ static std::vector<std::string> collect_system_font_paths() {
     return paths;
 }
 
-// RmlUi event listener that dispatches element clicks to a C++ std::function.
-// Attached to every loaded document — RmlUi bubbles events up to the root.
+// RmlUi event listener that dispatches element clicks to per-id closures
+// registered via Shell::bind. Attached to every loaded document — RmlUi
+// bubbles events up to the root, so a single listener catches descendants.
 class ShellClickListener final : public Rml::EventListener {
 public:
-    Shell::ClickHandler handler;
+    std::unordered_map<std::string, Shell::ClickClosure>* bindings = nullptr;
     void ProcessEvent(Rml::Event& event) override {
-        if (!handler) return;
+        if (!bindings) return;
         auto* el = event.GetTargetElement();
         if (!el) return;
         const Rml::String& id = el->GetId();
         if (id.empty()) return;
-        handler(std::string_view(id.c_str(), id.size()));
+        auto it = bindings->find(std::string(id.c_str(), id.size()));
+        if (it != bindings->end() && it->second) it->second();
     }
 };
 
@@ -98,6 +101,7 @@ struct Shell::Impl {
     Rml::Context*    context    = nullptr;
     Rml::ElementDocument* document = nullptr;
     std::unique_ptr<ShellClickListener> click_listener;
+    std::unordered_map<std::string, Shell::ClickClosure> bindings;
     bool             initialized = false;
 };
 
@@ -248,6 +252,10 @@ Rml::ElementDocument* Shell::load_document(std::string_view rml_path) {
     // Replace any existing document so Shell owns exactly one at a time.
     hide_current_document();
 
+    // Each screen owns its own bindings — clear the prior screen's so
+    // a stale closure can't fire if its element id happens to repeat.
+    impl.bindings.clear();
+
     auto* doc = impl.context->LoadDocument(Rml::String(rml_path.data(), rml_path.size()));
     if (!doc) {
         log::error(TAG, "Failed to load RML document '{}'", rml_path);
@@ -255,13 +263,14 @@ Rml::ElementDocument* Shell::load_document(std::string_view rml_path) {
     }
     doc->Show();
 
-    // If a click handler is registered, attach the listener to this doc's
-    // root. `bubbles=true` (actually capture_phase=false + bubbles impl by
-    // the third arg meaning 'in_capture_phase') → clicks on descendants
-    // bubble up and fire here.
-    if (impl.click_listener) {
-        doc->AddEventListener("click", impl.click_listener.get(), false);
+    // Listener dispatches by element id; bind() populates the table
+    // it reads. Listener is lazily created on first load_document so
+    // its bindings pointer is set up correctly.
+    if (!impl.click_listener) {
+        impl.click_listener = std::make_unique<ShellClickListener>();
+        impl.click_listener->bindings = &impl.bindings;
     }
+    doc->AddEventListener("click", impl.click_listener.get(), false);
 
     impl.document = doc;
     log::info(TAG, "Loaded RML document '{}'", rml_path);
@@ -286,17 +295,9 @@ void Shell::set_element_text(std::string_view id, std::string_view text) {
     el->SetInnerRML(Rml::String(text.data(), text.size()));
 }
 
-void Shell::set_click_handler(ClickHandler handler) {
+void Shell::bind(std::string_view id, ClickClosure on_click) {
     auto& impl = *m_impl;
-    if (!impl.click_listener) {
-        impl.click_listener = std::make_unique<ShellClickListener>();
-    }
-    impl.click_listener->handler = std::move(handler);
-
-    // If a document is already shown (handler set after load), attach now.
-    if (impl.document) {
-        impl.document->AddEventListener("click", impl.click_listener.get(), false);
-    }
+    impl.bindings[std::string(id.data(), id.size())] = std::move(on_click);
 }
 
 } // namespace uldum::shell

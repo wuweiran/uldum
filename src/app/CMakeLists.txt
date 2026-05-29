@@ -35,7 +35,7 @@ if(ANDROID)
 
     add_library(uldum SHARED
         android_main.cpp
-        app.cpp
+        engine.cpp
     )
     target_include_directories(uldum PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum PRIVATE
@@ -57,7 +57,7 @@ if(ANDROID)
     # builds. dev_console.cpp picks the right one via ULDUM_BACKEND_*.
     if(ULDUM_ANDROID_DEV)
         target_compile_definitions(uldum PRIVATE ULDUM_DEV_UI)
-        target_sources(uldum PRIVATE dev_console.cpp)
+        target_sources(uldum PRIVATE dev_console.cpp dev_app.cpp)
         target_link_libraries(uldum PRIVATE imgui)
     endif()
     # Game flavor: bring in the project's Shell UI (RmlUi). Same
@@ -68,7 +68,43 @@ if(ANDROID)
     if(ULDUM_SHELL_UI)
         target_compile_definitions(uldum PRIVATE ULDUM_SHELL_UI)
         target_link_libraries(uldum PRIVATE uldum_shell)
+        # If the game project ships its own game.cmake, include it
+        # and pick up the variables it sets (sources, include dirs, App
+        # header/class). Without game.cmake, the App macros below
+        # default to NullApp.
+        set(_uldum_game_cmake "${ULDUM_GAME_PROJECT_DIR}/game.cmake")
+        if(EXISTS "${_uldum_game_cmake}")
+            set(ULDUM_GAME_SOURCES "")
+            set(ULDUM_GAME_INCLUDE_DIRS "")
+            include("${_uldum_game_cmake}")
+            target_sources(uldum PRIVATE ${ULDUM_GAME_SOURCES})
+            if(ULDUM_GAME_INCLUDE_DIRS)
+                target_include_directories(uldum PRIVATE ${ULDUM_GAME_INCLUDE_DIRS})
+            endif()
+            message(STATUS "Uldum game project: ${ULDUM_GAME_PROJECT_DIR}")
+            message(STATUS "  sources:        ${ULDUM_GAME_SOURCES}")
+            message(STATUS "  include dirs:   ${ULDUM_GAME_INCLUDE_DIRS}")
+            message(STATUS "  app:            ${ULDUM_APP_HEADER} / ${ULDUM_APP_CLASS}")
+        endif()
     endif()
+
+    # Which App class engine.cpp instantiates. Dev flavor → DevApp;
+    # game flavor defaults to NullApp unless the project's game.cmake
+    # already set both macros above.
+    if(ULDUM_ANDROID_DEV)
+        set(_uldum_app_header "app/dev_app.h")
+        set(_uldum_app_class DevApp)
+    else()
+        if(NOT DEFINED ULDUM_APP_HEADER)
+            set(ULDUM_APP_HEADER "app/app.h")
+            set(ULDUM_APP_CLASS NullApp)
+        endif()
+        set(_uldum_app_header "${ULDUM_APP_HEADER}")
+        set(_uldum_app_class ${ULDUM_APP_CLASS})
+    endif()
+    target_compile_definitions(uldum PRIVATE
+        ULDUM_APP_HEADER="${_uldum_app_header}"
+        ULDUM_APP_CLASS=${_uldum_app_class})
 
 
 elseif(ULDUM_GAME_PROJECT_DIR)
@@ -164,7 +200,7 @@ elseif(ULDUM_GAME_PROJECT_DIR)
 
     add_executable(uldum_game
         game_main.cpp
-        app.cpp
+        engine.cpp
         ${ULDUM_GAME_ICON_SRC}
     )
     set_target_properties(uldum_game PROPERTIES OUTPUT_NAME ${ULDUM_GAME_EXE_NAME})
@@ -174,6 +210,30 @@ elseif(ULDUM_GAME_PROJECT_DIR)
         target_link_libraries(uldum_game PRIVATE uldum_shell)
         target_compile_definitions(uldum_game PRIVATE ULDUM_SHELL_UI)
     endif()
+
+    # Pull in the project's App + macro overrides (if any). With no
+    # game.cmake, fall back to NullApp.
+    set(_uldum_game_cmake "${ULDUM_GAME_PROJECT_DIR}/game.cmake")
+    if(EXISTS "${_uldum_game_cmake}")
+        set(ULDUM_GAME_SOURCES "")
+        set(ULDUM_GAME_INCLUDE_DIRS "")
+        include("${_uldum_game_cmake}")
+        target_sources(uldum_game PRIVATE ${ULDUM_GAME_SOURCES})
+        if(ULDUM_GAME_INCLUDE_DIRS)
+            target_include_directories(uldum_game PRIVATE ${ULDUM_GAME_INCLUDE_DIRS})
+        endif()
+        message(STATUS "Uldum game project: ${ULDUM_GAME_PROJECT_DIR}")
+        message(STATUS "  sources:        ${ULDUM_GAME_SOURCES}")
+        message(STATUS "  include dirs:   ${ULDUM_GAME_INCLUDE_DIRS}")
+        message(STATUS "  app:            ${ULDUM_APP_HEADER} / ${ULDUM_APP_CLASS}")
+    endif()
+    if(NOT DEFINED ULDUM_APP_HEADER)
+        set(ULDUM_APP_HEADER "app/app.h")
+        set(ULDUM_APP_CLASS NullApp)
+    endif()
+    target_compile_definitions(uldum_game PRIVATE
+        ULDUM_APP_HEADER="${ULDUM_APP_HEADER}"
+        ULDUM_APP_CLASS=${ULDUM_APP_CLASS})
     compile_shaders(uldum_game
         ${ULDUM_SRC}/render/shaders/vulkan
         ${ULDUM_ENGINE_STAGING}/shaders
@@ -193,7 +253,7 @@ else()
 
     add_executable(uldum_dev
         dev_main.cpp
-        app.cpp
+        engine.cpp
     )
     target_include_directories(uldum_dev PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum_dev PRIVATE ${ULDUM_ENGINE_LIBS})
@@ -203,9 +263,18 @@ else()
     # Header-only, no SSL needed (local dev uses plain http://).
     target_link_libraries(uldum_dev PRIVATE httplib)
     if(ULDUM_DEV_UI)
-        target_sources(uldum_dev PRIVATE dev_console.cpp)
+        target_sources(uldum_dev PRIVATE dev_console.cpp dev_app.cpp)
         target_link_libraries(uldum_dev PRIVATE imgui)
         target_compile_definitions(uldum_dev PRIVATE ULDUM_DEV_UI)
+        target_compile_definitions(uldum_dev PRIVATE
+            ULDUM_APP_HEADER="app/dev_app.h"
+            ULDUM_APP_CLASS=DevApp)
+    else()
+        # No dev console → use NullApp so the macro-driven instantiation
+        # in engine.cpp resolves to something benign.
+        target_compile_definitions(uldum_dev PRIVATE
+            ULDUM_APP_HEADER="app/app.h"
+            ULDUM_APP_CLASS=NullApp)
     endif()
     compile_shaders(uldum_dev
         ${ULDUM_SRC}/render/shaders/vulkan

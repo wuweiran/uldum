@@ -27,7 +27,7 @@ uldum/
 ├── audio/          # miniaudio: 3D positional, SFX, music streaming
 ├── asset/          # Resource manager, glTF/KTX2/OGG loaders, async loading
 ├── editor/         # In-engine terrain editor (ImGui): sculpt, paint, place, pathing
-└── app/            # Entry point, main loop, game state machine
+└── app/            # `class Engine`: entry points, main loop, hosts the active `App`
 ```
 
 ## 4. Core Module
@@ -709,23 +709,27 @@ Only ~50% of in-market Android phones support Vulkan 1.3 (most missing devices l
 - Indirect draw → instanced draw loop — GLES has glDrawElementsIndirect but limited; fall back to one `glDrawElementsInstancedBaseInstance`-equivalent per draw group.
 - Per-feature gating — UI's "graphics" settings expose only what the active backend supports. Vulkan-only features list lives next to the RHI selector.
 
+### Phase 26 — App architecture revamp
+
+Today's `uldum_game` and `uldum_dev` are conditional-compilation flavors of one binary, with menu / lobby / settings logic embedded in the engine runtime's click dispatcher. That doesn't scale — a real game can't customize UX without forking the engine. Phase 26 establishes the model every Uldum-based product uses: the engine is a library of services exposed as `class Engine`, and a product is an `App` implementation that uses them. The dev console becomes one such app, proving the architecture by being its first consumer. After this Phase, "dev" and "game" are no longer build flavors — they're different `App` implementations linked into the same engine binary. The target model and runtime/build details are in `docs/engine-model.md`.
+
+- Refactor `uldum_dev` into the new architecture first — rename `class App` → `class Engine`, extract the menu / lobby / pause flow into a `DevApp : App` implementation, retire the `ULDUM_DEV_UI` / `ULDUM_SHELL_UI` flavors. This validates the architecture before any other consumer. **(Done — landed alongside this doc rewrite. `DevApp` reaches `Engine` through its public surface only, no friend access.)**
+- Define the `App` interface + factory and the `Shell` facade `App` implementations use to drive RmlUi.
+- Add `shell/bindings.json` for declarative button actions (navigation, quit) so trivial cases don't need C++.
+- Parameterize desktop CMake + Android Gradle by `ULDUM_GAME_PROJECT_DIR` so the game project's C++ sources and assets get folded in at build time. Binary name derives from `game.json`.
+- Mirror the model on the worker side (`class Worker`).
+- Convert `sample_game/` to the new model (the reference `SampleGameApp`) and validate the full flow end-to-end on Windows + Android. After this, the existing dispatcher in `engine.cpp` is gone.
+- Documentation pass — update `docs/build-targets.md` to drop the "dev vs game flavor" framing.
+
 ## 16. Deferred / Future Work
 
 Two tiers by whether they block shipping a real production game; grouped by domain inside each tier.
 
 ### Production blockers
 
-**Networking & deployment**
-
-- **Observability seam** — engine surface for emitting structured events + crash hooks. Wire format and sink (Sentry / Crashlytics / Firebase Analytics) is per-game vendor code.
-
 **Platform reach**
 
 - **iOS client** — currently Windows + Android. Needs Metal RHI backend (or MoltenVK shim) and an iOS platform layer to mirror `android_platform.cpp`.
-
-**Game integration hooks**
-
-- **Persistence hooks** — every game built on Uldum will have its own profile / save / unlock schema; the engine doesn't ship a generic save format. What the engine *does* owe games: a Lua API surface for read / write, a server-side hook at session boundary, and a per-player storage interface the master can back with cloud DB or file.
 
 ### Quality & convenience (non-blocking)
 

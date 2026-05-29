@@ -1,5 +1,13 @@
 # Uldum Engine — Build Targets & Game Projects
 
+`uldum_dev` and `uldum_game` share one `class Engine`. Each binary
+links a concrete `App` implementation (`DevApp` or `SampleGameApp`)
+picked via the `ULDUM_APP_CLASS` macro CMake sets per target.
+`ULDUM_DEV_UI` and `ULDUM_SHELL_UI` are compile-time switches for the
+*contents* of each binary (dev console vs Shell UI) — per-build
+feature toggles, not the architectural seam. The full integration
+model is in [`docs/engine-model.md`](engine-model.md).
+
 ## Two kinds of things in this repo
 
 This repo contains an **engine** and one **game project** (`sample_game/`). They are different concepts with different build flows.
@@ -18,7 +26,7 @@ Four executables + one packaging tool, all built from engine source.
 | `uldum_dev` | Engine devs | Run any map from `maps/`; debug overlay, dev console, hot-reload |
 | `uldum_editor` | Map authors | ImGui terrain editor; opens `.uldmap` folders or archives |
 | `uldum_worker` | Multiplayer | One process per active game session. Headless authoritative simulation (no window, no renderer, no audio) |
-| `uldum_server` | Multiplayer | Orchestrator. HTTP API for game backends, spawns / reaps `uldum_worker` processes. *(Phase 24+, not yet built)* |
+| `uldum_server` | Multiplayer | Orchestrator. HTTP API for game backends, spawns / reaps `uldum_worker` processes, dispatches webhooks on session end |
 | `uldum_pack` | Build pipeline | Pack/unpack/list `.uldpak` and `.uldmap` archives |
 | `uldum_game` | End users | Shipped product runtime. Parameterized by a game project (name, icon, bundled maps, package ID) |
 
@@ -46,7 +54,7 @@ Four executables + one packaging tool, all built from engine source.
 - Reads `--map <path>` and `--port <n>` from CLI.
 - One process per active game session. Spawned by `uldum_server` (orchestrator) in production, or runnable standalone for LAN / dev.
 
-### `uldum_server` — orchestrator *(Phase 24+, not yet built)*
+### `uldum_server` — orchestrator
 
 - HTTP API that game backends call into to request a session: `POST /sessions`.
 - Spawns `uldum_worker` processes on demand, picks UDP ports from a configured range, issues per-player session tokens.
@@ -85,7 +93,7 @@ sample_game/
   keystore.properties.example  committed template
 ```
 
-`shell/` (Shell UI — menus, game room, settings, results) will appear once Phase 16a/b lands — RmlUi-authored RML + RCSS files. Until then, the game auto-loads `default_map` on launch. See [design.md](design.md) Phase 16 for the Shell UI / HUD split.
+`shell/` holds the RML + RCSS for the menus, lobby, settings, and results screens. The game project's `App` (e.g. `SampleGameApp`) loads these and binds their buttons via `engine.shell()`.
 
 ### `game.json` fields
 
@@ -126,7 +134,7 @@ All build / test / asset-util scripts are PowerShell (`.ps1`). The helper at `sc
 | `build.ps1` | all engine targets | `engine.uldpak`, every map in `maps/` |
 | `build_dev.ps1` | `uldum_dev` only | `engine.uldpak`, every map in `maps/` |
 | `build_editor.ps1` | `uldum_editor` only | `engine.uldpak` |
-| `build_server.ps1` | server-side targets (`uldum_worker`; `uldum_server` once it lands) | `engine.uldpak`, every map in `maps/` |
+| `build_server.ps1` | server-side targets (`uldum_worker`, `uldum_server`) | `engine.uldpak`, every map in `maps/` |
 | `convert_skybox.py` | — (asset util) | EXR → KTX2 cubemap faces |
 | `png_to_ktx2.ps1` | — (asset util) | PNG → KTX2 |
 
@@ -143,26 +151,21 @@ Game scripts always take (or default to) a game project directory. They never bu
 
 ## Current state
 
-**Done:**
-- Engine build (`scripts\build.ps1`) produces `uldum_dev`, `uldum_editor`, `uldum_worker`, `uldum_pack` + `engine.uldpak` + every `maps/*.uldmap/` packed into `build/bin/maps/`. Does **not** produce `uldum_game` (per-project) or `uldum_server` (Phase 24, not yet built).
-- `sample_game/` with `game.json`, `branding/icon.png` + committed `icon.ico` + committed Android launcher icons (`branding/android/mipmap-*/ic_launcher.png`), and `maps/simple_map.uldmap/` (flat 32×32 grass).
-- **Parameterized Windows build (`scripts\build_game.ps1 [<project>]`)** — per-project CMake build tree at `build/game-<project>/`; reads `game.json` via CMake's `file(READ ... JSON)`; exe renamed from `game.json.name` (whitespace stripped); icon embedded from `<project>/branding/icon.ico`; only maps listed in `game.json.maps` are packed. Output: `dist/<GameName>/<GameName>.exe` + `engine.uldpak` + `maps/` + `game.json`.
-- **Parameterized Android game build (`scripts\build_android_game.ps1 [<project>]`)** — PowerShell extracts `android.package_id` / `android.app_name` / `version` from `game.json` and passes them to Gradle as `-P` properties. `applicationId`, `versionName`, and `android:label` (manifest placeholder) are per-project. Launcher icons come from `<project>/branding/android/` via Gradle `sourceSets.res.srcDirs`. APK assets pre-staged by PowerShell into `src/game/assets/` (engine.uldpak + game.json + uldum_pack-packed maps). Output: `dist/<GameName>.apk` (signed debug or release).
-- **Android dev flavor** — second Gradle product flavor. Built via Android Studio's Run button (or `gradlew assembleDevDebug`). Fixed `applicationId = clan.midnight.uldum_dev`, bundles every `maps/*.uldmap/` from the engine repo (not a game project), hardcoded default map = `test_map`. Gradle's `stageDevAssets` task shells out to `uldum_pack.exe` to pack maps + copies `engine.uldpak` into `src/dev/assets/` — no PowerShell step needed. Different applicationId → installs side-by-side with game-flavor APKs.
+- Engine build (`scripts\build.ps1`) produces `uldum_dev`, `uldum_editor`, `uldum_worker`, `uldum_server`, `uldum_pack` + `engine.uldpak` + every `maps/*.uldmap/` packed into `build/bin/maps/`. It does not produce `uldum_game` (that's per-project, via `build_game.ps1`).
+- `sample_game/` ships `game.json`, `branding/icon.png` + committed `icon.ico` + committed Android launcher icons (`branding/android/mipmap-*/ic_launcher.png`), `maps/simple_map.uldmap/` (flat 32×32 grass), `shell/` with RML + RCSS, `game.cmake`, and `src/sample_game_app.{h,cpp}`.
+- Parameterized Windows build (`scripts\build_game.ps1 [<project>]`) — per-project CMake build tree at `build/games/<project>/`; reads `game.json` via CMake's `file(READ ... JSON)`; exe renamed from `game.json.name` (whitespace stripped); icon embedded from `<project>/branding/icon.ico`; only maps listed in `game.json.maps` are packed. Output: `dist/<GameName>-<config>/<GameName>-<config>.exe` + `engine.uldpak` + `maps/` + `game.json` + `shell/`.
+- Parameterized Android game build (`scripts\build_android_game.ps1 [<project>]`) — PowerShell extracts `android.package_id` / `android.app_name` / `version` from `game.json` and passes them to Gradle as `-P` properties. `applicationId`, `versionName`, and `android:label` (manifest placeholder) are per-project. Launcher icons come from `<project>/branding/android/` via Gradle `sourceSets.res.srcDirs`. APK assets pre-staged by PowerShell into `src/game/assets/` (engine.uldpak + game.json + uldum_pack-packed maps).
+- Android dev flavor — second Gradle product flavor. Built via Android Studio's Run button (or `gradlew assembleDevDebug`). Fixed `applicationId = clan.midnight.uldum_dev`, bundles every `maps/*.uldmap/` from the engine repo, hardcoded default map = `test_map`. Gradle's `stageDevAssets` task packs maps + copies `engine.uldpak` into `src/dev/assets/`. Different applicationId → installs side-by-side with game-flavor APKs.
 - Both Android flavors depend on `scripts\build.ps1` having run (needs `build/bin/uldum_pack.exe` and `build/bin/engine.uldpak` — the Android NDK doesn't ship glslc, so shaders and engine.uldpak are desktop-built and bundled in).
 - File-logged runtime diagnostics: every log line is also written to `run.log` next to the exe, flushed on each write.
 
-**TODO (still part of Phase 15d):**
-1. Android-side `game.json` read — `android_main.cpp` currently uses `LaunchArgs` defaults at runtime; should read `game.json` from APK assets to honor `default_map` / `default_port` the way `uldum_game.exe` does on desktop.
-2. Shell UI once Phase 16a/b lands — RmlUi integration + sample_game screens (menu → lobby → loading → session → results) replaces auto-load-default-map with a real boot path. HUD (in-game UI — health bars, selection, minimap) is Phase 16c, separate system authored in Lua.
-
 ## Platform matrix
 
-| Target | Windows | Android | Linux (future) |
-|--------|---------|---------|----------------|
-| `uldum_dev` | .exe | — | — |
-| `uldum_editor` | .exe | — | — |
-| `uldum_worker` | .exe | — | .elf |
-| `uldum_server` | .exe (planned) | — | .elf (planned) |
-| `uldum_pack` | .exe | — | .elf |
-| `uldum_game` | .exe | .apk | .elf |
+| Target | Windows | Android |
+|--------|---------|---------|
+| `uldum_dev` | .exe | .apk (dev flavor) |
+| `uldum_editor` | .exe | — |
+| `uldum_worker` | .exe | — |
+| `uldum_server` | .exe | — |
+| `uldum_pack` | .exe | — |
+| `uldum_game` | .exe | .apk |

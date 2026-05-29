@@ -1,4 +1,4 @@
-#include "app/app.h"
+#include "app/engine.h"
 #include "core/log.h"
 
 #include <nlohmann/json.hpp>
@@ -50,15 +50,15 @@ int main(int argc, char* argv[]) {
     auto args = load_game_config(argc, argv);
 #endif
 
-    uldum::App app;
+    uldum::Engine engine;
 
-    if (!app.init(args)) {
+    if (!engine.init(args)) {
         uldum::log::error("Game", "Engine initialization failed");
         return 1;
     }
 
-    app.run();
-    app.shutdown();
+    engine.run();
+    engine.shutdown();
 
     return 0;
 }

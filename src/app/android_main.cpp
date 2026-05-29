@@ -5,7 +5,7 @@
 // the App's init → run → shutdown lifecycle the same way the desktop entry
 // points do.
 
-#include "app/app.h"
+#include "app/engine.h"
 #include "core/log.h"
 
 #include <game-activity/native_app_glue/android_native_app_glue.h>
@@ -56,16 +56,16 @@ extern "C" void android_main(struct android_app* app) {
     // flavor) drives map selection. Native side has no opinion.
     uldum::LaunchArgs args;
 
-    uldum::App game;
-    if (!game.init(args)) {
+    uldum::Engine engine;
+    if (!engine.init(args)) {
         uldum::log::error("App", "Engine initialization failed on Android");
         // Wait for destroy so the Activity doesn't loop-restart us.
         while (!app->destroyRequested) pump_events(app, /*timeout_ms=*/-1);
         return;
     }
 
-    game.run();
-    game.shutdown();
+    engine.run();
+    engine.shutdown();
 
     // GameActivity stays alive in the foreground after android_main returns
     // unless we explicitly finish the Activity. Without this, in-app quit
