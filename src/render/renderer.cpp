@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <numeric>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -386,6 +387,8 @@ void Renderer::shutdown() {
     // m_terrain_shadow_pipeline_layout is shared with m_shadow_pipeline_layout, don't destroy twice
     m_rhi->destroy_pipeline(m_shadow_pipeline);
     m_rhi->destroy_pipeline_layout(m_shadow_pipeline_layout);
+    m_rhi->destroy_pipeline(m_shadow_mask_pipeline);
+    m_rhi->destroy_pipeline_layout(m_shadow_mask_pipeline_layout);
     m_rhi->destroy_pipeline(m_water_pipeline);
     m_rhi->destroy_pipeline_layout(m_water_pipeline_layout);
     m_rhi->destroy_pipeline(m_skybox_pipeline);
@@ -396,6 +399,7 @@ void Renderer::shutdown() {
     m_rhi->destroy_pipeline(m_terrain_pipeline);
     m_rhi->destroy_pipeline_layout(m_terrain_pipeline_layout);
     m_rhi->destroy_pipeline(m_mesh_pipeline);
+    m_rhi->destroy_pipeline(m_mesh_mask_pipeline);
     m_rhi->destroy_pipeline_layout(m_mesh_pipeline_layout);
 
     // Destroy descriptor infrastructure
@@ -1440,12 +1444,14 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
 
 
 bool Renderer::create_mesh_pipeline() {
-    auto vert_h = load_shader(*m_rhi, "engine/shaders/mesh.vert.spv");
-    auto frag_h = load_shader(*m_rhi, "engine/shaders/mesh.frag.spv");
-    if (!vert_h.is_valid() || !frag_h.is_valid()) {
+    auto vert_h      = load_shader(*m_rhi, "engine/shaders/mesh.vert.spv");
+    auto frag_h      = load_shader(*m_rhi, "engine/shaders/mesh.frag.spv");
+    auto frag_mask_h = load_shader(*m_rhi, "engine/shaders/mesh_mask.frag.spv");
+    if (!vert_h.is_valid() || !frag_h.is_valid() || !frag_mask_h.is_valid()) {
         log::error(TAG, "Failed to load mesh shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
+        m_rhi->destroy_shader_module(frag_mask_h);
         return false;
     }
 
@@ -1462,12 +1468,9 @@ bool Renderer::create_mesh_pipeline() {
         log::error(TAG, "Failed to create mesh pipeline layout");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
+        m_rhi->destroy_shader_module(frag_mask_h);
         return false;
     }
-
-    rhi::ShaderStageDesc stages[2]{};
-    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
-    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
 
     rhi::VertexBindingDesc binding{ 0, sizeof(asset::Vertex), false };
     rhi::VertexAttributeDesc attrs[3]{
@@ -1480,8 +1483,11 @@ bool Renderer::create_mesh_pipeline() {
     vi.attributes = std::span{attrs, 3};
 
     rhi::RasterizerState rs{};
-    rs.cull_mode  = rhi::CullMode::Back;
-    rs.front_face = rhi::FrontFace::CounterClockwise;
+    rs.cull_mode         = rhi::CullMode::Back;
+    rs.front_face        = rhi::FrontFace::CounterClockwise;
+    // Dynamic cull state so the draw loop can flip back-cull / no-cull
+    // per group for glTF doubleSided primitives (banners, leaves).
+    rs.cull_mode_dynamic = true;
 
     rhi::DepthStencilState ds{};
     ds.depth_test_enable  = true;
@@ -1504,26 +1510,34 @@ bool Renderer::create_mesh_pipeline() {
     rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
     rhi::TextureFormat depth_fmt = m_rhi->depth_format();
 
-    rhi::GraphicsPipelineDesc desc{};
-    desc.layout            = m_mesh_pipeline_layout;
-    desc.stages            = std::span{stages, 2};
-    desc.vertex_input      = vi;
-    desc.topology          = rhi::PrimitiveTopology::TriangleList;
-    desc.rasterizer        = rs;
-    desc.depth_stencil     = ds;
-    desc.blend_attachments = std::span{&ba, 1};
-    desc.multisample       = ms;
-    desc.render.color_formats = std::span{&color_fmt, 1};
-    desc.render.depth_format  = depth_fmt;
+    auto build_variant = [&](rhi::ShaderModuleHandle frag) -> rhi::PipelineHandle {
+        rhi::ShaderStageDesc stages[2]{};
+        stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+        stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag;
+        rhi::GraphicsPipelineDesc desc{};
+        desc.layout            = m_mesh_pipeline_layout;
+        desc.stages            = std::span{stages, 2};
+        desc.vertex_input      = vi;
+        desc.topology          = rhi::PrimitiveTopology::TriangleList;
+        desc.rasterizer        = rs;
+        desc.depth_stencil     = ds;
+        desc.blend_attachments = std::span{&ba, 1};
+        desc.multisample       = ms;
+        desc.render.color_formats = std::span{&color_fmt, 1};
+        desc.render.depth_format  = depth_fmt;
+        return m_rhi->create_graphics_pipeline(desc);
+    };
 
-    m_mesh_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_mesh_pipeline      = build_variant(frag_h);
+    m_mesh_mask_pipeline = build_variant(frag_mask_h);
     m_rhi->destroy_shader_module(vert_h);
     m_rhi->destroy_shader_module(frag_h);
-    if (!m_mesh_pipeline.is_valid()) {
-        log::error(TAG, "Failed to create mesh pipeline");
+    m_rhi->destroy_shader_module(frag_mask_h);
+    if (!m_mesh_pipeline.is_valid() || !m_mesh_mask_pipeline.is_valid()) {
+        log::error(TAG, "Failed to create mesh pipeline(s)");
         return false;
     }
-    log::info(TAG, "Mesh pipeline created (textured + shadow)");
+    log::info(TAG, "Mesh pipelines created (opaque + mask, textured + shadow, dynamic cull)");
     return true;
 }
 
@@ -2084,37 +2098,118 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     LoadedModel lm;
     lm.data = std::move(*result);
 
-    // Merge all meshes into one and upload
+    // ── Per-submesh material resolution ──────────────────────────────────
+    // Build the submeshes vector by walking each glTF primitive, uploading
+    // its geometry into the mega buffer (or merged skinned buffer), and
+    // resolving its glTF material → (texture_index, base_color_factor,
+    // alpha_mode, doubleSided). Multiple primitives referencing the same
+    // image share one bindless slot via the image_to_bindless cache.
+
+    std::unordered_map<i32, u32> image_to_bindless;
+    auto resolve_texture = [&](i32 image_idx) -> u32 {
+        if (image_idx < 0 ||
+            image_idx >= static_cast<i32>(lm.data.textures.size())) {
+            return m_default_tex_idx;
+        }
+        if (auto it = image_to_bindless.find(image_idx); it != image_to_bindless.end()) {
+            return it->second;
+        }
+        auto& td = lm.data.textures[image_idx];
+        GpuTexture gt = upload_texture_rgba(*m_rhi, td.pixels.data(), td.width, td.height);
+        u32 slot = register_unit_texture(gt, td.pixels.data(), td.width, td.height);
+        image_to_bindless[image_idx] = slot;
+        // Stash the first uploaded image as the legacy single-texture
+        // descriptor (still consumed by the skinned-mesh pipeline below
+        // until that pipeline is converted to bindless).
+        if (!lm.diffuse_texture.texture.is_valid()) {
+            lm.diffuse_texture = gt;
+            lm.material.diffuse = gt;
+            lm.material.descriptor_set = allocate_mesh_descriptor(gt);
+        }
+        return slot;
+    };
+
+    auto fill_submesh_material = [&](Submesh& sm, i32 mat_idx) {
+        if (mat_idx >= 0 && mat_idx < static_cast<i32>(lm.data.materials.size())) {
+            const auto& mat = lm.data.materials[mat_idx];
+            sm.base_color_factor = mat.base_color_factor;
+            sm.alpha_mode        = mat.alpha_mode;
+            sm.alpha_cutoff      = mat.alpha_cutoff;
+            sm.double_sided      = mat.double_sided;
+            sm.texture_index     = resolve_texture(mat.base_color_texture);
+        } else {
+            sm.texture_index = m_default_tex_idx;
+        }
+    };
+
     if (!lm.data.skinned_meshes.empty() && lm.data.has_skeleton()) {
-        // Merge all skinned mesh primitives into one
+        // Skinned models still go through a single dedicated vertex/index
+        // buffer (the skinned pipeline isn't bindless yet — descriptor-set
+        // per model). Per-primitive ranges are tracked so the draw loop
+        // can iterate submeshes within the merged buffer.
         asset::SkinnedMeshData merged;
-        for (auto& sm : lm.data.skinned_meshes) {
+        std::vector<u32> first_indices, index_counts, first_vertices, vertex_counts;
+        first_indices.reserve(lm.data.skinned_meshes.size());
+        for (auto& smd : lm.data.skinned_meshes) {
             u32 base_vertex = static_cast<u32>(merged.vertices.size());
-            merged.vertices.insert(merged.vertices.end(), sm.vertices.begin(), sm.vertices.end());
-            for (u32 idx : sm.indices) {
-                merged.indices.push_back(base_vertex + idx);
-            }
+            u32 first_index = static_cast<u32>(merged.indices.size());
+            merged.vertices.insert(merged.vertices.end(), smd.vertices.begin(), smd.vertices.end());
+            for (u32 idx : smd.indices) merged.indices.push_back(base_vertex + idx);
+            first_indices.push_back(first_index);
+            index_counts.push_back(static_cast<u32>(smd.indices.size()));
+            first_vertices.push_back(base_vertex);
+            vertex_counts.push_back(static_cast<u32>(smd.vertices.size()));
         }
         u32 bone_count = static_cast<u32>(lm.data.skeleton.bones.size());
         lm.mesh = upload_skinned_mesh(*m_rhi, merged, bone_count);
         lm.is_skinned = true;
-        log::info(TAG, "Loaded skinned model '{}': {} meshes merged, {} verts, {} bones, {} anims",
-                  model_path, lm.data.skinned_meshes.size(), lm.mesh.vertex_count,
+
+        for (size_t i = 0; i < lm.data.skinned_meshes.size(); ++i) {
+            Submesh sm;
+            sm.mesh.vertex_buffer = lm.mesh.vertex_buffer;
+            sm.mesh.index_buffer  = lm.mesh.index_buffer;
+            sm.mesh.first_vertex  = first_vertices[i];
+            sm.mesh.first_index   = first_indices[i];
+            sm.mesh.vertex_count  = vertex_counts[i];
+            sm.mesh.index_count   = index_counts[i];
+            sm.mesh.owns_buffers  = false;
+            fill_submesh_material(sm, lm.data.skinned_meshes[i].material);
+            lm.submeshes.push_back(sm);
+        }
+        log::info(TAG, "Loaded skinned model '{}': {} primitives, {} verts, {} bones, {} anims",
+                  model_path, lm.submeshes.size(), lm.mesh.vertex_count,
                   bone_count, lm.data.animations.size());
     } else if (!lm.data.meshes.empty()) {
-        // Merge all static mesh primitives into one → mega buffer (Phase 14b)
-        asset::MeshData merged;
-        for (auto& m : lm.data.meshes) {
-            u32 base_vertex = static_cast<u32>(merged.vertices.size());
-            merged.vertices.insert(merged.vertices.end(), m.vertices.begin(), m.vertices.end());
-            for (u32 idx : m.indices) {
-                merged.indices.push_back(base_vertex + idx);
+        // Static: each primitive gets its own slice of the mega buffer +
+        // its own bindless texture + material data. The model-wide
+        // `lm.mesh` covers the union (for the frustum-cull bounding
+        // radius); individual draws read each submesh's range.
+        f32 model_radius_sq = 0.0f;
+        bool first = true;
+        for (auto& mdat : lm.data.meshes) {
+            GpuMesh prim_gpu = upload_to_mega(mdat);
+            if (first) {
+                lm.mesh.vertex_buffer = prim_gpu.vertex_buffer;
+                lm.mesh.index_buffer  = prim_gpu.index_buffer;
+                lm.mesh.first_vertex  = prim_gpu.first_vertex;
+                lm.mesh.first_index   = prim_gpu.first_index;
+                lm.mesh.owns_buffers  = false;
+                first = false;
             }
+            lm.mesh.vertex_count += prim_gpu.vertex_count;
+            lm.mesh.index_count  += prim_gpu.index_count;
+            f32 r = prim_gpu.bounding_radius;
+            if (r * r > model_radius_sq) model_radius_sq = r * r;
+
+            Submesh sm;
+            sm.mesh = prim_gpu;
+            fill_submesh_material(sm, mdat.material);
+            lm.submeshes.push_back(sm);
         }
-        lm.mesh = upload_to_mega(merged);
+        lm.mesh.bounding_radius = std::sqrt(model_radius_sq);
         lm.is_skinned = false;
-        log::info(TAG, "Loaded static model '{}': {} meshes merged, {} verts (mega @{}/{})",
-                  model_path, lm.data.meshes.size(), lm.mesh.vertex_count,
+        log::info(TAG, "Loaded static model '{}': {} primitives, {} verts (mega @{}/{})",
+                  model_path, lm.submeshes.size(), lm.mesh.vertex_count,
                   lm.mesh.first_vertex, lm.mesh.first_index);
     } else {
         log::warn(TAG, "Model '{}' has no meshes", model_path);
@@ -2122,25 +2217,11 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
         return nullptr;
     }
 
-    // Upload diffuse texture (from model or use default)
-    if (!lm.data.textures.empty()) {
-        lm.diffuse_texture = upload_texture_rgba(*m_rhi,
-            lm.data.textures[0].pixels.data(),
-            lm.data.textures[0].width,
-            lm.data.textures[0].height);
-        lm.material.diffuse = lm.diffuse_texture;
-        lm.material.descriptor_set = allocate_mesh_descriptor(lm.diffuse_texture);
-        // Register in bindless (Vulkan) / unit-texture-array (GLES) for the
-        // static mesh pipeline.
-        lm.texture_index = register_unit_texture(lm.diffuse_texture,
-                                                 lm.data.textures[0].pixels.data(),
-                                                 lm.data.textures[0].width,
-                                                 lm.data.textures[0].height);
-        log::info(TAG, "  Texture: {}x{} (unit array idx: {})",
-                  lm.data.textures[0].width, lm.data.textures[0].height, lm.texture_index);
-    } else {
+    // No glTF materials referenced any image but the legacy single-binding
+    // is still expected by the skinned pipeline — fall back to the engine's
+    // default material so descriptor binding stays valid.
+    if (!lm.diffuse_texture.texture.is_valid()) {
         lm.material = m_default_material;
-        lm.texture_index = m_default_tex_idx;
     }
 
     auto [inserted, _] = m_model_cache.emplace(model_path, std::move(lm));
@@ -2181,12 +2262,17 @@ GpuMesh& Renderer::get_or_upload_mesh(const std::string& model_path) {
 // ── Shadow pipeline + resources ────────────────────────────────────────────
 
 bool Renderer::create_shadow_pipeline() {
-    auto vert_h = load_shader(*m_rhi, "engine/shaders/shadow.vert.spv");
-    auto frag_h = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
-    if (!vert_h.is_valid() || !frag_h.is_valid()) {
+    auto vert_h        = load_shader(*m_rhi, "engine/shaders/shadow.vert.spv");
+    auto frag_h        = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
+    auto mask_vert_h   = load_shader(*m_rhi, "engine/shaders/shadow_mask.vert.spv");
+    auto mask_frag_h   = load_shader(*m_rhi, "engine/shaders/shadow_mask.frag.spv");
+    if (!vert_h.is_valid() || !frag_h.is_valid()
+            || !mask_vert_h.is_valid() || !mask_frag_h.is_valid()) {
         log::error(TAG, "Failed to load shadow shaders");
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
+        m_rhi->destroy_shader_module(mask_vert_h);
+        m_rhi->destroy_shader_module(mask_frag_h);
         return false;
     }
 
@@ -2194,6 +2280,7 @@ bool Renderer::create_shadow_pipeline() {
     pc.stages = rhi::ShaderStage::Vertex;
     pc.size   = sizeof(glm::mat4);
 
+    // Opaque shadow pipeline: just the instance SSBO (set 0).
     rhi::PipelineLayoutDesc pl_desc{};
     pl_desc.set_layouts    = std::span{&m_bone_desc_layout, 1};
     pl_desc.push_constants = std::span{&pc, 1};
@@ -2201,12 +2288,25 @@ bool Renderer::create_shadow_pipeline() {
     if (!m_shadow_pipeline_layout.is_valid()) {
         m_rhi->destroy_shader_module(vert_h);
         m_rhi->destroy_shader_module(frag_h);
+        m_rhi->destroy_shader_module(mask_vert_h);
+        m_rhi->destroy_shader_module(mask_frag_h);
         return false;
     }
 
-    rhi::ShaderStageDesc stages[2]{};
-    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
-    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
+    // Mask shadow pipeline: same instance SSBO at set 0, bindless
+    // textures at set 1 so the fragment shader can alpha-test.
+    rhi::DescriptorSetLayoutHandle mask_sets[] = { m_bone_desc_layout, m_bindless_layout };
+    rhi::PipelineLayoutDesc mask_pl_desc{};
+    mask_pl_desc.set_layouts    = std::span{mask_sets, 2};
+    mask_pl_desc.push_constants = std::span{&pc, 1};
+    m_shadow_mask_pipeline_layout = m_rhi->create_pipeline_layout(mask_pl_desc);
+    if (!m_shadow_mask_pipeline_layout.is_valid()) {
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
+        m_rhi->destroy_shader_module(mask_vert_h);
+        m_rhi->destroy_shader_module(mask_frag_h);
+        return false;
+    }
 
     rhi::VertexBindingDesc binding{ 0, sizeof(asset::Vertex), false };
     rhi::VertexAttributeDesc attrs[3]{
@@ -2224,6 +2324,7 @@ bool Renderer::create_shadow_pipeline() {
     rs.depth_bias_enable         = true;
     rs.depth_bias_constant_factor = 2.0f;
     rs.depth_bias_slope_factor    = 1.5f;
+    rs.cull_mode_dynamic         = true;
 
     rhi::DepthStencilState ds{};
     ds.depth_test_enable  = true;
@@ -2235,6 +2336,12 @@ bool Renderer::create_shadow_pipeline() {
 
     rhi::TextureFormat depth_fmt = rhi::TextureFormat::D32_SFLOAT;
 
+    // Opaque shadow variant: vert reads only model matrix from the
+    // instance SSBO and writes depth; no fragment work.
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
+
     rhi::GraphicsPipelineDesc desc{};
     desc.layout            = m_shadow_pipeline_layout;
     desc.stages            = std::span{stages, 2};
@@ -2243,12 +2350,26 @@ bool Renderer::create_shadow_pipeline() {
     desc.depth_stencil     = ds;
     desc.multisample       = ms;
     desc.render.depth_format = depth_fmt;
-    // no color attachments
 
     m_shadow_pipeline = m_rhi->create_graphics_pipeline(desc);
+
+    // Mask variant: vert also passes texcoord/material/baseColorFactor/
+    // cutoff; frag samples bindless texture and discards below cutoff so
+    // alpha-tested geometry casts the correct silhouette into the shadow.
+    rhi::ShaderStageDesc mask_stages[2]{};
+    mask_stages[0].stage = rhi::ShaderStage::Vertex;   mask_stages[0].module = mask_vert_h;
+    mask_stages[1].stage = rhi::ShaderStage::Fragment; mask_stages[1].module = mask_frag_h;
+
+    rhi::GraphicsPipelineDesc mask_desc = desc;
+    mask_desc.layout = m_shadow_mask_pipeline_layout;
+    mask_desc.stages = std::span{mask_stages, 2};
+    m_shadow_mask_pipeline = m_rhi->create_graphics_pipeline(mask_desc);
+
     m_rhi->destroy_shader_module(vert_h);
     m_rhi->destroy_shader_module(frag_h);
-    if (!m_shadow_pipeline.is_valid()) return false;
+    m_rhi->destroy_shader_module(mask_vert_h);
+    m_rhi->destroy_shader_module(mask_frag_h);
+    if (!m_shadow_pipeline.is_valid() || !m_shadow_mask_pipeline.is_valid()) return false;
 
     // Terrain shadow pipeline: same as above but with TerrainVertex layout
     auto terrain_vert_h = load_shader(*m_rhi, "engine/shaders/terrain_shadow.vert.spv");
@@ -2271,11 +2392,18 @@ bool Renderer::create_shadow_pipeline() {
         // Reuse shadow pipeline layout (same push constant)
         m_terrain_shadow_pipeline_layout = m_shadow_pipeline_layout;
 
+        // Terrain has no doubleSided primitives — bake cull mode in
+        // statically so the draw site doesn't need to set it dynamically
+        // (and so the pipeline isn't subject to the "must call
+        // vkCmdSetCullMode" validation requirement).
+        rhi::RasterizerState terrain_rs = rs;
+        terrain_rs.cull_mode_dynamic = false;
+
         rhi::GraphicsPipelineDesc tdesc{};
         tdesc.layout            = m_terrain_shadow_pipeline_layout;
         tdesc.stages            = std::span{tstages, 2};
         tdesc.vertex_input      = tvi;
-        tdesc.rasterizer        = rs;
+        tdesc.rasterizer        = terrain_rs;
         tdesc.depth_stencil     = ds;
         tdesc.multisample       = ms;
         tdesc.render.depth_format = depth_fmt;
@@ -2493,23 +2621,47 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
     build_static_draw_batches(world, alpha);
 
     if (m_shadow_pipeline.is_valid() && !m_draw_groups.empty()) {
-        cmd.bind_pipeline(m_shadow_pipeline);
+        const u32 fi = m_rhi->frame_index();
         cmd.set_viewport(0, 0, size_f, size_f);
         cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
 
-        cmd.push_constants(m_shadow_pipeline_layout, rhi::ShaderStage::Vertex,
-                           0, sizeof(glm::mat4), &light_vp);
-
-        // Bind mega VB/IB + instance SSBO once
+        // Shared geometry + push constant.
         cmd.bind_vertex_buffer(0, m_mega_vb);
         cmd.bind_index_buffer(m_mega_ib, 0, rhi::IndexType::U32);
-        const u32 fi = m_rhi->frame_index();
-        cmd.bind_descriptor_set(m_shadow_pipeline_layout, 0, m_instance_desc_set[fi]);
 
-        // Multi-draw indirect for all static mesh shadows
-        u32 draw_count = static_cast<u32>(m_draw_groups.size());
-        cmd.draw_indexed_indirect(m_indirect_buffer[fi], 0, draw_count,
-                                  sizeof(rhi::DrawIndexedIndirectCommand));
+        rhi::PipelineHandle prev_pipeline{};
+        rhi::PipelineLayoutHandle prev_layout{};
+        for (u8 pi = 0; pi < 4; ++pi) {
+            auto& part = m_static_partitions[pi];
+            if (part.count == 0) continue;
+            bool is_mask = (pi & 0b10) != 0;
+            bool is_ds   = (pi & 0b01) != 0;
+            auto pipeline = is_mask ? m_shadow_mask_pipeline : m_shadow_pipeline;
+            auto layout   = is_mask ? m_shadow_mask_pipeline_layout : m_shadow_pipeline_layout;
+            if (!pipeline.is_valid()) continue;
+            if (pipeline != prev_pipeline) {
+                cmd.bind_pipeline(pipeline);
+                // Bindings differ between the two pipeline layouts (the
+                // mask one adds bindless textures at set 1), so re-bind
+                // descriptor sets when the layout changes too.
+                if (layout != prev_layout) {
+                    cmd.push_constants(layout, rhi::ShaderStage::Vertex,
+                                       0, sizeof(glm::mat4), &light_vp);
+                    cmd.bind_descriptor_set(layout, 0, m_instance_desc_set[fi]);
+                    if (is_mask) {
+                        cmd.bind_descriptor_set(layout, 1, m_bindless_set);
+                    }
+                    prev_layout = layout;
+                }
+                prev_pipeline = pipeline;
+            }
+            cmd.set_cull_mode(is_ds ? rhi::CullMode::None : rhi::CullMode::Back);
+
+            u64 offset = static_cast<u64>(part.first)
+                       * sizeof(rhi::DrawIndexedIndirectCommand);
+            cmd.draw_indexed_indirect(m_indirect_buffer[fi], offset, part.count,
+                                      sizeof(rhi::DrawIndexedIndirectCommand));
+        }
     }
 
     cmd.end_rendering();
@@ -2546,12 +2698,19 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     bool has_skinned = m_skinned_mesh_pipeline.is_valid();
     auto frustum = m_camera.frustum();
 
-    // Key: mesh geometry identity (offsets into mega buffer) → group index
+    // Key: per-submesh geometry identity + pipeline class. Pipeline
+    // class is included because Opaque and Mask submeshes go through
+    // different pipelines (alpha-test discard), so they can't share a
+    // multi-draw-indirect batch even if their geometry matches.
     struct GroupKey {
         u32 first_index; u32 index_count; i32 vertex_offset;
+        u8  pipeline_class;   // 0 = Opaque, 1 = Mask
+        u8  double_sided;     // 0 = back-cull, 1 = no-cull
         bool operator==(const GroupKey& o) const {
             return first_index == o.first_index && index_count == o.index_count
-                && vertex_offset == o.vertex_offset;
+                && vertex_offset == o.vertex_offset
+                && pipeline_class == o.pipeline_class
+                && double_sided == o.double_sided;
         }
     };
     struct GroupKeyHash {
@@ -2559,14 +2718,17 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             size_t h = std::hash<u32>{}(k.first_index);
             h ^= std::hash<u32>{}(k.index_count) * 2654435761u;
             h ^= std::hash<i32>{}(k.vertex_offset) * 40503u;
+            h ^= std::hash<u8>{}(k.pipeline_class) * 19349663u;
+            h ^= std::hash<u8>{}(k.double_sided)  * 83492791u;
             return h;
         }
     };
-    // group_map: mesh geometry → index into per-group instance buckets.
-    // Buckets are kept separate during traversal because entities iterate
-    // in sparse-set dense order (which interleaves meshes when variations
-    // alternate). Concatenating buckets at the end gives each draw group
-    // a contiguous slice of the instance buffer — required by multi-draw
+    // group_map: per-submesh geometry × pipeline-class → index into
+    // per-group instance buckets. Buckets are kept separate during
+    // traversal because entities iterate in sparse-set dense order
+    // (which interleaves meshes when variations alternate).
+    // Concatenating buckets at the end gives each draw group a
+    // contiguous slice of the instance buffer — required by multi-draw
     // indirect (each command reads instances[firstInstance .. +count]).
     std::unordered_map<GroupKey, u32, GroupKeyHash> group_map;
     std::vector<std::vector<InstanceData>> buckets;
@@ -2587,30 +2749,75 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         if (!transform) continue;
         if (is_fog_hidden(world, id, *transform)) continue;
 
-        GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
-        if (!mesh.vertex_buffer.is_valid() || !mesh.index_buffer.is_valid()) continue;
+        auto* lm = get_or_load_model(renderable.model_path);
+        // Fall back to the legacy placeholder mesh if the model failed
+        // to load — keeps untextured entities visible during dev.
+        if (!lm || lm->submeshes.empty()) {
+            GpuMesh& mesh = get_or_upload_mesh(renderable.model_path);
+            if (!mesh.vertex_buffer.is_valid() || !mesh.index_buffer.is_valid()) continue;
 
-        // Frustum cull: skip entities whose bounding sphere is entirely off-screen
-        {
             glm::vec3 pos = lerp_position(*transform, alpha);
-            f32 radius = mesh.bounding_radius * transform->scale;
-            if (!frustum.is_sphere_visible(pos, radius)) continue;
+            if (!frustum.is_sphere_visible(pos, mesh.bounding_radius * transform->scale)) continue;
+
+            // Build the synthetic single submesh on the fly.
+            Submesh fallback{};
+            fallback.mesh = mesh;
+            fallback.texture_index = m_default_tex_idx;
+            fallback.base_color_factor = {1, 1, 1, 1};
+
+            // Frustum-cull-safe model matrix + per-submesh emit below.
+            // (We reuse the same per-submesh body by aliasing `submeshes`.)
+            // For clarity, just do it inline:
+            glm::vec3 vis_pos = pos;
+            f32 vis_facing = lerp_facing(*transform, alpha);
+            glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
+            if (m_terrain_data) {
+                glm::vec3 normal = map::sample_normal(*m_terrain_data, vis_pos.x, vis_pos.y);
+                model = model * slope_tilt_matrix(normal);
+            }
+            f32 facing = vis_facing;
+            if (!mesh.native_z_up) facing += glm::half_pi<f32>();
+            model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
+            model = glm::scale(model, glm::vec3{transform->scale});
+            if (!mesh.native_z_up) {
+                model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+            }
+
+            GroupKey key{fallback.mesh.first_index, fallback.mesh.index_count,
+                         static_cast<i32>(fallback.mesh.first_vertex), 0, 0};
+            auto git = group_map.find(key);
+            u32 gi;
+            if (git == group_map.end()) {
+                gi = static_cast<u32>(m_draw_groups.size());
+                group_map[key] = gi;
+                DrawGroup dg{};
+                dg.first_index    = fallback.mesh.first_index;
+                dg.index_count    = fallback.mesh.index_count;
+                dg.vertex_offset  = static_cast<i32>(fallback.mesh.first_vertex);
+                dg.pipeline_class = 0;
+                dg.double_sided   = 0;
+                m_draw_groups.push_back(dg);
+                buckets.emplace_back();
+            } else {
+                gi = git->second;
+            }
+            InstanceData inst{};
+            inst.model              = model;
+            inst.base_color_factor  = fallback.base_color_factor;
+            inst.material_index     = fallback.texture_index;
+            inst.alpha              = effective_visual_alpha(world, id, renderable);
+            inst.alpha_cutoff       = 0.0f;
+            if (is_in_fog_memory(world, id)) inst.alpha *= kFoggedMemoryAlpha;
+            buckets[gi].push_back(inst);
+            continue;
         }
 
-        // Resolve bindless texture index
-        bool is_corpse = world.dead_states.has(id);
-        auto* lm_static = get_or_load_model(renderable.model_path);
-        u32 tex_idx;
-        if (is_corpse && !(lm_static && lm_static->diffuse_texture.texture.is_valid())) {
-            tex_idx = m_corpse_tex_idx;
-        } else if (lm_static) {
-            tex_idx = lm_static->texture_index;
-        } else {
-            tex_idx = m_default_tex_idx;
-        }
-
-        // Compute model matrix
+        // Frustum cull on the model-wide bounding sphere (one test per
+        // entity instead of per submesh).
         glm::vec3 vis_pos = lerp_position(*transform, alpha);
+        if (!frustum.is_sphere_visible(vis_pos, lm->mesh.bounding_radius * transform->scale)) continue;
+
+        // Compute the per-entity model matrix once.
         f32 vis_facing = lerp_facing(*transform, alpha);
         glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
         if (m_terrain_data) {
@@ -2618,39 +2825,92 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             model = model * slope_tilt_matrix(normal);
         }
         f32 facing = vis_facing;
-        if (!mesh.native_z_up) facing += glm::half_pi<f32>();
+        if (!lm->mesh.native_z_up) facing += glm::half_pi<f32>();
         model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
         model = glm::scale(model, glm::vec3{transform->scale});
-        if (!mesh.native_z_up) {
+        if (!lm->mesh.native_z_up) {
             model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
         }
 
-        // Find or create draw group keyed by mesh geometry.
-        GroupKey key{mesh.first_index, mesh.index_count,
-                     static_cast<i32>(mesh.first_vertex)};
-        auto git = group_map.find(key);
-        u32 gi;
-        if (git == group_map.end()) {
-            gi = static_cast<u32>(m_draw_groups.size());
-            group_map[key] = gi;
-            DrawGroup dg{};
-            dg.first_index    = mesh.first_index;
-            dg.index_count    = mesh.index_count;
-            dg.vertex_offset  = static_cast<i32>(mesh.first_vertex);
-            dg.first_instance = 0;   // filled in after concatenation
-            dg.instance_count = 0;
-            m_draw_groups.push_back(dg);
-            buckets.emplace_back();
-        } else {
-            gi = git->second;
-        }
+        bool is_corpse = world.dead_states.has(id);
+        f32  entity_alpha = effective_visual_alpha(world, id, renderable);
+        if (is_in_fog_memory(world, id)) entity_alpha *= kFoggedMemoryAlpha;
 
-        InstanceData inst{};
-        inst.model = model;
-        inst.material_index = tex_idx;
-        inst.alpha = effective_visual_alpha(world, id, renderable);
-        if (is_in_fog_memory(world, id)) inst.alpha *= kFoggedMemoryAlpha;
-        buckets[gi].push_back(inst);
+        // Emit one instance per submesh. Each lands in its own (geometry,
+        // pipeline-class) draw group, so multi-draw-indirect dispatches
+        // them correctly per pipeline.
+        for (const auto& sm : lm->submeshes) {
+            u32 tex_idx = sm.texture_index;
+            // Corpse override only kicks in for models that ship no
+            // diffuse texture at all (matches prior behavior).
+            if (is_corpse && !lm->diffuse_texture.texture.is_valid()) {
+                tex_idx = m_corpse_tex_idx;
+            }
+
+            u8 pipe_class = (sm.alpha_mode == asset::AlphaMode::Mask) ? 1 : 0;
+            u8 ds         = sm.double_sided ? 1 : 0;
+            GroupKey key{sm.mesh.first_index, sm.mesh.index_count,
+                         static_cast<i32>(sm.mesh.first_vertex), pipe_class, ds};
+            auto git = group_map.find(key);
+            u32 gi;
+            if (git == group_map.end()) {
+                gi = static_cast<u32>(m_draw_groups.size());
+                group_map[key] = gi;
+                DrawGroup dg{};
+                dg.first_index    = sm.mesh.first_index;
+                dg.index_count    = sm.mesh.index_count;
+                dg.vertex_offset  = static_cast<i32>(sm.mesh.first_vertex);
+                dg.pipeline_class = pipe_class;
+                dg.double_sided   = ds;
+                m_draw_groups.push_back(dg);
+                buckets.emplace_back();
+            } else {
+                gi = git->second;
+            }
+
+            InstanceData inst{};
+            inst.model              = model;
+            inst.base_color_factor  = sm.base_color_factor;
+            inst.material_index     = tex_idx;
+            inst.alpha              = entity_alpha;
+            inst.alpha_cutoff       = sm.alpha_cutoff;
+            buckets[gi].push_back(inst);
+        }
+    }
+
+    // Sort (groups, buckets) in lockstep by partition index so each
+    // (pipeline_class × double_sided) combo is a contiguous slice ready
+    // for one multi-draw-indirect dispatch. Within a partition, groups
+    // stay in insertion order — preserves the implicit "first appearance
+    // wins" priority and matches the indirect command order.
+    {
+        std::vector<u32> order(m_draw_groups.size());
+        std::iota(order.begin(), order.end(), 0u);
+        std::stable_sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+            return partition_index(m_draw_groups[a].pipeline_class,
+                                   m_draw_groups[a].double_sided)
+                 < partition_index(m_draw_groups[b].pipeline_class,
+                                   m_draw_groups[b].double_sided);
+        });
+        std::vector<DrawGroup> sorted_groups;
+        std::vector<std::vector<InstanceData>> sorted_buckets;
+        sorted_groups.reserve(m_draw_groups.size());
+        sorted_buckets.reserve(buckets.size());
+        for (u32 i : order) {
+            sorted_groups.push_back(m_draw_groups[i]);
+            sorted_buckets.push_back(std::move(buckets[i]));
+        }
+        m_draw_groups = std::move(sorted_groups);
+        buckets       = std::move(sorted_buckets);
+    }
+
+    // Compute partition slices into m_draw_groups.
+    for (auto& p : m_static_partitions) { p.first = 0; p.count = 0; }
+    for (u32 gi = 0; gi < m_draw_groups.size(); ++gi) {
+        u8 pi = partition_index(m_draw_groups[gi].pipeline_class,
+                                m_draw_groups[gi].double_sided);
+        if (m_static_partitions[pi].count == 0) m_static_partitions[pi].first = gi;
+        m_static_partitions[pi].count++;
     }
 
     // Concatenate buckets into the final instance buffer; record each
@@ -3048,33 +3308,47 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         }
     }
 
-    // Pass 2: Draw non-skinned entities via mega buffer + bindless + indirect draw (Phase 14b)
+    // Pass 2: Draw non-skinned entities via mega buffer + bindless +
+    // indirect draw. m_draw_groups is sorted into 4 partitions by
+    // (pipeline_class × double_sided); each partition gets its own
+    // pipeline bind + cull-mode set, then one multi-draw-indirect for
+    // the contiguous run of groups in that partition.
     if (m_mesh_pipeline.is_valid() && !m_draw_groups.empty()) {
-        cmd.bind_pipeline(m_mesh_pipeline);
+        const u32 fi = m_rhi->frame_index();
         cmd.set_viewport(0, 0, vw, vh);
         cmd.set_scissor(0, 0, extent.width, extent.height);
 
-        // Push vp matrix (same for all instances)
-        cmd.push_constants(m_mesh_pipeline_layout, rhi::ShaderStage::Vertex,
-                           0, sizeof(glm::mat4), &vp);
-
-        // Bind mega vertex/index buffers once (all static meshes share them)
+        // Shared bindings: mega VB/IB, descriptor sets, vp push.
         cmd.bind_vertex_buffer(0, m_mega_vb);
         cmd.bind_index_buffer(m_mega_ib, 0, rhi::IndexType::U32);
-
-        // Bind all descriptor sets once: bindless textures + shadow + instance SSBO
-        const u32 fi = m_rhi->frame_index();
         rhi::DescriptorSetHandle sets[] = {
             m_bindless_set,
             m_shadow_desc_set,
             m_instance_desc_set[fi],
         };
         cmd.bind_descriptor_sets(m_mesh_pipeline_layout, 0, std::span{sets, 3});
+        cmd.push_constants(m_mesh_pipeline_layout, rhi::ShaderStage::Vertex,
+                           0, sizeof(glm::mat4), &vp);
 
-        // Multi-draw indirect: one command per unique mesh geometry
-        u32 draw_count = static_cast<u32>(m_draw_groups.size());
-        cmd.draw_indexed_indirect(m_indirect_buffer[fi], 0, draw_count,
-                                  sizeof(rhi::DrawIndexedIndirectCommand));
+        rhi::PipelineHandle prev_pipeline{};
+        for (u8 pi = 0; pi < 4; ++pi) {
+            auto& part = m_static_partitions[pi];
+            if (part.count == 0) continue;
+            // Decode partition: 0..3 = (opaque|mask, back|none).
+            bool is_mask  = (pi & 0b10) != 0;
+            bool is_ds    = (pi & 0b01) != 0;
+            auto pipeline = is_mask ? m_mesh_mask_pipeline : m_mesh_pipeline;
+            if (pipeline.is_valid() && pipeline != prev_pipeline) {
+                cmd.bind_pipeline(pipeline);
+                prev_pipeline = pipeline;
+            }
+            cmd.set_cull_mode(is_ds ? rhi::CullMode::None : rhi::CullMode::Back);
+
+            u64 offset = static_cast<u64>(part.first)
+                       * sizeof(rhi::DrawIndexedIndirectCommand);
+            cmd.draw_indexed_indirect(m_indirect_buffer[fi], offset, part.count,
+                                      sizeof(rhi::DrawIndexedIndirectCommand));
+        }
     }
 
     // ── Pass 3: Particles (alpha-blended, drawn last) ────────────────────

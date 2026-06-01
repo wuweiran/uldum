@@ -285,6 +285,11 @@ struct RasterizerState {
     f32         depth_bias_constant_factor = 0.0f;
     f32         depth_bias_slope_factor    = 0.0f;
     f32         line_width        = 1.0f;
+    // When true, the pipeline is created with VK_DYNAMIC_STATE_CULL_MODE
+    // so the consumer can flip back-cull / no-cull / front-cull per draw
+    // via `CommandList::set_cull_mode`. Use for materials that need to
+    // mix single-sided and doubleSided primitives in the same pass.
+    bool        cull_mode_dynamic = false;
 };
 
 struct DepthStencilState {

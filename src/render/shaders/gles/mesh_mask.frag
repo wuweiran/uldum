@@ -1,19 +1,23 @@
-#version 450
-#extension GL_EXT_nonuniform_qualifier : require
+#version 310 es
+precision highp float;
+precision highp int;
 
-// Set 0: bindless texture array
-layout(set = 0, binding = 0) uniform sampler2D textures[];
+// GLES port of mesh_mask.frag — same math as mesh.frag but with the
+// glTF alphaMode=MASK discard so cut-out geometry (leaves, decals,
+// fences) renders the right silhouette instead of its bounding box.
 
-// Set 1: shadow data
-layout(set = 1, binding = 0) uniform ShadowData {
+layout(binding = 0) uniform highp sampler2DArray u_textures;
+
+layout(binding = 16, std140) uniform ShadowData {
     mat4 light_vp;
 } shadow;
-layout(set = 1, binding = 1) uniform sampler2DShadow shadow_map;
+layout(binding = 17) uniform highp sampler2DShadow shadow_map;
+
 struct PointLight {
     vec4 position;
     vec4 color;
 };
-layout(set = 1, binding = 2) uniform EnvironmentData {
+layout(binding = 18, std140) uniform EnvironmentData {
     vec4 sun_direction;
     vec4 sun_color;
     vec4 ambient_color;
@@ -33,7 +37,6 @@ layout(location = 6) flat in float frag_alpha_cutoff;
 layout(location = 0) out vec4 out_color;
 
 float shadow_pcf(vec3 light_ndc) {
-    // 3x3 PCF kernel
     float shadow = 0.0;
     vec2 texel_size = vec2(1.0 / 2048.0);
     for (int x = -1; x <= 1; ++x) {
@@ -48,19 +51,17 @@ float shadow_pcf(vec3 light_ndc) {
 void main() {
     vec3 normal = normalize(frag_world_normal);
 
-    // Sample diffuse texture from bindless array using per-instance
-    // material index, then modulate by the glTF baseColorFactor. For
-    // texture-less primitives the default 1×1 white sampler combined
-    // with the baseColorFactor reproduces the authored material color.
-    vec4 sample_rgba = texture(textures[nonuniformEXT(frag_material_index)], frag_texcoord);
-    vec4 base_rgba   = sample_rgba * frag_base_color_factor;
+    vec4 base_rgba = texture(u_textures, vec3(frag_texcoord, float(frag_material_index)))
+                   * frag_base_color_factor;
+
+    // glTF alphaMode=MASK: discard pixels below the cutoff.
+    if (base_rgba.a < frag_alpha_cutoff) discard;
+
     vec3 albedo = base_rgba.rgb;
 
-    // Directional sun light (game coords: X=right, Y=forward, Z=up)
     vec3 light_dir = normalize(env.sun_direction.xyz);
     float ndotl = max(dot(normal, light_dir), 0.0);
 
-    // Shadow
     vec4 light_clip = shadow.light_vp * vec4(frag_world_pos, 1.0);
     vec3 light_ndc = light_clip.xyz / light_clip.w;
     light_ndc.xy = light_ndc.xy * 0.5 + 0.5;
@@ -78,7 +79,6 @@ void main() {
 
     vec3 lit = albedo * lighting;
 
-    // Point lights
     for (int i = 0; i < env.light_count.x; i++) {
         vec3 lv = env.lights[i].position.xyz - frag_world_pos;
         float d = length(lv);

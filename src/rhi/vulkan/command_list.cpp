@@ -125,6 +125,16 @@ void CommandList::set_scissor(i32 x, i32 y, u32 width, u32 height) {
     vkCmdSetScissor(vk(m_cmd), 0, 1, &r);
 }
 
+void CommandList::set_cull_mode(CullMode mode) {
+    VkCullModeFlags flags = VK_CULL_MODE_BACK_BIT;
+    switch (mode) {
+        case CullMode::None:  flags = VK_CULL_MODE_NONE;       break;
+        case CullMode::Front: flags = VK_CULL_MODE_FRONT_BIT;  break;
+        case CullMode::Back:  flags = VK_CULL_MODE_BACK_BIT;   break;
+    }
+    vkCmdSetCullMode(vk(m_cmd), flags);
+}
+
 void CommandList::push_constants(PipelineLayoutHandle layout, ShaderStage stages,
                                  u32 offset, u32 size, const void* data) {
     vkCmdPushConstants(vk(m_cmd), m_rhi->resolve(layout), to_vk_shader_stage(stages),

@@ -7,7 +7,7 @@ A modern game engine for unit-centric, map-based games with scripting and multip
 ## 2. Target Platforms
 
 - Windows (Win32 + Vulkan)
-- Android (GameActivity + Vulkan)
+- Android (GameActivity + Vulkan / OpenGL ES)
 
 ## 3. Module Architecture
 

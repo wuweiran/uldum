@@ -1700,12 +1700,18 @@ PipelineHandle Rhi::create_graphics_pipeline(const GraphicsPipelineDesc& desc) {
     cb.attachmentCount = static_cast<u32>(vk_blend.size());
     cb.pAttachments    = vk_blend.empty() ? nullptr : vk_blend.data();
 
-    // Dynamic state (always viewport + scissor)
-    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    // Dynamic state — viewport + scissor are always dynamic; cull mode
+    // is opt-in per pipeline so authors who never need doubleSided don't
+    // pay for the per-draw cull-mode write.
+    std::vector<VkDynamicState> dyn_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    if (desc.rasterizer.cull_mode_dynamic) {
+        // Core in Vulkan 1.3; was VK_EXT_extended_dynamic_state before.
+        dyn_states.push_back(VK_DYNAMIC_STATE_CULL_MODE);
+    }
     VkPipelineDynamicStateCreateInfo dyn{};
     dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = static_cast<u32>(std::size(dyn_states));
-    dyn.pDynamicStates    = dyn_states;
+    dyn.dynamicStateCount = static_cast<u32>(dyn_states.size());
+    dyn.pDynamicStates    = dyn_states.data();
 
     // Dynamic rendering
     std::vector<VkFormat> color_formats(desc.render.color_formats.size());

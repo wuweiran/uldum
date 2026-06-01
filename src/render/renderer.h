@@ -27,25 +27,47 @@ namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentCon
 
 namespace uldum::render {
 
-// A fully loaded model: CPU data + GPU resources + material.
-struct LoadedModel {
-    asset::ModelData data;
-    GpuMesh          mesh{};             // first mesh (skinned or static)
-    GpuTexture       diffuse_texture{};  // from model or default
-    MeshMaterial     material{};         // per-model descriptor (skinned pipeline only)
-    bool             is_skinned = false;
-    u32              texture_index = 0;  // index into bindless texture array (Phase 14b)
+// One primitive of a model: a slice of the mega buffer plus the
+// material that drives its draw state (texture binding, color
+// multiplier, alpha pipeline variant, cull mode). A single-material
+// model has exactly one Submesh; a multi-material model has one per
+// glTF primitive.
+struct Submesh {
+    GpuMesh           mesh{};                    // range into the mega vert/idx buffers
+    u32               texture_index   = 0;       // bindless slot for baseColorTexture, or default
+    glm::vec4         base_color_factor{1, 1, 1, 1};
+    asset::AlphaMode  alpha_mode      = asset::AlphaMode::Opaque;
+    f32               alpha_cutoff    = 0.5f;
+    bool              double_sided    = false;
 };
 
-// Per-instance data for static mesh SSBO (80 bytes, std430 aligned).
-// `alpha` is the SetUnitAlpha multiplier carried into the fragment so
-// the editor's ghost preview (and any future map-side fade) works on
-// the static pipeline just like it already does on the skinned one.
+// A fully loaded model: CPU data + GPU submeshes.
+//
+// `mesh` is the model-wide range (covers every submesh contiguously in
+// the mega buffer) — kept around for frustum-cull bounding radius and
+// any legacy single-draw path. Per-primitive draw state lives on
+// `submeshes`, with one entry per glTF primitive.
+struct LoadedModel {
+    asset::ModelData     data;
+    std::vector<Submesh> submeshes;
+    GpuMesh              mesh{};            // merged extents (bounding radius lookup, legacy single-binding draws)
+    GpuTexture           diffuse_texture{}; // first submesh's image (skinned descriptor)
+    MeshMaterial         material{};        // first submesh's descriptor (skinned pipeline)
+    bool                 is_skinned = false;
+};
+
+// Per-instance data for static mesh SSBO (std430 aligned). Each
+// (entity × submesh) pair contributes one instance: `material_index`
+// indexes the bindless texture array, `base_color_factor` multiplies
+// the sample, `alpha` is the SetUnitAlpha multiplier. `alpha_cutoff`
+// drives the MASK pipeline's discard test (unused in Opaque).
 struct InstanceData {
-    glm::mat4 model;          // 64 bytes
-    u32       material_index; // 4 bytes — index into bindless texture array
-    f32       alpha;          // 4 bytes — visual_alpha (1.0 = opaque)
-    u32       _pad[2];        // 8 bytes — align to 16
+    glm::mat4 model;              // 64 bytes
+    glm::vec4 base_color_factor;  // 16 bytes
+    u32       material_index;     //  4 bytes — bindless texture slot
+    f32       alpha;              //  4 bytes — visual_alpha (1.0 = opaque)
+    f32       alpha_cutoff;       //  4 bytes — MASK threshold
+    u32       _pad;               //  4 bytes — align to 16
 };
 
 class Renderer {
@@ -165,9 +187,13 @@ private:
     rhi::DescriptorSetLayoutHandle m_terrain_desc_layout{}; // set 0: 4 layers + 1 splatmap
     rhi::DescriptorSetLayoutHandle m_shadow_desc_layout{};  // set 1: UBO + shadow map
 
-    // Mesh pipeline (set 0 = material, set 1 = shadow)
+    // Mesh pipeline (set 0 = material, set 1 = shadow).
+    // _mask variant adds a fragment-shader discard for glTF alphaMode=MASK
+    // primitives. Both pipelines share the same layout; only the fragment
+    // shader differs. Both opt into dynamic cull-mode for doubleSided.
     rhi::PipelineLayoutHandle m_mesh_pipeline_layout{};
     rhi::PipelineHandle       m_mesh_pipeline{};
+    rhi::PipelineHandle       m_mesh_mask_pipeline{};
 
     // Terrain pipeline (set 0 = terrain material, set 1 = shadow)
     rhi::PipelineLayoutHandle m_terrain_pipeline_layout{};
@@ -195,9 +221,14 @@ private:
     bool create_skybox_pipeline();
     bool create_skybox_mesh();
 
-    // Shadow depth pass pipeline (push constant = light MVP, depth-only)
+    // Shadow depth pass pipeline (push constant = light MVP, depth-only).
+    // The _mask variant adds bindless textures (set 1) and a fragment
+    // shader that samples + alpha-tests, so cut-out geometry casts the
+    // correct silhouette into the shadow map.
     rhi::PipelineLayoutHandle m_shadow_pipeline_layout{};
     rhi::PipelineHandle       m_shadow_pipeline{};
+    rhi::PipelineLayoutHandle m_shadow_mask_pipeline_layout{};
+    rhi::PipelineHandle       m_shadow_mask_pipeline{};
     rhi::PipelineLayoutHandle m_terrain_shadow_pipeline_layout{};
     rhi::PipelineHandle       m_terrain_shadow_pipeline{};
 
@@ -319,16 +350,36 @@ private:
 
     rhi::BufferHandle m_indirect_buffer[rhi::MAX_FRAMES_IN_FLIGHT] = {};
 
-    // Draw group: one indirect draw per unique mesh geometry
+    // Draw group: one indirect draw per (geometry × pipeline state)
+    // combination. `pipeline_class` separates Opaque (0) from Mask (1)
+    // because they bind different pipelines (alpha-test discard).
+    // `double_sided` flips cull mode at draw time (back-cull vs no-cull).
     struct DrawGroup {
         u32 first_index;      // into mega index buffer
         u32 index_count;
         i32 vertex_offset;    // into mega vertex buffer
         u32 first_instance;   // offset into instance SSBO
         u32 instance_count;
+        u8  pipeline_class;   // 0 = Opaque, 1 = Mask
+        u8  double_sided;     // 0 = back-cull, 1 = no-cull
     };
     std::vector<DrawGroup>  m_draw_groups;
     u32                     m_static_instance_count = 0;
+
+    // After build_static_draw_batches, m_draw_groups is sorted by
+    // (pipeline_class, double_sided) so each combo is a contiguous slice
+    // ready for one multi-draw-indirect dispatch. Partition indices map
+    // to: 0 = opaque+back-cull, 1 = opaque+no-cull, 2 = mask+back-cull,
+    // 3 = mask+no-cull.
+    struct DrawPartition {
+        u32 first = 0;
+        u32 count = 0;
+    };
+    DrawPartition m_static_partitions[4];
+
+    static constexpr u8 partition_index(u8 pipeline_class, u8 double_sided) {
+        return static_cast<u8>((pipeline_class << 1) | double_sided);
+    }
 
     void build_static_draw_batches(const simulation::World& world, f32 alpha);
 

@@ -275,27 +275,55 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
         }
     }
 
-    // Fallback: if the model has no texture images but its first material
-    // declares a baseColorFactor, synthesize a 1×1 RGBA texture from that
-    // color. Without this, models authored as "color-only" (no diffuse
-    // map) all render with the engine's default white material — making
-    // variations indistinguishable. Uses material[0] only; per-primitive
-    // material colors aren't supported yet.
-    if (textures.empty() && data->materials_count > 0) {
-        const cgltf_material& mat = data->materials[0];
-        if (mat.has_pbr_metallic_roughness) {
-            const float* c = mat.pbr_metallic_roughness.base_color_factor;
-            auto to_u8 = [](float v) {
-                int i = static_cast<int>(v * 255.0f + 0.5f);
-                if (i < 0) i = 0;
-                if (i > 255) i = 255;
-                return static_cast<u8>(i);
-            };
-            TextureData tex;
-            tex.width = 1; tex.height = 1; tex.channels = 4;
-            tex.pixels = {to_u8(c[0]), to_u8(c[1]), to_u8(c[2]), to_u8(c[3])};
-            textures.push_back(std::move(tex));
+}
+
+// ── Material extraction ──────────────────────────────────────────────────
+
+static void extract_materials(const cgltf_data* data,
+                              std::string_view model_path,
+                              std::vector<MaterialDef>& materials) {
+    materials.resize(data->materials_count);
+    for (cgltf_size i = 0; i < data->materials_count; ++i) {
+        const cgltf_material& src = data->materials[i];
+        MaterialDef& dst = materials[i];
+
+        // baseColorFactor: rgba multiplier applied to baseColorTexture
+        // (or used alone when there's no texture). Default is white.
+        if (src.has_pbr_metallic_roughness) {
+            const float* c = src.pbr_metallic_roughness.base_color_factor;
+            dst.base_color_factor = {c[0], c[1], c[2], c[3]};
+
+            // Resolve baseColorTexture → index into ModelData.textures.
+            // cgltf parses KHR_texture_basisu as `basisu_image` on the
+            // texture; either field points to the right cgltf_image.
+            const cgltf_texture* tex = src.pbr_metallic_roughness.base_color_texture.texture;
+            if (tex) {
+                const cgltf_image* img = tex->basisu_image ? tex->basisu_image : tex->image;
+                if (img) {
+                    cgltf_size idx = static_cast<cgltf_size>(img - data->images);
+                    if (idx < data->images_count) {
+                        dst.base_color_texture = static_cast<i32>(idx);
+                    }
+                }
+            }
         }
+
+        switch (src.alpha_mode) {
+            case cgltf_alpha_mode_opaque: dst.alpha_mode = AlphaMode::Opaque; break;
+            case cgltf_alpha_mode_mask:   dst.alpha_mode = AlphaMode::Mask;   break;
+            case cgltf_alpha_mode_blend:
+                // The engine doesn't have a sorted transparent pass yet;
+                // BLEND primitives degrade to Opaque (and emit a warning
+                // so authors notice rather than silently lose transparency).
+                dst.alpha_mode = AlphaMode::Opaque;
+                log::warn("Asset", "Model '{}': material '{}' uses alphaMode=BLEND; "
+                                   "rendering as Opaque until sorted transparent pass lands.",
+                          model_path, src.name ? src.name : "?");
+                break;
+        }
+
+        dst.alpha_cutoff = src.alpha_cutoff;
+        dst.double_sided = src.double_sided;
     }
 }
 
@@ -349,6 +377,11 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
 
     // Extract textures from glTF images
     extract_textures(data, path, model.textures);
+
+    // Extract materials (baseColorFactor, baseColorTexture index, alpha
+    // mode, doubleSided). Each primitive below references one by index;
+    // primitives with no glTF material get the default (-1 sentinel).
+    extract_materials(data, path, model.materials);
 
     // Extract skeleton from first skin (if any)
     NodeToBoneMap node_to_bone;
@@ -454,10 +487,20 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
 
             std::string mesh_name = mesh.name ? mesh.name : std::format("mesh_{}", ni);
 
+            // Resolve this primitive's material index by pointer-arithmetic
+            // into cgltf_data.materials. -1 = primitive has no material in
+            // glTF, renderer uses its default.
+            i32 material_idx = -1;
+            if (prim.material) {
+                cgltf_size mi = static_cast<cgltf_size>(prim.material - data->materials);
+                if (mi < data->materials_count) material_idx = static_cast<i32>(mi);
+            }
+
             if (has_skin && joints_acc && weights_acc) {
                 // Properly skinned mesh
                 SkinnedMeshData smd;
                 smd.name = mesh_name;
+                smd.material = material_idx;
                 smd.indices = std::move(indices);
                 smd.vertices.resize(vertex_count);
 
@@ -487,6 +530,7 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
 
                 SkinnedMeshData smd;
                 smd.name = mesh_name;
+                smd.material = material_idx;
                 smd.indices = std::move(indices);
                 smd.vertices.resize(vertex_count);
 
@@ -509,6 +553,7 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
                 // Non-skinned, not bone-parented
                 MeshData md;
                 md.name = mesh_name;
+                md.material = material_idx;
                 md.indices = std::move(indices);
                 md.vertices.resize(vertex_count);
 

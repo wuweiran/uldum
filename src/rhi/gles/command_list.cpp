@@ -292,6 +292,18 @@ void CommandList::set_scissor(i32 x, i32 y, u32 width, u32 height) {
     glEnable(GL_SCISSOR_TEST);
 }
 
+void CommandList::set_cull_mode(CullMode mode) {
+    // GL cull state is global (apply_pipeline_state writes it at pipeline
+    // bind time); flip it here to override the pipeline's static value
+    // until the next bind_pipeline restores the pipeline's default.
+    if (mode == CullMode::None) {
+        glDisable(GL_CULL_FACE);
+    } else {
+        glEnable(GL_CULL_FACE);
+        glCullFace(mode == CullMode::Front ? GL_FRONT : GL_BACK);
+    }
+}
+
 void CommandList::push_constants(PipelineLayoutHandle layout, ShaderStage /*stages*/,
                                  u32 offset, u32 size, const void* data) {
     auto& rhi = rhi_of(m_cmd);

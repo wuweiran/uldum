@@ -8,10 +8,16 @@ layout(push_constant) uniform PushConstants {
     mat4 light_vp;
 } pc;
 
+// Must mirror Renderer::InstanceData (renderer.h). Shadow pass only
+// uses the model matrix but the stride must match so gl_InstanceIndex
+// indexing aligns with the main pass.
 struct InstanceData {
-    mat4 model;
-    uint material_index;
-    uint _pad1, _pad2, _pad3;
+    mat4  model;
+    vec4  base_color_factor;
+    uint  material_index;
+    float alpha;
+    float alpha_cutoff;
+    uint  _pad;
 };
 
 layout(set = 0, binding = 0) readonly buffer InstanceBuffer {

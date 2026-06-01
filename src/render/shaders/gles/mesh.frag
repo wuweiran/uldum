@@ -32,11 +32,13 @@ layout(binding = 18, std140) uniform EnvironmentData {
     PointLight lights[8];
 } env;
 
-layout(location = 0) in vec3 frag_world_normal;
-layout(location = 1) in vec2 frag_texcoord;
-layout(location = 2) in vec3 frag_world_pos;
-layout(location = 3) flat in uint frag_material_index;
+layout(location = 0) in vec3  frag_world_normal;
+layout(location = 1) in vec2  frag_texcoord;
+layout(location = 2) in vec3  frag_world_pos;
+layout(location = 3) flat in uint  frag_material_index;
 layout(location = 4)      in float frag_alpha;
+layout(location = 5)      in vec4  frag_base_color_factor;
+layout(location = 6) flat in float frag_alpha_cutoff;
 
 layout(location = 0) out vec4 out_color;
 
@@ -58,7 +60,11 @@ void main() {
     // Sample the unit-texture array using per-instance material_index as
     // the layer. material_index 0 = engine default, 1 = corpse, 2+ = each
     // loaded model's diffuse texture (see Renderer::register_unit_texture).
-    vec3 albedo = texture(u_textures, vec3(frag_texcoord, float(frag_material_index))).rgb;
+    // Multiply by the glTF baseColorFactor so per-primitive material
+    // colors render correctly even on color-only models.
+    vec4 base_rgba = texture(u_textures, vec3(frag_texcoord, float(frag_material_index)))
+                   * frag_base_color_factor;
+    vec3 albedo = base_rgba.rgb;
 
     vec3 light_dir = normalize(env.sun_direction.xyz);
     float ndotl = max(dot(normal, light_dir), 0.0);

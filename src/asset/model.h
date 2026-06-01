@@ -32,16 +32,38 @@ struct SkinnedVertex {
     glm::vec4  bone_weights{0.0f};
 };
 
+// glTF alphaMode — drives the renderer's pipeline + shader path per primitive.
+//   Opaque: alpha channel ignored, no discard, no blend
+//   Mask:   `if (sample.a < alpha_cutoff) discard;` — foliage, decals, cut-outs
+//   Blend:  fully transparent (depth-sorted) — not yet supported by the engine;
+//           primitives flagged Blend currently render as Opaque with a warning.
+enum class AlphaMode : u8 { Opaque, Mask, Blend };
+
+// Per-primitive material data extracted from a glTF material. The renderer
+// uses these to drive per-primitive draw state (texture binding, color
+// multiplier, alpha-test pipeline variant, cull mode). A primitive with
+// `material = -1` falls back to the engine's default: white texture,
+// (1,1,1,1) base color, Opaque, single-sided.
+struct MaterialDef {
+    glm::vec4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+    i32       base_color_texture = -1;   // index into ModelData.textures; -1 = no texture
+    f32       alpha_cutoff       = 0.5f; // MASK threshold
+    AlphaMode alpha_mode         = AlphaMode::Opaque;
+    bool      double_sided       = false;
+};
+
 struct MeshData {
     std::vector<Vertex> vertices;
     std::vector<u32>    indices;
     std::string         name;
+    i32                 material = -1;   // index into ModelData.materials; -1 = default
 };
 
 struct SkinnedMeshData {
     std::vector<SkinnedVertex> vertices;
     std::vector<u32>           indices;
     std::string                name;
+    i32                        material = -1;
 };
 
 // ── Skeleton ──────────────────────────────────────────────────────────────
@@ -85,7 +107,8 @@ struct ModelData {
     Skeleton                     skeleton;
     std::vector<AnimationClip>   animations;
     std::string                  name;
-    std::vector<TextureData>     textures;  // extracted diffuse textures
+    std::vector<TextureData>     textures;   // extracted diffuse images (one per cgltf_image)
+    std::vector<MaterialDef>     materials;  // one per cgltf_material; MeshData.material indexes here
 
     bool has_skeleton() const { return !skeleton.empty(); }
 };

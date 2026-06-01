@@ -176,6 +176,11 @@ public:
                       f32 min_depth = 0.0f, f32 max_depth = 1.0f);
     void set_scissor(i32 x, i32 y, u32 width, u32 height);
 
+    // Override the bound pipeline's cull mode without rebinding. Pipelines
+    // that opt into this must be created with `rasterizer.cull_mode_dynamic
+    // = true`; calling it on a static-cull pipeline is undefined.
+    void set_cull_mode(CullMode mode);
+
     // Push constants
     void push_constants(PipelineLayoutHandle layout, ShaderStage stages,
                         u32 offset, u32 size, const void* data);

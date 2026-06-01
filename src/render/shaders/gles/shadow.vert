@@ -10,10 +10,16 @@ layout(binding = 30, std140) uniform PushConstants {
     mat4 light_vp;
 } pc;
 
+// Must mirror Renderer::InstanceData (renderer.h). Shadow pass only
+// reads the model matrix, but the stride has to match so gl_InstanceID
+// indexes the right element.
 struct InstanceData {
-    mat4 model;
-    uint material_index;
-    uint _pad1, _pad2, _pad3;
+    mat4  model;
+    vec4  base_color_factor;
+    uint  material_index;
+    float alpha;
+    float alpha_cutoff;
+    uint  _pad;
 };
 
 layout(binding = 0, std430) readonly buffer InstanceBuffer {
@@ -21,8 +27,8 @@ layout(binding = 0, std430) readonly buffer InstanceBuffer {
 };
 
 layout(location = 0) in vec3 in_position;
-layout(location = 1) in vec3 in_normal;    // unused, matches vertex layout
-layout(location = 2) in vec2 in_texcoord;  // unused, matches vertex layout
+layout(location = 1) in vec3 in_normal;    // unused
+layout(location = 2) in vec2 in_texcoord;  // unused
 
 void main() {
     mat4 model = instances[gl_InstanceID].model;

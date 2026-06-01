@@ -16,10 +16,10 @@ A glTF model can contain:
 
 | Component | glTF Field | Required | Notes |
 |-----------|-----------|----------|-------|
-| Meshes | `meshes[]` | Yes | Triangle primitives only |
+| Meshes | `meshes[]` | Yes | Triangle primitives only. Each primitive becomes its own draw with its own material (static models). |
 | Skeleton | `skins[0]` | No | First skin used. Up to 128 bones |
 | Animations | `animations[]` | No | Matched to engine states by name |
-| Materials | `materials[]` | No | Only `baseColorFactor` is read, as a 1×1 RGBA fallback when the model has no image data |
+| Materials | `materials[]` | No | Per-primitive on **static** models (texture + baseColorFactor + alphaMode + doubleSided). Skinned models still use `materials[0]` for the whole entity. |
 
 ## Supported subset of glTF 2.0
 
@@ -33,7 +33,12 @@ The loader is tuned for skeletal-animated unit models. Authors hitting an unsupp
 - Bone-parented un-skinned meshes (e.g., a weapon node parented to a hand bone) are auto-converted to skinned with 100% weight on the parent bone.
 - Animations: `translation`, `rotation`, `scale` channels. Played as linear regardless of the sampler's authored interpolation.
 - Textures: PNG / JPEG / BMP / TGA / HDR (via stb_image), KTX2 / Basis Universal (via the engine's transcoder). Embedded in buffer-views or referenced by external URI. KTX2 detection works via the `KHR_texture_basisu` extension's mime type, the KTX2 magic prefix, or a `.ktx2` URI extension.
-- Materials: only `pbrMetallicRoughness.baseColorFactor` is read, used as a 1×1 RGBA fallback texture when the model ships no image data.
+- **Materials (static models, per-primitive):**
+  - `pbrMetallicRoughness.baseColorTexture` → bound as the primitive's diffuse texture.
+  - `pbrMetallicRoughness.baseColorFactor` → per-instance multiplier in the fragment shader. Modulates the diffuse texture, or supplies a flat color for color-only primitives.
+  - `alphaMode`: `OPAQUE` and `MASK` (alpha-test discard with `alphaCutoff`) both fully supported, including correctly shaped shadows for masked geometry. `BLEND` degrades to `OPAQUE` with a warning (no sorted transparent pass yet).
+  - `doubleSided` → flips the cull mode per draw (no-cull for double-sided primitives, back-cull otherwise). Both pass and shadow honor this.
+- **Materials (skinned models):** the loader reads per-primitive material data, but the renderer currently binds a single texture + material per entity (`materials[0]`). Multi-material skinned characters render as if they had one material until the skinned per-submesh pass lands. `alphaMode` / `doubleSided` not yet honored on skinned.
 
 ### Not supported
 
@@ -46,7 +51,8 @@ These are silently ignored unless a warning is noted:
 - Animation sampler interpolation modes `STEP` and `CUBICSPLINE` (warning emitted; played as linear).
 - Animations on un-skinned models (warning emitted; channels dropped).
 - Skins beyond `skins[0]` (warning emitted).
-- Material properties beyond `baseColorFactor`: `baseColorTexture` mapping, roughness/metallic, normal map, occlusion, emissive, alpha mode (`MASK` / `BLEND`), all `KHR_materials_*` extensions, and `KHR_materials_pbrSpecularGlossiness` (legacy).
+- PBR shading: `roughness`, `metallic`, normal map, occlusion, emissive, all `KHR_materials_*` extensions, and `KHR_materials_pbrSpecularGlossiness` (legacy). The fragment shader is Lambert + ambient + shadow + point lights; PBR is deferred work.
+- `alphaMode: BLEND` (true transparency with depth-sorted draws). Degrades to `OPAQUE` with a per-material warning.
 - `KHR_draco_mesh_compression`, `KHR_lights_punctual`, camera nodes, scene roots — the loader walks all nodes regardless of which scene they're in.
 
 ## Vertex Format
