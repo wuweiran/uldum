@@ -35,16 +35,22 @@ bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
     m_platform = &platform;
 
 #if defined(ULDUM_BACKEND_VULKAN)
-    // Descriptor pool — ImGui needs one slot per font texture and per custom
-    // image; 100 is far more than we need for dev widgets.
+    // Descriptor pool — ImGui's Vulkan backend allocates COMBINED_IMAGE_SAMPLER
+    // for its main font/texture binding, plus separate SAMPLER + SAMPLED_IMAGE
+    // sets on the new texture API path introduced in ImGui 1.92 (which is now
+    // the default in the backend even when ImTextureID still resolves to a
+    // combined-image-sampler set). The pool must reserve all three types or
+    // the separate-sampler allocations trip a validation warning.
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,                100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          100 },
     };
     VkDescriptorPoolCreateInfo pool_ci{};
     pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool_ci.maxSets       = 100;
-    pool_ci.poolSizeCount = 1;
+    pool_ci.poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]);
     pool_ci.pPoolSizes    = pool_sizes;
 
     VkDescriptorPool pool = VK_NULL_HANDLE;

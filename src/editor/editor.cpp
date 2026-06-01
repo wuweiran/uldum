@@ -181,15 +181,21 @@ bool Editor::init(const std::string& map_path) {
 }
 
 bool Editor::init_imgui() {
+    // ImGui 1.92's Vulkan backend allocates COMBINED_IMAGE_SAMPLER for the
+    // main font/texture binding, plus separate SAMPLER + SAMPLED_IMAGE sets
+    // on the new texture API path. Reserve all three so the separate-sampler
+    // allocations don't trip a validation warning.
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,                100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          100 },
     };
 
     VkDescriptorPoolCreateInfo pool_ci{};
     pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_ci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool_ci.maxSets       = 100;
-    pool_ci.poolSizeCount = 1;
+    pool_ci.poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]);
     pool_ci.pPoolSizes    = pool_sizes;
 
     if (vkCreateDescriptorPool(m_rhi.device(), &pool_ci, nullptr, &m_imgui_pool) != VK_SUCCESS) {
