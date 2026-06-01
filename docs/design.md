@@ -13,21 +13,29 @@ A modern game engine for unit-centric, map-based games with scripting and multip
 
 ```
 uldum/
-├── core/           # Allocators, containers, math (glm), logging, profiling (Tracy)
-├── platform/       # Custom platform layer
-│   ├── windows/    #   Win32 window, input, filesystem
-│   └── android/    #   GameActivity, touch input, APK filesystem
-├── rhi/            # Thin Vulkan 1.3 abstraction
-│   └── vulkan/     #   Instance, device, swapchain, command buffers, sync
-├── render/         # Render graph, materials, terrain, skeletal anim, particles, UI
-├── simulation/     # ECS, units, abilities, pathfinding, collision, AI
-├── script/         # Lua 5.4 VM, sol2 bindings, trigger/event system
-├── map/            # Map format (FlatBuffers), terrain data, object placement
-├── network/        # Server-authoritative: server sim, client prediction, state sync
-├── audio/          # miniaudio: 3D positional, SFX, music streaming
-├── asset/          # Resource manager, glTF/KTX2/OGG loaders, async loading
-├── editor/         # In-engine terrain editor (ImGui): sculpt, paint, place, pathing
-└── app/            # `class Engine`: entry points, main loop, hosts the active `App`
+├── core/             # Containers, math (glm), logging, settings, types
+├── platform/         # Custom platform layer
+│   ├── windows/      #   Win32 window, input, filesystem
+│   └── android/      #   GameActivity, touch input, APK filesystem
+├── rhi/              # GPU abstraction with two interchangeable backends
+│   ├── vulkan/       #   Vulkan 1.3 (dynamic rendering, sync2, bindless)
+│   └── gles/         #   OpenGL ES 3.1+ (deferred state, hand-written GLSL ES)
+├── render/           # Renderer, terrain, skeletal anim, particles, effects, world overlays, shadow
+├── simulation/       # ECS, units, abilities, pathfinding, collision, projectiles
+├── script/           # Lua 5.4 VM, sol2 bindings, trigger/event system
+├── map/              # Map format (hand-rolled binary), terrain data, object placement
+├── network/          # Server-authoritative: server sim, client snapshots, ENet transport
+├── audio/            # miniaudio: 3D positional, SFX, music streaming
+├── asset/            # Resource manager, glTF/KTX2/OGG loaders, .uldpak mounts
+├── input/            # GameCommand, selection state, RTS / Action input presets
+├── input_router/     # Picker + preset dispatch (split so server has no client deps)
+├── hud/              # Custom retained-mode HUD (atoms + composites, world overlays, text tags)
+├── shell/            # RmlUi-backed shell (menus, lobby, results) — game builds only
+├── i18n/             # Locale manager, string-pool lookup
+├── editor/           # In-engine terrain editor (ImGui): sculpt, paint, cliff, ramp, pathing
+├── tools/            # Build-time CLIs: `uldum_pack`, overlay generator
+├── server/           # Headless binaries: `uldum_worker` per session, `uldum_server` orchestrator
+└── app/              # `class Engine`: entry points, main loop, hosts the active `App`
 ```
 
 ## 4. Core Module
@@ -75,34 +83,46 @@ public:
 - `WndProc` message pump for input and lifecycle events
 - Returns `HWND` and `HINSTANCE` for Vulkan surface creation
 
-### Android Implementation (future)
+### Android Implementation
 
-- GameActivity from Android Game Development Kit
-- Touch input mapping
-- APK asset access via AAssetManager
+- GameActivity (Android Game Development Kit) hosts the engine inside a native activity
+- Touch input mapped into the same `InputState` the Win32 path produces
+- APK asset access via `AAssetManager`, density-aware `ui_scale`, safe-area insets exposed to the HUD
 
-## 6. RHI Module (Vulkan 1.3)
+## 6. RHI Module
 
-Thin abstraction over Vulkan. Not a generic RHI — Vulkan-specific, but organized cleanly.
+Two interchangeable GPU backends behind a single public surface (`CommandList`, pipeline / layout / buffer handles, etc.). The active backend is picked at startup; consumer code never branches on it.
 
-### Current
+### Vulkan 1.3 backend
 
-- Vulkan 1.3 instance + validation layers (debug)
+- Instance + validation layers (debug)
 - Physical device selection (prefer discrete GPU)
-- Logical device + graphics/present queue
-- Swapchain with per-swapchain-image semaphores
-- Per-frame command buffers, fences
+- Logical device + graphics/present queue, swapchain with per-image semaphores
+- Per-frame command buffers + fences
 - VMA for GPU memory management
 - One-shot command buffers for immediate GPU work (texture uploads)
 - Dynamic rendering (no render passes)
 - Synchronization2 barriers
+- Bindless textures via `VK_EXT_descriptor_indexing`
+- Indirect draw via `vkCmdDrawIndexedIndirect` (multi-draw indirect for GPU-driven static geometry)
+- Dynamic state: viewport, scissor, and (opt-in per pipeline) cull mode
 - Shader compilation: GLSL → SPIR-V at build time via glslc
 
-### Future
+### OpenGL ES backend (3.1+)
+
+- EGL context creation on Android
+- Framebuffer-as-swapchain, deferred state batches as command-buffer-equivalent
+- UBO + sampler bindings as descriptor-equivalent (flat binding scheme: `set * 16 + binding`)
+- Program + state cache as pipeline-equivalent
+- Bindless replaced by a fixed-size `sampler2DArray` keyed by per-instance material index
+- Indirect draw via `glDrawElementsIndirect` (one call per group; no multi-draw)
+- Hand-written GLSL ES siblings of every Vulkan shader live at `src/render/shaders/gles/` and are packaged into `engine.uldpak`
+
+### Deferred
 
 - Render graph with automatic barriers and transient resources
-- GPU-driven rendering (indirect draw, compute culling, instance buffer)
-- Bindless resources via descriptor indexing (VK_EXT_descriptor_indexing)
+- Compute-driven culling (per-instance visibility on GPU)
+- Mesh shaders / pipeline cache persistence
 
 ## 7. Rendering
 
@@ -122,13 +142,16 @@ See `docs/model-format.md` for full model, animation, and art pipeline specifica
 
 ### Particles
 
-- Compute-based particle system
-- Emitter types: point, sphere, cone, mesh surface
+- CPU-driven billboard particle system; updated on the main thread, uploaded to a dynamic vertex buffer each frame
+- Burst emitters and continuous emitters (`emit_rate` field on the effect def); position spawn pattern is either spread-cone (`spread`) or horizontal ring (`radius`)
+- Procedural shapes selected by ID in the fragment shader (soft circle, spark, blood splatter, glow beam, water droplet) — no texture authoring required for the common cases
+- Glow particles seed dynamic point lights into the scene
 
 ### UI
 
-- Custom retained-mode UI for game HUD
-- Dear ImGui for editor and debug overlay
+- **Shell UI** (`src/shell/`, game builds only) — RmlUi 6 with a custom Vulkan / file / system interface set. Game projects ship their own `shell/` directory with `.rml` + `.rcss` + fonts; the App drives screen transitions through `engine.shell().load_document(...)` / `.bind(...)`.
+- **HUD** (`src/hud/`, all builds) — custom retained-mode tree of atoms (panel, label, image, bar, button) and composites (action_bar, command_bar, minimap, joystick, inventory). 2D quad batcher feeds the render graph; SDF text for crisp scaling. World-anchored overlays (health bars, name labels, text tags) ride the same batcher with world-to-screen projection.
+- **Dev console / editor** — Dear ImGui (Vulkan + GLES backends both wired), used for the in-engine map editor and the dev runtime's map picker / session controls.
 
 ## 8. Simulation
 
@@ -260,22 +283,26 @@ In-engine tool using Dear ImGui. Activated via editor mode toggle.
 
 ## 14. Third-Party Libraries
 
-| Library | Version | Purpose | License |
-|---------|---------|---------|---------|
-| VMA | latest | Vulkan memory management | MIT |
-| shaderc | latest | GLSL → SPIR-V compilation | Apache 2.0 |
-| sol2 | 3.x | C++ ↔ Lua binding | MIT |
-| Lua | 5.4 | Scripting runtime | MIT |
-| ENet | 1.3.x | UDP networking | MIT |
-| miniaudio | latest | Audio playback | MIT/Public Domain |
-| Dear ImGui | latest | Editor/debug UI | MIT |
-| Tracy | latest | Profiling | BSD |
-| glm | latest | Math (rendering) | MIT |
-| cgltf | latest | glTF 2.0 loading | MIT |
-| KTX-Software | 4.3+ | KTX2 + Basis Universal textures | Apache 2.0 |
-| stb_vorbis | latest | OGG Vorbis decoding | MIT/Public Domain |
-| FlatBuffers | latest | Binary serialization | Apache 2.0 |
-| nlohmann/json | 3.11 | JSON parsing | MIT |
+Versions are pinned in `third_party/CMakeLists.txt` via `FetchContent`. `latest` here means tracking the default branch rather than a tagged release.
+
+| Library | Pin | Purpose | License |
+|---|---|---|---|
+| glm | 1.0.3 | Math (rendering) | MIT |
+| nlohmann/json | v3.12.0 | JSON parsing | MIT |
+| stb | latest | `stb_image` (PNG/JPEG/...), `stb_vorbis` (OGG decode) | MIT / Public Domain |
+| cgltf | v1.15 | glTF 2.0 loading | MIT |
+| Lua | v5.4.8 | Scripting runtime | MIT |
+| sol2 | latest | C++ ↔ Lua binding (main branch — 3.3.0 has a reference-optional bug newer Clang trips on) | MIT |
+| Dear ImGui | v1.92.8 | Editor / debug UI | MIT |
+| miniaudio | 0.11.25 | Audio playback | MIT / Public Domain |
+| VMA | v3.3.0 | Vulkan memory allocator | MIT |
+| ENet | v1.3.18 | UDP networking | MIT |
+| cpp-httplib | v0.46.0 | HTTP for `uldum_server` (orchestrator API) + dev CLI client | MIT |
+| Basis Universal | latest | KTX2 transcoder (runtime) + encoder `basisu` CLI (author-time) | Apache 2.0 |
+| FreeType | VER-2-14-3 | Font rasterization for HUD MSDF + RmlUi | FTL / GPLv2 |
+| RmlUi | 6.2 | Shell UI framework (game builds only) | MIT |
+
+Build-time dependencies (not part of the engine binary): `glslc` from the Vulkan SDK for SPIR-V compilation. No use of shaderc, FlatBuffers, KTX-Software, or Tracy yet (Tracy is listed under Deferred work below).
 
 ## 15. Build Phases
 
@@ -754,6 +781,5 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 - **HDR + tonemap** — float color target, ACES / Khronos PBR Neutral on present. Without it, emissives clip and bright-sun + dark-shadow can't both be exposed.
 - **Tangent space (MikkTSpace)** — add `tangent: vec4` to vertex format; read glTF `TANGENT` when present, generate via MikkTSpace otherwise. Triggered by the first model with a hand-authored normal map.
 - **Shadow cascades** — replace the fixed world-space shadow box with view-frustum cascades for uniform shadow resolution regardless of map size.
-- **Triplanar terrain sampling** — sample three projections blended by `abs(normal)` weights to fix cliff-wall stretching; skip the extra two samples when `abs(normal.z) > 0.95` so only slopes pay 3×.
 - **Rendering audit pass** — sweep for other "works because nothing's stressed it" shortcuts: ambient uniform, post-process pipeline, SSAO, anisotropic filtering, HUD/world gamma mismatch. Promote individual findings out as they bite.
 - Rich custom shader decorators (game-project art concern).

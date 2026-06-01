@@ -1,10 +1,10 @@
 # Uldum Engine
 
-A unit-centric game engine inspired by Warcraft III, built with modern C++23 and Vulkan 1.3.
+A unit-centric game engine inspired by Warcraft III, built with modern C++23. Two interchangeable GPU backends — Vulkan 1.3 (Windows + Android) and OpenGL ES 3.1+ (Android fallback for non-Vulkan-1.3 devices).
 
 ## Features (planned)
 
-- **Vulkan 1.3 rendering** — render graph, GPU-driven rendering, bindless resources
+- **Vulkan 1.3 / OpenGL ES rendering** — GPU-driven rendering with bindless textures (Vulkan) or sampler-array fallback (GLES); shared shader sources, separate per-backend stages
 - **Skeletal animation** — GPU skinning, animation state machine, glTF models
 - **Particle effects** — CPU-driven billboard particles, named effect system
 - **Unit-centric gameplay** — ECS internally, unit facade for scripting
@@ -17,224 +17,26 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23 and
 
 ## Current Status
 
-Phase 24 (Server Orchestration + Reconnect) complete. Next: Phase 25 (OpenGL ES RHI).
+Phase 26 (App architecture revamp) — `uldum_dev` refactored onto the new `Engine + App` model and migrated to a public surface; remaining sub-steps (sample_game conversion + Shell facade) are in progress.
 
 **What works:**
-- Win32 window + Vulkan 1.3 rendering (dynamic rendering, synchronization2)
-- VMA for GPU memory, GLSL shaders compiled to SPIR-V at build time
-- Asset pipeline: KTX2 + Basis Universal textures (libktx), glTF models with skeleton + animation (cgltf), JSON configs (nlohmann/json)
-- Handle-based AssetManager with path caching + absolute path loading
-- Real glTF model loading: mesh merging, embedded texture extraction, per-model material
-- ECS simulation: sparse set storage, generational typed handles (Unit, Destructable, Item)
-- Map system: `.uldmap` packages with manifest, types, scenes, scripts, assets
-  - Manifest: metadata, players, teams, alliances, map-defined enumerations
-  - Type loading from map's `types/` directory (no engine gameplay data)
-  - Scene: terrain + object placements (units, destructables, items, regions, cameras)
-- WC3-scale coordinates (1 tile = 128 game units, melee range 128, speed ~270)
-- WC3 facing convention (0 = +X, 90 = +Y, degrees in JSON/Lua, radians internally)
-- Generic state system (HP engine-built-in, mana/energy/etc. map-defined)
-- Generic attribute system (string-based: armor, attack_type, strength, etc. all map-defined)
-- String-based classifications, attack/armor types (map declares valid values in manifest)
-- Alliance system: per-player-pair, asymmetric (allied, passive, shared_vision), loaded from manifest teams
-- Fog of war: per-player tile-based visibility with three modes (none, explored, unexplored)
-  - Cliff-based line-of-sight blocking (high ground sees low, cliffs block vision)
-  - Shared vision via alliance flags (per-team configurable)
-  - Visual smoothing: temporal fade (fast reveal, slow fade), feathered vision edges, bilinear filtering
-  - Per-frame GPU fog texture, terrain shader darkening, enemy unit/shadow culling
-  - Lua API: reveal, unexplore, visibility queries
-- A* pathfinding on tile grid with 8-directional movement
-- Movement with committed-side local avoidance (steer around other units)
-- Per-unit collision radius (configurable per type in JSON)
-- Hard collision resolution (prevents unit overlap)
-- Spatial grid for efficient proximity queries
-- Combat system: attack state machine, auto-acquire within acquire_range, attack-move
-  - Attack facing tolerance (~10 degrees, like WC3)
-  - Backswing completes even when target dies (cancelable by player orders)
-  - Continuous attack: no idle gap between swings against same target
-- Unified damage pipeline with damage types (map-defined), on_damage event with SetDamageAmount
-- Death system with on_death callback, corpse lifecycle
-- Projectile system: flight, homing, hit detection, impact damage
-- Ability system: passive, aura, instant, target_unit, target_point, toggle, channel
-  - Cast order system: IssueOrder(unit, "cast", ability_id, target) with state machine
-  - Aura scanning, modifier system, stackable abilities
-- Skeletal animation (Phase 9):
-  - GPU skinning via vertex shader + per-entity bone SSBO
-  - glTF skeleton/animation extraction (joints, weights, inverse bind matrices, keyframes)
-  - Rest pose support for correct bind pose rendering
-  - Animation state machine: idle, walk, attack, spell, death, birth (clips bound by name)
-  - Playback speed syncs to gameplay timing (attack cooldown, movement speed)
-  - Crossfade blending between all state transitions
-  - Skinned shadow pass (shadows match animation pose)
-- Effect system (Phase 9):
-  - Named effects: engine defaults + map-defined (Lua or JSON)
-  - Lifecycle: CreateEffect (persistent) / PlayEffect (fire-and-forget) / DestroyEffect
-  - Unit-attached effects that follow the unit
-  - CPU-driven billboard particles with alpha blending
-  - Growable descriptor pool (auto-allocates new pools on demand)
-- Lua 5.4 scripting with sol2 bindings
-  - Sandboxed VM (no filesystem access)
-  - Trigger system with 3 priority levels (High, Normal, Low)
-  - Timer system: CreateTimer with repeating/one-shot support
-  - Full engine API: unit CRUD, orders, abilities, damage, spatial queries, hero, player
-  - Alliance API: SetAlliance, IsPlayerAlly, IsPlayerEnemy
-  - Effect API: DefineEffect, CreateEffect, PlayEffect, DestroyEffect
-  - Audio API: PlaySound, PlayMusic, StopMusic, PlayAmbientLoop, SetVolume
-  - Attribute API: GetUnitAttribute, SetUnitAttribute
-  - Proper Unit/Player usertypes with == operator, nil for invalid handles
-  - Context functions with wrong-event warnings
-- Textured mesh pipeline with descriptor sets, samplers, and diffuse texture binding
-- Terrain splatmap rendering: 4 ground texture layers blended per tile
-- Shadow mapping: 2048x2048 depth pass, 3x3 PCF filtering, depth bias, normal offset bias
-- Directional lighting with world-space normals and shadows
-- Render interpolation: smooth 60fps visuals from 32Hz simulation tick
-- Game coordinates: X=right, Y=forward, Z=up
-- Terrain editor (Phase 10):
-  - Separate `uldum_editor.exe` build target with ImGui (Dear ImGui + Vulkan + Win32)
-  - Heightmap sculpting: raise, lower, smooth, flatten brushes
-  - Texture painting: splatmap with 4 ground layers
-  - Cliff level editing: sheer terraces with smoothed diagonal edges (midpoint cutting)
-  - Cliff constraint enforcement: max 1 level difference between adjacent vertices
-  - Per-edge ramp-aware cliff smoothing (no gaps at ramp/cliff boundaries)
-  - Diagonal cliff case (saddle points) with proper wall geometry
-  - Ramp placement: slopes between adjacent cliff levels (auto-validated)
-  - Water placement: per-tile water as splatmap layer
-  - Pathing editing: toggle walkable flag per vertex
-  - WC3-style brush sizing (1 = single vertex)
-  - Tile-based brush with vertex indicator and grid overlay
-  - Save/load terrain.bin (binary format)
-  - Open Map folder picker, scene switching
-  - DPI-aware UI scaling
-- Audio system (Phase 11):
-  - miniaudio high-level engine (ma_engine) with 3D spatialization
-  - 5 volume channels: Master, SFX, Music, Ambient, Voice (sound groups)
-  - SFX: 3D positioned and 2D fire-and-forget sounds, auto-cleanup
-  - Music: streaming playback with looping and crossfade between tracks
-  - Ambient: 3D looping sounds with fade-out
-  - Listener updated from camera position each frame
-  - Animation-driven sounds: attack, death, birth sounds defined per unit type in JSON
-  - Sound callback system: simulation fires events, audio engine plays them (no coupling)
-  - Path resolution: AssetManager mount chain (active map's pak first, then engine.uldpak)
-  - Lua API: PlaySound, PlaySoundAtPoint, PlaySound2D, PlayMusic, StopMusic, PlayAmbientLoop, StopAmbientLoop, SetVolume
-- Input system (Phase 12):
-  - Command system: GameCommand struct, ownership validation, Lua on_order filter
-  - Selection state: click, box drag, shift-toggle, control groups (Ctrl+0-9), hero select (F1-F3)
-  - Picker: ray-cylinder intersection for unit picking, screen-to-world terrain raycast
-  - RTS input preset: WC3-style controls (select, smart order, attack-move, ability hotkeys)
-  - InputBindings: configurable action-to-key mapping with JSON overrides from manifest
-  - Preset factory: map manifest selects input preset (`"input_preset": "rts"`)
-  - Ability hotkeys: per-ability `"hotkey"` field, RTS preset scans selected unit's abilities
-  - Ability `"hidden"` field for system-level passives (no UI slot)
-  - Commands vs ability slots design: built-in commands (attack, move, stop, hold) separate from ability slots
-  - Lua selection API: GetSelectedUnits, SelectUnit, ClearSelection, IsUnitSelected
-  - Lua events: on_order (post-issuance observer, non-cancellable), on_select
-  - Platform: key_letter[26] array for arbitrary A-Z key detection
-- Networking — local server (Phase 13a):
-  - GameServer class: owns Simulation + ScriptEngine (server-side state)
-  - Two-phase init: simulation before map load, game logic after
-  - Zero-overhead local play: tick() is a direct function call, no threading or IPC
-  - Clean client/server boundary: Engine holds GameServer + client modules (renderer, audio, input)
-- Networking — multiplayer (Phase 13b):
-  - Transport abstraction (ENet UDP, swappable for QUIC/TCP later)
-  - Binary protocol: commands (client → server), state snapshots (server → client)
-  - Server broadcasts fog-filtered state at 32 Hz, client interpolates between snapshots
-  - Host mode (`--host`) and connect mode (`--connect <ip>`)
-- Session management (Phase 13c):
-  - `--map <path>` CLI arg for map selection
-  - Server waits for expected players before starting simulation
-  - Synchronized start: `S_START` broadcast when all players connected
-  - Lua `EndGame(winner, stats_json)` → `on_game_end` event → `S_END` broadcast
-- Reconnect (Phase 13d):
-  - Disconnected player's state kept alive during configurable timeout
-  - Reconnecting client receives full state snapshot to catch up
-  - Optional game pause on disconnect (configurable per map)
-  - Timeout fires `on_player_dropped` Lua event, client disconnect transitions to Results
-- GPU-driven rendering (Phase 14a/b):
-  - Instance SSBO + indirect draw for all static meshes
-  - Mega vertex/index buffer — all static meshes share one VB+IB
-  - Bindless texture array (VK_EXT_descriptor_indexing) — per-instance material index
-  - Single multi-draw-indirect call for all static geometry
-  - CPU frustum culling: bounding sphere vs camera frustum, skips off-screen entities
-  - 4x MSAA anti-aliasing (multisampled color + depth, resolve to swapchain)
-- Water rendering (Phase 14d/e):
-  - Tileset-driven terrain textures (sampler2DArray, 256x256)
-  - SDF curve-based terrain type transitions with noise perturbation
-  - Terrain normal maps (UNORM format)
-  - Shallow water: transparent surface, riverbed visible, Fresnel edge glow
-  - Deep water: opaque with Gerstner wave normals + noise-driven shade
-  - Smooth shallow/deep transition via `deep_blend`
-  - Shore shrink for shallow water edges
-  - Cubemap environment reflection on water surface
-  - Splash particles on units walking through shallow water (fog-aware)
-  - Pathfinding: ground units walk on shallow water, blocked by deep water
-- Skybox and environment lighting (Phase 14f):
-  - Map-defined cubemap skybox (6 KTX2 faces, optional)
-  - EXR-to-cubemap converter script (`scripts/convert_skybox.py`)
-  - Environment config in manifest.json (sun direction/color, ambient, fog)
-  - Environment UBO replacing hardcoded lighting in all shaders
-  - Dynamic point light system (8 lights, quadratic falloff)
-  - Glow particle effects cast point lights on surrounding surfaces
-  - Procedural particle shapes: soft circle, spark, blood splatter, glow beam, water droplet
-  - Lua API: SetSunDirection, AddPointLight
-- Build targets (Phase 15a):
-  - `uldum_dev` — development runtime (debug, auto-starts map)
-  - `uldum_game` — shipped product runtime, parameterized by a game project (name, icon, bundled maps, package ID)
-  - `uldum_worker` — headless per-session game server (no renderer/audio/window). One process per active game session.
-  - `uldum_server` — orchestrator (HTTP API for game backends, spawns workers, dispatches webhooks)
-  - `uldum_editor` — in-engine terrain editor (ImGui)
-  - `uldum_pack` — package tool (pack/unpack/list .uldpak / .uldmap archives)
-  - `sample_game/game.json` — product configuration (name, window, maps, default_map, Android metadata)
-  - Build scripts (PowerShell):
-    - `build.ps1` — build all targets
-    - `build_dev.ps1` — build uldum_dev only
-    - `build_game.ps1` — build uldum_game only
-    - `build_server.ps1` — build server-side targets (`uldum_worker` + `uldum_server`)
-    - `build_editor.ps1` — build uldum_editor only
-- Packaging (Phase 15b):
-  - `.uldpak` — engine asset archive (`engine.uldpak`)
-  - `.uldmap` — map asset archive (e.g. `maps/test_map.uldmap`)
-  - Both use the same binary format (hash-keyed lookup, optional LZ4 compression, optional XOR encryption)
-  - Package-only asset loading — no filesystem fallback at runtime (missing file surfaces as a load error)
-  - Build pipeline packs source `engine/` and `maps/<name>.uldmap/` folders into `bin/engine.uldpak` and `bin/maps/<name>.uldmap`; `build/bin/` contains only packages, no loose asset folders
-  - `uldum_pack pack <dir> <output> [--encrypt --key <secret>]`
-  - `uldum_pack unpack <input> <dir> [--key <secret>]`
-  - `uldum_pack list <input>`
-- Android port (Phase 15c/d):
-  - GameActivity-based Android entry, native_app_glue lifecycle
-  - AAssetManager-backed AssetManager mount, density-aware ui_scale, safe-area insets
-  - Two flavors: `dev` APK (engine iteration) and `game` APK (per-project ship build)
-- Shell UI — game-flavor menus (Phase 16a/b):
-  - RmlUi 6 with custom Vulkan / file / system interfaces; single Rml::Context
-  - Project-supplied `<game>/shell/*.rml + *.rcss + fonts/` drive the menu look
-  - Sample game ships main menu / options / lobby / loading / results screens
-  - Networked lobby (host-authoritative slot table, S_LOBBY_STATE / S_LOBBY_COMMIT)
-- HUD system — custom Lua-driven in-game UI (Phase 16c):
-  - Retained node tree (atoms + composites) with 2D quad batcher and MSDF text, dp-authored
-  - World overlays (health bars, name labels, text tags) and decal-based selection / cast indicators
-  - Mobile drag-cast for ability targeting
-  - Server-authoritative HUD state synced to clients
-- Android dev parity + Shell polish (Phase 16d):
-  - Dev console + map picker on Android, RCSS shell transitions, mobile-tuned tap targets
-- Items (Phase 17):
-  - Item entity = collection of abilities; engine stores charges + level (badged), never interprets them
-  - Per-unit inventory component, smart-pickup, HUD inventory composite, item-aware cast trigger context
-- Enrich scripting (Phase 18):
-  - Regions — rect/circle zones with enter/leave triggers
-  - Scene switching — terrain + entities + Lua VM swap mid-session, MP-synchronized via a host barrier; cross-scene data via the save channel
-  - Node-event + composite UI bindings so maps can compose dialogs from atoms
-  - Script-driven game pause and single-player query
-  - Camera scripting — per-player addressed (scripts run server-only), WC3-style ground-target semantics, plus zoom, trauma shake, and a hard lock-to-unit
-- Headless server (Phase 23):
-  - `uldum_worker` builds and runs game-agnostic on Linux as well as Windows
-  - SHA-256 map fingerprint, hard-reject on `C_JOIN` mismatch
-  - Server-side library split keeps Vulkan / RHI / fonts out of the headless link graph
-- Server orchestration (Phase 24):
-  - `uldum_server` orchestrator with HTTP API; spawns `uldum_worker` per session
-  - Map allowlist auto-discovered from `maps/`; engine stays cloud-neutral (caller auth is the operator's job, terminated at a reverse proxy in production)
-  - Per-player session tokens validated at C_JOIN; reconnect-after-blip restores the same slot via the same token
-  - `GAME_SESSION` global exposes the game backend's `initial_data` JSON to map Lua
-  - End-of-session result captured from worker stdout and POSTed to the configured webhook URL
-  - `uldum_dev --server <url>` doubles as a game-backend stand-in for local testing
-- Ninja build system for parallel compilation
+
+- **Cross-platform GPU.** Vulkan 1.3 (dynamic rendering, sync2, bindless) and OpenGL ES 3.1+ behind a single command-list API. Shared assets and shaders; one backend picked at startup.
+- **Asset pipeline.** glTF 2.0 models (`KHR_texture_basisu` supported), KTX2 + Basis Universal textures, OGG audio, JSON configs. Per-primitive materials on static meshes (`baseColorTexture` × `baseColorFactor`, `alphaMode=MASK`, `doubleSided`).
+- **GPU-driven static rendering.** Mega VB/IB, bindless textures, instance SSBO, multi-draw indirect partitioned by pipeline class × cull mode. 4× MSAA, frustum culling, PCF shadow maps with correctly silhouetted alpha-masked casters.
+- **Terrain.** Heightmap + cliffs + ramps, splatmap with 4 layers, SDF-based transitions with noise, sampler2DArray for layer textures, shallow + deep water with Gerstner waves and reflection.
+- **Skeletal animation.** GPU skinning, animation state machine driven by simulation, crossfade blending, skinned shadow casting.
+- **Effects + particles.** CPU-driven billboards with burst + continuous emitters, procedural shapes, glow-particle-seeded point lights, unit-attached effects with bone targeting.
+- **ECS simulation.** Typed handles (Unit / Item / Destructable / Projectile), data-driven types loaded from map JSON, deterministic 32 Hz tick. WC3-style facing + scale + alliances.
+- **Gameplay primitives.** Tile-grid A* + steering, attack-move + auto-acquire, abilities (passive / instant / target / aura / channel / toggle), items as ability bundles, projectiles, cliff-aware fog of war with shared vision.
+- **Lua 5.4 scripting.** Sandboxed sol2 VM, WC3-style triggers + events + timers, regions, scene switching mid-session (Lua VM swap), camera scripting, save-data channel.
+- **Audio.** miniaudio with 3D positional SFX, music streaming, ambient loops, per-channel volume mixing.
+- **Server-authoritative networking.** ENet UDP, fog-filtered snapshots, host barrier on scene swap, reconnect-with-state-restore. Local single-player runs the same server in-process.
+- **Production server topology.** `uldum_worker` (one process per session, game-agnostic, Linux + Windows) + `uldum_server` orchestrator (HTTP API, per-player tokens, webhook dispatch).
+- **Shell UI** (game builds) — RmlUi 6 driven by project-supplied `.rml` / `.rcss`; networked lobby with host-authoritative slot table.
+- **HUD** (all builds) — custom retained-mode tree of atoms + composites (action_bar, command_bar, minimap, joystick, inventory), MSDF text, world overlays, drag-cast.
+- **In-engine terrain editor.** Sculpt / paint / cliff / ramp / pathing / object placement, source-folder or packed-map workflow.
+- **Build targets.** `uldum_dev`, `uldum_game` (per-project), `uldum_worker`, `uldum_server`, `uldum_editor`, `uldum_pack`. Windows + Android (dev APK and game-flavor APK).
 
 ## Prerequisites
 
@@ -315,7 +117,7 @@ In host mode, the simulation waits for all expected players (from manifest) befo
 src/
 ├── core/           Types, logging, math, allocators
 ├── platform/       Window, input, filesystem (Win32 / Android)
-├── rhi/            Vulkan 1.3 abstraction
+├── rhi/            GPU abstraction (vulkan/ + gles/ backends)
 ├── asset/          Resource manager, format loaders (glTF, KTX2, JSON)
 ├── render/         Pipelines, camera, terrain, animation, particles, effects, world overlays
 ├── audio/          3D positional audio, music, ambient (miniaudio)
