@@ -1,4 +1,5 @@
 #include "asset/model.h"
+#include "asset/texture.h"   // for load_texture / load_texture_from_memory (KTX2)
 #include "core/log.h"
 
 #include <cgltf.h>
@@ -8,8 +9,10 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 
+#include <cstring>
 #include <filesystem>
 #include <format>
+#include <string_view>
 #include <unordered_map>
 
 namespace uldum::asset {
@@ -102,6 +105,7 @@ static void extract_skeleton(const cgltf_skin& skin,
 
 static void extract_animations(const cgltf_data* data, const NodeToBoneMap& node_to_bone,
                                 std::vector<AnimationClip>& clips) {
+    bool warned_interp = false;
     for (cgltf_size ai = 0; ai < data->animations_count; ++ai) {
         const cgltf_animation& anim = data->animations[ai];
 
@@ -119,6 +123,14 @@ static void extract_animations(const cgltf_data* data, const NodeToBoneMap& node
             const cgltf_animation_sampler& sampler = *ch.sampler;
             const cgltf_accessor* input  = sampler.input;   // timestamps
             const cgltf_accessor* output = sampler.output;  // values
+
+            if (!warned_interp &&
+                sampler.interpolation != cgltf_interpolation_type_linear) {
+                log::warn("Asset", "Animation '{}' uses {} interpolation; the engine plays all channels as linear.",
+                          clip.name,
+                          sampler.interpolation == cgltf_interpolation_type_step ? "STEP" : "CUBICSPLINE");
+                warned_interp = true;
+            }
 
             // One AnimationChannel per cgltf sub-path. T/R/S can have
             // different keyframe counts (e.g. constant translation =
@@ -168,6 +180,24 @@ static void extract_animations(const cgltf_data* data, const NodeToBoneMap& node
 
 // ── Texture extraction ───────────────────────────────────────────────────
 
+// KTX2 file magic: 0xAB 'K' 'T' 'X' ' ' '2' '0' 0xBB 0x0D 0x0A 0x1A 0x0A
+static constexpr u8 KTX2_MAGIC[12] = {
+    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A
+};
+
+static bool is_ktx2_image(const cgltf_image& img, const u8* buf, u32 size) {
+    if (img.mime_type && std::string_view(img.mime_type) == "image/ktx2") return true;
+    if (buf && size >= sizeof(KTX2_MAGIC) &&
+        std::memcmp(buf, KTX2_MAGIC, sizeof(KTX2_MAGIC)) == 0) return true;
+    if (img.uri) {
+        std::string_view uri{img.uri};
+        if (uri.size() >= 5 &&
+            (uri.substr(uri.size() - 5) == ".ktx2" ||
+             uri.substr(uri.size() - 5) == ".KTX2")) return true;
+    }
+    return false;
+}
+
 static void extract_textures(const cgltf_data* data, std::string_view model_path,
                               std::vector<TextureData>& textures) {
     namespace fs = std::filesystem;
@@ -176,23 +206,65 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
     for (cgltf_size i = 0; i < data->images_count; ++i) {
         const cgltf_image& img = data->images[i];
 
-        int w = 0, h = 0, channels = 0;
-        u8* pixels = nullptr;
-
+        // ── Embedded (buffer-view) image ──
         if (img.buffer_view) {
-            // Embedded image (typical for .glb)
             const u8* buf = static_cast<const u8*>(img.buffer_view->buffer->data)
                             + img.buffer_view->offset;
-            int len = static_cast<int>(img.buffer_view->size);
-            pixels = stbi_load_from_memory(buf, len, &w, &h, &channels, 4);
-        } else if (img.uri) {
-            // External image file relative to model directory
-            fs::path img_path = base_dir / img.uri;
-            std::string img_str = img_path.string();
-            pixels = stbi_load(img_str.c_str(), &w, &h, &channels, 4);
+            const u32 len = static_cast<u32>(img.buffer_view->size);
+
+            if (is_ktx2_image(img, buf, len)) {
+                // KHR_texture_basisu / KTX2 — route to the basisu transcoder.
+                auto result = load_texture_from_memory(buf, len);
+                if (result) {
+                    textures.push_back(std::move(*result));
+                } else {
+                    log::warn("Asset", "Model '{}': embedded KTX2 image {} failed to decode: {}",
+                              model_path, static_cast<u32>(i), result.error());
+                }
+                continue;
+            }
+
+            int w = 0, h = 0, channels = 0;
+            u8* pixels = stbi_load_from_memory(buf, len, &w, &h, &channels, 4);
+            if (!pixels) {
+                log::warn("Asset", "Model '{}': embedded image {} failed to decode (unsupported format? mime '{}', size {} bytes)",
+                          model_path, static_cast<u32>(i),
+                          img.mime_type ? img.mime_type : "?", len);
+                continue;
+            }
+            TextureData tex;
+            tex.width    = static_cast<u32>(w);
+            tex.height   = static_cast<u32>(h);
+            tex.channels = 4;
+            tex.pixels.assign(pixels, pixels + w * h * 4);
+            stbi_image_free(pixels);
+            textures.push_back(std::move(tex));
+            continue;
         }
 
-        if (pixels) {
+        // ── External URI image ──
+        if (img.uri) {
+            fs::path img_path = base_dir / img.uri;
+            std::string img_str = img_path.string();
+
+            if (is_ktx2_image(img, nullptr, 0)) {
+                auto result = load_texture(img_str);
+                if (result) {
+                    textures.push_back(std::move(*result));
+                } else {
+                    log::warn("Asset", "Model '{}': external KTX2 image '{}' failed to load: {}",
+                              model_path, img.uri, result.error());
+                }
+                continue;
+            }
+
+            int w = 0, h = 0, channels = 0;
+            u8* pixels = stbi_load(img_str.c_str(), &w, &h, &channels, 4);
+            if (!pixels) {
+                log::warn("Asset", "Model '{}': external image '{}' failed to load (missing? unsupported format?)",
+                          model_path, img.uri);
+                continue;
+            }
             TextureData tex;
             tex.width    = static_cast<u32>(w);
             tex.height   = static_cast<u32>(h);
@@ -282,10 +354,14 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
     NodeToBoneMap node_to_bone;
     bool has_skin = data->skins_count > 0;
     if (has_skin) {
+        if (data->skins_count > 1) {
+            log::warn("Asset", "Model '{}' has {} skins; using skins[0] and ignoring the rest.",
+                      path_str, static_cast<u32>(data->skins_count));
+        }
         extract_skeleton(data->skins[0], model.skeleton, node_to_bone);
         extract_animations(data, node_to_bone, model.animations);
     } else if (data->animations_count > 0) {
-        log::warn("Asset", "[Anim] '{}' has {} animation(s) but no skin — node-level animations are not extracted; re-author with an Armature + skinned mesh.",
+        log::warn("Asset", "Model '{}' has {} animation(s) but no skin — node-level animations are not extracted; re-author with an Armature + skinned mesh.",
                   path_str, static_cast<u32>(data->animations_count));
     }
 
@@ -327,21 +403,41 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
 
         for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
             const cgltf_primitive& prim = mesh.primitives[pi];
-            if (prim.type != cgltf_primitive_type_triangles) continue;
+            if (prim.type != cgltf_primitive_type_triangles) {
+                log::warn("Asset", "Model '{}': mesh '{}' primitive {} is non-triangles (type {}) — skipping; engine only renders triangles.",
+                          path_str, mesh.name ? mesh.name : "?", static_cast<u32>(pi),
+                          static_cast<int>(prim.type));
+                continue;
+            }
 
             const cgltf_accessor* pos_acc    = nullptr;
             const cgltf_accessor* norm_acc   = nullptr;
             const cgltf_accessor* uv_acc     = nullptr;
             const cgltf_accessor* joints_acc = nullptr;
             const cgltf_accessor* weights_acc = nullptr;
+            u32 extra_uv_sets = 0, extra_joint_sets = 0;
 
             for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
                 const auto& attr = prim.attributes[ai];
                 if (attr.type == cgltf_attribute_type_position)  pos_acc     = attr.data;
                 if (attr.type == cgltf_attribute_type_normal)    norm_acc    = attr.data;
-                if (attr.type == cgltf_attribute_type_texcoord)  uv_acc      = attr.data;
-                if (attr.type == cgltf_attribute_type_joints)    joints_acc  = attr.data;
-                if (attr.type == cgltf_attribute_type_weights)   weights_acc = attr.data;
+                if (attr.type == cgltf_attribute_type_texcoord) {
+                    if (uv_acc == nullptr) uv_acc = attr.data; else ++extra_uv_sets;
+                }
+                if (attr.type == cgltf_attribute_type_joints) {
+                    if (joints_acc == nullptr) joints_acc = attr.data; else ++extra_joint_sets;
+                }
+                if (attr.type == cgltf_attribute_type_weights) {
+                    if (weights_acc == nullptr) weights_acc = attr.data;
+                }
+            }
+            if (extra_uv_sets > 0) {
+                log::warn("Asset", "Model '{}': mesh '{}' has {} additional UV set(s); only TEXCOORD_0 is used.",
+                          path_str, mesh.name ? mesh.name : "?", extra_uv_sets);
+            }
+            if (extra_joint_sets > 0) {
+                log::warn("Asset", "Model '{}': mesh '{}' has {} additional JOINTS_n set(s); only JOINTS_0 / WEIGHTS_0 (4 influences) are used.",
+                          path_str, mesh.name ? mesh.name : "?", extra_joint_sets);
             }
 
             if (!pos_acc) continue;

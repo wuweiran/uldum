@@ -19,7 +19,35 @@ A glTF model can contain:
 | Meshes | `meshes[]` | Yes | Triangle primitives only |
 | Skeleton | `skins[0]` | No | First skin used. Up to 128 bones |
 | Animations | `animations[]` | No | Matched to engine states by name |
-| Materials | `materials[]` | Not yet | Engine uses placeholder textures currently |
+| Materials | `materials[]` | No | Only `baseColorFactor` is read, as a 1×1 RGBA fallback when the model has no image data |
+
+## Supported subset of glTF 2.0
+
+The loader is tuned for skeletal-animated unit models. Authors hitting an unsupported feature get a `[WARN ] [Asset]` log line at load time so the limit doesn't go unnoticed.
+
+### Supported
+
+- Geometry: `TRIANGLES` primitives only. Indexed and non-indexed both work.
+- Vertex attributes: `POSITION` (required), `NORMAL`, `TEXCOORD_0`, `JOINTS_0`, `WEIGHTS_0`.
+- Skin: first `skins[0]` only. Up to 128 bones. 4 bone influences per vertex.
+- Bone-parented un-skinned meshes (e.g., a weapon node parented to a hand bone) are auto-converted to skinned with 100% weight on the parent bone.
+- Animations: `translation`, `rotation`, `scale` channels. Played as linear regardless of the sampler's authored interpolation.
+- Textures: PNG / JPEG / BMP / TGA / HDR (via stb_image), KTX2 / Basis Universal (via the engine's transcoder). Embedded in buffer-views or referenced by external URI. KTX2 detection works via the `KHR_texture_basisu` extension's mime type, the KTX2 magic prefix, or a `.ktx2` URI extension.
+- Materials: only `pbrMetallicRoughness.baseColorFactor` is read, used as a 1×1 RGBA fallback texture when the model ships no image data.
+
+### Not supported
+
+These are silently ignored unless a warning is noted:
+
+- Primitive types other than `TRIANGLES` (warning emitted, primitive skipped).
+- Additional UV sets (`TEXCOORD_1+`), additional joint/weight sets — warnings emitted; only the first set is used.
+- Vertex colors (`COLOR_0`), `TANGENT` attribute.
+- Morph targets and morph-target animation channels.
+- Animation sampler interpolation modes `STEP` and `CUBICSPLINE` (warning emitted; played as linear).
+- Animations on un-skinned models (warning emitted; channels dropped).
+- Skins beyond `skins[0]` (warning emitted).
+- Material properties beyond `baseColorFactor`: `baseColorTexture` mapping, roughness/metallic, normal map, occlusion, emissive, alpha mode (`MASK` / `BLEND`), all `KHR_materials_*` extensions, and `KHR_materials_pbrSpecularGlossiness` (legacy).
+- `KHR_draco_mesh_compression`, `KHR_lights_punctual`, camera nodes, scene roots — the loader walks all nodes regardless of which scene they're in.
 
 ## Vertex Format
 
@@ -92,89 +120,11 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 }
 ```
 
-## Effects
-
-Effects are named presets for visual feedback (particles, future: model attachments, sprites). The engine provides defaults, maps can define or override.
-
-### Effect Definition
-
-Effects can be defined in three ways:
-
-**1. Engine defaults** — built-in effects always available:
-
-| Name | Description |
-|------|-------------|
-| `hit_spark` | Orange sparks on attack hit |
-| `death_burst` | Red burst on unit death |
-| `heal_glow` | Green upward particles on healing |
-| `spell_cast` | Blue burst on ability cast |
-| `blood_splat` | Dark red on heavy damage |
-| `aura_glow` | Continuous blue glow (persistent) |
-
-**2. Map-defined in Lua** — maps can define custom effects:
-
-```lua
-DefineEffect("holy_nova", {
-    count = 25, speed = 200, life = 0.8, size = 12,
-    start_color = {1, 1, 0.5, 1},
-    end_color = {1, 0.8, 0, 0}
-})
-```
-
-**3. Map-defined in JSON** — `effects.json` alongside type definitions:
-
-```json
-{
-    "holy_nova": {
-        "count": 25, "speed": 200, "life": 0.8, "size": 12,
-        "start_color": { "r": 1, "g": 1, "b": 0.5, "a": 1 },
-        "end_color": { "r": 1, "g": 0.8, "b": 0, "a": 0 }
-    }
-}
-```
-
-### Effect Lifecycle
-
-Effects have two modes:
-
-**Fire-and-forget** — plays once, auto-destroys:
-```lua
-PlayEffect("hit_spark", x, y, z)
-PlayEffectOnUnit("death_burst", unit)
-```
-
-**Persistent** — stays until explicitly destroyed (auras, buffs, environmental):
-```lua
-local fx = CreateEffectOnUnit("aura_glow", unit)
--- Later:
-DestroyEffect(fx)
-```
-
-Persistent effects attached to a unit automatically follow the unit's position.
-
-### Model-Attached Effects (Future)
-
-Defined in a sidecar JSON file alongside the glTF model (e.g. `footman.effects.json`). Effects are attached to bones and triggered by animation events:
-
-```json
-{
-    "effects": [
-        {
-            "name": "weapon_trail",
-            "bone": "weapon_r",
-            "effect": "hit_spark",
-            "trigger": { "animation": "attack", "start": 0.2, "end": 0.4 }
-        }
-    ]
-}
-```
-
 ## Textures
 
-- **Format**: KTX2 + Basis Universal (one format, every target, every mount)
-- **Loader**: [Basis Universal](https://github.com/BinomialLLC/basis_universal) transcoder library (linked into `uldum_asset`). Parses the KTX2 container and transcodes to BC7 on desktop or ASTC on Android at GPU upload time.
-- **Unit textures**: referenced by glTF material (standalone KTX2 files; embedded glTF textures are a separate deferred item)
-- **Terrain textures**: 4-layer splatmap; each layer points to a KTX2 in `tileset.json`
+- **Recommended format**: KTX2 + Basis Universal — one format, every target, every mount. The [Basis Universal](https://github.com/BinomialLLC/basis_universal) transcoder library is linked into `uldum_asset`; it parses the KTX2 container and transcodes to RGBA8 for GPU upload (BC7/ASTC paths are a later optimization).
+- **Unit textures**: referenced by glTF material. KTX2 can be embedded in the `.glb` via the `KHR_texture_basisu` extension, embedded as a raw image buffer-view, or sit as an external file next to the model. The loader detects KTX2 by mime type, magic bytes, or `.ktx2` extension and routes through the transcoder; everything else goes through stb_image (PNG / JPEG / BMP / TGA / HDR).
+- **Terrain textures**: 4-layer splatmap; each layer points to a KTX2 in `tileset.json`.
 
 ### Texture Pipeline
 
@@ -190,7 +140,7 @@ See [packaging.md](packaging.md) and [editor.md](editor.md) for the full authori
 
 - **Music / voice**: OGG Opus (streaming)
 - **SFX**: WAV (no decompression latency) or OGG Opus
-- **3D positional**: Per-unit sound sources with distance attenuation (Phase 11)
+- **3D positional**: Per-unit sound sources with distance attenuation
 
 ## Unit Type Model Reference
 
