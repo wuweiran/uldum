@@ -6,7 +6,9 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -77,6 +79,16 @@ public:
     void set_particles(ParticleSystem* ps) { m_particles = ps; }
     void set_registry(EffectRegistry* reg) { m_registry = reg; }
 
+    // Resolve a (unit, attach_point) pair to a world position. Used by
+    // play_on_unit / create_on_unit to spawn the initial burst at the
+    // bone rather than the unit's feet — so `attach_point = "overhead"`
+    // actually puts particles overhead. Returns zero vector if the
+    // unit or bone can't be resolved (the manager then falls back to
+    // the unit's transform position). Set once at engine init.
+    using UnitPosResolver = std::function<glm::vec3(simulation::Unit unit,
+                                                     std::string_view attach_point)>;
+    void set_unit_pos_resolver(UnitPosResolver r) { m_resolve = std::move(r); }
+
     // Create a persistent effect. Returns handle for later destruction.
     u32 create(const std::string& name, glm::vec3 position);
     u32 create_on_unit(const std::string& name, simulation::Unit unit,
@@ -107,6 +119,7 @@ public:
 private:
     ParticleSystem*  m_particles = nullptr;
     EffectRegistry*  m_registry  = nullptr;
+    UnitPosResolver  m_resolve;
     std::vector<EffectInstance> m_instances;
     u32 m_next_id = 0;
 };

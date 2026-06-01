@@ -109,7 +109,17 @@ u32 EffectManager::create_on_unit(const std::string& name, simulation::Unit unit
     inst.id            = ++m_next_id;
     inst.def           = def;
     inst.position      = spawn_pos;
-    if (attach_point.empty()) inst.position.z += 32.0f;  // waist fallback
+    if (!attach_point.empty() && m_resolve) {
+        // Honor the attach point for the initial burst too — without this
+        // the burst spawns at the unit's feet regardless of what the
+        // author asked for. Per-frame update() also runs the resolver to
+        // track the bone as the unit moves. If the bone doesn't exist
+        // the resolver returns zero and we fall through to spawn_pos.
+        glm::vec3 resolved = m_resolve(unit, attach_point);
+        if (resolved.x != 0 || resolved.y != 0 || resolved.z != 0) {
+            inst.position = resolved;
+        }
+    }
     inst.attached_unit = unit;
     inst.attach_point  = std::move(attach_point);
     inst.duration      = -1;
@@ -146,7 +156,12 @@ void EffectManager::play_on_unit(const std::string& name, simulation::Unit unit,
     if (!def) { log::warn(TAG, "Unknown effect '{}'", name); return; }
 
     glm::vec3 pos = spawn_pos;
-    if (attach_point.empty()) pos.z += 32.0f;
+    if (!attach_point.empty() && m_resolve) {
+        glm::vec3 resolved = m_resolve(unit, attach_point);
+        if (resolved.x != 0 || resolved.y != 0 || resolved.z != 0) {
+            pos = resolved;
+        }
+    }
     if (m_particles) {
         m_particles->burst(pos, def->count, def->start_color, def->speed, def->life, def->size, def->gravity, def->texture_id, def->spread, def->radius);
     }
@@ -179,7 +194,6 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
             glm::vec3 pos = get_pos(inst.attached_unit, inst.attach_point, ctx);
             if (pos.x != 0 || pos.y != 0 || pos.z != 0) {
                 inst.position = pos;
-                if (inst.attach_point.empty()) inst.position.z += 32.0f;
             }
         }
 

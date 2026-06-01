@@ -139,6 +139,24 @@ bool Engine::init(const LaunchArgs& args) {
     }
     m_camera_controller.attach(&m_renderer.camera());
 
+    // Let effect bursts spawn at the bone the author asked for (e.g.
+    // "overhead") instead of always at the unit's feet. The renderer's
+    // per-frame update already does this for continuous emitters; this
+    // resolver covers the one-shot burst at create / play time. Captures
+    // `this` so it re-reads active_world() each call (survives host ↔
+    // client switches across sessions).
+    m_renderer.effect_manager().set_unit_pos_resolver(
+        [this](simulation::Unit u, std::string_view attach) -> glm::vec3 {
+            auto& world = active_world();
+            auto* t = world.transforms.get(u.id);
+            if (!t) return {0, 0, 0};
+            glm::vec3 pos = t->position;
+            if (!attach.empty()) {
+                pos += m_renderer.get_attachment_point(u.id, attach) * t->scale;
+            }
+            return pos;
+        });
+
     // HUD — custom retained-mode UI for in-game overlays. Initialized once
     // alongside the renderer; lives across sessions. The data side (Hud)
     // holds the node tree + composite configs; HudRenderer owns the

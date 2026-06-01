@@ -31,7 +31,7 @@
         "end_color": { "r": 0.3, "g": 0, "b": 0, "a": 0 }
     },
     "heal_glow": {
-        "count": 8, "emit_rate": 25, "speed": 120, "life": 0.6, "size": 35, "gravity": 0, "spread": 0.03,
+        "count": 24, "radius": 25, "speed": 80, "life": 0.9, "size": 35, "gravity": 0,
         "texture": "glow",
         "start_color": { "r": 1, "g": 0.85, "b": 0.2, "a": 1 },
         "end_color": { "r": 1, "g": 0.7, "b": 0.1, "a": 0 }
