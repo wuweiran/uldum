@@ -169,6 +169,13 @@ public:
     };
     CmdState& cmd_state() { return m_cmd_state; }
 
+    // GLES baseInstance emulation. Writes `base` into the shared draw-info
+    // UBO at slot kDrawInstanceInfoSlot so vertex shaders can add it to
+    // gl_InstanceID. Called per-draw by command_list.cpp from
+    // draw_indexed_indirect and friends. Cached to avoid redundant
+    // glBufferSubData when consecutive draws share the same baseInstance.
+    void set_base_instance(u32 base);
+
 private:
     void* m_native_window = nullptr;
     Extent2D m_extent{};

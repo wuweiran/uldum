@@ -181,8 +181,32 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
                 u32 v1 = grid_vert(tx + 1, ty);
                 u32 v2 = grid_vert(tx, ty + 1);
                 u32 v3 = grid_vert(tx + 1, ty + 1);
+                // `layer_corners` is a `flat`-qualified vertex output that
+                // the SDF transition shader reads from the provoking
+                // vertex of each triangle. Of the four shared grid
+                // vertices on this tile, only v0 (the SW corner) carries
+                // THIS tile's data — v1/v2/v3 belong to neighboring
+                // tiles. To make the shader read the right value we have
+                // to make v0 the provoking vertex.
+                //
+                //   Vulkan: provoking = first vertex of the triangle.
+                //           → emit (v0, ..., ...) so v0 is first.
+                //   OpenGL ES: provoking = last vertex (no API to change).
+                //           → emit (..., ..., v0) so v0 is last.
+                //
+                // Same triangles in both cases (same set of three
+                // vertices, same CCW winding); only the cyclic rotation
+                // differs. Cliff-wall paths below use add_vert (one
+                // dedicated vertex per tile, all four carrying the same
+                // layer_corners) so provoking-vertex selection doesn't
+                // matter there.
+#if defined(ULDUM_BACKEND_GLES)
+                add_tri(v3, v2, v0);
+                add_tri(v1, v3, v0);
+#else
                 add_tri(v0, v3, v2);
                 add_tri(v0, v1, v3);
+#endif
                 continue;
             }
 

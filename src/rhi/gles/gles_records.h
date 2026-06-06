@@ -83,6 +83,14 @@ struct Rhi::PipelineLayoutRecord {
     // Push constants get a dedicated UBO at binding kPushConstantSlot.
     static constexpr u32 kBindingsPerSet  = 16;
     static constexpr u32 kPushConstantSlot = 30;  // reserved UBO
+    // Reserved UBO slot used by the GLES backend to feed per-draw
+    // `firstInstance` into shaders that read instance data. GLES 3.1
+    // doesn't honor the `firstInstance` field of multi-draw-indirect
+    // commands at the shader level (gl_InstanceID always starts at 0
+    // for each indirect command), so we emulate it by pushing the
+    // value into this UBO between draws and adding it to gl_InstanceID
+    // in the vertex shader. Vulkan ignores this slot entirely.
+    static constexpr u32 kDrawInstanceInfoSlot = 31;
 
     std::vector<DescriptorSetLayoutHandle> set_layouts;
     std::vector<PushConstantRange>         push_constants;

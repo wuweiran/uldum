@@ -182,11 +182,11 @@ static void apply_descriptor_bindings(Rhi& rhi, const Rhi::PipelineLayoutRecord&
             }
         }
     }
-    // Push-constant UBO sits at its reserved slot.
-    if (pl.push_constant_ubo != 0) {
-        glBindBufferBase(GL_UNIFORM_BUFFER, Rhi::PipelineLayoutRecord::kPushConstantSlot,
-                         pl.push_constant_ubo);
-    }
+    // Note: push-constant UBO is bound from the bound pipeline's layout
+    // in flush_for_draw, not here. `cs.sets_layout` may be stale (left
+    // over from a previous pipeline that did take descriptor sets), so
+    // binding the push UBO from it could overwrite the current
+    // pipeline's data with someone else's.
 }
 
 // Bind the vertex format described by the pipeline + the buffers from the
@@ -233,6 +233,18 @@ static const Rhi::PipelineRecord* flush_for_draw(Rhi& rhi) {
         return nullptr;
     }
     apply_pipeline_state(*p);
+    // Push-constant UBO is keyed by the bound pipeline's layout, not by
+    // the last bind_descriptor_sets call. Pipelines that don't take
+    // any descriptor sets (e.g. particles, push-constant-only pipelines)
+    // never call bind_descriptor_sets — without this, their push UBO
+    // would never get bound at slot 30 and shaders would read stale
+    // data from a previous pipeline's layout.
+    if (const auto* ppl = rhi.pipeline_layout_record(p->layout);
+        ppl && ppl->push_constant_ubo != 0) {
+        glBindBufferBase(GL_UNIFORM_BUFFER,
+                         Rhi::PipelineLayoutRecord::kPushConstantSlot,
+                         ppl->push_constant_ubo);
+    }
     if (const auto* pl = rhi.pipeline_layout_record(cs.sets_layout)) {
         apply_descriptor_bindings(rhi, *pl, std::span{cs.sets.data(), cs.sets.size()});
     }
@@ -314,9 +326,14 @@ void CommandList::push_constants(PipelineLayoutHandle layout, ShaderStage /*stag
 }
 
 void CommandList::draw(u32 vertex_count, u32 instance_count,
-                       u32 first_vertex, u32 /*first_instance*/) {
-    const auto* p = flush_for_draw(rhi_of(m_cmd));
+                       u32 first_vertex, u32 first_instance) {
+    auto& rhi = rhi_of(m_cmd);
+    const auto* p = flush_for_draw(rhi);
     if (!p) return;
+    // GLES doesn't honor first_instance natively (no gl_BaseInstance);
+    // feed it via the shared draw-info UBO so shaders that do
+    // `instances[gl_InstanceID + u_base_instance]` read the right slice.
+    rhi.set_base_instance(first_instance);
     const GLenum mode = to_gl_topology(p->topology);
     if (instance_count == 1) {
         glDrawArrays(mode, static_cast<GLint>(first_vertex), static_cast<GLsizei>(vertex_count));
@@ -328,10 +345,11 @@ void CommandList::draw(u32 vertex_count, u32 instance_count,
 }
 
 void CommandList::draw_indexed(u32 index_count, u32 instance_count,
-                               u32 first_index, i32 vertex_offset, u32 /*first_instance*/) {
+                               u32 first_index, i32 vertex_offset, u32 first_instance) {
     auto& rhi = rhi_of(m_cmd);
     const auto* p = flush_for_draw(rhi);
     if (!p) return;
+    rhi.set_base_instance(first_instance);  // see draw() above
     const auto& cs = rhi.cmd_state();
     const GLenum mode = to_gl_topology(p->topology);
     const GLsizei type_size = (cs.index_type == GL_UNSIGNED_SHORT) ? 2 : 4;
@@ -360,11 +378,29 @@ void CommandList::draw_indexed_indirect(BufferHandle buf, u64 offset,
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ib->name);
     const auto& cs = rhi.cmd_state();
     const GLenum mode = to_gl_topology(p->topology);
+
+    // Read the CPU-side shadow of the indirect buffer so we can pull
+    // each command's `firstInstance` field. GLES 3.1 doesn't honor it
+    // at the shader level (gl_InstanceID resets to 0 per draw), so we
+    // feed it via the draw-info UBO at slot 31 and the vertex shader
+    // adds it to gl_InstanceID. Mandatory: the renderer's indirect
+    // buffer is host-visible (mapped + memcpy'd), so the shadow is the
+    // authoritative copy.
+    const u8* shadow = ib->shadow.empty() ? nullptr : ib->shadow.data();
     for (u32 i = 0; i < draw_count; ++i) {
+        const u64 cmd_offset = offset + static_cast<u64>(i) * stride;
+        if (shadow && cmd_offset + sizeof(u32) * 5 <= ib->shadow.size()) {
+            // VkDrawIndexedIndirectCommand layout: indexCount,
+            // instanceCount, firstIndex, vertexOffset, firstInstance.
+            const u32* cmd = reinterpret_cast<const u32*>(shadow + cmd_offset);
+            rhi.set_base_instance(cmd[4]);
+        }
         const void* off = reinterpret_cast<const void*>(
-            static_cast<uintptr_t>(offset + static_cast<u64>(i) * stride));
+            static_cast<uintptr_t>(cmd_offset));
         glDrawElementsIndirect(mode, cs.index_type, off);
     }
+    // Reset for safety so the next non-indirect draw starts at 0.
+    rhi.set_base_instance(0);
 }
 
 void CommandList::image_barriers(std::span<const ImageBarrier> /*barriers*/) {

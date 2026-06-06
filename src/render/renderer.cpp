@@ -1633,9 +1633,15 @@ bool Renderer::create_skinned_mesh_pipeline() {
         return false;
     }
 
-    // Skinned shadow pipeline — depth-only, set 0 = bones SSBO, push = mat4 light_mvp
+    // Skinned shadow pipeline — depth-only, set 0 = bones SSBO, push = mat4 light_mvp.
+    // Loads `shadow.frag` (empty) explicitly even though depth-only
+    // pipelines theoretically don't need a fragment shader — Vulkan
+    // accepts that, but OpenGL ES rejects programs without both a
+    // vertex AND a fragment shader linked. Loading the empty frag
+    // keeps both backends happy.
     auto shadow_vert_h = load_shader(*m_rhi, "engine/shaders/skinned_shadow.vert.spv");
-    if (shadow_vert_h.is_valid()) {
+    auto shadow_frag_h = load_shader(*m_rhi, "engine/shaders/shadow.frag.spv");
+    if (shadow_vert_h.is_valid() && shadow_frag_h.is_valid()) {
         rhi::PushConstantRange spc{};
         spc.stages = rhi::ShaderStage::Vertex;
         spc.size   = sizeof(glm::mat4);
@@ -1645,9 +1651,11 @@ bool Renderer::create_skinned_mesh_pipeline() {
         spl.push_constants = std::span{&spc, 1};
         m_skinned_shadow_pipeline_layout = m_rhi->create_pipeline_layout(spl);
 
-        rhi::ShaderStageDesc shadow_stages[1]{};
+        rhi::ShaderStageDesc shadow_stages[2]{};
         shadow_stages[0].stage  = rhi::ShaderStage::Vertex;
         shadow_stages[0].module = shadow_vert_h;
+        shadow_stages[1].stage  = rhi::ShaderStage::Fragment;
+        shadow_stages[1].module = shadow_frag_h;
 
         rhi::RasterizerState shadow_rs = rs;
         shadow_rs.depth_bias_enable          = true;
@@ -1659,7 +1667,7 @@ bool Renderer::create_skinned_mesh_pipeline() {
 
         rhi::GraphicsPipelineDesc sdesc{};
         sdesc.layout            = m_skinned_shadow_pipeline_layout;
-        sdesc.stages            = std::span{shadow_stages, 1};
+        sdesc.stages            = std::span{shadow_stages, 2};
         sdesc.vertex_input      = vi;
         sdesc.topology          = rhi::PrimitiveTopology::TriangleList;
         sdesc.rasterizer        = shadow_rs;
@@ -1669,8 +1677,9 @@ bool Renderer::create_skinned_mesh_pipeline() {
         // no color attachments → blend_attachments empty
 
         m_skinned_shadow_pipeline = m_rhi->create_graphics_pipeline(sdesc);
-        m_rhi->destroy_shader_module(shadow_vert_h);
     }
+    m_rhi->destroy_shader_module(shadow_vert_h);
+    m_rhi->destroy_shader_module(shadow_frag_h);
 
     log::info(TAG, "Skinned mesh pipeline created (textured + shadow + bone SSBO)");
     return true;

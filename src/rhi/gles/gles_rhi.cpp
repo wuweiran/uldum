@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string_view>
 
 namespace uldum::rhi {
 
@@ -63,6 +64,15 @@ struct Rhi::Impl {
     std::vector<u32>                       pl_free;
     std::vector<PipelineRecord>            pipeline_records;
     std::vector<u32>                       pipeline_free;
+
+    // GLES baseInstance emulation. GLES 3.1 ignores the firstInstance
+    // field of multi-draw-indirect commands when computing
+    // gl_InstanceID. We feed it manually via a small UBO at slot 31
+    // that every vertex shader reads and adds to gl_InstanceID. One
+    // UBO for the whole RHI — written by draw_indexed_indirect /
+    // draw_indexed before each glDrawElements* call.
+    GLuint  draw_info_ubo = 0;
+    u32     last_base_instance = 0xFFFFFFFFu;  // force first upload
 };
 
 // ── Slab-allocator helpers (mirror the Vulkan backend) ──────────────
@@ -175,6 +185,62 @@ GLenum to_gl_min_filter(Filter f, MipmapMode m, f32 max_lod) {
 Rhi::Rhi() : m_impl(new Impl{}) {}
 Rhi::~Rhi() { shutdown(); delete m_impl; m_impl = nullptr; }
 
+// EGL_KHR_gl_colorspace token values — hard-coded so we don't depend on
+// the header shipping the extension defines. EGL_KHR_gl_colorspace has
+// been an Android core extension since API 17; we just have to ask for
+// it. The driver still validates the request and falls back to no
+// extension list if it doesn't support sRGB on this config.
+#ifndef EGL_GL_COLORSPACE_KHR
+#define EGL_GL_COLORSPACE_KHR       0x309D
+#endif
+#ifndef EGL_GL_COLORSPACE_SRGB_KHR
+#define EGL_GL_COLORSPACE_SRGB_KHR  0x3089
+#endif
+#ifndef EGL_GL_COLORSPACE_LINEAR_KHR
+#define EGL_GL_COLORSPACE_LINEAR_KHR 0x308A
+#endif
+
+// Create the window surface with an sRGB color space when the driver
+// supports it. Falls back silently to a default (linear) surface so an
+// older driver gets pre-fix dim output rather than a hard failure.
+static EGLSurface create_window_surface_srgb(EGLDisplay display, EGLConfig config,
+                                              void* native_window) {
+    // Log whether the driver advertises EGL_KHR_gl_colorspace so we
+    // know up front whether the sRGB request can succeed. Returning an
+    // unsupported attribute usually fails with EGL_BAD_ATTRIBUTE.
+    const char* exts = eglQueryString(display, EGL_EXTENSIONS);
+    bool has_srgb_ext = exts && std::string_view(exts).find("EGL_KHR_gl_colorspace") != std::string_view::npos;
+    log::info(TAG, "EGL extensions advertise sRGB color-space: {}",
+              has_srgb_ext ? "yes" : "no");
+
+    const EGLint srgb_attrs[] = {
+        EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SRGB_KHR,
+        EGL_NONE
+    };
+    EGLSurface surf = eglCreateWindowSurface(display, config,
+        static_cast<EGLNativeWindowType>(native_window), srgb_attrs);
+    if (surf == EGL_NO_SURFACE) {
+        EGLint err = eglGetError();
+        log::warn(TAG, "sRGB EGL surface not supported (err 0x{:x}); "
+                       "falling back to linear — colors will look dim", err);
+        surf = eglCreateWindowSurface(display, config,
+            static_cast<EGLNativeWindowType>(native_window), nullptr);
+    } else {
+        // Verify what the driver actually gave us. Some drivers
+        // silently downgrade to linear even though they returned a
+        // surface — querying after creation is the only way to know.
+        EGLint colorspace = 0;
+        if (eglQuerySurface(display, surf, EGL_GL_COLORSPACE_KHR, &colorspace)) {
+            log::info(TAG, "EGL surface color space: {} ({})",
+                      colorspace,
+                      colorspace == EGL_GL_COLORSPACE_SRGB_KHR ? "sRGB" :
+                      colorspace == EGL_GL_COLORSPACE_LINEAR_KHR ? "LINEAR — driver downgraded the request" :
+                      "unknown");
+        }
+    }
+    return surf;
+}
+
 static void GL_APIENTRY gl_debug_callback(GLenum /*source*/, GLenum type, GLuint id,
                                           GLenum severity, GLsizei /*length*/,
                                           const GLchar* message, const void* /*user*/) {
@@ -254,14 +320,25 @@ bool Rhi::init(const Config& config, platform::Platform& platform) {
     }
 
     // 4. Create the window surface against the platform's ANativeWindow.
+    //    Request an sRGB framebuffer via EGL_KHR_gl_colorspace so the
+    //    swapchain auto-encodes shader-output linear values to sRGB on
+    //    write — matches the Vulkan backend (which picks an sRGB
+    //    swapchain format) and keeps brightness consistent across
+    //    backends. Without this the shader's linear color goes to the
+    //    panel uncorrected and the whole scene looks ~2× too dark.
+    //
+    //    The extension has been required by GLES 3.0+ for years; we
+    //    still gracefully fall back to a default (linear) surface if
+    //    sRGB isn't advertised, so an ancient device just gets the
+    //    pre-fix dim look rather than a hard failure.
     m_native_window = platform.native_window_handle();
     if (!m_native_window) {
         log::error(TAG, "GLES init: platform has no native window handle yet");
         return false;
     }
-    m_impl->egl_surface = eglCreateWindowSurface(
-        m_impl->egl_display, m_impl->egl_config,
-        static_cast<EGLNativeWindowType>(m_native_window), nullptr);
+    m_impl->egl_surface = create_window_surface_srgb(m_impl->egl_display,
+                                                      m_impl->egl_config,
+                                                      m_native_window);
     if (m_impl->egl_surface == EGL_NO_SURFACE) {
         log::error(TAG, "eglCreateWindowSurface failed (code 0x{:x})", eglGetError());
         return false;
@@ -299,6 +376,20 @@ bool Rhi::init(const Config& config, platform::Platform& platform) {
     glGenVertexArrays(1, &m_default_vao);
     glBindVertexArray(m_default_vao);
 
+    // Allocate the draw-info UBO that feeds per-draw `firstInstance` into
+    // vertex shaders (GLES baseInstance emulation). Bound once at slot 31
+    // and re-written between draws by draw_indexed_indirect / draw_indexed.
+    // Single-uint payload; the std140 layout pads it to 16 bytes.
+    glGenBuffers(1, &m_impl->draw_info_ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, m_impl->draw_info_ubo);
+    {
+        u32 zero[4] = {0, 0, 0, 0};
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(zero), zero, GL_DYNAMIC_DRAW);
+    }
+    glBindBufferBase(GL_UNIFORM_BUFFER,
+                     PipelineLayoutRecord::kDrawInstanceInfoSlot,
+                     m_impl->draw_info_ubo);
+
     // Default pixel unpack alignment is 4 — fine for RGBA8 but corrupts
     // R8 / RG8 uploads whose row width isn't a multiple of 4 (the font
     // atlas is one such consumer: glyph bitmaps come in arbitrary widths).
@@ -323,6 +414,10 @@ void Rhi::shutdown() {
         glBindVertexArray(0);
         glDeleteVertexArrays(1, &m_default_vao);
         m_default_vao = 0;
+    }
+    if (m_impl->draw_info_ubo != 0) {
+        glDeleteBuffers(1, &m_impl->draw_info_ubo);
+        m_impl->draw_info_ubo = 0;
     }
 
     eglMakeCurrent(m_impl->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -409,9 +504,9 @@ void Rhi::recreate_surface(platform::Platform& platform) {
         return;
     }
 
-    m_impl->egl_surface = eglCreateWindowSurface(
-        m_impl->egl_display, m_impl->egl_config,
-        static_cast<EGLNativeWindowType>(m_native_window), nullptr);
+    m_impl->egl_surface = create_window_surface_srgb(m_impl->egl_display,
+                                                      m_impl->egl_config,
+                                                      m_native_window);
     if (m_impl->egl_surface == EGL_NO_SURFACE) {
         log::error(TAG, "recreate_surface: eglCreateWindowSurface failed (0x{:x})", eglGetError());
         return;
@@ -433,7 +528,17 @@ void Rhi::wait_idle() { glFinish(); }
 
 // Surface format reporting — until the EGL config is selected at init,
 // these return Undefined. The pipeline factories should tolerate that.
-TextureFormat Rhi::swapchain_format() const { return TextureFormat::R8G8B8A8_UNORM; }
+TextureFormat Rhi::swapchain_format() const { return TextureFormat::R8G8B8A8_SRGB; }
+
+void Rhi::set_base_instance(u32 base) {
+    if (base == m_impl->last_base_instance) return;
+    m_impl->last_base_instance = base;
+    if (m_impl->draw_info_ubo == 0) return;
+    // std140 a uint as the only field still occupies 16 bytes for alignment.
+    u32 payload[4] = {base, 0, 0, 0};
+    glBindBuffer(GL_UNIFORM_BUFFER, m_impl->draw_info_ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(payload), payload);
+}
 TextureFormat Rhi::depth_format()     const { return TextureFormat::D32_SFLOAT; }
 
 // ── Resource factories (TODO) ─────────────────────────────────────────
@@ -663,9 +768,16 @@ ShaderModuleHandle Rhi::create_shader_module(std::span<const u8> source) {
     if (ok != GL_TRUE) {
         GLint log_len = 0;
         glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
-        std::vector<char> buf(static_cast<usize>(log_len));
-        glGetShaderInfoLog(shader, log_len, nullptr, buf.data());
-        log::error(TAG, "shader compile failed: {}", buf.data());
+        // Drivers may return 0 even when compilation failed. Always
+        // reserve at least one byte so `buf.data()` is non-null and the
+        // log call doesn't dereference a nullptr.
+        std::vector<char> buf(static_cast<usize>(log_len > 0 ? log_len : 1), '\0');
+        if (log_len > 0) {
+            glGetShaderInfoLog(shader, log_len, nullptr, buf.data());
+        }
+        log::error(TAG, "shader compile failed (stage={}, log_len={}): {}",
+                   stage == GL_VERTEX_SHADER ? "VS" : "FS",
+                   log_len, buf.data());
         glDeleteShader(shader);
         return {};
     }
@@ -817,9 +929,12 @@ PipelineHandle Rhi::create_graphics_pipeline(const GraphicsPipelineDesc& desc) {
     if (linked != GL_TRUE) {
         GLint log_len = 0;
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
-        std::vector<char> buf(static_cast<usize>(log_len));
-        glGetProgramInfoLog(program, log_len, nullptr, buf.data());
-        log::error(TAG, "program link failed: {}", buf.data());
+        std::vector<char> buf(static_cast<usize>(log_len > 0 ? log_len : 1), '\0');
+        if (log_len > 0) {
+            glGetProgramInfoLog(program, log_len, nullptr, buf.data());
+        }
+        log::error(TAG, "program link failed (stages={}, log_len={}): {}",
+                   desc.stages.size(), log_len, buf.data());
         glDeleteProgram(program);
         return {};
     }

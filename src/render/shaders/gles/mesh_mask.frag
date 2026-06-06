@@ -65,6 +65,8 @@ void main() {
     vec4 light_clip = shadow.light_vp * vec4(frag_world_pos, 1.0);
     vec3 light_ndc = light_clip.xyz / light_clip.w;
     light_ndc.xy = light_ndc.xy * 0.5 + 0.5;
+    // GLES NDC z is in [-1, +1] but the depth buffer stores [0, 1].
+    light_ndc.z  = light_ndc.z  * 0.5 + 0.5;
 
     float shadow_factor = 1.0;
     if (light_ndc.x >= 0.0 && light_ndc.x <= 1.0 &&

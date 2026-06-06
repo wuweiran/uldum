@@ -22,6 +22,12 @@ layout(binding = 0, std430) readonly buffer InstanceBuffer {
     InstanceData instances[];
 };
 
+// GLES baseInstance emulation — see mesh.vert's comment.
+layout(binding = 31, std140) uniform DrawInfo {
+    uint base_instance;
+    uint _pad0, _pad1, _pad2;
+} draw_info;
+
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;    // unused
 layout(location = 2) in vec2 in_texcoord;
@@ -32,7 +38,7 @@ layout(location = 2)      out vec4  frag_base_color_factor;
 layout(location = 3) flat out float frag_alpha_cutoff;
 
 void main() {
-    InstanceData inst = instances[gl_InstanceID];
+    InstanceData inst = instances[uint(gl_InstanceID) + draw_info.base_instance];
     gl_Position = pc.light_vp * inst.model * vec4(in_position, 1.0);
     frag_texcoord = in_texcoord;
     frag_material_index = inst.material_index;
