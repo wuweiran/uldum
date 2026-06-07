@@ -352,6 +352,16 @@ bool MapManager::load_scene_terrain(std::string_view scene_name, asset::AssetMan
         log::error(TAG, "Scene '{}': missing terrain.bin — every scene must have terrain data", scene_name);
         return false;
     }
+    // Water-layer IDs come from the (map-wide) tileset, not from
+    // terrain.bin — re-apply them every time a scene's terrain loads
+    // so a scene switch can't leave the new terrain with empty water
+    // layers. (Without this, is_deep_water() falls back to false for
+    // every vertex and ground units happily walk on sea after a switch.)
+    {
+        std::vector<u8> shallow, deep;
+        m_tileset.get_water_layer_ids(shallow, deep);
+        m_scene.terrain.set_water_layers(shallow, deep);
+    }
     log::info(TAG, "Scene '{}': terrain {}x{} tiles",
               scene_name, m_scene.terrain.tiles_x, m_scene.terrain.tiles_y);
     return true;
