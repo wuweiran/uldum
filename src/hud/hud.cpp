@@ -2416,11 +2416,23 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // still wins. `on_joystick` also fires when slot 0 (the primary
     // finger) has already captured the stick — that suppresses tree /
     // drag-select from the same finger while dragging the knob.
-    i32  bar_slot    = action_bar_hit_test(s, x, y);
-    i32  cmd_slot    = (bar_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
-    i32  inv_slot    = (bar_slot < 0 && cmd_slot < 0) ? inventory_hit_test(s, x, y) : -1;
-    bool on_minimap  = (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && minimap_hit_test(s, x, y);
-    bool on_joystick = (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && !on_minimap
+    //
+    // Touch hover gate: on mobile, "no finger on screen" means "no
+    // hover" — but the platform layer keeps the last touch coords in
+    // mouse_x/y after release, so the hit-tests below would otherwise
+    // keep resolving to whichever slot the finger lifted from. That
+    // breaks tooltip dismissal (won't clear until you tap elsewhere)
+    // and falsely treats rapid retaps as a continuous dwell over the
+    // same slot (timer never resets between taps, tooltip pops). We
+    // allow the hit-test only while a finger is actually down, OR on
+    // the release frame itself so the lift-fixup above can still
+    // resolve "released over this slot" for click-firing.
+    const bool allow_hit_test = !s.is_mobile || button_down || s.pointer_down_prev;
+    i32  bar_slot    = allow_hit_test ? action_bar_hit_test(s, x, y) : -1;
+    i32  cmd_slot    = (allow_hit_test && bar_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
+    i32  inv_slot    = (allow_hit_test && bar_slot < 0 && cmd_slot < 0) ? inventory_hit_test(s, x, y) : -1;
+    bool on_minimap  = allow_hit_test && (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && minimap_hit_test(s, x, y);
+    bool on_joystick = allow_hit_test && (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && !on_minimap
                        && (s.joystick_rt.captured_slot == 0
                            || joystick_hit_test_point(s.joystick_cfg, x, y));
 
@@ -2461,10 +2473,10 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // Tooltip arming. The pointer dwelling on a slot for `delay_ms`
     // pops the tooltip; any change (different slot / left every slot)
     // resets the timer. Desktop uses 250ms — snappy hover. Mobile uses
-    // 500ms — AoV-like long-press (handle_pointer is called every frame
-    // with the last known position, so dwelling means stationary press;
-    // sliding past the slot edges fails the hit-test and naturally
-    // clears the timer).
+    // 500ms — AoV-like long-press. On mobile the hit-test gate above
+    // makes "no finger down" report no slot, so a finger lift naturally
+    // clears the source and the timer; while held, sliding past the
+    // slot edges still fails the hit-test and clears it too.
     Impl::TooltipState::Source kind = Impl::TooltipState::Source::None;
     i32 kind_idx = -1;
     if      (bar_slot >= 0) { kind = Impl::TooltipState::Source::ActionBar;  kind_idx = bar_slot; }
