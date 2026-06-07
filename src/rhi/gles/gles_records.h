@@ -29,6 +29,11 @@ struct Rhi::BufferRecord {
     // GL operation that reads it. `shadow` is empty for GpuOnly buffers.
     std::vector<u8> shadow;
     bool   shadow_dirty = false;  // set on map; cleared on sync
+    // True once sync_buffer_to_gpu has uploaded this buffer's contents
+    // during the current frame; reset at begin_frame. Cuts the per-draw
+    // upload pattern (where a single host-visible buffer was re-pushed
+    // from every draw that touched it) down to one upload per frame.
+    bool   synced_this_frame = false;
     u64    size        = 0;
     u32    generation  = 0;
 };

@@ -360,11 +360,17 @@ bool Rhi::init(const Config& config, platform::Platform& platform) {
     // 6. KHR_debug: hook the GL callback when validation is on. KHR_debug
     //    is an extension on ES 3.1 (core only in 3.2) but every shipping
     //    Android driver exposes it; we just check the extension string.
+    //
+    //    GL_DEBUG_OUTPUT_SYNCHRONOUS would force the driver to invoke our
+    //    callback on the thread that made the offending GL call before
+    //    the call returns — which inserts a CPU/GPU sync on every single
+    //    GL call and ruins frame time. Leave it off; async delivery
+    //    (callback may arrive on a driver thread, possibly out of order)
+    //    is plenty for catching errors during development.
     if (config.enable_validation) {
         const auto* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
         if (ext && std::strstr(ext, "GL_KHR_debug")) {
             glEnable(GL_DEBUG_OUTPUT);
-            glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
             glDebugMessageCallback(&gl_debug_callback, nullptr);
         }
     }
@@ -442,6 +448,12 @@ CommandList Rhi::begin_frame() {
     // handle, which gles/command_list.cpp uses to reach into record tables
     // when it needs to translate handles.
     if (m_impl->egl_surface == EGL_NO_SURFACE) return {};
+    // Per-frame once-upload bookkeeping: clear the synced-this-frame flag
+    // on every host-visible buffer so the first sync of each draw path
+    // actually pushes its CPU shadow. See sync_buffer_to_gpu() for why.
+    for (auto& rec : m_impl->buffers) {
+        rec.synced_this_frame = false;
+    }
     return CommandList(*this, this);
 }
 
@@ -594,8 +606,11 @@ void* Rhi::mapped_ptr(BufferHandle h) const {
     auto& rec = const_cast<BufferRecord&>(m_impl->buffers[h.index]);
     if (rec.generation != h.generation) return nullptr;
     if (rec.shadow.empty()) return nullptr;  // GpuOnly buffer — not host-visible
-    // Caller is about to write; mark dirty so the next use re-uploads.
+    // Caller is about to write; mark dirty so the next use re-uploads, and
+    // clear the per-frame sync flag so the next sync_buffer_to_gpu actually
+    // pushes the new data instead of short-circuiting.
     rec.shadow_dirty = true;
+    rec.synced_this_frame = false;
     return rec.shadow.data();
 }
 
@@ -603,6 +618,15 @@ void Rhi::sync_buffer_to_gpu(BufferHandle h) {
     if (!h.is_valid() || h.index >= m_impl->buffers.size()) return;
     auto& rec = m_impl->buffers[h.index];
     if (rec.generation != h.generation || rec.shadow.empty()) return;
+    // Once-per-frame upload. Without this guard the GLES backend
+    // re-pushed the full shadow on every draw / bind / copy that
+    // touched the buffer, which for the static-mesh path meant
+    // 4 partition iterations × (384 KB instance + 80 KB indirect)
+    // = ~1.8 MB of glBufferSubData per frame on the bus, and the
+    // resulting implicit GPU syncs cost ~25 ms / frame on Adreno.
+    // Clearing the flag at begin_frame and after mapped_ptr writes
+    // keeps a fresh write visible to the next draw.
+    if (rec.synced_this_frame) return;
     // We can't reliably know whether the shadow has been written to since
     // the last sync — Vulkan's VMA persistent mapping lets consumers cache
     // the pointer from a single mapped_ptr() call and write through it
@@ -613,6 +637,7 @@ void Rhi::sync_buffer_to_gpu(BufferHandle h) {
     glBindBuffer(rec.target, rec.name);
     glBufferSubData(rec.target, 0, static_cast<GLsizeiptr>(rec.size), rec.shadow.data());
     rec.shadow_dirty = false;
+    rec.synced_this_frame = true;
 }
 
 TextureHandle Rhi::create_texture(const TextureDesc& desc) {
