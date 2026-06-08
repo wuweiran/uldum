@@ -196,8 +196,17 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
     }
 
     case WM_KEYDOWN:
-    case WM_KEYUP: {
-        bool pressed = (msg == WM_KEYDOWN);
+    case WM_KEYUP:
+    case WM_SYSKEYDOWN:
+    case WM_SYSKEYUP: {
+        // Alt (VK_MENU) and any key while Alt is held arrive as
+        // WM_SYSKEYDOWN / WM_SYSKEYUP, not WM_KEYDOWN / WM_KEYUP.
+        // Handle them through the same key-state update so Alt-modified
+        // bindings work — but still fall through to DefWindowProc for
+        // the SYS variants so the OS keeps Alt-F4, F10 menu activation,
+        // and similar system shortcuts.
+        const bool pressed = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+        const bool is_sys  = (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP);
         // Always set key_letter for A-Z
         if (wparam >= 'A' && wparam <= 'Z') {
             self->m_input.key_letter[wparam - 'A'] = pressed;
@@ -226,25 +235,55 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         case '5': case '6': case '7': case '8': case '9':
             self->m_input.key_num[wparam - '0'] = pressed; break;
         }
+        // Consume normal key events; let SYS variants fall through to
+        // DefWindowProc so Alt-F4, F10 menu, etc. still work.
+        if (is_sys) break;
         return 0;
     }
 
     case WM_MOUSEMOVE: {
         f32 nx = static_cast<f32>(GET_X_LPARAM(lparam));
         f32 ny = static_cast<f32>(GET_Y_LPARAM(lparam));
-        self->m_input.mouse_dx = nx - self->m_input.mouse_x;
-        self->m_input.mouse_dy = ny - self->m_input.mouse_y;
+        // Accumulate the delta across every WM_MOUSEMOVE that arrives
+        // between two poll_events calls. Plain assignment used to lose
+        // all but the final hop when the OS coalesced multiple moves
+        // into one poll (visible as sluggish camera pan on fast mouse
+        // motion). dx/dy reset to 0 at the top of poll_events.
+        self->m_input.mouse_dx += nx - self->m_input.mouse_x;
+        self->m_input.mouse_dy += ny - self->m_input.mouse_y;
         self->m_input.mouse_x = nx;
         self->m_input.mouse_y = ny;
         return 0;
     }
 
-    case WM_LBUTTONDOWN: self->m_input.mouse_left = true;  self->m_input.mouse_left_pressed = true;  return 0;
-    case WM_LBUTTONUP:   self->m_input.mouse_left = false; self->m_input.mouse_left_released = true; return 0;
-    case WM_RBUTTONDOWN: self->m_input.mouse_right = true;  self->m_input.mouse_right_pressed = true;  return 0;
-    case WM_RBUTTONUP:   self->m_input.mouse_right = false; self->m_input.mouse_right_released = true; return 0;
-    case WM_MBUTTONDOWN: self->m_input.mouse_middle = true;  return 0;
-    case WM_MBUTTONUP:   self->m_input.mouse_middle = false; return 0;
+    // Mouse buttons. SetCapture on the first button-down so a drag that
+    // leaves the window still routes its WM_*BUTTONUP back here —
+    // otherwise the up event goes to whichever window the cursor is
+    // over and our button state stays stuck-down (drag-select keeps
+    // following the cursor, etc.). Release capture only when every
+    // button is up; otherwise a multi-button drag with one button
+    // released would prematurely lose capture.
+    case WM_LBUTTONDOWN:
+        if (!self->m_input.mouse_left && !self->m_input.mouse_right && !self->m_input.mouse_middle) SetCapture(hwnd);
+        self->m_input.mouse_left = true;  self->m_input.mouse_left_pressed = true;  return 0;
+    case WM_LBUTTONUP:
+        self->m_input.mouse_left = false; self->m_input.mouse_left_released = true;
+        if (!self->m_input.mouse_right && !self->m_input.mouse_middle) ReleaseCapture();
+        return 0;
+    case WM_RBUTTONDOWN:
+        if (!self->m_input.mouse_left && !self->m_input.mouse_right && !self->m_input.mouse_middle) SetCapture(hwnd);
+        self->m_input.mouse_right = true;  self->m_input.mouse_right_pressed = true;  return 0;
+    case WM_RBUTTONUP:
+        self->m_input.mouse_right = false; self->m_input.mouse_right_released = true;
+        if (!self->m_input.mouse_left && !self->m_input.mouse_middle) ReleaseCapture();
+        return 0;
+    case WM_MBUTTONDOWN:
+        if (!self->m_input.mouse_left && !self->m_input.mouse_right && !self->m_input.mouse_middle) SetCapture(hwnd);
+        self->m_input.mouse_middle = true;  return 0;
+    case WM_MBUTTONUP:
+        self->m_input.mouse_middle = false;
+        if (!self->m_input.mouse_left && !self->m_input.mouse_right) ReleaseCapture();
+        return 0;
 
     case WM_MOUSEWHEEL:
         self->m_input.scroll_delta = static_cast<f32>(GET_WHEEL_DELTA_WPARAM(wparam)) / 120.0f;
