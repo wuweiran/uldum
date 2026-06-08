@@ -1764,8 +1764,7 @@ void Engine::run() {
                     // Scales automatically if TICK_RATE changes.
                     constexpr f32 SLOW_TICK_MS = TICK_DT * 0.5f * 1000.0f;
                     if (tick_ms > SLOW_TICK_MS) {
-                        log::warn(TAG, "Slow tick: {:.1f}ms (units: {})",
-                                  tick_ms, active_world().transforms.count());
+                        log::warn(TAG, "Slow tick: {:.1f}ms", tick_ms);
                     }
                     tick_counter++;
                     if (m_args.net_mode == network::Mode::Host)

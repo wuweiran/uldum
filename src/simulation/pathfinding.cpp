@@ -5,12 +5,10 @@
 #include "core/log.h"
 
 #include <glm/geometric.hpp>
-#include <chrono>
 
 #include <algorithm>
 #include <cmath>
 #include <queue>
-#include <unordered_set>
 #include <vector>
 
 namespace uldum::simulation {
@@ -150,13 +148,20 @@ bool Pathfinder::can_occupy_cell(i32 cx, i32 cy, MoveType move_type) const {
     if (!m_terrain) return false;
     if (move_type == MoveType::Air) return true;
     if (cx < 0 || cy < 0) return false;
-    u32 cells_x = m_terrain->tiles_x * PATHING_SUBDIV;
-    u32 cells_y = m_terrain->tiles_y * PATHING_SUBDIV;
-    if (static_cast<u32>(cx) >= cells_x || static_cast<u32>(cy) >= cells_y) return false;
-    u32 tx = static_cast<u32>(cx) / PATHING_SUBDIV;
-    u32 ty = static_cast<u32>(cy) / PATHING_SUBDIV;
-    if (!m_terrain->is_tile_passable(tx, ty)) return false;
-    if (move_type == MoveType::Ground && m_terrain->is_tile_deep_water(tx, ty)) return false;
+    if (static_cast<u32>(cx) >= m_cells_w || static_cast<u32>(cy) >= m_cells_h) return false;
+    // Static cache (terrain passable + not deep water) was filled in
+    // build_cache; fall through to the slow path if the map is too
+    // small / pre-cache. Runtime blocker check stays per-call — that
+    // bitmap changes whenever a building is placed.
+    if (!m_static_occupiable_ground.empty()) {
+        const u32 idx = static_cast<u32>(cy) * m_cells_w + static_cast<u32>(cx);
+        if (!m_static_occupiable_ground[idx]) return false;
+    } else {
+        u32 tx = static_cast<u32>(cx) / PATHING_SUBDIV;
+        u32 ty = static_cast<u32>(cy) / PATHING_SUBDIV;
+        if (!m_terrain->is_tile_passable(tx, ty)) return false;
+        if (m_terrain->is_tile_deep_water(tx, ty)) return false;
+    }
     if (is_cell_blocked(cx, cy)) return false;
     return true;
 }
@@ -222,24 +227,6 @@ bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
 
 // ── A* on tile graph ─────────────────────────────────────────────────────
 
-struct AStarNode {
-    u32 tx, ty;
-    f32 g_cost;
-    f32 f_cost;
-    u32 parent_idx;
-    u8  cliff_level;
-};
-
-struct NodeCompare {
-    bool operator()(const AStarNode& a, const AStarNode& b) const {
-        return a.f_cost > b.f_cost;
-    }
-};
-
-static u64 tile_key(u32 tx, u32 ty) {
-    return (static_cast<u64>(ty) << 32) | tx;
-}
-
 // 8 directions matching the A* neighbor order
 static constexpr i32 s_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
 static constexpr i32 s_dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
@@ -250,6 +237,8 @@ void Pathfinder::build_cache() {
     u32 w = td.tiles_x, h = td.tiles_y;
     m_cache_w = w;
     m_cache_h = h;
+    m_cells_w = w * PATHING_SUBDIV;
+    m_cells_h = h * PATHING_SUBDIV;
     u32 count = w * h;
 
     m_occupiable.assign(count, false);
@@ -286,56 +275,167 @@ void Pathfinder::build_cache() {
         }
     }
 
+    // Pass 3: per-cell static occupiable cache. Captures only the
+    // never-changing terrain bits (passable + not deep-water); the
+    // runtime block check is applied per call. Pre-baking these here
+    // turns can_occupy_cell into one array read on the hot path.
+    // Loop is tile-outer / cell-inner: compute the per-tile result
+    // once, then broadcast to the SUBDIV×SUBDIV cell block. Saves a
+    // factor of SUBDIV² (16× by default) tile-level lookups + divisions.
+    {
+        const u32 cells_total = m_cells_w * m_cells_h;
+        m_static_occupiable_ground.assign(cells_total, 0);
+        for (u32 ty = 0; ty < h; ++ty) {
+            for (u32 tx = 0; tx < w; ++tx) {
+                const u8 ok = (td.is_tile_passable(tx, ty)
+                            && !td.is_tile_deep_water(tx, ty)) ? 1 : 0;
+                if (!ok) continue;  // assign(…, 0) already covers the zero case
+                const u32 c0x = tx * PATHING_SUBDIV;
+                const u32 c0y = ty * PATHING_SUBDIV;
+                for (u32 dy = 0; dy < PATHING_SUBDIV; ++dy) {
+                    u8* row = &m_static_occupiable_ground[(c0y + dy) * m_cells_w + c0x];
+                    for (u32 dx = 0; dx < PATHING_SUBDIV; ++dx) row[dx] = 1;
+                }
+            }
+        }
+    }
+
+    // Visit-stamp scratch (used by A*'s generation-counter closed set).
+    // Size matches the new cell count; bump m_visit_gen to 0 so the
+    // lazy "if (++m_visit_gen == 0) clear" branch in find_corridor
+    // doesn't trigger a spurious extra clear on the very first search.
+    m_visit_stamp.assign(static_cast<size_t>(m_cells_w) * m_cells_h, 0);
+    m_visit_gen = 0;
+
+    // Connected-components storage: sized but not yet populated. The
+    // per-MoveType dirty flags trigger a flood on the first find_corridor
+    // that actually needs each map type, so maps that never use
+    // Amphibious units never pay that flood cost.
+    m_components_ground.assign(static_cast<size_t>(m_cells_w) * m_cells_h, 0);
+    m_components_amphibious.assign(static_cast<size_t>(m_cells_w) * m_cells_h, 0);
+    m_components_ground_dirty     = true;
+    m_components_amphibious_dirty = true;
+
     log::info("Pathfind", "Connectivity cache built: {}x{} tiles", w, h);
 }
 
-// Build a set of tiles occupied by units (for A* cost penalty).
-// Returns a set of tile keys where non-self units are standing.
-static std::unordered_set<u64> build_unit_tile_set(const World* world, u32 self_id, const map::TerrainData& td) {
-    std::unordered_set<u64> occupied;
-    if (!world) return occupied;
-    const f32 tile_size = td.tile_size;
-    const f32 ox = td.origin_x();
-    const f32 oy = td.origin_y();
-    const u32 tiles_x = td.tiles_x;
-    const u32 tiles_y = td.tiles_y;
+// ── Connected components ─────────────────────────────────────────────────
+//
+// Build a per-cell component id map by BFS-flooding every walkable
+// cell. Two grids — Ground and Amphibious — because deep water is
+// walkable for the latter and not the former, so connectivity differs.
+//
+// Cardinal-only flood: an A* diagonal step requires both cardinal
+// intermediates to also be walkable (corner-cut prevention). So any two
+// cells reachable diagonally are reachable cardinally too — using only
+// 4-neighbor flood for component assignment is conservatively correct
+// and slightly simpler.
+//
+// Cliff levels: same-level tiles flood freely; a ramp tile is wired to
+// both adjacent levels via tiles_terrain_connected, so the BFS naturally
+// merges levels through ramps. End result: a hill and its valley share a
+// component IFF a ramp connects them, which is exactly what A* would
+// find. Buildings (runtime blocks) participate via is_cell_blocked, so
+// a wall splits components correctly.
+static void flood_components(const map::TerrainData& td,
+                              const Pathfinder& pf, MoveType mt,
+                              u32 cells_w, u32 cells_h,
+                              std::vector<u32>& out) {
+    out.assign(static_cast<size_t>(cells_w) * cells_h, 0);
+    if (mt == MoveType::Air) return;  // air doesn't need components
 
-    for (u32 i = 0; i < world->transforms.count(); ++i) {
-        u32 id = world->transforms.ids()[i];
-        if (id == self_id) continue;
-        if (world->dead_states.has(id)) continue;
+    std::vector<u32> queue;
+    queue.reserve(1024);
+    u32 next_id = 1;
 
-        // Only consider units (not doodads, projectiles, etc.)
-        auto* info = world->handle_infos.get(id);
-        if (!info || info->category != Category::Unit) continue;
+    auto idx_of = [&](u32 cx, u32 cy) { return cy * cells_w + cx; };
 
-        auto& pos = world->transforms.data()[i].position;
-        i32 tx = static_cast<i32>((pos.x - ox) / tile_size);
-        i32 ty = static_cast<i32>((pos.y - oy) / tile_size);
-        if (tx >= 0 && ty >= 0 &&
-            static_cast<u32>(tx) < tiles_x && static_cast<u32>(ty) < tiles_y) {
-            occupied.insert(tile_key(tx, ty));
+    for (u32 cy0 = 0; cy0 < cells_h; ++cy0) {
+        for (u32 cx0 = 0; cx0 < cells_w; ++cx0) {
+            const u32 seed = idx_of(cx0, cy0);
+            if (out[seed] != 0) continue;
+            if (!pf.can_occupy_cell(static_cast<i32>(cx0),
+                                    static_cast<i32>(cy0), mt)) continue;
+
+            // Start a new component. u32 ids give us ~4B distinct
+            // components before any wrap concern; on a realistic map
+            // we're talking hundreds at most.
+            const u32 id = next_id++;
+            out[seed] = id;
+            queue.clear();
+            queue.push_back(seed);
+
+            while (!queue.empty()) {
+                const u32 cur = queue.back();
+                queue.pop_back();
+                const u32 cx = cur % cells_w;
+                const u32 cy = cur / cells_w;
+                const u32 cur_tx = cx / PATHING_SUBDIV;
+                const u32 cur_ty = cy / PATHING_SUBDIV;
+
+                static constexpr i32 ndx[] = {-1, 1, 0, 0};
+                static constexpr i32 ndy[] = { 0, 0,-1, 1};
+                for (u32 d = 0; d < 4; ++d) {
+                    const i32 nx = static_cast<i32>(cx) + ndx[d];
+                    const i32 ny = static_cast<i32>(cy) + ndy[d];
+                    if (nx < 0 || ny < 0
+                        || static_cast<u32>(nx) >= cells_w
+                        || static_cast<u32>(ny) >= cells_h) continue;
+                    const u32 ni = idx_of(static_cast<u32>(nx), static_cast<u32>(ny));
+                    if (out[ni] != 0) continue;
+                    if (!pf.can_occupy_cell(nx, ny, mt)) continue;
+
+                    // Cross-tile transitions need the cliff/edge
+                    // connectivity check — same logic A* uses.
+                    const u32 n_tx = static_cast<u32>(nx) / PATHING_SUBDIV;
+                    const u32 n_ty = static_cast<u32>(ny) / PATHING_SUBDIV;
+                    if ((n_tx != cur_tx || n_ty != cur_ty) &&
+                        !tiles_terrain_connected(td, cur_tx, cur_ty, n_tx, n_ty, mt))
+                        continue;
+
+                    out[ni] = id;
+                    queue.push_back(ni);
+                }
+            }
         }
     }
-    return occupied;
+}
+
+void Pathfinder::refresh_components_if_dirty(MoveType mt) const {
+    if (!m_terrain || !m_terrain->is_valid()) return;
+    if (mt == MoveType::Air) return;
+    if (mt == MoveType::Amphibious) {
+        if (!m_components_amphibious_dirty) return;
+        flood_components(*m_terrain, *this, MoveType::Amphibious,
+                         m_cells_w, m_cells_h, m_components_amphibious);
+        m_components_amphibious_dirty = false;
+    } else {
+        if (!m_components_ground_dirty) return;
+        flood_components(*m_terrain, *this, MoveType::Ground,
+                         m_cells_w, m_cells_h, m_components_ground);
+        m_components_ground_dirty = false;
+    }
 }
 
 Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
-                                    u8 start_cliff_level, MoveType move_type,
-                                    const World* world, u32 self_id) const {
+                                    u8 start_cliff_level, MoveType move_type) const {
     Corridor result;
     if (!m_terrain || !m_terrain->is_valid()) return result;
     auto& td = *m_terrain;
 
     // Cell grid dimensions.
-    const u32 cells_x = td.tiles_x * PATHING_SUBDIV;
-    const u32 cells_y = td.tiles_y * PATHING_SUBDIV;
+    const u32 cells_x = m_cells_w;
+    const u32 cells_y = m_cells_h;
 
-    // Unit occupancy cost penalty stays at tile granularity (still keyed
-    // by tile_key); each cell pays the penalty if its containing tile
-    // hosts another unit. Coarse but enough to push A* around clusters.
-    auto unit_tiles = build_unit_tile_set(world, self_id, td);
-    static constexpr f32 UNIT_COST_PENALTY = 5.0f;
+    // No soft-cost penalty for unit-occupied tiles. We dropped it
+    // because the +5.0 bias makes A*'s heuristic underestimate true
+    // step cost, which causes A* to fan out exploring "alternate"
+    // routes whenever the direct path crosses unit-dense tiles —
+    // catastrophic in swarm-attack scenarios where many units cluster
+    // near a single target. Local steering (system_movement::
+    // local_steer) handles unit-on-unit avoidance moment-to-moment,
+    // which is the right altitude for it. A future RVO2 / ORCA layer
+    // would slot in there too.
 
     glm::ivec2 s = world_to_cell(start.x, start.y);
     glm::ivec2 g = world_to_cell(goal.x, goal.y);
@@ -382,17 +482,118 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
         g = best_g;
     }
 
+    // ── Connected-components pre-flight ─────────────────────────────────
+    //
+    // If the goal isn't in the same reachable region as the start, A*
+    // would otherwise flood the entire start-component before giving up
+    // — pathological worst case for the unreachable-goal scenario. We
+    // catch it cheaply here: compare component ids, and if they differ,
+    // retarget the goal to the closest cell that IS in the start's
+    // component. The user wanted "walk as close as you can get," and
+    // this delivers it without ever running A* on a doomed search.
+    //
+    // Air units skip the check (everything is reachable).
+    //
+    // If the start cell itself is unreachable (component id 0 — happens
+    // when a unit gets knocked onto a freshly-blocked cell, or a
+    // building is dropped on it, or terrain is repainted in-editor),
+    // snap to the nearest occupiable cell so A* can still find an
+    // escape path. Without this snap a unit that ends up on a blocked
+    // cell goes inert until stuck-detection drops the order.
+    refresh_components_if_dirty(move_type);
+    if (move_type != MoveType::Air) {
+        const auto& comps = (move_type == MoveType::Amphibious)
+            ? m_components_amphibious : m_components_ground;
+        if (!comps.empty()) {
+            u32 start_comp = comps[static_cast<u32>(s.y) * cells_x + static_cast<u32>(s.x)];
+            const u32 goal_comp  = comps[static_cast<u32>(g.y) * cells_x + static_cast<u32>(g.x)];
+            if (start_comp == 0) {
+                // Find the nearest occupiable cell to the unit's
+                // current position and pretend that's where we are.
+                // The unit will walk toward it via the corridor's first
+                // few cells (find_straight_waypoint handles the fact
+                // that the unit's actual position differs from the
+                // corridor's start by snapping to the nearest matched
+                // cell or falling back to corridor[0]).
+                bool snap_found = false;
+                glm::ivec2 best_s = s;
+                f32 best_d2 = 1e30f;
+                const i32 max_r = 20 * static_cast<i32>(PATHING_SUBDIV);
+                for (i32 r = 1; r <= max_r && !snap_found; ++r) {
+                    for (i32 dy = -r; dy <= r; ++dy) {
+                        for (i32 dx = -r; dx <= r; ++dx) {
+                            if (std::abs(dx) != r && std::abs(dy) != r) continue;
+                            i32 nx = s.x + dx, ny = s.y + dy;
+                            if (!in_bounds(nx, ny)) continue;
+                            const u32 c = comps[static_cast<u32>(ny) * cells_x + static_cast<u32>(nx)];
+                            if (c == 0) continue;
+                            f32 d2 = static_cast<f32>(dx*dx + dy*dy);
+                            if (d2 < best_d2) {
+                                best_d2 = d2;
+                                best_s  = {nx, ny};
+                                snap_found = true;
+                            }
+                        }
+                    }
+                }
+                if (!snap_found) return result;  // truly nowhere to go
+                s = best_s;
+                start_comp = comps[static_cast<u32>(s.y) * cells_x + static_cast<u32>(s.x)];
+            }
+            if (start_comp != goal_comp) {
+                // Goal is in a different region. Spiral out from g
+                // looking for the closest cell in start_comp. Search a
+                // generous radius — covers reasonable "go as close as
+                // you can" cases. If nothing in start's component is
+                // close to the goal, return invalid (caller treats as
+                // "no path"; stuck-detection handles user feedback).
+                bool found = false;
+                glm::ivec2 best_g = g;
+                f32 best_d2 = 1e30f;
+                const i32 max_r = 64 * static_cast<i32>(PATHING_SUBDIV);
+                for (i32 r = 1; r <= max_r && !found; ++r) {
+                    for (i32 dy = -r; dy <= r; ++dy) {
+                        for (i32 dx = -r; dx <= r; ++dx) {
+                            if (std::abs(dx) != r && std::abs(dy) != r) continue;
+                            i32 nx = g.x + dx, ny = g.y + dy;
+                            if (!in_bounds(nx, ny)) continue;
+                            const u32 c = comps[static_cast<u32>(ny) * cells_x + static_cast<u32>(nx)];
+                            if (c != start_comp) continue;
+                            f32 d2 = static_cast<f32>(dx*dx + dy*dy);
+                            if (d2 < best_d2) {
+                                best_d2 = d2;
+                                best_g  = {nx, ny};
+                                found = true;
+                            }
+                        }
+                    }
+                }
+                if (!found) return result;
+                g = best_g;
+            }
+        }
+    }
+
     if (s == g) {
         result.cells.push_back(s);
         result.valid = true;
         return result;
     }
 
+    // Closed set: persistent stamp array, generation-counter cleared.
+    // Bump the generation; "closed" = m_visit_stamp[idx] == m_visit_gen.
+    // On rollover the stamp array clears once so old stamps can't match.
+    const size_t cells_total = static_cast<size_t>(cells_x) * cells_y;
+    if (m_visit_stamp.size() < cells_total) m_visit_stamp.assign(cells_total, 0);
+    if (++m_visit_gen == 0) {
+        std::fill(m_visit_stamp.begin(), m_visit_stamp.end(), 0);
+        m_visit_gen = 1;
+    }
+    const u32 gen = m_visit_gen;
+    auto cell_idx = [&](u32 cx, u32 cy) -> u32 { return cy * cells_x + cx; };
+
     std::priority_queue<AStarNode, std::vector<AStarNode>, NodeCompare> open;
-    std::vector<bool> closed(cells_x * cells_y, false);
-    auto closed_key = [&](u32 cx, u32 cy) -> u32 { return cy * cells_x + cx; };
-    std::vector<AStarNode> all_nodes;
-    all_nodes.reserve(512);
+    m_astar_nodes.clear();
 
     // Octile distance — exact minimum cost on an 8-direction grid where
     // cardinal moves cost 1 and diagonals cost √2. Tighter than Euclidean
@@ -415,12 +616,16 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     static constexpr i32 dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     static constexpr f32 cost[] = {1.414f, 1.0f, 1.414f, 1.0f, 1.0f, 1.414f, 1.0f, 1.414f};
 
-    // Cap = max number of UNIQUE cells visited (lazy-dedup pops aren't
-    // counted). 768 leaves comfortable headroom over the ~256 cells
-    // typical scenes need; if A* still gives up before reaching the
-    // goal, the closest-reachable fallback returns a partial path and
-    // the unit re-paths after it walks closer.
-    static constexpr u32 max_iterations = 768;
+    // A* iteration cap — safety net only. The connected-components
+    // pre-flight above guarantees the goal is reachable from the start,
+    // so A* will terminate by finding it; the cap protects against
+    // pathological detour cases where the octile heuristic underestimates
+    // enough that A* fans out a large fraction of the start's component
+    // before reaching the goal. 1024 unique cell expansions covers any
+    // realistic in-game path on our maps with comfortable headroom; if
+    // we ever do hit it the closest-reachable fallback below returns a
+    // partial path and the unit re-paths from the new vantage.
+    static constexpr u32 max_iterations = 1024;
     u32 iterations = 0;
 
     u32 best_reachable_idx = UINT32_MAX;
@@ -430,13 +635,13 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
         AStarNode current = open.top();
         open.pop();
 
-        u32 ck = closed_key(current.tx, current.ty);
-        if (closed[ck]) continue;   // already-closed pops don't count
-        closed[ck] = true;
+        const u32 ck = cell_idx(current.tx, current.ty);
+        if (m_visit_stamp[ck] == gen) continue;   // already closed
+        m_visit_stamp[ck] = gen;
         if (iterations++ >= max_iterations) break;
 
-        u32 current_idx = static_cast<u32>(all_nodes.size());
-        all_nodes.push_back(current);
+        u32 current_idx = static_cast<u32>(m_astar_nodes.size());
+        m_astar_nodes.push_back(current);
 
         f32 h = heuristic(current.tx, current.ty);
         if (h < best_reachable_h) {
@@ -447,7 +652,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
         if (current.tx == static_cast<u32>(g.x) && current.ty == static_cast<u32>(g.y)) {
             u32 idx = current_idx;
             while (idx != UINT32_MAX) {
-                auto& n = all_nodes[idx];
+                auto& n = m_astar_nodes[idx];
                 result.cells.push_back({static_cast<i32>(n.tx), static_cast<i32>(n.ty)});
                 idx = n.parent_idx;
             }
@@ -470,15 +675,34 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
             u32 ucx = static_cast<u32>(ncx);
             u32 ucy = static_cast<u32>(ncy);
 
-            if (closed[closed_key(ucx, ucy)]) continue;
+            if (m_visit_stamp[cell_idx(ucx, ucy)] == gen) continue;
             if (!can_occupy_cell(ncx, ncy, move_type)) continue;
 
-            // Diagonal corner-cut prevention at cell granularity.
+            // Diagonal corner-cut prevention at cell granularity. We
+            // also require both cardinal intermediates to be cliff/edge
+            // connected when they cross tile boundaries — matches the
+            // flood used to build connected components (which uses
+            // cardinal-only steps). Without this, A* could "jump" via a
+            // diagonal across a cliff edge that CC considers a wall,
+            // and the CC pre-flight would falsely route the goal away
+            // from a reachable destination.
             if (dx[i] != 0 && dy[i] != 0) {
-                if (!can_occupy_cell(static_cast<i32>(current.tx) + dx[i],
-                                     static_cast<i32>(current.ty), move_type)) continue;
-                if (!can_occupy_cell(static_cast<i32>(current.tx),
-                                     static_cast<i32>(current.ty) + dy[i], move_type)) continue;
+                const i32 ix1 = static_cast<i32>(current.tx) + dx[i];
+                const i32 iy1 = static_cast<i32>(current.ty);
+                const i32 ix2 = static_cast<i32>(current.tx);
+                const i32 iy2 = static_cast<i32>(current.ty) + dy[i];
+                if (!can_occupy_cell(ix1, iy1, move_type)) continue;
+                if (!can_occupy_cell(ix2, iy2, move_type)) continue;
+                const u32 i1_tx = static_cast<u32>(ix1) / PATHING_SUBDIV;
+                const u32 i1_ty = static_cast<u32>(iy1) / PATHING_SUBDIV;
+                const u32 i2_tx = static_cast<u32>(ix2) / PATHING_SUBDIV;
+                const u32 i2_ty = static_cast<u32>(iy2) / PATHING_SUBDIV;
+                if ((i1_tx != cur_tx || i1_ty != cur_ty) &&
+                    !tiles_terrain_connected(td, cur_tx, cur_ty, i1_tx, i1_ty, move_type))
+                    continue;
+                if ((i2_tx != cur_tx || i2_ty != cur_ty) &&
+                    !tiles_terrain_connected(td, cur_tx, cur_ty, i2_tx, i2_ty, move_type))
+                    continue;
             }
 
             // Cross-tile transitions need a cliff / edge-vertex check.
@@ -504,9 +728,6 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
             }
 
             f32 step_cost = cost[i];
-            if (unit_tiles.contains(tile_key(n_tx, n_ty))) {
-                step_cost += UNIT_COST_PENALTY;
-            }
             f32 new_g = current.g_cost + step_cost;
             f32 new_f = new_g + heuristic(ucx, ucy);
             open.push({ucx, ucy, new_g, new_f, current_idx, new_cliff});
@@ -517,7 +738,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     if (best_reachable_idx != UINT32_MAX && best_reachable_idx != 0) {
         u32 idx = best_reachable_idx;
         while (idx != UINT32_MAX) {
-            auto& n = all_nodes[idx];
+            auto& n = m_astar_nodes[idx];
             result.cells.push_back({static_cast<i32>(n.tx), static_cast<i32>(n.ty)});
             idx = n.parent_idx;
         }
@@ -681,6 +902,12 @@ void Pathfinder::block_cells(i32 cx, i32 cy, u32 w, u32 h) {
             if (m_runtime_blocked_cells[idx] < 255) m_runtime_blocked_cells[idx]++;
         }
     }
+    // Blocked cells can split a previously connected region in two —
+    // mark both MoveType component maps stale. The next find_corridor
+    // refloods only the map for its requested MoveType, so games that
+    // never use Amphibious pay nothing.
+    m_components_ground_dirty     = true;
+    m_components_amphibious_dirty = true;
 }
 
 void Pathfinder::unblock_cells(i32 cx, i32 cy, u32 w, u32 h) {
@@ -697,6 +924,10 @@ void Pathfinder::unblock_cells(i32 cx, i32 cy, u32 w, u32 h) {
             if (m_runtime_blocked_cells[idx] > 0) m_runtime_blocked_cells[idx]--;
         }
     }
+    // Unblocked cells may merge two previously separate components —
+    // same flag pair, same refresh path.
+    m_components_ground_dirty     = true;
+    m_components_amphibious_dirty = true;
 }
 
 void Pathfinder::block_tiles(i32 tx, i32 ty, u32 w, u32 h) {

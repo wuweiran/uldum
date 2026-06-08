@@ -315,9 +315,19 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         bool need_repath = rp_drift || rp_timer;
 
         if (need_repath) {
-            mov.repath_timer = Movement::REPATH_INTERVAL;
+            // Adaptive interval:
+            //   * stuck units repath sooner so they recover from a
+            //     transient block fast.
+            //   * a small id-based jitter spreads N units' next repaths
+            //     across a window — without it, a box-select issued on
+            //     a single tick has all N units' timers expire on the
+            //     same later tick, spiking the pathfinder.
+            f32 base = Movement::REPATH_INTERVAL;
+            if (mov.stuck_timer > 0.5f) base = 0.5f;
+            const f32 jitter = static_cast<f32>(id % 16) * (1.0f / 16.0f) * 0.25f;
+            mov.repath_timer = base + jitter;
             mov.path_dest = goal2d;
-            auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type, &world, id);
+            auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type);
             if (corridor.valid && !corridor.cells.empty()) {
                 mov.corridor = std::move(corridor.cells);
                 mov.waypoint = pathfinder.find_straight_waypoint(pos2d, mov.corridor, mov.collision_radius, mov.cliff_level, mov.type);

@@ -531,9 +531,6 @@ bool Rhi::create_swapchain(u32 width, u32 height) {
                        "colors will render without gamma correction",
                   static_cast<int>(chosen_format.format));
     }
-    log::info(TAG, "Swapchain format: {} (colorSpace: {})",
-              static_cast<int>(chosen_format.format),
-              static_cast<int>(chosen_format.colorSpace));
 
     // Pick extent — skip if zero (window minimized or during display switch)
     VkExtent2D extent;

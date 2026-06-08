@@ -46,6 +46,16 @@ public:
         // index into the previous terrain's pathing grid. Drop them so a
         // same-size new terrain doesn't inherit stale blocks.
         m_runtime_blocked_cells.clear();
+        // Scratch sized to the previous terrain's cell count — drop so
+        // build_cache resizes to the new dimensions on the next search.
+        m_visit_stamp.clear();
+        m_visit_gen = 0;
+        m_astar_nodes.clear();
+        m_static_occupiable_ground.clear();
+        m_components_ground.clear();
+        m_components_amphibious.clear();
+        m_components_ground_dirty     = false;
+        m_components_amphibious_dirty = false;
         build_cache();
     }
     const map::TerrainData* terrain() const { return m_terrain; }
@@ -93,11 +103,11 @@ public:
 
     // ── Pathfinding ───────────────────────────────────────────────────────
 
-    // Find a corridor (tile path) from start to goal.
-    // If world and self_id are provided, tiles occupied by other units incur extra cost.
+    // Find a corridor (tile path) from start to goal. Returns an empty
+    // (invalid) corridor when no path exists; the caller treats that as
+    // a "no path" signal.
     Corridor find_corridor(glm::vec2 start, glm::vec2 goal,
-                           u8 start_cliff_level, MoveType move_type,
-                           const World* world = nullptr, u32 self_id = UINT32_MAX) const;
+                           u8 start_cliff_level, MoveType move_type) const;
 
     // Given a corridor's cells, find the farthest point reachable in a
     // straight line from the given position without leaving the corridor.
@@ -137,6 +147,14 @@ public:
     // Build connectivity cache from terrain data. Call after set_terrain().
     void build_cache();
 
+    // Recompute the per-cell connected-component id map for the given
+    // MoveType if its dirty flag is set (e.g. after a building placement
+    // or destruction). Otherwise a no-op. Called lazily from
+    // find_corridor — only the MoveType we're actually pathing for ever
+    // gets flooded, so maps with no Amphibious units never pay that
+    // cost. Air is a no-op (returns immediately).
+    void refresh_components_if_dirty(MoveType mt) const;
+
 private:
     const map::TerrainData* m_terrain = nullptr;
     // Per-cell refcount of runtime blockers (buildings, etc.). Sized to
@@ -150,6 +168,54 @@ private:
     std::vector<u8>   m_cliff_level;      // cliff_level_on_tile per tile
     std::vector<u8>   m_connectivity;     // 8 bits: which directions are connected (Ground)
     u32 m_cache_w = 0, m_cache_h = 0;
+
+    // Per-cell static-occupiable cache for Ground (terrain passable +
+    // not deep water). Doesn't include the runtime-block check — that
+    // changes when buildings come and go and is checked separately.
+    // Sized cells_x * cells_y, built once in build_cache.
+    std::vector<u8>  m_static_occupiable_ground;
+    u32 m_cells_w = 0, m_cells_h = 0;
+
+    // A* scratch — persistent across calls to avoid per-search heap
+    // churn. The "closed" set is a generation-counter array: at the
+    // start of a search we bump m_visit_gen; a cell is closed when
+    // m_visit_stamp[idx] == m_visit_gen. This makes "clear the closed
+    // set" O(1) instead of O(cells_x * cells_y) zero-fill per call.
+    // Size matches cells_x * cells_y on first use.
+    mutable std::vector<u32> m_visit_stamp;
+    mutable u32              m_visit_gen = 0;
+    // A* node pool — reused via .clear() each search; the underlying
+    // capacity sticks around.
+    struct AStarNode {
+        u32 tx, ty;
+        f32 g_cost;
+        f32 f_cost;
+        u32 parent_idx;
+        u8  cliff_level;
+    };
+    struct NodeCompare {
+        bool operator()(const AStarNode& a, const AStarNode& b) const {
+            return a.f_cost > b.f_cost;
+        }
+    };
+    mutable std::vector<AStarNode> m_astar_nodes;
+
+    // Per-cell connected-component id, one map per MoveType that needs
+    // distinct connectivity (Ground vs Amphibious — Air can fly to any
+    // cell so doesn't need one). 0 = unreachable cell; ids start at 1.
+    // Built lazily on first find_corridor that needs the relevant
+    // MoveType, refreshed when the corresponding dirty flag is set
+    // (block_cells / unblock_cells flip both flags). u32 ids so we
+    // never wrap on dense maze maps with many tiny components.
+    //
+    // The per-MoveType dirty pair (instead of a single bool) lets the
+    // typical "only Ground units exist" map skip the Amphibious flood
+    // forever: as long as no Amphibious request ever asks for it, the
+    // flag is never read and the flood never runs.
+    mutable std::vector<u32> m_components_ground;
+    mutable std::vector<u32> m_components_amphibious;
+    mutable bool             m_components_ground_dirty     = false;
+    mutable bool             m_components_amphibious_dirty = false;
 };
 
 } // namespace uldum::simulation
