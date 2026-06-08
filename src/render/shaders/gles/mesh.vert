@@ -16,8 +16,13 @@ struct InstanceData {
     uint  _pad;                 //  4
 };
 
-// set 2 binding 0 → flat binding 32
-layout(binding = 32, std430) readonly buffer InstanceBuffer {
+// SSBO uses a dense binding namespace on GLES (binding=0 across all
+// pipelines that have an SSBO). The CPU side packs SSBO bindings into
+// the descriptor's `binding` value directly (no set*N offset) because
+// the GLES SSBO binding pool is tiny — only 4 slots guaranteed by
+// ES 3.1 spec — so the flat formula used for UBOs/samplers would
+// overflow it. See command_list.cpp::apply_descriptor_bindings.
+layout(binding = 0, std430) readonly buffer InstanceBuffer {
     InstanceData instances[];
 };
 

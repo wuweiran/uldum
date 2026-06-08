@@ -8,6 +8,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "rhi/handles.h"
+#include "rhi/rhi.h"   // for rhi::MAX_FRAMES_IN_FLIGHT
 
 #include <array>
 #include <string>
@@ -68,10 +69,15 @@ struct AnimationInstance {
     // Global bone transforms (before inverse bind — for attachment point lookups)
     std::vector<glm::mat4> bone_globals;
 
-    // Per-entity GPU bone buffer (allocated by renderer). Persistent map
-    // lives inside the RHI's record; query via rhi.mapped_ptr(bone_buffer).
-    rhi::BufferHandle        bone_buffer{};
-    rhi::DescriptorSetHandle bone_descriptor{};
+    // Per-entity GPU bone buffer + descriptor — one per in-flight frame
+    // slot, NOT one shared. Each tick the renderer writes new bone
+    // matrices into the slot keyed by rhi.frame_index(); meanwhile the
+    // GPU is still consuming the previous slot's contents from the
+    // last submitted frame. Sharing a single buffer across frames is a
+    // write-after-read hazard that Vulkan sync validation flags and
+    // that can cause one-frame skinning pops on real drivers.
+    std::array<rhi::BufferHandle,        rhi::MAX_FRAMES_IN_FLIGHT> bone_buffer{};
+    std::array<rhi::DescriptorSetHandle, rhi::MAX_FRAMES_IN_FLIGHT> bone_descriptor{};
 
     AnimationInstance() { state_to_clip.fill(-1); }
 };

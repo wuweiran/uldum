@@ -408,6 +408,37 @@ bool Rhi::init(const Config& config, platform::Platform& platform) {
               reinterpret_cast<const char*>(glGetString(GL_VERSION)),
               reinterpret_cast<const char*>(glGetString(GL_VENDOR)),
               reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
+
+    // Sanity-check the binding pools we depend on. The engine uses
+    // UBO slots up to 31 (push-constant UBO + draw-info UBO at the
+    // top of the pool; lower slots for shadow/env/per-pipeline UBOs)
+    // and a small number of SSBO slots (currently 1 per pipeline at
+    // binding 0). ES 3.1 minimums are SSBO=4 and UBO=24, so a device
+    // sitting at spec-min would fail silently on slots 24-31. Mali
+    // Valhall + Adreno 6xx+ go well above the minimum; if a low-end
+    // chip ever exposes <32 UBO slots we want a hard error at boot
+    // rather than mysterious missing-data renders later.
+    {
+        GLint max_ubo = 0, max_ssbo_vs = 0, max_ssbo_fs = 0, max_combined_tex = 0;
+        glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS,          &max_ubo);
+        glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS,      &max_ssbo_vs);
+        glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS,    &max_ssbo_fs);
+        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,      &max_combined_tex);
+        log::info(TAG,
+                  "GL limits: UBO bindings={}, SSBO blocks (vs/fs)={}/{}, combined tex units={}",
+                  max_ubo, max_ssbo_vs, max_ssbo_fs, max_combined_tex);
+        if (max_ubo < 32) {
+            log::error(TAG,
+                       "GL_MAX_UNIFORM_BUFFER_BINDINGS={} < 32 required by the engine "
+                       "(push-constant UBO uses slot 30, draw-info UBO uses slot 31). "
+                       "Bindings above the limit are silently dropped.", max_ubo);
+        }
+        if (max_ssbo_vs < 1) {
+            log::error(TAG,
+                       "GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS={} < 1 required for "
+                       "instance / bone SSBOs.", max_ssbo_vs);
+        }
+    }
     return true;
 }
 

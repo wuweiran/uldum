@@ -12,8 +12,12 @@ layout(binding = 30, std140) uniform PushConstants {
     vec4 visual;
 } pc;
 
-// Bone matrices SSBO — set 2 binding 0 → flat binding 32.
-layout(binding = 32, std430) readonly buffer BoneMatrices {
+// Bone matrices SSBO. On GLES SSBOs live in their own dense binding
+// namespace at binding=0 across all pipelines that use one — ES 3.1
+// only guarantees 4 SSBO bindings, so the wider flat-formula used for
+// UBOs/samplers would overflow on Mali/Adreno. See
+// command_list.cpp::apply_descriptor_bindings.
+layout(binding = 0, std430) readonly buffer BoneMatrices {
     mat4 bones[];
 };
 

@@ -89,6 +89,8 @@ void Rhi::shutdown() {
         if (m_image_available[i]) { vkDestroySemaphore(m_device, m_image_available[i], nullptr);  m_image_available[i] = VK_NULL_HANDLE; }
         if (m_command_pools[i])   { vkDestroyCommandPool(m_device, m_command_pools[i], nullptr);  m_command_pools[i] = VK_NULL_HANDLE; }
     }
+    if (m_oneshot_fence) { vkDestroyFence(m_device, m_oneshot_fence, nullptr); m_oneshot_fence = VK_NULL_HANDLE; }
+    if (m_oneshot_pool)  { vkDestroyCommandPool(m_device, m_oneshot_pool, nullptr); m_oneshot_pool = VK_NULL_HANDLE; }
 
     destroy_swapchain();
 
@@ -831,8 +833,35 @@ bool Rhi::create_sync_objects() {
     }
 
     // m_render_finished is per-swapchain-image and created/resized inside
-    // create_swapchain — it has to match the image count on every recreate,
+    // create_swapchain — it has to match the image count on every resize,
     // so we don't do a one-shot creation here.
+
+    // Dedicated pool + fence for begin_oneshot. Separate from
+    // m_command_pools so background asset uploads can run without
+    // racing the main thread's frame recording. The fence replaces
+    // vkQueueWaitIdle at end_oneshot so a oneshot doesn't stall every
+    // other in-flight submission.
+    {
+        VkCommandPoolCreateInfo pool_ci{};
+        pool_ci.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        // Transient: hint to the driver that command buffers from this
+        // pool are short-lived. Reset bit lets us avoid re-allocating
+        // the pool each call.
+        pool_ci.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT
+                                 | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_ci.queueFamilyIndex = m_graphics_family;
+        if (vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_oneshot_pool) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create oneshot command pool");
+            return false;
+        }
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fci.flags = 0;  // not signaled; end_oneshot waits on it after submit
+        if (vkCreateFence(m_device, &fci, nullptr, &m_oneshot_fence) != VK_SUCCESS) {
+            log::error(TAG, "Failed to create oneshot fence");
+            return false;
+        }
+    }
 
     return true;
 }
@@ -847,11 +876,16 @@ void Rhi::handle_resize(u32 width, u32 height) {
 }
 
 CommandList Rhi::begin_oneshot() {
-    VkCommandPool pool = m_command_pools[0];
+    // The mutex serializes concurrent oneshot calls — pool allocation
+    // is externally synchronized per Vulkan spec. Held until end_oneshot
+    // returns so the matching alloc / submit / wait / free run as one
+    // critical section. (If oneshot throughput ever becomes a concern,
+    // the right fix is a pool-per-thread, not finer-grained locking.)
+    m_oneshot_mutex.lock();
 
     VkCommandBufferAllocateInfo alloc_info{};
     alloc_info.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool        = pool;
+    alloc_info.commandPool        = m_oneshot_pool;
     alloc_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
@@ -875,10 +909,17 @@ void Rhi::end_oneshot(CommandList& cl) {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers    = &cmd;
 
-    vkQueueSubmit(m_graphics_queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(m_graphics_queue);
+    // Per-call fence instead of vkQueueWaitIdle: only blocks until
+    // THIS submission completes, not every other in-flight present /
+    // frame draw. Reset before submitting because the fence is
+    // re-used across oneshot calls.
+    vkResetFences(m_device, 1, &m_oneshot_fence);
+    vkQueueSubmit(m_graphics_queue, 1, &submit, m_oneshot_fence);
+    vkWaitForFences(m_device, 1, &m_oneshot_fence, VK_TRUE, UINT64_MAX);
 
-    vkFreeCommandBuffers(m_device, m_command_pools[0], 1, &cmd);
+    vkFreeCommandBuffers(m_device, m_oneshot_pool, 1, &cmd);
+
+    m_oneshot_mutex.unlock();
 }
 
 // ── Resource factories ──────────────────────────────────────────────────

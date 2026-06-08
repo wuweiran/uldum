@@ -139,10 +139,15 @@ static void apply_pipeline_state(const Rhi::PipelineRecord& p) {
                 (p.blend.write_mask & 0x8) ? GL_TRUE : GL_FALSE);
 }
 
-// Bind all currently active descriptor sets to GL slots. Layout's
-// (set_index * kBindingsPerSet + binding) → flat GL binding, used for
-// BOTH UBO/SSBO binding points AND sampler texture units. The hand-written
-// GLES shaders declare `layout(binding=slot)` to match.
+// Bind all currently active descriptor sets to GL slots. UBO + sampler
+// bindings use the flat `(set * kBindingsPerSet + binding)` formula —
+// the hand-written GLES shaders declare `layout(binding=N)` matching
+// those flat numbers. SSBO bindings use the descriptor's `binding`
+// VALUE DIRECTLY, ignoring the set index: ES 3.1 spec only guarantees
+// 4 SSBO bindings total, so the flat formula (which produces slot 32
+// for set 2 binding 0) violates spec on real Mali/Adreno hardware and
+// silently fails to bind. Our engine puts at most one SSBO per
+// pipeline at binding 0, so packing them to slot 0 is collision-free.
 static void apply_descriptor_bindings(Rhi& rhi, const Rhi::PipelineLayoutRecord& pl,
                                       std::span<const DescriptorSetHandle> sets) {
     for (u32 s = 0; s < sets.size(); ++s) {
@@ -151,26 +156,37 @@ static void apply_descriptor_bindings(Rhi& rhi, const Rhi::PipelineLayoutRecord&
         if (!set) continue;
         const u32 base = s * Rhi::PipelineLayoutRecord::kBindingsPerSet;
         for (const auto& b : set->bindings) {
-            const GLuint slot = base + b.binding;
             switch (b.type) {
-                case DescriptorType::UniformBuffer:
-                case DescriptorType::StorageBuffer: {
+                case DescriptorType::UniformBuffer: {
                     rhi.sync_buffer_to_gpu(b.buffer);
                     const auto* buf = rhi.buffer_record(b.buffer);
                     if (!buf) break;
-                    const GLenum target = (b.type == DescriptorType::UniformBuffer)
-                        ? GL_UNIFORM_BUFFER : GL_SHADER_STORAGE_BUFFER;
+                    const GLuint slot = base + b.binding;
                     const GLintptr  off = static_cast<GLintptr>(b.buffer_offset);
                     const GLsizeiptr range = (b.buffer_range == ~0ull)
                         ? static_cast<GLsizeiptr>(buf->size)
                         : static_cast<GLsizeiptr>(b.buffer_range);
-                    glBindBufferRange(target, slot, buf->name, off, range);
+                    glBindBufferRange(GL_UNIFORM_BUFFER, slot, buf->name, off, range);
+                    break;
+                }
+                case DescriptorType::StorageBuffer: {
+                    rhi.sync_buffer_to_gpu(b.buffer);
+                    const auto* buf = rhi.buffer_record(b.buffer);
+                    if (!buf) break;
+                    // SSBO uses b.binding directly — see header comment.
+                    const GLuint slot = b.binding;
+                    const GLintptr  off = static_cast<GLintptr>(b.buffer_offset);
+                    const GLsizeiptr range = (b.buffer_range == ~0ull)
+                        ? static_cast<GLsizeiptr>(buf->size)
+                        : static_cast<GLsizeiptr>(b.buffer_range);
+                    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, slot, buf->name, off, range);
                     break;
                 }
                 case DescriptorType::SampledImage:
                 case DescriptorType::CombinedImageSampler: {
                     const auto* tex = rhi.texture_record(b.texture);
                     if (!tex) break;
+                    const GLuint slot = base + b.binding;
                     glActiveTexture(GL_TEXTURE0 + slot);
                     glBindTexture(tex->target, tex->name);
                     if (b.type == DescriptorType::CombinedImageSampler) {
@@ -466,16 +482,51 @@ void CommandList::clear_color_image(TextureHandle image, f32 r, f32 g, f32 b, f3
     auto& rhi = rhi_of(m_cmd);
     const auto* tex = rhi.texture_record(image);
     if (!tex) return;
-    // ES 3.2 has glClearTexImage via EXT_clear_texture; use it when present.
-    // Fallback: bind to a temporary FBO and glClear.
-    const f32 color[4] = { r, g, b, a };
-    if (tex->target == GL_TEXTURE_2D || tex->target == GL_TEXTURE_2D_ARRAY) {
-        // EXT_clear_texture entry point — guarded behind a runtime check
-        // would belong here; for now assume it's available.
-        // glClearTexImageEXT(tex->name, 0, GL_RGBA, GL_FLOAT, color);
-        (void)color;
+    // ES 3.2 has glClearTexImage via EXT_clear_texture, but the
+    // extension is rare on Android. Use the universally-available
+    // FBO + glClear fallback instead: attach the texture as
+    // COLOR_ATTACHMENT0 of a scratch FBO, set the clear color, and
+    // clear. Restores the previous FBO binding when done.
+    //
+    // The old implementation was a logged no-op, which left the
+    // font atlas reading whatever was previously resident in the
+    // allocation — visually most Android drivers zero-init for
+    // security so it happened to look fine, but that's not
+    // guaranteed and broke on the first driver that didn't.
+    const GLfloat color[4] = { r, g, b, a };
+    GLint prev_fbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+
+    static GLuint scratch_fbo = 0;
+    if (scratch_fbo == 0) glGenFramebuffers(1, &scratch_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, scratch_fbo);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    if (tex->target == GL_TEXTURE_2D) {
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex->name, 0);
+        glClearBufferfv(GL_COLOR, 0, color);
+    } else if (tex->target == GL_TEXTURE_2D_ARRAY) {
+        // Clear every layer of the array. Atlases are typically a
+        // single layer so this loop usually runs once.
+        for (u32 layer = 0; layer < tex->layers; ++layer) {
+            glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                      tex->name, 0, static_cast<GLint>(layer));
+            glClearBufferfv(GL_COLOR, 0, color);
+        }
+    } else if (tex->target == GL_TEXTURE_CUBE_MAP) {
+        for (u32 face = 0; face < 6; ++face) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                                   tex->name, 0);
+            glClearBufferfv(GL_COLOR, 0, color);
+        }
+    } else {
+        log::warn(TAG, "clear_color_image: unsupported texture target 0x{:x}", tex->target);
     }
-    log::warn(TAG, "clear_color_image: needs EXT_clear_texture path");
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
 }
 
 void CommandList::begin_rendering(const RenderingDesc& desc) {

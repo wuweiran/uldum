@@ -284,7 +284,9 @@ void Renderer::end_session() {
     // GPU must be idle before freeing any bone buffer still in flight.
     m_rhi->wait_idle();
     for (auto& [eid, anim] : m_anim_instances) {
-        m_rhi->destroy_buffer(anim.bone_buffer);
+        for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+            m_rhi->destroy_buffer(anim.bone_buffer[f]);
+        }
         // Descriptor sets will be freed when the pool is destroyed in
         // shutdown(). They're cheap to leak per session for the small
         // # of units we run; revisit when sessions are very long-lived.
@@ -321,7 +323,9 @@ void Renderer::shutdown() {
     destroy_terrain_mesh(*m_rhi, m_terrain);
     for (auto& [eid, anim] : m_anim_instances) {
         // Descriptor sets freed implicitly when pools are destroyed below
-        m_rhi->destroy_buffer(anim.bone_buffer);
+        for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+            m_rhi->destroy_buffer(anim.bone_buffer[f]);
+        }
     }
     m_anim_instances.clear();
     for (auto& [path, lm] : m_model_cache) {
@@ -451,23 +455,30 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
         inst.looping = false;
     }
 
-    // Allocate per-entity bone buffer (persistently mapped)
+    // Allocate per-entity bone buffer (persistently mapped). One buffer
+    // per in-flight frame slot — each tick the upload pickts the
+    // current frame's slot; the GPU keeps reading the previous slot
+    // from the still-in-flight last frame. Single-buffer sharing here
+    // was a write-after-read hazard (sync validation flagged it).
     u32 bone_count = static_cast<u32>(model.data.skeleton.bones.size());
     if (bone_count > 0) {
         rhi::BufferDesc d{};
         d.size   = bone_count * sizeof(glm::mat4);
         d.usage  = rhi::BufferUsage::Storage;
         d.memory = rhi::MemoryUsage::HostSequential;
-        inst.bone_buffer = m_rhi->create_buffer(d);
 
-        // Initialize to identity
-        auto* bones = static_cast<glm::mat4*>(m_rhi->mapped_ptr(inst.bone_buffer));
-        for (u32 i = 0; i < bone_count; ++i) bones[i] = glm::mat4{1.0f};
+        for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+            inst.bone_buffer[f] = m_rhi->create_buffer(d);
 
-        // Allocate descriptor set
-        inst.bone_descriptor = allocate_bone_descriptor(
-            inst.bone_buffer,
-            bone_count * sizeof(glm::mat4));
+            // Initialize to identity so the first frame before any
+            // animation eval still renders a sensible pose.
+            auto* bones = static_cast<glm::mat4*>(m_rhi->mapped_ptr(inst.bone_buffer[f]));
+            for (u32 i = 0; i < bone_count; ++i) bones[i] = glm::mat4{1.0f};
+
+            inst.bone_descriptor[f] = allocate_bone_descriptor(
+                inst.bone_buffer[f],
+                bone_count * sizeof(glm::mat4));
+        }
     }
 
     auto [inserted, _] = m_anim_instances.emplace(entity_id, std::move(inst));
@@ -2579,6 +2590,8 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
         cmd.set_viewport(0, 0, size_f, size_f);
         cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
 
+        const u32 fi = m_rhi->frame_index();
+
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
             const auto& renderable = renderables.data()[i];
@@ -2592,17 +2605,17 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
             if (is_fog_hidden(world, id, *transform)) continue;
 
             auto it = m_anim_instances.find(id);
-            if (it == m_anim_instances.end() || !it->second.bone_descriptor.is_valid()) continue;
+            if (it == m_anim_instances.end() || !it->second.bone_descriptor[fi].is_valid()) continue;
 
             // Upload bones (animation already evaluated in draw())
             auto& anim = it->second;
-            if (void* dst = m_rhi->mapped_ptr(anim.bone_buffer);
+            if (void* dst = m_rhi->mapped_ptr(anim.bone_buffer[fi]);
                 dst && !anim.bone_matrices.empty()) {
                 std::memcpy(dst, anim.bone_matrices.data(),
                             anim.bone_matrices.size() * sizeof(glm::mat4));
             }
 
-            cmd.bind_descriptor_set(m_skinned_shadow_pipeline_layout, 0, anim.bone_descriptor);
+            cmd.bind_descriptor_set(m_skinned_shadow_pipeline_layout, 0, anim.bone_descriptor[fi]);
 
             glm::vec3 vis_pos = lerp_position(*transform, alpha);
             f32 vis_facing = lerp_facing(*transform, alpha);
@@ -3121,7 +3134,9 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         for (u32 eid : stale) {
             auto it = m_anim_instances.find(eid);
             if (it != m_anim_instances.end()) {
-                m_rhi->destroy_buffer(it->second.bone_buffer);
+                for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+                    m_rhi->destroy_buffer(it->second.bone_buffer[f]);
+                }
                 m_anim_instances.erase(it);
             }
         }
@@ -3242,6 +3257,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         cmd.set_viewport(0, 0, vw, vh);
         cmd.set_scissor(0, 0, extent.width, extent.height);
 
+        const u32 fi = m_rhi->frame_index();
         auto draw_frustum = m_camera.frustum();
         for (u32 i = 0; i < renderables.count(); ++i) {
             u32 id = renderables.ids()[i];
@@ -3267,10 +3283,14 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             auto it = m_anim_instances.find(id);
             if (it == m_anim_instances.end()) continue;
             auto& anim = it->second;
-            if (!anim.bone_descriptor.is_valid()) continue;
+            if (!anim.bone_descriptor[fi].is_valid()) continue;
 
-            // Upload this entity's bone matrices to its own SSBO
-            if (void* dst = m_rhi->mapped_ptr(anim.bone_buffer);
+            // Upload this entity's bone matrices to its own SSBO. One
+            // buffer per in-flight frame slot — see animation.h. The
+            // GPU is still reading the OTHER slot from the previous
+            // frame's submission, so writing the current slot now is
+            // hazard-free.
+            if (void* dst = m_rhi->mapped_ptr(anim.bone_buffer[fi]);
                 dst && !anim.bone_matrices.empty()) {
                 std::memcpy(dst, anim.bone_matrices.data(),
                             anim.bone_matrices.size() * sizeof(glm::mat4));
@@ -3284,7 +3304,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                 rhi::DescriptorSetHandle sets[] = {
                     mat.descriptor_set,
                     m_shadow_desc_set,
-                    anim.bone_descriptor,
+                    anim.bone_descriptor[fi],
                 };
                 cmd.bind_descriptor_sets(m_skinned_mesh_pipeline_layout, 0, std::span{sets, 3});
             }

@@ -15,6 +15,7 @@
 #include <vk_mem_alloc.h>
 #include <span>
 #include <vector>
+#include <mutex>
 
 #include "rhi/handles.h"
 #include "rhi/types.h"
@@ -213,6 +214,23 @@ private:
     VkCommandBuffer m_command_buffers[MAX_FRAMES_IN_FLIGHT] = {};
     VkSemaphore     m_image_available[MAX_FRAMES_IN_FLIGHT] = {};
     VkFence         m_in_flight[MAX_FRAMES_IN_FLIGHT]       = {};
+
+    // Dedicated pool + fence + mutex for begin_oneshot / end_oneshot.
+    // Originally these reused m_command_pools[0], which is wrong for
+    // two reasons: (1) VkCommandPool requires external synchronization
+    // — concurrent vkAllocateCommandBuffers / vkFreeCommandBuffers from
+    // a background asset-loading thread would be UB; (2) vkQueueWaitIdle
+    // at end_oneshot stalled the entire graphics queue (every in-flight
+    // present and frame submission), not just the oneshot.
+    //
+    // The mutex covers concurrent oneshot calls. The fence replaces
+    // vkQueueWaitIdle with a per-call wait, so a oneshot submitted
+    // alongside frame N's draws doesn't block frame N+1. The pool +
+    // fence are both pre-allocated; mutex is held only for the alloc
+    // / submit / wait / free critical section (microseconds at most).
+    VkCommandPool m_oneshot_pool  = VK_NULL_HANDLE;
+    VkFence       m_oneshot_fence = VK_NULL_HANDLE;
+    mutable std::mutex m_oneshot_mutex;
 
     // Per-swapchain-image semaphore for present — avoids reuse while present engine holds it
     std::vector<VkSemaphore> m_render_finished;
