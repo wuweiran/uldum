@@ -63,11 +63,15 @@ bool UPKReader::open(std::string_view path, std::string_view encryption_key) {
 
     std::ifstream file(std::string(path), std::ios::binary | std::ios::ate);
     if (!file) return false;
-    auto size = file.tellg();
+    // See asset.cpp::read_file_bytes for why we guard tellg / read here.
+    const auto pos = file.tellg();
+    if (pos < 0) return false;
+    const auto size = static_cast<size_t>(pos);
     file.seekg(0);
-    std::vector<u8> buf(static_cast<size_t>(size));
-    file.read(reinterpret_cast<char*>(buf.data()), size);
-    if (!file) return false;
+    std::vector<u8> buf(size);
+    file.read(reinterpret_cast<char*>(buf.data()),
+              static_cast<std::streamsize>(size));
+    if (!file || static_cast<size_t>(file.gcount()) != size) return false;
 
     if (!parse_archive_header(buf.data(), buf.size(), m_header, m_entries, path)) {
         close();
@@ -151,9 +155,16 @@ std::vector<u8> UPKReader::read_by_hash(u64 hash) const {
     // Both file-backed (open) and memory-backed (open_from_memory) paths store
     // the full archive in m_bytes — reads slice from there. File-backed path
     // loaded it once in open(); no per-read disk I/O.
-    if (entry->offset + entry->stored_size > m_bytes.size()) return {};
-    std::vector<u8> data(m_bytes.begin() + entry->offset,
-                         m_bytes.begin() + entry->offset + entry->stored_size);
+    //
+    // Bounds check in size_t to avoid u32 + u32 wrap — a crafted entry with
+    // offset near UINT32_MAX would otherwise pass `offset + stored_size >
+    // m_bytes.size()` and slice out of bounds. We also check offset alone
+    // first, then `stored_size > size - offset` so neither side underflows.
+    const size_t off = entry->offset;
+    const size_t sz  = entry->stored_size;
+    if (off > m_bytes.size() || sz > m_bytes.size() - off) return {};
+    std::vector<u8> data(m_bytes.begin() + off,
+                         m_bytes.begin() + off + sz);
 
     if (m_encrypted) {
         upk_xor(data.data(), static_cast<u32>(data.size()), m_key);

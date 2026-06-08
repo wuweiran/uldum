@@ -64,10 +64,19 @@ std::expected<TextureData, std::string> load_texture(std::string_view path) {
     if (!file) {
         return std::unexpected(std::format("Failed to open texture '{}'", path));
     }
-    auto size = file.tellg();
+    // See asset.cpp::read_file_bytes for why we guard tellg / read here.
+    const auto pos = file.tellg();
+    if (pos < 0) {
+        return std::unexpected(std::format("Failed to size texture '{}'", path));
+    }
+    const auto size = static_cast<size_t>(pos);
     file.seekg(0);
-    std::vector<u8> bytes(static_cast<size_t>(size));
-    file.read(reinterpret_cast<char*>(bytes.data()), size);
+    std::vector<u8> bytes(size);
+    file.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(size));
+    if (static_cast<size_t>(file.gcount()) != size) {
+        return std::unexpected(std::format("Short read on texture '{}'", path));
+    }
     return decode_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
 }
 

@@ -236,7 +236,7 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
             tex.width    = static_cast<u32>(w);
             tex.height   = static_cast<u32>(h);
             tex.channels = 4;
-            tex.pixels.assign(pixels, pixels + w * h * 4);
+            tex.pixels.assign(pixels, pixels + static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
             stbi_image_free(pixels);
             textures.push_back(std::move(tex));
             continue;
@@ -269,7 +269,7 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
             tex.width    = static_cast<u32>(w);
             tex.height   = static_cast<u32>(h);
             tex.channels = 4;
-            tex.pixels.assign(pixels, pixels + w * h * 4);
+            tex.pixels.assign(pixels, pixels + static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
             stbi_image_free(pixels);
             textures.push_back(std::move(tex));
         }
