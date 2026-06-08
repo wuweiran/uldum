@@ -105,7 +105,14 @@ void ENetTransport::send(u32 peer_id, std::span<const u8> data, bool reliable) {
     u8 channel = reliable ? 0 : 1;
 
     ENetPacket* packet = enet_packet_create(data.data(), data.size(), flags);
-    enet_peer_send(it->second, channel, packet);
+    // enet_peer_send returns 0 on success, < 0 on failure (peer in
+    // disconnect-pending state, invalid channel, etc.). On failure
+    // ENet does NOT take ownership; we have to destroy the packet
+    // ourselves or it leaks. With ~32 Hz state updates per peer this
+    // adds up quickly when a peer is stuck mid-disconnect.
+    if (enet_peer_send(it->second, channel, packet) < 0) {
+        enet_packet_destroy(packet);
+    }
 }
 
 void ENetTransport::broadcast(std::span<const u8> data, bool reliable) {

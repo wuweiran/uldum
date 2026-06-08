@@ -193,9 +193,14 @@ bool spawn_worker(const std::vector<std::string>& argv,
 
 bool worker_still_running(const Session& s) {
     if (!s.process_handle) return false;
-    DWORD code = 0;
-    if (!GetExitCodeProcess(s.process_handle, &code)) return false;
-    return code == STILL_ACTIVE;
+    // Microsoft's docs explicitly warn against `code == STILL_ACTIVE`
+    // for liveness: STILL_ACTIVE is the literal value 259, and any
+    // worker that legitimately exits with 259 (some asserts, third-
+    // party libs, runtime termination paths) would be reported alive
+    // forever. WaitForSingleObject with a zero timeout polls the
+    // process handle's signaled state, which transitions on real
+    // termination only and is independent of exit code.
+    return WaitForSingleObject(s.process_handle, 0) != WAIT_OBJECT_0;
 }
 
 std::string drain_worker_stdout(Session& s) {

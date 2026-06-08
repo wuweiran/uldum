@@ -32,6 +32,9 @@ namespace uldum::network {
 //   0x6X  server → client, playing / session events
 //   0x7X  server → client, HUD sync (16c-v)
 enum class MsgType : u8 {
+    // Sentinel for empty / corrupted packets. No real message uses 0.
+    Invalid         = 0x00,
+
     // ── Client → Server ──
 
     // Lobby
@@ -156,6 +159,12 @@ public:
     ByteReader(std::span<const u8> data) : m_data(data) {}
 
     bool has(size_t n) const { return m_pos + n <= m_data.size(); }
+    // Sticky truncation flag — set the moment any read would go OOB.
+    // Subsequent reads silently return zero/empty so handlers walking
+    // a multi-field payload don't have to gate every line individually.
+    // Callers that care explicitly check ok() once before acting on
+    // the decoded values; most just rely on zero defaults being inert.
+    bool ok() const { return !m_truncated; }
 
     u8  read_u8()  { u8 v = 0;  read(&v, 1); return v; }
     u16 read_u16() { u16 v = 0; read(&v, 2); return v; }
@@ -163,7 +172,17 @@ public:
     f32 read_f32() { f32 v = 0; read(&v, 4); return v; }
     glm::vec3 read_vec3() { return {read_f32(), read_f32(), read_f32()}; }
     std::string read_string() {
+        // Length-prefixed string. A hostile sender can claim any length
+        // up to 65535; clamp to the bytes actually left in the buffer
+        // and flag the packet truncated. The handler still gets a
+        // string of the wrong length, but no OOB read and no UB.
         u16 len = read_u16();
+        if (m_truncated) return {};
+        const size_t avail = m_data.size() - m_pos;
+        if (len > avail) {
+            m_truncated = true;
+            len = static_cast<u16>(avail);
+        }
         std::string s(m_data.begin() + m_pos, m_data.begin() + m_pos + len);
         m_pos += len;
         return s;
@@ -173,17 +192,32 @@ public:
 
 private:
     void read(void* p, size_t n) {
+        if (m_pos + n > m_data.size()) {
+            // Underflow: leave the output buffer at its caller-provided
+            // initial value (the public read_* helpers zero-initialize
+            // before calling this). Set the sticky flag so ok() returns
+            // false. Advance m_pos to data.size() so further reads also
+            // short-circuit through the same path.
+            m_truncated = true;
+            m_pos = m_data.size();
+            return;
+        }
         std::memcpy(p, m_data.data() + m_pos, n);
         m_pos += n;
     }
     std::span<const u8> m_data;
     size_t m_pos = 0;
+    bool   m_truncated = false;
 };
 
 // ── Message builders ──────────────────────────────────────────────────────
 
-// Returns the message type from a raw packet's first byte.
+// Returns the message type from a raw packet's first byte. Returns
+// MsgType::Invalid for an empty packet (defensive — every real
+// packet starts with a type byte, but a hostile / corrupted send
+// could deliver zero bytes).
 inline MsgType peek_type(std::span<const u8> data) {
+    if (data.empty()) return MsgType::Invalid;
     return static_cast<MsgType>(data[0]);
 }
 
