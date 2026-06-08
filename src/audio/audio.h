@@ -24,7 +24,11 @@ class AudioEngine {
 public:
     bool init();
     void shutdown();
-    void update();
+    // dt in seconds since the last call. Advances music fades. Should
+    // be called every frame from every AppState (Menu / Lobby /
+    // Loading / Playing / Results) so transitions don't freeze when
+    // the game pauses or switches screens.
+    void update(f32 dt);
 
     // Listener (call each frame with camera position)
     void set_listener(glm::vec3 position, glm::vec3 forward, glm::vec3 up);

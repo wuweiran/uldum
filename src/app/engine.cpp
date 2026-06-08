@@ -1956,7 +1956,6 @@ void Engine::run() {
                 auto& cam = m_renderer.camera();
                 m_audio.set_listener(cam.position(), cam.forward_dir(), glm::vec3{0, 0, 1});
             }
-            m_audio.update();
 
             if (!is_client) {
                 auto& vision = m_server.simulation().vision();
@@ -1992,6 +1991,14 @@ void Engine::run() {
 #endif
             break;
         }
+
+        // Audio fades run every frame regardless of AppState so music
+        // transitions don't freeze on pause / menu / scene-load. Pass
+        // real frame_dt so fade rates are vsync-independent (used to be
+        // a hard-coded 1/60 inside the Playing case — wrong by ~2-3x
+        // on 144 Hz desktop and 30 Hz mobile, and stuck mid-fade when
+        // the player paused).
+        m_audio.update(frame_dt);
 
         // Shell document / button bindings / results data are all the
         // App's responsibility now. Engine just fires

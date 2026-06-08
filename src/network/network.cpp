@@ -1541,17 +1541,38 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
 
 void NetworkManager::destroy_client_entity(u32 entity_id) {
     auto& world = m_client_world;
+    // Mirror the per-entity pool list in World::clear_entities. Anything
+    // left behind here resurrects on the next entity that gets this id
+    // back from the allocator — manifests as ghost mana / cooldowns /
+    // active-ability flags on the new occupant, plus pure memory growth
+    // across long sessions.
     world.transforms.remove(entity_id);
     world.handle_infos.remove(entity_id);
-    world.owners.remove(entity_id);
-    world.renderables.remove(entity_id);
     world.healths.remove(entity_id);
-    world.movements.remove(entity_id);
-    world.sights.remove(entity_id);
+    world.state_blocks.remove(entity_id);
+    world.attribute_blocks.remove(entity_id);
     world.selectables.remove(entity_id);
+    world.owners.remove(entity_id);
+    world.movements.remove(entity_id);
     world.combats.remove(entity_id);
-    world.dead_states.remove(entity_id);
+    world.sights.remove(entity_id);
+    world.order_queues.remove(entity_id);
+    world.ability_sets.remove(entity_id);
+    world.classifications.remove(entity_id);
+    world.inventories.remove(entity_id);
+    world.buildings.remove(entity_id);
+    world.constructions.remove(entity_id);
+    world.destructables.remove(entity_id);
+    world.doodads.remove(entity_id);
+    world.pathing_blockers.remove(entity_id);
+    world.item_infos.remove(entity_id);
+    world.carriables.remove(entity_id);
     world.projectiles.remove(entity_id);
+    world.dead_states.remove(entity_id);
+    world.renderables.remove(entity_id);
+    world.status_flags.remove(entity_id);
+    world.true_sight_vis.remove(entity_id);
+    world.forced_vis.remove(entity_id);
     world.anim_queues.remove(entity_id);
 }
 

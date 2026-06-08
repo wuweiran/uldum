@@ -157,12 +157,12 @@ void AudioEngine::reset_session_state() {
     m_map_root.clear();
 }
 
-void AudioEngine::update() {
+void AudioEngine::update(f32 dt) {
     if (!m_initialized) return;
 
     // Update music fade-in
     if (m_music && m_music_fade_in > 0) {
-        m_music_fade_timer += 1.0f / 60.0f;  // approximate frame dt
+        m_music_fade_timer += dt;
         f32 t = std::min(m_music_fade_timer / m_music_fade_in, 1.0f);
         ma_sound_set_volume(m_music, t);
         if (t >= 1.0f) m_music_fade_in = 0;
@@ -170,7 +170,7 @@ void AudioEngine::update() {
 
     // Update music fade-out (previous track during crossfade)
     if (m_music_prev && m_music_prev_fade_timer > 0) {
-        m_music_prev_fade_timer -= 1.0f / 60.0f;
+        m_music_prev_fade_timer -= dt;
         if (m_music_prev_fade_timer <= 0) {
             ma_sound_uninit(m_music_prev);
             delete m_music_prev;
@@ -284,8 +284,21 @@ void AudioEngine::play_music(std::string_view path, f32 fade_in) {
     }
     m_music_prev = m_music;
     if (m_music_prev) {
-        m_music_fade_out = fade_in;
-        m_music_prev_fade_timer = fade_in;
+        if (fade_in > 0) {
+            m_music_fade_out = fade_in;
+            m_music_prev_fade_timer = fade_in;
+        } else {
+            // Instant swap: tear down the previous track now. The fade
+            // branch in update() is gated on `> 0`, so leaving timer
+            // at 0 would orphan the old track at full volume — audible
+            // as two layered tracks until the next play_music kills
+            // the orphan via the cleanup at the top of this function.
+            ma_sound_uninit(m_music_prev);
+            delete m_music_prev;
+            m_music_prev = nullptr;
+            m_music_fade_out = 0;
+            m_music_prev_fade_timer = 0;
+        }
     }
 
     // Start new track

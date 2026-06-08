@@ -1071,13 +1071,18 @@ void flag_refcount_delta(World& world, u32 id,
 }
 
 void recalculate_modifiers(World& world, u32 id) {
-    auto* attrs = world.attribute_blocks.get(id);
-    if (!attrs) return;
-
     // Effective = (base + sum(bare-key)) * (1 + sum(*_mult)).
     // Bare keys are additive; only the `_mult` suffix is special.
     // `_mult` values are unit fractions (-0.5 = -50%, +0.25 = +25%) —
     // multiple sources sum before the (1 + sum) multiplier applies.
+    //
+    // flat/pct are built from ability_sets unconditionally because
+    // they feed three independent passes: the AttributeBlock numeric
+    // map (skipped if the unit has no attributes), the Movement speed,
+    // and the Renderable visual alpha. The latter two need to keep
+    // working on attribute-less units (e.g. summons with a slow / fade
+    // buff but no JSON `attributes` block) — the old early-return on
+    // missing AttributeBlock skipped both.
     std::unordered_map<std::string, f32> flat;
     std::unordered_map<std::string, f32> pct;
 
@@ -1098,12 +1103,14 @@ void recalculate_modifiers(World& world, u32 id) {
         }
     }
 
-    attrs->numeric = attrs->base;
-    for (auto& [k, v] : flat) {
-        attrs->numeric[k] += v;
-    }
-    for (auto& [k, p] : pct) {
-        attrs->numeric[k] = attrs->numeric[k] * (1.0f + p);
+    if (auto* attrs = world.attribute_blocks.get(id)) {
+        attrs->numeric = attrs->base;
+        for (auto& [k, v] : flat) {
+            attrs->numeric[k] += v;
+        }
+        for (auto& [k, p] : pct) {
+            attrs->numeric[k] = attrs->numeric[k] * (1.0f + p);
+        }
     }
 
     // Movement speed. Lives on Movement, not in the attribute block,
