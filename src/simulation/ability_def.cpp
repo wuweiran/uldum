@@ -61,7 +61,6 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
             lvl.cost[k] = v.get<f32>();
         }
     }
-    lvl.cost_can_kill = j.value("cost_can_kill", false);
     lvl.cooldown      = j.value("cooldown", 0.0f);
     lvl.range         = j.value("range", 0.0f);
     lvl.cast_time     = j.value("cast_time", 0.0f);

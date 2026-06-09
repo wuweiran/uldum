@@ -74,9 +74,10 @@ struct TargetFilter {
 };
 
 struct AbilityLevelDef {
-    // Cost: state_name → amount
+    // Cost: state_name → amount. Spent at cast start (engine-enforced in
+    // system_ability). A "health" key costs HP but can never be lethal —
+    // the caster floors at 1 HP.
     std::map<std::string, f32> cost;
-    bool cost_can_kill = false;
 
     f32 cooldown    = 0;
     f32 range       = 0;

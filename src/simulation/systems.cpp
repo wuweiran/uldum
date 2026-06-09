@@ -892,6 +892,14 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 self.id = id;
                 self.generation = world.handle_infos.get(id)->generation;
 
+                // Snapshot the attacker position BEFORE spawning the
+                // projectile. spawn_attack_projectile → create_projectile
+                // → world.transforms.add() can reallocate the dense
+                // transform vector, dangling the `transform` pointer
+                // cached at the top of this loop. We only need the
+                // position for the attack sound below, so capture it now.
+                const glm::vec3 attack_pos = transform->position;
+
                 if (combat.is_ranged) {
                     spawn_attack_projectile(world, self, target, combat.damage, combat.projectile_speed);
                 } else {
@@ -903,7 +911,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     auto* info = world.handle_infos.get(id);
                     auto* def = info ? world.types->get_unit_type(info->type_id) : nullptr;
                     if (def && !def->sound_attack.empty()) {
-                        world.on_sound(def->sound_attack, transform->position);
+                        world.on_sound(def->sound_attack, attack_pos);
                     }
                 }
                 combat.attack_state = AttackState::Backswing;
@@ -1034,30 +1042,43 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         if (a.ability_id == cast_order->ability_id) { inst = &a; break; }
                     }
                     if (inst && inst->cooldown_remaining <= 0) {
-                        aset.casting_id       = cast_order->ability_id;
-                        aset.cast_target_unit = cast_order->target_unit;
-                        aset.cast_target_pos  = cast_order->target_pos;
-                        aset.cast_source_item = cast_order->source_item;
-
+                        // Engine-enforced ability cost. WC3 semantics:
+                        // mana / state cost is spent at cast START (the
+                        // instant the cast begins), not at effect fire —
+                        // an interrupted foreswing still costs. The HUD's
+                        // can_afford greying gates the click; this gates
+                        // the actual sim cast so scripted / queued casts
+                        // pay too. cost is empty for free abilities.
                         auto& lvl = def->level_data(inst->level);
-                        bool needs_range = (def->form == AbilityForm::Target);
-                        if (needs_range && lvl.range > 0) {
-                            aset.cast_state = CastState::MovingToTarget;
-                            // Delegate approach to movement system. A widget
-                            // pick (cast_target_unit valid) approaches the
-                            // widget; otherwise the cast is point-only and
-                            // approaches the ground location.
-                            auto* mov = world.movements.get(id);
-                            if (mov) {
-                                mov->approach_range = lvl.range;
-                                if (world.validate(cast_order->target_unit)) {
-                                    mov->approach_target = cast_order->target_unit;
-                                } else {
-                                    mov->approach_goal = {cast_order->target_pos.x, cast_order->target_pos.y};
-                                }
-                            }
+                        if (!simulation::ability_can_afford(world, id, lvl.cost)) {
+                            oq->current.reset();  // can't afford — drop the order
                         } else {
-                            aset.cast_state = CastState::TurningToFace;
+                            simulation::ability_pay_cost(world, id, lvl.cost);
+
+                            aset.casting_id       = cast_order->ability_id;
+                            aset.cast_target_unit = cast_order->target_unit;
+                            aset.cast_target_pos  = cast_order->target_pos;
+                            aset.cast_source_item = cast_order->source_item;
+
+                            bool needs_range = (def->form == AbilityForm::Target);
+                            if (needs_range && lvl.range > 0) {
+                                aset.cast_state = CastState::MovingToTarget;
+                                // Delegate approach to movement system. A widget
+                                // pick (cast_target_unit valid) approaches the
+                                // widget; otherwise the cast is point-only and
+                                // approaches the ground location.
+                                auto* mov = world.movements.get(id);
+                                if (mov) {
+                                    mov->approach_range = lvl.range;
+                                    if (world.validate(cast_order->target_unit)) {
+                                        mov->approach_target = cast_order->target_unit;
+                                    } else {
+                                        mov->approach_goal = {cast_order->target_pos.x, cast_order->target_pos.y};
+                                    }
+                                }
+                            } else {
+                                aset.cast_state = CastState::TurningToFace;
+                            }
                         }
                     } else {
                         oq->current.reset();  // ability not available or on cooldown
@@ -1260,7 +1281,14 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 auto* info = world.handle_infos.get(id);
                 source_unit.generation = info ? info->generation : 0;
 
-                f32 aura_duration = (AURA_SCAN_INTERVAL + 2) * (1.0f / 32.0f);
+                // Duration must outlast the scan interval so a unit that
+                // stays in radius is refreshed before its buff lapses.
+                // The applied ability's remaining_duration is decremented
+                // by dt (game-speed-scaled) each tick, so express the
+                // window in the same dt units — `(scan_interval + slack)`
+                // ticks worth of dt — otherwise at >1x game speed the
+                // buff expires mid-interval and flickers.
+                f32 aura_duration = static_cast<f32>(AURA_SCAN_INTERVAL + 2) * dt;
                 for (auto& target : nearby) {
                     if (target.id == id && !def->target_filter.self_) continue;
                     deferred.push_back({target, std::string(lvl.aura_ability), source_unit, aura_duration});
@@ -1600,17 +1628,33 @@ void system_projectile(World& world, float dt) {
 
             // Per-tick scan: any unit within hit_radius that isn't
             // already in the already_hit list and isn't the source.
+            // All identity comparisons are generation-checked: a raw-id
+            // match could alias a recycled handle (unit removed mid-
+            // flight, id reused for a new unit) and wrongly skip the new
+            // occupant.
             Unit pu = make_proj_unit(world, id);
             for (u32 j = 0; j < world.transforms.count(); ++j) {
                 u32 oid = world.transforms.ids()[j];
-                if (oid == id || oid == proj.source.id) continue;
+                if (oid == id) continue;
                 auto* info = world.handle_infos.get(oid);
                 if (!info || info->category != Category::Unit) continue;
+
+                // Build the candidate's full handle once for identity
+                // checks below.
+                Unit cand;
+                cand.id = oid;
+                cand.generation = info->generation;
+
+                // Skip the source — but only if THIS unit is genuinely
+                // the source (same generation). A recycled source id
+                // belonging to a different unit must still be hittable.
+                if (cand.id == proj.source.id && cand.generation == proj.source.generation) continue;
+
                 auto* hp = world.healths.get(oid);
                 if (!hp || hp->current <= 0) continue;
                 bool already = false;
-                for (u32 done : proj.already_hit) {
-                    if (done == oid) { already = true; break; }
+                for (const Unit& done : proj.already_hit) {
+                    if (done.id == cand.id && done.generation == cand.generation) { already = true; break; }
                 }
                 if (already) continue;
                 const auto& tf = world.transforms.data()[j];
@@ -1622,7 +1666,7 @@ void system_projectile(World& world, float dt) {
                     if (proj.is_attack) {
                         deal_attack_damage(world, proj.source, hit, proj.damage);
                     }
-                    proj.already_hit.push_back(oid);
+                    proj.already_hit.push_back(hit);
                 }
             }
 
@@ -1748,7 +1792,7 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
 
 // ── Death system ─────────────────────────────────────────────────────────
 
-void system_death(World& world) {
+void system_death(World& world, float dt) {
     // Phase 1: transition newly dead units to corpse state
     for (u32 i = 0; i < world.healths.count(); ++i) {
         u32 id = world.healths.ids()[i];
@@ -1789,6 +1833,13 @@ void system_death(World& world) {
                 auto* hp_now = world.healths.get(id);
                 if (!hp_now) continue;
                 hp_now->current = 0;
+                // Same exposure for `info`: on_dying could have spawned
+                // a unit (Reincarnation / summon-on-death), reallocating
+                // the handle_infos dense vector and dangling the pointer
+                // cached above. Everything below reads info->type_id /
+                // category / generation, so refresh it here too.
+                info = world.handle_infos.get(id);
+                if (!info) continue;
             } else {
                 hp.current = 0;
             }
@@ -1848,7 +1899,7 @@ void system_death(World& world) {
         u32 id = world.dead_states.ids()[i];
         auto& dead = world.dead_states.data()[i];
 
-        dead.corpse_timer += 1.0f / 32.0f;  // approximate dt (called once per tick)
+        dead.corpse_timer += dt;  // game-speed-scaled; corpses linger in game-time, not real-time
 
         // Hide corpse after corpse_duration
         if (dead.corpse_visible && dead.corpse_timer >= dead.corpse_duration) {

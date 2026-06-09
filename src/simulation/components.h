@@ -396,8 +396,11 @@ struct ProjectileComp {
     glm::vec3   spawn_pos{0.0f};
     // Linear with pierce: every unit within hit_radius along the path
     // fires PROJECTILE_HIT. Tracked so we don't hit the same unit twice
-    // on a single flight. Stored as raw ids (generation check on use).
-    std::vector<u32> already_hit;
+    // on a single flight. Stored as full Unit handles (id + generation)
+    // so a recycled id can't alias a different unit — a raw-id list
+    // would wrongly mark a freshly-spawned unit (same id, new gen) as
+    // already-hit and grant it false immunity.
+    std::vector<Unit> already_hit;
     // Dying state — gameplay has ended (PROJECTILE_DESTROYED fired,
     // triggers cleaned up, no further movement / collision) but the
     // entity persists briefly so the renderer can play the model's

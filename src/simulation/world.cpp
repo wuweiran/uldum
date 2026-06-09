@@ -465,6 +465,15 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
 
     if (amount <= 0) return;
 
+    // Re-fetch hp after the hook: an on_damage handler that spawns
+    // (healths.add → realloc) or removes (sparse-set swap-remove) any
+    // unit invalidates the pointer cached above. Without this re-fetch
+    // we'd write through a dangling pointer (heap corruption) or apply
+    // damage to whichever unit's Health got swapped into the slot. The
+    // handler may also have killed the target outright, so re-check.
+    hp = world.healths.get(target.id);
+    if (!hp || hp->current <= 0) return;
+
     hp->current -= amount;
     if (hp->current < 0) hp->current = 0;
 
@@ -1068,6 +1077,49 @@ void flag_refcount_delta(World& world, u32 id,
         }
     }
     recompute_effective_flags(*sf);
+}
+
+bool ability_can_afford(const World& world, u32 unit_id,
+                        const std::map<std::string, f32>& cost) {
+    if (cost.empty()) return true;
+    for (const auto& [state_name, amount] : cost) {
+        if (amount <= 0.0f) continue;
+        if (state_name == "health") {
+            // Health cost can never kill: require strictly more than the
+            // cost so the caster stays at >= 1 HP. (No cost_can_kill /
+            // suicide-cast opt-in — removed by design.)
+            const auto* hp = world.healths.get(unit_id);
+            if (!hp || hp->current <= amount) return false;
+            continue;
+        }
+        const auto* sb = world.state_blocks.get(unit_id);
+        if (!sb) return false;
+        auto it = sb->states.find(state_name);
+        if (it == sb->states.end() || it->second.current < amount) return false;
+    }
+    return true;
+}
+
+void ability_pay_cost(World& world, u32 unit_id,
+                      const std::map<std::string, f32>& cost) {
+    if (cost.empty()) return;
+    for (const auto& [state_name, amount] : cost) {
+        if (amount <= 0.0f) continue;
+        if (state_name == "health") {
+            if (auto* hp = world.healths.get(unit_id)) {
+                hp->current -= amount;
+                if (hp->current < 1.0f) hp->current = 1.0f;  // hard floor — never lethal
+            }
+            continue;
+        }
+        if (auto* sb = world.state_blocks.get(unit_id)) {
+            auto it = sb->states.find(state_name);
+            if (it != sb->states.end()) {
+                it->second.current -= amount;
+                if (it->second.current < 0.0f) it->second.current = 0.0f;
+            }
+        }
+    }
 }
 
 void recalculate_modifiers(World& world, u32 id) {

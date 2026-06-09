@@ -8,6 +8,7 @@
 
 #include <glm/vec3.hpp>
 #include <functional>
+#include <map>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -264,6 +265,17 @@ u32      get_ability_level(const World& world, Unit unit, std::string_view abili
 // the unit doesn't have the ability.
 bool     set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
                             std::string_view ability_id, u32 level);
+
+// Ability cost (state cost = mana / energy / etc., plus an optional
+// "health" key). `cost` maps state-name → amount. ability_can_afford
+// returns true when every cost is satisfiable; health cost never
+// reduces the caster below 1 HP (it is hard-capped, no suicide casts).
+// ability_pay_cost deducts; call it only after ability_can_afford
+// returned true. Both no-op on an empty cost map.
+bool     ability_can_afford(const World& world, u32 unit_id,
+                            const std::map<std::string, f32>& cost);
+void     ability_pay_cost(World& world, u32 unit_id,
+                          const std::map<std::string, f32>& cost);
 
 // Recalculate effective attributes from base + all active modifiers.
 void     recalculate_modifiers(World& world, u32 id);

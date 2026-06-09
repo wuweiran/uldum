@@ -186,7 +186,7 @@ void Simulation::tick(float dt) {
     system_items(m_world, dt);
     system_projectile(m_world, dt);
     system_collision(m_world, m_spatial_grid, m_pathfinder);
-    system_death(m_world);
+    system_death(m_world, dt);
     // After all the state-changing systems — regions read final
     // positions and dead/alive state for this tick.
     system_regions(m_world);

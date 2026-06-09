@@ -22,7 +22,7 @@ void system_ability(World& world, float dt, const class AbilityRegistry& abiliti
 void system_items(World& world, float dt);
 void system_projectile(World& world, float dt);
 void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& pathfinder);
-void system_death(World& world);
+void system_death(World& world, float dt);
 
 // Detection pass for UNIT_STATUS_INVISIBLE. For each unit with numeric
 // attribute "true_sight" > 0, queries enemy invisible units within

@@ -130,8 +130,7 @@ Each entry in `levels[]` uses these defaults for omitted fields:
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `cost` | `{}` | No cost — free to cast |
-| `cost_can_kill` | `false` | Health cost won't kill caster |
+| `cost` | `{}` | No cost — free to cast. Map of state-name → amount (e.g. `{"mana": 75}`), plus an optional `health` key. Spent at cast start; engine-enforced. Health cost can never be lethal — the caster floors at 1 HP. |
 | `cooldown` | `0` | No cooldown |
 | `range` | `0` | Unlimited range (for instant) or melee range |
 | `cast_time` | `0` | No foreswing — instant fire |
@@ -312,7 +311,7 @@ No `source` field. Stacking and refresh decisions use only `(ability_id, target)
 1. Player issues Cast order (ability_id + target)
 2. Engine checks:
    a. Cooldown ready?
-   b. State cost affordable? (check each state >= cost, health cost won't kill unless cost_can_kill)
+   b. State cost affordable? (each state >= cost; health cost requires current HP strictly above the cost — health cost is never lethal)
    c. Target passes filter? (engine basic check)
    d. Lua can_cast(caster, ability, target) returns true? (custom validation)
    e. In range?
@@ -335,7 +334,7 @@ Ability cost references map-defined states by name:
 ```
 
 - Engine checks `state.current >= cost` for each entry
-- For health cost: default behavior is the ability **cannot** kill the caster. Set `"cost_can_kill": true` to allow suicide casts.
+- For health cost: the ability **cannot** kill the caster — HP floors at 1. (There is no opt-in suicide-cast flag.)
 - Custom validation beyond this → Lua `can_cast` stub
 
 ## Modifier System
