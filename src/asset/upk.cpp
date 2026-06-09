@@ -1,7 +1,6 @@
 #include "asset/upk.h"
+#include "asset/file_io.h"
 #include "core/log.h"
-
-#include <fstream>
 
 namespace uldum::asset {
 
@@ -61,17 +60,9 @@ static bool parse_archive_header(const u8* data, size_t size,
 bool UPKReader::open(std::string_view path, std::string_view encryption_key) {
     close();
 
-    std::ifstream file(std::string(path), std::ios::binary | std::ios::ate);
-    if (!file) return false;
-    // See asset.cpp::read_file_bytes for why we guard tellg / read here.
-    const auto pos = file.tellg();
-    if (pos < 0) return false;
-    const auto size = static_cast<size_t>(pos);
-    file.seekg(0);
-    std::vector<u8> buf(size);
-    file.read(reinterpret_cast<char*>(buf.data()),
-              static_cast<std::streamsize>(size));
-    if (!file || static_cast<size_t>(file.gcount()) != size) return false;
+    auto bytes = read_whole_file(path);
+    if (!bytes) return false;
+    std::vector<u8>& buf = *bytes;
 
     if (!parse_archive_header(buf.data(), buf.size(), m_header, m_entries, path)) {
         close();

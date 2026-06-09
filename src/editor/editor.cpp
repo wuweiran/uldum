@@ -559,8 +559,8 @@ static f32 tile_falloff(i32 dx, i32 dy, i32 size) {
 // ── Brush application ────────────────────────────────────────────────────
 
 void Editor::apply_brush(f32 dt) {
-    // In single-click mode (dt=1), strength = m_brush_amount
-    // In continuous mode (dt=frame_dt), strength = m_brush_speed
+    // Single-click passes dt=1 (uses m_brush_amount); continuous passes
+    // frame_dt (uses m_brush_speed).
     f32 strength = m_continuous ? m_brush_speed : m_brush_amount;
 
     switch (m_tool) {

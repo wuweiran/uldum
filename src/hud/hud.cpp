@@ -819,8 +819,6 @@ void Hud::set_text_tag_visible(TextTagId id, bool visible) {
 }
 
 // ── Action-bar composite ──────────────────────────────────────────────────
-// Phase A: static slot rendering (colored rects + hotkey label). Icons,
-// cooldown radial, and click/hotkey input arrive in later phases.
 
 void Hud::set_action_bar_config(const ActionBarConfig& cfg) {
     if (!m_impl) return;
@@ -907,19 +905,6 @@ static bool minimap_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     if (!cfg.enabled || !s.minimap_rt.visible) return false;
     const Rect& r = cfg.rect;
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
-}
-
-// Convert a point inside the minimap rect into a world-space (x, y)
-// position on the ground plane. World coords are centered on (0, 0);
-// terrain extents come from WorldContext::terrain.
-static void minimap_point_to_world(const Rect& mm, const map::TerrainData& td,
-                                    f32 sx, f32 sy, f32& wx, f32& wy) {
-    f32 fx = (sx - mm.x) / mm.w;   // 0..1 across minimap
-    f32 fy = (sy - mm.y) / mm.h;
-    wx = td.origin_x() + fx * td.world_width();
-    // Minimap Y is flipped (north at top, south at bottom) to match WC3.
-    // Invert fy so the click lands at the world position the dot sat on.
-    wy = td.origin_y() + (1.0f - fy) * td.world_height();
 }
 
 // ── Command-bar composite ────────────────────────────────────────────────
@@ -1098,16 +1083,6 @@ static i32 command_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     return -1;
 }
 
-// Render the command bar for the current frame. Reuses the classic_rts
-// look the action_bar uses. Armed state (slot whose command matches
-// the preset's current targeting mode) renders with press_bg + the
-// accent border, identical to the action_bar's armed ability slot.
-// Should the command bar's slots render this frame? Engine commands
-// (Move / Stop / Hold / Attack) only make sense for the local player's
-// own units. Future: filter individual slots against a per-unit-type
-// allow-list (a building shouldn't show Move) — the gate here is
-// "any-or-none" until that lands. As with action_bar, the bar frame
-// itself always shows; only the slot icons are conditional.
 void Hud::set_joystick_config(const JoystickConfig& cfg) {
     if (!m_impl) return;
     m_impl->joystick_cfg = cfg;
@@ -2775,7 +2750,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             if (s.world_ctx && s.world_ctx->terrain && s.minimap_jump_fn) {
                 s.minimap_dragging = true;
                 f32 wx = 0.0f, wy = 0.0f;
-                minimap_point_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
+                minimap_screen_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
                                        x, y, wx, wy);
                 s.minimap_jump_fn(wx, wy);
             }
@@ -2890,7 +2865,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             s.minimap_dragging = false;
         } else if (s.world_ctx && s.world_ctx->terrain && s.minimap_jump_fn) {
             f32 wx = 0.0f, wy = 0.0f;
-            minimap_point_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
+            minimap_screen_to_world(s.minimap_cfg.rect, *s.world_ctx->terrain,
                                    x, y, wx, wy);
             s.minimap_jump_fn(wx, wy);
         }

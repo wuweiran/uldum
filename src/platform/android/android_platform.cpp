@@ -66,10 +66,8 @@ static void on_app_cmd(android_app* app, int32_t cmd) {
         break;
     case APP_CMD_DESTROY:
         log::info(TAG, "APP_CMD_DESTROY");
-        // poll_events returns false next tick, exiting the main loop.
-        // (The private m_quit_requested flag is set by a method on
-        // AndroidPlatform; we expose it indirectly via on_surface_lost
-        // here for now — real destroy handling comes when App cooperates.)
+        // Drop the rendering surface. Main-loop exit is driven separately
+        // by the destroyRequested check in poll_events.
         self->on_surface_lost();
         break;
     default:

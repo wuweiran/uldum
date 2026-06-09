@@ -48,7 +48,6 @@ bool AudioEngine::init() {
 void AudioEngine::shutdown() {
     if (!m_initialized) return;
 
-    // Clean up active SFX
     for (auto& sfx : m_active_sfx) {
         if (sfx.sound) {
             ma_sound_uninit(sfx.sound);
@@ -57,7 +56,6 @@ void AudioEngine::shutdown() {
     }
     m_active_sfx.clear();
 
-    // Clean up ambient sounds
     for (auto& [id, amb] : m_ambients) {
         if (amb.sound) {
             ma_sound_uninit(amb.sound);
@@ -66,7 +64,6 @@ void AudioEngine::shutdown() {
     }
     m_ambients.clear();
 
-    // Clean up music
     if (m_music) {
         ma_sound_uninit(m_music);
         delete m_music;
@@ -78,7 +75,6 @@ void AudioEngine::shutdown() {
         m_music_prev = nullptr;
     }
 
-    // Clean up groups
     if (m_groups) {
         auto* groups = GROUPS();
         for (u32 i = 0; i < GROUP_COUNT; ++i) {
@@ -153,8 +149,6 @@ void AudioEngine::reset_session_state() {
         }
     }
     m_sound_cache.clear();
-
-    m_map_root.clear();
 }
 
 void AudioEngine::update(f32 dt) {

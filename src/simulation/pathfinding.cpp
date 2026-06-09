@@ -92,8 +92,8 @@ u8 Pathfinder::cliff_level_on_tile(u32 tx, u32 ty) const {
     i32 eff = m_terrain->tile_effective_level(tx, ty);
     if (eff >= 0) return static_cast<u8>(eff);
 
-    // Ramp: use min corner level (entering from low side) or max (from high side).
-    // Use the average — the movement system will update cliff_level based on nearest vertex.
+    // Ramp: take the lowest corner level; the movement system re-derives
+    // cliff_level per nearest vertex as the unit crosses.
     u8 c[4] = { td.cliff_at(tx, ty),     td.cliff_at(tx+1, ty),
                  td.cliff_at(tx, ty+1),   td.cliff_at(tx+1, ty+1) };
     return std::min({c[0], c[1], c[2], c[3]});
@@ -138,10 +138,8 @@ f32 Pathfinder::cell_size() const {
 bool Pathfinder::is_cell_blocked(i32 cx, i32 cy) const {
     if (m_runtime_blocked_cells.empty() || !m_terrain) return false;
     if (cx < 0 || cy < 0) return false;
-    u32 cells_x = m_terrain->tiles_x * PATHING_SUBDIV;
-    u32 cells_y = m_terrain->tiles_y * PATHING_SUBDIV;
-    if (static_cast<u32>(cx) >= cells_x || static_cast<u32>(cy) >= cells_y) return false;
-    return m_runtime_blocked_cells[static_cast<u32>(cy) * cells_x + static_cast<u32>(cx)] > 0;
+    if (static_cast<u32>(cx) >= m_cells_w || static_cast<u32>(cy) >= m_cells_h) return false;
+    return m_runtime_blocked_cells[static_cast<u32>(cy) * m_cells_w + static_cast<u32>(cx)] > 0;
 }
 
 bool Pathfinder::can_occupy_cell(i32 cx, i32 cy, MoveType move_type) const {
@@ -232,7 +230,15 @@ static constexpr i32 s_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
 static constexpr i32 s_dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 
 void Pathfinder::build_cache() {
-    if (!m_terrain || !m_terrain->is_valid()) return;
+    // Keep the cached cell dimensions a faithful mirror of the current
+    // terrain: a null / invalid terrain has zero cells, matching what the
+    // old `tiles_x * PATHING_SUBDIV` recompute yielded for that case (so
+    // block_cells / is_cell_blocked bound-check against 0 and no-op).
+    if (!m_terrain || !m_terrain->is_valid()) {
+        m_cells_w = 0;
+        m_cells_h = 0;
+        return;
+    }
     auto& td = *m_terrain;
     u32 w = td.tiles_x, h = td.tiles_y;
     m_cache_w = w;
@@ -427,15 +433,9 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     const u32 cells_x = m_cells_w;
     const u32 cells_y = m_cells_h;
 
-    // No soft-cost penalty for unit-occupied tiles. We dropped it
-    // because the +5.0 bias makes A*'s heuristic underestimate true
-    // step cost, which causes A* to fan out exploring "alternate"
-    // routes whenever the direct path crosses unit-dense tiles —
-    // catastrophic in swarm-attack scenarios where many units cluster
-    // near a single target. Local steering (system_movement::
-    // local_steer) handles unit-on-unit avoidance moment-to-moment,
-    // which is the right altitude for it. A future RVO2 / ORCA layer
-    // would slot in there too.
+    // No per-tile unit-occupancy soft cost — the +5.0 bias made A*'s
+    // heuristic underestimate and fan out exploring alternate routes.
+    // local_steer handles unit-on-unit avoidance instead.
 
     glm::ivec2 s = world_to_cell(start.x, start.y);
     glm::ivec2 g = world_to_cell(goal.x, goal.y);
@@ -508,13 +508,8 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
             u32 start_comp = comps[static_cast<u32>(s.y) * cells_x + static_cast<u32>(s.x)];
             const u32 goal_comp  = comps[static_cast<u32>(g.y) * cells_x + static_cast<u32>(g.x)];
             if (start_comp == 0) {
-                // Find the nearest occupiable cell to the unit's
-                // current position and pretend that's where we are.
-                // The unit will walk toward it via the corridor's first
-                // few cells (find_straight_waypoint handles the fact
-                // that the unit's actual position differs from the
-                // corridor's start by snapping to the nearest matched
-                // cell or falling back to corridor[0]).
+                // Snap to the nearest occupiable cell; find_straight_waypoint
+                // reconciles the unit's real position with the corridor start.
                 bool snap_found = false;
                 glm::ivec2 best_s = s;
                 f32 best_d2 = 1e30f;
@@ -616,15 +611,11 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     static constexpr i32 dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
     static constexpr f32 cost[] = {1.414f, 1.0f, 1.414f, 1.0f, 1.0f, 1.414f, 1.0f, 1.414f};
 
-    // A* iteration cap — safety net only. The connected-components
-    // pre-flight above guarantees the goal is reachable from the start,
-    // so A* will terminate by finding it; the cap protects against
-    // pathological detour cases where the octile heuristic underestimates
-    // enough that A* fans out a large fraction of the start's component
-    // before reaching the goal. 1024 unique cell expansions covers any
-    // realistic in-game path on our maps with comfortable headroom; if
-    // we ever do hit it the closest-reachable fallback below returns a
-    // partial path and the unit re-paths from the new vantage.
+    // Safety net only — the CC pre-flight above already guarantees the
+    // goal is reachable. The cap protects against pathological detours
+    // where the heuristic underestimates and A* fans out a large part of
+    // the component. On a hit, the closest-reachable fallback below
+    // returns a partial path and the unit re-paths.
     static constexpr u32 max_iterations = 1024;
     u32 iterations = 0;
 
@@ -887,8 +878,8 @@ glm::vec2 Pathfinder::find_nearest_valid(f32 x, f32 y, MoveType move_type) const
 
 void Pathfinder::block_cells(i32 cx, i32 cy, u32 w, u32 h) {
     if (!m_terrain || w == 0 || h == 0) return;
-    u32 cells_x = m_terrain->tiles_x * PATHING_SUBDIV;
-    u32 cells_y = m_terrain->tiles_y * PATHING_SUBDIV;
+    const u32 cells_x = m_cells_w;
+    const u32 cells_y = m_cells_h;
     if (m_runtime_blocked_cells.empty()) {
         m_runtime_blocked_cells.resize(cells_x * cells_y, 0);
     }
@@ -912,8 +903,8 @@ void Pathfinder::block_cells(i32 cx, i32 cy, u32 w, u32 h) {
 
 void Pathfinder::unblock_cells(i32 cx, i32 cy, u32 w, u32 h) {
     if (m_runtime_blocked_cells.empty() || !m_terrain) return;
-    u32 cells_x = m_terrain->tiles_x * PATHING_SUBDIV;
-    u32 cells_y = m_terrain->tiles_y * PATHING_SUBDIV;
+    const u32 cells_x = m_cells_w;
+    const u32 cells_y = m_cells_h;
     for (u32 dy = 0; dy < h; ++dy) {
         i32 y = cy + static_cast<i32>(dy);
         if (y < 0 || static_cast<u32>(y) >= cells_y) continue;
@@ -947,7 +938,7 @@ void Pathfinder::unblock_tiles(i32 tx, i32 ty, u32 w, u32 h) {
 bool Pathfinder::is_tile_blocked(u32 tx, u32 ty) const {
     if (m_runtime_blocked_cells.empty() || !m_terrain) return false;
     if (tx >= m_terrain->tiles_x || ty >= m_terrain->tiles_y) return false;
-    u32 cells_x = m_terrain->tiles_x * PATHING_SUBDIV;
+    const u32 cells_x = m_cells_w;
     u32 c0x = tx * PATHING_SUBDIV;
     u32 c0y = ty * PATHING_SUBDIV;
     for (u32 dy = 0; dy < PATHING_SUBDIV; ++dy) {

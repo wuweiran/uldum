@@ -317,11 +317,6 @@ public:
     std::function<void(u32 host_handle, f32 fade_out)>                                         on_ambient_stop;
     // Environment.
     std::function<void(f32 x, f32 y, f32 z)>                                                   on_set_sun_direction;
-    // Effect spawn received from host. `entity_id == UINT32_MAX` =
-    // free-position effect; otherwise attach to the named entity
-    // (`attach_point` may be empty for unit-pivot).
-    std::function<void(std::string_view name, u32 entity_id, glm::vec3 pos,
-                       std::string_view attach_point)> on_effect;
     // CreateEffect — persistent effect with stable handle.
     std::function<void(u32 server_id, std::string_view name, u32 entity_id,
                        glm::vec3 pos, std::string_view attach_point)> on_effect_create;
@@ -458,7 +453,6 @@ private:
     void client_handle_destroy(std::span<const u8> data);
     void client_handle_state(std::span<const u8> data);
     void client_handle_sound(std::span<const u8> data);
-    void client_handle_effect(std::span<const u8> data);
     void client_handle_effect_create(std::span<const u8> data);
     void client_handle_effect_destroy(std::span<const u8> data);
     void client_handle_projectile_dying(std::span<const u8> data);

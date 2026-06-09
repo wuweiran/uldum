@@ -1,9 +1,9 @@
 #include "asset/texture.h"
+#include "asset/file_io.h"
 
 #include <basisu_transcoder.h>
 
 #include <format>
-#include <fstream>
 #include <mutex>
 
 namespace uldum::asset {
@@ -59,25 +59,11 @@ static std::expected<TextureData, std::string> decode_from_memory(const u8* data
 }
 
 std::expected<TextureData, std::string> load_texture(std::string_view path) {
-    std::string path_str(path);
-    std::ifstream file(path_str, std::ios::binary | std::ios::ate);
-    if (!file) {
-        return std::unexpected(std::format("Failed to open texture '{}'", path));
+    auto bytes = read_whole_file(path);
+    if (!bytes) {
+        return std::unexpected(std::format("Failed to read texture '{}'", path));
     }
-    // See asset.cpp::read_file_bytes for why we guard tellg / read here.
-    const auto pos = file.tellg();
-    if (pos < 0) {
-        return std::unexpected(std::format("Failed to size texture '{}'", path));
-    }
-    const auto size = static_cast<size_t>(pos);
-    file.seekg(0);
-    std::vector<u8> bytes(size);
-    file.read(reinterpret_cast<char*>(bytes.data()),
-              static_cast<std::streamsize>(size));
-    if (static_cast<size_t>(file.gcount()) != size) {
-        return std::unexpected(std::format("Short read on texture '{}'", path));
-    }
-    return decode_from_memory(bytes.data(), static_cast<u32>(bytes.size()));
+    return decode_from_memory(bytes->data(), static_cast<u32>(bytes->size()));
 }
 
 std::expected<TextureData, std::string> load_texture_from_memory(const u8* data, u32 size) {

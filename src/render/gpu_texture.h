@@ -39,6 +39,16 @@ GpuTexture upload_texture_array(rhi::Rhi& rhi, const u8** layers_data, u32 layer
 GpuTexture upload_texture_cubemap(rhi::Rhi& rhi, const u8* faces[6],
                                   u32 width, u32 height);
 
+// Stream one RGBA layer into an already-created sampler2DArray at `layer`.
+// `pixels` must be exactly width*height*4 bytes and match the array's
+// dimensions (no resize here — caller resizes first). Runs the same
+// staging + UNDEFINED→TRANSFER_DST→copy→SHADER_READ barrier path as the
+// bulk upload_texture_array, scoped to the single target layer. Returns
+// false on bad args / staging failure. Used by the GLES unit-texture
+// array, which fills layers one at a time as units are registered.
+bool upload_array_layer(rhi::Rhi& rhi, rhi::TextureHandle array_tex, u32 layer,
+                        const u8* pixels, u32 width, u32 height);
+
 void destroy_texture(rhi::Rhi& rhi, GpuTexture& tex);
 
 } // namespace uldum::render

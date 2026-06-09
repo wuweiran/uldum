@@ -65,7 +65,6 @@ enum class MsgType : u8 {
     S_STATE         = 0x52,
     S_UPDATE        = 0x53,   // on-change: attribute, state, or ability update
     S_SOUND         = 0x54,
-    S_EFFECT        = 0x55,   // (reserved, currently unused — Create/Destroy pair below)
     S_EFFECT_CREATE = 0x57,   // CreateEffect / CreateEffectOnUnit (with handle)
     S_EFFECT_DESTROY = 0x58,  // DestroyEffect (handle)
     S_PROJECTILE_DYING = 0x59, // projectile entered dying state — play death clip
@@ -370,7 +369,7 @@ struct EntityState {
     f32 x, y, z;
     f32 facing;
     f32 health_frac;
-    u8  flags;       // bit 0: moving, bit 1: attacking, bit 2: casting, bit 3: dead
+    u8  flags;       // bit 0: moving, bit 1: attacking, bit 3: dead
     u32 target_id;
 };
 
@@ -457,43 +456,9 @@ inline std::vector<u8> build_set_sun_direction(f32 x, f32 y, f32 z) {
     return std::move(w.data());
 }
 
-// PlayEffect broadcast. `entity_id` is UINT32_MAX for a free
-// world-position effect; otherwise the effect attaches to the unit and
-// `pos` is taken from the unit's transform on the client (plus
-// `attach_point` if non-empty). Mirrors the server-side
-// EffectManager::play / play_on_unit dispatch.
-inline std::vector<u8> build_effect(std::string_view name, u32 entity_id,
-                                     glm::vec3 pos, std::string_view attach_point) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_EFFECT));
-    w.write_string(name);
-    w.write_u32(entity_id);
-    w.write_vec3(pos);
-    w.write_string(attach_point);
-    return std::move(w.data());
-}
-
-struct EffectData {
-    std::string name;
-    u32         entity_id = UINT32_MAX;
-    glm::vec3   pos{0};
-    std::string attach_point;
-};
-
-inline EffectData parse_effect(std::span<const u8> data) {
-    ByteReader r(data);
-    r.read_u8();
-    EffectData e;
-    e.name         = r.read_string();
-    e.entity_id    = r.read_u32();
-    e.pos          = r.read_vec3();
-    e.attach_point = r.read_string();
-    return e;
-}
-
-// CreateEffect — server-assigned handle + the same payload as the
-// fire-and-forget S_EFFECT. Client maps the server handle to its
-// local instance so a later S_EFFECT_DESTROY can find it.
+// CreateEffect — server-assigned handle + an effect payload. Client
+// maps the server handle to its local instance so a later
+// S_EFFECT_DESTROY can find it.
 struct EffectCreateData {
     u32         server_id = 0;
     std::string name;

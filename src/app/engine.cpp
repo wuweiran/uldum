@@ -464,7 +464,6 @@ bool Engine::start_session() {
     // mesh, environment, and the scene camera pose are only meaningful once
     // the content is loaded.
     m_renderer.set_map_root(m_map.map_root());
-    m_audio.set_map_root(m_map.map_root());
     {
         std::string effects_path = m_map.map_root() + "/types/effects.json";
         m_renderer.effect_registry().load_from_json(effects_path);
@@ -961,22 +960,6 @@ bool Engine::start_session() {
             env.sun_direction = glm::normalize(glm::vec3{x, y, z});
             m_renderer.set_environment(env);
         };
-        // Effect spawn from host. UINT32_MAX entity_id = free-position
-        // effect; otherwise attach to the named entity (using the
-        // local client's transform for live tracking).
-        m_network.on_effect = [this](std::string_view name, u32 entity_id,
-                                      glm::vec3 pos, std::string_view attach_point) {
-            if (entity_id == UINT32_MAX) {
-                m_renderer.effect_manager().play(std::string(name), pos);
-                return;
-            }
-            simulation::Unit u;
-            u.id = entity_id;
-            auto* info = m_network.client_world().handle_infos.get(entity_id);
-            u.generation = info ? info->generation : 0;
-            m_renderer.effect_manager().play_on_unit(std::string(name), u, pos,
-                                                    std::string(attach_point));
-        };
         // CreateEffect: persistent effect with stable server-assigned
         // id. Track server→local handle so a later destroy can find
         // its EffectManager instance.
@@ -1187,20 +1170,6 @@ void Engine::end_session() {
     log::info(TAG, "=== Session ended ===");
 }
 
-// ── Scene switch (Lua-driven) ─────────────────────────────────────────────
-//
-// Resets: sim entities & regions, terrain (mesh + pathfinder + spatial
-// grid), camera (re-posed to scene's authored start), selection, HUD
-// per-scene state (text tags, drag-cast, focus, slot input — but NOT
-// hud.json composites or the image cache), world overlays, picker, and
-// the Lua VM. SaveData/LoadData is the cross-scene data channel for
-// maps that need to persist values across scenes.
-//
-// Persists: map manifest, type registry, ability registry, tileset,
-// fog-of-war state (assumes scenes share terrain dimensions), audio,
-// renderer-cached models / effects / textures, network connection,
-// local player slot, lobby, hud.json composites.
-//
 // ── Scripted-camera routing ───────────────────────────────────────────────
 //
 // Each route function takes a `players_mask` (bitmask of player ids).
@@ -1303,6 +1272,16 @@ void Engine::register_script_camera_callbacks() {
 // point), so this helper does NOT load placements or run main(). For
 // the host's offline + post-barrier path, scene_switch_run_main()
 // finishes the job.
+//
+// Resets: sim entities & regions, terrain (mesh + pathfinder + spatial
+// grid), camera, selection, HUD per-scene state (text tags, drag-cast,
+// focus, slot input — but NOT hud.json composites or the image cache),
+// world overlays, picker, and the Lua VM. SaveData/LoadData is the
+// cross-scene data channel for maps that persist values across scenes.
+// Persists: map manifest, type registry, ability registry, tileset,
+// fog-of-war state (assumes scenes share terrain dimensions), audio,
+// renderer-cached models / effects / textures, network connection,
+// local player slot, lobby, hud.json composites.
 void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     log::info(TAG, "Scene switch teardown → '{}'", scene_name);
 

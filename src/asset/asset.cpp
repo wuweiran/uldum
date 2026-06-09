@@ -1,9 +1,9 @@
 #include "asset/asset.h"
+#include "asset/file_io.h"
 #include "core/log.h"
 
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 
 #ifdef ULDUM_PLATFORM_ANDROID
 #include <android/asset_manager.h>
@@ -281,26 +281,8 @@ std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
                 if (!abs_path.empty() && abs_path.back() != '/' && abs_path.back() != '\\')
                     abs_path += '/';
                 abs_path += std::string(lookup);
-                std::ifstream file(abs_path, std::ios::binary | std::ios::ate);
-                if (!file) return {};
-                // tellg can fail (returns -1) on non-seekable streams: pipes,
-                // device files, mid-race deletion on Windows. Casting -1 to
-                // size_t would yield SIZE_MAX and the vector ctor would
-                // throw bad_alloc, killing whichever loader called us.
-                const auto pos = file.tellg();
-                if (pos < 0) return {};
-                const auto size = static_cast<size_t>(pos);
-                file.seekg(0);
-                std::vector<u8> buf(size);
-                file.read(reinterpret_cast<char*>(buf.data()),
-                          static_cast<std::streamsize>(size));
-                // Short read: file was truncated under us, or it's not really
-                // a regular file. The tail of `buf` is zero-initialized but
-                // doesn't match the bytes on disk — return empty so the
-                // caller treats it as a load failure rather than silently
-                // feeding garbage downstream.
-                if (static_cast<size_t>(file.gcount()) != size) return {};
-                return buf;
+                auto bytes = read_whole_file(abs_path);
+                return bytes ? std::move(*bytes) : std::vector<u8>{};
             } else {
                 // ApkAssetMount — only reachable when a mount was installed, which
                 // only happens on Android.

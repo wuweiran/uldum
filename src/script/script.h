@@ -127,11 +127,11 @@ public:
     using SceneSwitchFn = std::function<void(std::string_view scene_name)>;
     void set_scene_switch_fn(SceneSwitchFn fn) { m_scene_switch_fn = std::move(fn); }
 
-    // Per-player scripted-camera routing. App installs these; the
-    // implementation decides whether to apply locally (own player or
-    // WC3-style camera. App routes the `players_mask` (parsed from
-    // Lua's `players` arg via parse_players_mask) per set bit. Pitch/
-    // yaw are radians on the C++ side; Lua converts from degrees.
+    // Per-player scripted-camera routing. App installs these and routes
+    // the `players_mask` (parsed from Lua's `players` arg via
+    // parse_players_mask) per set bit — applying locally for the host's
+    // own slot and sending a packet to each remote slot. Pitch/yaw are
+    // radians on the C++ side; Lua converts from degrees.
     // Lua surface: GetCameraSetup, CameraSetupApply,
     // CameraSetTargetPosition, CameraSetSourceDistance,
     // CameraSetTargetController, CameraShake.

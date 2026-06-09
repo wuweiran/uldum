@@ -346,7 +346,6 @@ TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size) {
 
 // ── Binary serialization ─────────────────────────────────────────────────
 
-// terrain.bin format:
 // Terrain binary format:
 //   tiles_x(u32), tiles_y(u32), tile_size(f32), layer_height(f32)
 //   heightmap:    f32[vertex_count]

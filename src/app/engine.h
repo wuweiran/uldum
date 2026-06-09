@@ -27,7 +27,7 @@
 #include <unordered_map>
 
 // Forward-declare UI types that Engine owns via unique_ptr. Engine's destructor
-// is defined out-of-line in app.cpp, so the header doesn't need complete
+// is defined out-of-line in engine.cpp, so the header doesn't need complete
 // types — this lets dev_console.h / ui/shell.h include app.h in turn
 // without a cycle.
 namespace uldum::shell { class Shell; }
@@ -221,13 +221,10 @@ private:
     std::unique_ptr<shell::Shell> m_shell;
 #endif
 
-    // The App implementation for this binary. Constructed via the
-    // `create_app()` factory in `Engine::init` — `app_factory_dev.cpp`
-    // returns `DevApp` for dev builds, `app_factory_null.cpp` returns
-    // `NullApp` for game builds that don't yet ship a project App,
-    // and a game project supplies its own translation unit defining
-    // `create_app()` once it adopts the architecture. Always non-null
-    // after init, so engine-side dispatch through it needs no guards.
+    // The App implementation for this binary. Constructed in Engine::init
+    // as `make_unique<ULDUM_APP_CLASS>()` — the class is picked at compile
+    // time via the ULDUM_APP_CLASS macro that CMake sets per target. Always
+    // non-null after init, so engine-side dispatch through it needs no guards.
     std::unique_ptr<App> m_app;
 
     // ── Per-session (created in start_session, destroyed in end_session) ─

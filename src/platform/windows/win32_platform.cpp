@@ -50,7 +50,6 @@ bool Win32Platform::init(const Config& config) {
     int window_width  = rect.right - rect.left;
     int window_height = rect.bottom - rect.top;
 
-    // Convert title to wide string
     int title_len = MultiByteToWideChar(CP_UTF8, 0, config.title.data(),
                                          static_cast<int>(config.title.size()), nullptr, 0);
     std::wstring wide_title(title_len, L'\0');
@@ -213,14 +212,6 @@ LRESULT CALLBACK Win32Platform::wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPA
         }
         switch (wparam) {
         case VK_ESCAPE: self->m_input.key_escape = pressed; break;
-        case 'W':       self->m_input.key_w = pressed; break;
-        case 'A':       self->m_input.key_a = pressed; break;
-        case 'S':       self->m_input.key_s = pressed; break;
-        case 'D':       self->m_input.key_d = pressed; break;
-        case 'Q':       self->m_input.key_q = pressed; break;
-        case 'E':       self->m_input.key_e = pressed; break;
-        case 'H':       self->m_input.key_h = pressed; break;
-        case 'P':       self->m_input.key_p = pressed; break;
         case VK_F1:     self->m_input.key_f1 = pressed; break;
         case VK_F2:     self->m_input.key_f2 = pressed; break;
         case VK_F3:     self->m_input.key_f3 = pressed; break;

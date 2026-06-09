@@ -80,6 +80,28 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
         return idx;
     };
 
+    // Emit a cliff/chamfer wall quad from its four corner vertices: a_h/b_h
+    // are the high (top) edge, a_l/b_l the low (bottom) edge. All four are
+    // assigned `wall_n` (callers pass duplicated verts so the wall's flat
+    // normal doesn't blend into the surrounding surface). Winding is chosen
+    // so the two triangles face along wall_n. This block was copy-pasted at
+    // every cliff configuration (1-high / 2-high diagonal / 3-high / 4-way);
+    // only how the four verts and wall_n are derived differs per site.
+    auto add_wall_quad = [&](u32 a_h, u32 a_l, u32 b_h, u32 b_l, glm::vec3 wall_n) {
+        vertices[a_h].normal = vertices[a_l].normal = wall_n;
+        vertices[b_h].normal = vertices[b_l].normal = wall_n;
+        glm::vec3 cross = glm::cross(
+            vertices[b_h].position - vertices[a_h].position,
+            vertices[a_l].position - vertices[a_h].position);
+        if (glm::dot(cross, wall_n) >= 0) {
+            indices.push_back(a_h); indices.push_back(b_h); indices.push_back(a_l);
+            indices.push_back(b_h); indices.push_back(b_l); indices.push_back(a_l);
+        } else {
+            indices.push_back(a_h); indices.push_back(a_l); indices.push_back(b_h);
+            indices.push_back(b_h); indices.push_back(a_l); indices.push_back(b_l);
+        }
+    };
+
     // ── Shared vertex grid (lazy creation) ─────────────────────────────
     // Flat and ramp tiles share vertices. Each grid vertex stores the tile
     // data for tile (ix, iy) — used when it's the provoking vertex.
@@ -334,21 +356,7 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
                     glm::vec3 wall_n = glm::normalize(glm::vec3{
                         xm - vertices[vh].position.x,
                         ym - vertices[vh].position.y, 0.0f});
-                    u32 d_wa_h = dup_v(wa_h); u32 d_wa_l = dup_v(wa_l);
-                    u32 d_wb_h = dup_v(wb_h); u32 d_wb_l = dup_v(wb_l);
-                    vertices[d_wa_h].normal = vertices[d_wa_l].normal = wall_n;
-                    vertices[d_wb_h].normal = vertices[d_wb_l].normal = wall_n;
-
-                    glm::vec3 cross = glm::cross(
-                        vertices[d_wb_h].position - vertices[d_wa_h].position,
-                        vertices[d_wa_l].position - vertices[d_wa_h].position);
-                    if (glm::dot(cross, wall_n) >= 0) {
-                        indices.push_back(d_wa_h); indices.push_back(d_wb_h); indices.push_back(d_wa_l);
-                        indices.push_back(d_wb_h); indices.push_back(d_wb_l); indices.push_back(d_wa_l);
-                    } else {
-                        indices.push_back(d_wa_h); indices.push_back(d_wa_l); indices.push_back(d_wb_h);
-                        indices.push_back(d_wb_h); indices.push_back(d_wa_l); indices.push_back(d_wb_l);
-                    }
+                    add_wall_quad(dup_v(wa_h), dup_v(wa_l), dup_v(wb_h), dup_v(wb_l), wall_n);
                 }
 
                 // Low surface: substitute midpoints with wall endpoints
@@ -413,19 +421,7 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
                         glm::vec3 wall_n = glm::normalize(glm::vec3{
                             xm - vertices[vh].position.x,
                             ym - vertices[vh].position.y, 0.0f});
-                        vertices[d_ma_h].normal = vertices[d_ma_l].normal = wall_n;
-                        vertices[d_mb_h].normal = vertices[d_mb_l].normal = wall_n;
-
-                        glm::vec3 cross = glm::cross(
-                            vertices[d_mb_h].position - vertices[d_ma_h].position,
-                            vertices[d_ma_l].position - vertices[d_ma_h].position);
-                        if (glm::dot(cross, wall_n) >= 0) {
-                            indices.push_back(d_ma_h); indices.push_back(d_mb_h); indices.push_back(d_ma_l);
-                            indices.push_back(d_mb_h); indices.push_back(d_mb_l); indices.push_back(d_ma_l);
-                        } else {
-                            indices.push_back(d_ma_h); indices.push_back(d_ma_l); indices.push_back(d_mb_h);
-                            indices.push_back(d_mb_h); indices.push_back(d_ma_l); indices.push_back(d_mb_l);
-                        }
+                        add_wall_quad(d_ma_h, d_ma_l, d_mb_h, d_mb_l, wall_n);
                     }
 
                     // Low center: 4 midpoints + 2 low corners form the remaining surface
@@ -540,21 +536,7 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
                     low_center.x - wall_center.x,
                     low_center.y - wall_center.y, 0.0f});
 
-                u32 d_wa_h = dup_v(wa_h); u32 d_wa_l = dup_v(wa_l);
-                u32 d_wb_h = dup_v(wb_h); u32 d_wb_l = dup_v(wb_l);
-                vertices[d_wa_h].normal = vertices[d_wa_l].normal = wall_n;
-                vertices[d_wb_h].normal = vertices[d_wb_l].normal = wall_n;
-
-                glm::vec3 cross = glm::cross(
-                    vertices[d_wb_h].position - vertices[d_wa_h].position,
-                    vertices[d_wa_l].position - vertices[d_wa_h].position);
-                if (glm::dot(cross, wall_n) >= 0) {
-                    indices.push_back(d_wa_h); indices.push_back(d_wb_h); indices.push_back(d_wa_l);
-                    indices.push_back(d_wb_h); indices.push_back(d_wb_l); indices.push_back(d_wa_l);
-                } else {
-                    indices.push_back(d_wa_h); indices.push_back(d_wa_l); indices.push_back(d_wb_h);
-                    indices.push_back(d_wb_h); indices.push_back(d_wa_l); indices.push_back(d_wb_l);
-                }
+                add_wall_quad(dup_v(wa_h), dup_v(wa_l), dup_v(wb_h), dup_v(wb_l), wall_n);
 
             } else if (high_count == 3) {
                 // 3 high: same as 1-low. Small triangle at low, rest high.
@@ -609,21 +591,7 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
                     glm::vec3 wall_n = glm::normalize(glm::vec3{
                         vertices[vlo].position.x - xm,
                         vertices[vlo].position.y - ym, 0.0f});
-                    u32 d_wa_h = dup_v(wa_h); u32 d_wa_l = dup_v(wa_l);
-                    u32 d_wb_h = dup_v(wb_h); u32 d_wb_l = dup_v(wb_l);
-                    vertices[d_wa_h].normal = vertices[d_wa_l].normal = wall_n;
-                    vertices[d_wb_h].normal = vertices[d_wb_l].normal = wall_n;
-
-                    glm::vec3 cross = glm::cross(
-                        vertices[d_wb_h].position - vertices[d_wa_h].position,
-                        vertices[d_wa_l].position - vertices[d_wa_h].position);
-                    if (glm::dot(cross, wall_n) >= 0) {
-                        indices.push_back(d_wa_h); indices.push_back(d_wb_h); indices.push_back(d_wa_l);
-                        indices.push_back(d_wb_h); indices.push_back(d_wb_l); indices.push_back(d_wa_l);
-                    } else {
-                        indices.push_back(d_wa_h); indices.push_back(d_wa_l); indices.push_back(d_wb_h);
-                        indices.push_back(d_wb_h); indices.push_back(d_wa_l); indices.push_back(d_wb_l);
-                    }
+                    add_wall_quad(dup_v(wa_h), dup_v(wa_l), dup_v(wb_h), dup_v(wb_l), wall_n);
                 }
 
                 // High surface: substitute midpoints with wall endpoints

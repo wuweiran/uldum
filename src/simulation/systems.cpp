@@ -231,11 +231,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 // Follow on someone we can't see).
                 if (m->target_unit.is_valid()) {
                     if (!world.validate(m->target_unit)) {
-                        oq->current.reset();
-                        if (!oq->queued.empty()) {
-                            oq->current = std::move(oq->queued.front());
-                            oq->queued.pop_front();
-                        }
+                        oq->advance();
                         mov.moving = false;
                         mov.stuck_timer = 0;
                         continue;
@@ -362,11 +358,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     mov.has_waypoint = false;
                     mov.moving = false;
                     mov.stuck_timer = 0;
-                    oq->current.reset();
-                    if (!oq->queued.empty()) {
-                        oq->current = std::move(oq->queued.front());
-                        oq->queued.pop_front();
-                    }
+                    oq->advance();
                     continue;
                 }
             }
@@ -406,11 +398,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 mov.moving = false;
                 mov.stuck_timer = 0;
                 if (!is_follow) {
-                    oq->current.reset();
-                    if (!oq->queued.empty()) {
-                        oq->current = std::move(oq->queued.front());
-                        oq->queued.pop_front();
-                    }
+                    oq->advance();
                 } else {
                     // Follow in range: keep turning to face the followed
                     // target. The next tick's re-path immediately flips
@@ -434,8 +422,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 continue;
             }
         }
-
-        // (Stuck detection moved above the no-waypoint early-return.)
 
         // ── Move toward waypoint ─────────────────────────────────────────
         glm::vec2 to_wp = mov.waypoint - pos2d;
@@ -487,7 +473,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                               mov.type, prefer_left);
         }
 
-        // Turn toward movement direction
         f32 desired_facing = std::atan2(dir.y, dir.x);
         f32 face_diff = angle_diff(transform->facing, desired_facing);
         f32 max_turn = mov.turn_rate * dt;
@@ -526,7 +511,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             }
         }
 
-        // Update visual Z and cliff level
         if (terrain) {
             transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
         }
@@ -731,11 +715,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
             if (attack_order) {
                 // Explicit Attack order finished — advance queue
-                oq->current.reset();
-                if (!oq->queued.empty()) {
-                    oq->current = std::move(oq->queued.front());
-                    oq->queued.pop_front();
-                }
+                oq->advance();
             }
             // AttackMove: order stays — movement system picks up the destination next tick
 
@@ -888,9 +868,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             combat.attack_timer -= dt;
             if (combat.attack_timer <= 0) {
                 // FIRE — deal damage or spawn projectile
-                Unit self;
-                self.id = id;
-                self.generation = world.handle_infos.get(id)->generation;
+                Unit self = world.unit(id);
 
                 // Snapshot the attacker position BEFORE spawning the
                 // projectile. spawn_attack_projectile → create_projectile
@@ -992,10 +970,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             recalculate_modifiers(world, id);
         }
         if (world.on_ability_removed && !expired_ids.empty()) {
-            Unit u;
-            u.id = id;
-            auto* info = world.handle_infos.get(id);
-            u.generation = info ? info->generation : 0;
+            Unit u = world.unit(id);
             for (auto& aid : expired_ids) {
                 world.on_ability_removed(u, aid);
             }
@@ -1155,10 +1130,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     case CastState::Foreswing:
                         aset.cast_timer -= dt;
                         if (aset.cast_timer <= 0) {
-                            Unit caster;
-                            caster.id = id;
-                            auto* info = world.handle_infos.get(id);
-                            caster.generation = info ? info->generation : 0;
+                            Unit caster = world.unit(id);
 
                             if (lvl.channel_time > 0) {
                                 // Channelled cast: hand off to Channeling.
@@ -1196,10 +1168,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         // oq->queued. Treat a non-empty queue as the user's
                         // signal to break the channel.
                         bool interrupted = oq && !oq->queued.empty();
-                        Unit caster;
-                        caster.id = id;
-                        auto* info = world.handle_infos.get(id);
-                        caster.generation = info ? info->generation : 0;
+                        Unit caster = world.unit(id);
 
                         if (interrupted) {
                             // ENDCAST fires for both natural completion and
@@ -1276,10 +1245,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 if (def->target_filter.enemy) filter.enemy_of = owner->player;
                 auto nearby = grid.units_in_range(world, aura_transform->position, lvl.aura_radius, filter);
 
-                Unit source_unit;
-                source_unit.id = id;
-                auto* info = world.handle_infos.get(id);
-                source_unit.generation = info ? info->generation : 0;
+                Unit source_unit = world.unit(id);
 
                 // Duration must outlast the scan interval so a unit that
                 // stays in radius is refreshed before its buff lapses.
@@ -1366,8 +1332,7 @@ void system_items(World& world, float /*dt*/) {
 
             // In range → claim into first free inventory slot.
             if (dist2 <= pickup_r * pickup_r) {
-                Unit unit_h{ id, world.handle_infos.get(id) ?
-                                  world.handle_infos.get(id)->generation : 0 };
+                Unit unit_h = world.unit(id);
                 i32 slot = give_item_to_unit(world, unit_h, po->item);
                 // slot < 0 = inventory full; the claim failed but we
                 // still pop the order so the unit doesn't stand on
@@ -1403,8 +1368,7 @@ void system_items(World& world, float /*dt*/) {
         else if (auto* d = std::get_if<orders::DropItem>(&oq.current->payload)) {
             constexpr f32 DROP_RANGE = 150.0f;     // engine-wide drop reach (game units)
 
-            Unit unit_h{ id, world.handle_infos.get(id) ?
-                              world.handle_infos.get(id)->generation : 0 };
+            Unit unit_h = world.unit(id);
 
             // Find which slot holds this item.
             i32 slot = -1;
@@ -1497,14 +1461,6 @@ static void destroy_projectile_entity(World& world, u32 id) {
     world.handles.free(h);
 }
 
-static Unit make_proj_unit(World& world, u32 id) {
-    Unit u;
-    u.id = id;
-    auto* info = world.handle_infos.get(id);
-    u.generation = info ? info->generation : 0;
-    return u;
-}
-
 // Window the projectile lingers in the Dying state so its death clip
 // can play out before teardown. Generous enough for typical glTF
 // death clips (most well under 1.5 s); for static / non-skinned
@@ -1533,7 +1489,7 @@ static void begin_destroy_projectile(World& world, u32 id) {
             if (dur > 0.0f) timer = dur;
         }
     }
-    Unit pu = make_proj_unit(world, id);
+    Unit pu = world.unit(id);
     if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
     p->dying       = true;
     p->death_timer = timer;
@@ -1597,7 +1553,7 @@ void system_projectile(World& world, float dt) {
             glm::vec3 to = aim - transform->position;
             f32 dist = glm::length(to);
             if (dist < proj.hit_radius) {
-                Unit pu = make_proj_unit(world, id);
+                Unit pu = world.unit(id);
                 if (world.validate(proj.target) && world.on_projectile_hit) {
                     world.on_projectile_hit(pu, proj.target);
                 }
@@ -1632,7 +1588,7 @@ void system_projectile(World& world, float dt) {
             // match could alias a recycled handle (unit removed mid-
             // flight, id reused for a new unit) and wrongly skip the new
             // occupant.
-            Unit pu = make_proj_unit(world, id);
+            Unit pu = world.unit(id);
             for (u32 j = 0; j < world.transforms.count(); ++j) {
                 u32 oid = world.transforms.ids()[j];
                 if (oid == id) continue;
@@ -1661,7 +1617,7 @@ void system_projectile(World& world, float dt) {
                 glm::vec3 delta = tf.position - transform->position;
                 delta.z = 0;
                 if (glm::length(delta) <= proj.hit_radius) {
-                    Unit hit = make_proj_unit(world, oid);
+                    Unit hit = world.unit(oid);
                     if (world.on_projectile_hit) world.on_projectile_hit(pu, hit);
                     if (proj.is_attack) {
                         deal_attack_damage(world, proj.source, hit, proj.damage);
@@ -1688,34 +1644,12 @@ void system_projectile(World& world, float dt) {
 // ── Death + corpse system ─────────────────────────────────────────────────
 
 static void remove_all_components_and_free(World& world, Handle h) {
-    world.transforms.remove(h.id);
-    world.handle_infos.remove(h.id);
-    world.healths.remove(h.id);
-    world.state_blocks.remove(h.id);
-    world.attribute_blocks.remove(h.id);
-    world.selectables.remove(h.id);
-    world.owners.remove(h.id);
-    world.movements.remove(h.id);
-    world.combats.remove(h.id);
-    world.sights.remove(h.id);
-    world.order_queues.remove(h.id);
-    world.ability_sets.remove(h.id);
-    world.classifications.remove(h.id);
-    world.inventories.remove(h.id);
-    world.buildings.remove(h.id);
-    world.constructions.remove(h.id);
-    world.destructables.remove(h.id);
-    world.doodads.remove(h.id);
-    if (world.on_pathing_unblock) {
-        auto* pb = world.pathing_blockers.get(h.id);
-        if (pb) world.on_pathing_unblock(pb->cx, pb->cy, pb->w, pb->h);
-    }
-    world.pathing_blockers.remove(h.id);
-    world.item_infos.remove(h.id);
-    world.carriables.remove(h.id);
-    world.projectiles.remove(h.id);
-    world.dead_states.remove(h.id);
-    world.renderables.remove(h.id);
+    // Route through the canonical teardown so this corpse-cleanup path
+    // can't drift from the master pool list. (It used to be a hand-
+    // maintained copy that had silently lost status_flags / anim_queues
+    // / true_sight_vis / forced_vis — a dead unit's stun/silence/invis
+    // refcounts bled onto whatever new unit recycled its handle id.)
+    remove_all_components(world, h.id);
     world.handles.free(h);
 }
 
@@ -1944,11 +1878,10 @@ static bool region_contains_point(const World::Region& r, glm::vec3 pos) {
 
 void system_regions(World& world) {
     if (world.regions.empty()) return;
-    if (!world.on_region_enter && !world.on_region_leave) {
-        // No script consumer wired — keep `contained` in sync anyway
-        // so IsUnitInRegion queries return correct answers, but skip
-        // the diff dispatch.
-    }
+    // Note: `contained` is kept in sync below even when no script
+    // consumer (on_region_enter / on_region_leave) is wired, so
+    // IsUnitInRegion queries stay correct; only the diff dispatch is
+    // skipped per-region when there's no callback.
 
     // Reused across regions to avoid reallocation.
     std::unordered_set<u32> current;
@@ -1974,18 +1907,12 @@ void system_regions(World& world) {
         for (u32 uid : current) {
             if (region.contained.count(uid)) continue;
             if (!world.on_region_enter) continue;
-            const auto* hi = world.handle_infos.get(uid);
-            Unit u; u.id = uid;
-            if (hi) u.generation = hi->generation;
-            world.on_region_enter(rid, u);
+            world.on_region_enter(rid, world.unit(uid));
         }
         for (u32 uid : region.contained) {
             if (current.count(uid)) continue;
             if (!world.on_region_leave) continue;
-            const auto* hi = world.handle_infos.get(uid);
-            Unit u; u.id = uid;
-            if (hi) u.generation = hi->generation;
-            world.on_region_leave(rid, u);
+            world.on_region_leave(rid, world.unit(uid));
         }
 
         region.contained = std::move(current);

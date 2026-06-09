@@ -1352,9 +1352,6 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
     const auto& td    = *s.world_ctx->terrain;
     const auto* vision = s.world_ctx->vision;
 
-    f32 inv_w = (td.world_width()  > 0.0f) ? (cfg.rect.w / td.world_width())  : 0.0f;
-    f32 inv_h = (td.world_height() > 0.0f) ? (cfg.rect.h / td.world_height()) : 0.0f;
-
     for (u32 i = 0; i < world.transforms.count(); ++i) {
         u32 id = world.transforms.ids()[i];
         const auto& tf = world.transforms.data()[i];
@@ -1376,8 +1373,8 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
             }
         }
 
-        f32 sx = cfg.rect.x + (tf.position.x - td.origin_x()) * inv_w;
-        f32 sy = cfg.rect.y + cfg.rect.h - (tf.position.y - td.origin_y()) * inv_h;
+        f32 sx = 0.0f, sy = 0.0f;
+        hud::minimap_world_to_screen(cfg.rect, td, tf.position.x, tf.position.y, sx, sy);
         f32 half = cfg.style.dot_size * 0.5f;
         Rect dot{ sx - half, sy - half, cfg.style.dot_size, cfg.style.dot_size };
         emit_rect(r, dot, minimap_dot_color(*s.world_ctx, id, cfg.style));

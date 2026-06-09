@@ -331,26 +331,6 @@ static void extract_materials(const cgltf_data* data,
 
 static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* data, std::string_view path);
 
-std::expected<ModelData, std::string> load_model(std::string_view path) {
-    std::string path_str(path);
-
-    cgltf_options options{};
-    cgltf_data* data = nullptr;
-
-    cgltf_result result = cgltf_parse_file(&options, path_str.c_str(), &data);
-    if (result != cgltf_result_success) {
-        return std::unexpected(std::format("Failed to parse glTF '{}': error {}", path, static_cast<int>(result)));
-    }
-
-    result = cgltf_load_buffers(&options, data, path_str.c_str());
-    if (result != cgltf_result_success) {
-        cgltf_free(data);
-        return std::unexpected(std::format("Failed to load glTF buffers '{}': error {}", path, static_cast<int>(result)));
-    }
-
-    return build_model_from_cgltf(data, path);
-}
-
 std::expected<ModelData, std::string> load_model_from_memory(const u8* data_bytes, u32 size, std::string_view source_path) {
     cgltf_options options{};
     cgltf_data* data = nullptr;
@@ -497,7 +477,6 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
             }
 
             if (has_skin && joints_acc && weights_acc) {
-                // Properly skinned mesh
                 SkinnedMeshData smd;
                 smd.name = mesh_name;
                 smd.material = material_idx;
@@ -550,7 +529,6 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
 
                 model.skinned_meshes.push_back(std::move(smd));
             } else {
-                // Non-skinned, not bone-parented
                 MeshData md;
                 md.name = mesh_name;
                 md.material = material_idx;

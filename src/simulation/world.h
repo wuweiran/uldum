@@ -198,7 +198,25 @@ struct World {
     // Validate a typed handle
     bool validate(Handle h) const { return handles.is_valid(h); }
 
-    // Clear all entities (keeps type registry and callbacks)
+    // Build a Unit handle (id + current generation) from a raw entity
+    // id. Returns an invalid Unit (generation 0) when the id has no
+    // handle_infos entry — so callers can't accidentally deref a null
+    // record to read the generation (the idiom `{id, handle_infos.get(
+    // id)->generation}` was hand-written ~12× and crashed on a missing
+    // entry at least once).
+    Unit unit(u32 id) const {
+        Unit u;
+        u.id = id;
+        const auto* info = handle_infos.get(id);
+        u.generation = info ? info->generation : 0;
+        return u;
+    }
+
+    // Clear all entities (keeps type registry and callbacks).
+    // This is the BULK-WIPE counterpart to remove_all_components: it
+    // .clear()s every per-entity pool at once (plus regions + handle
+    // allocator) instead of removing one id. If you add a component
+    // pool, add it BOTH here and in remove_all_components (world.cpp).
     void clear_entities() {
         transforms.clear(); handle_infos.clear(); healths.clear();
         state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
@@ -228,15 +246,24 @@ void          destroy(World& world, Destructable d);
 void          destroy(World& world, Item item);
 void          destroy(World& world, Doodad d);
 
+// Canonical per-entity teardown: removes every component pool for the
+// given id (and fires on_pathing_unblock for a building footprint).
+// Does NOT free the handle — callers that recycle the slot call
+// world.handles.free() themselves; callers on the client mirror just
+// drop the components. This is THE single source of truth for "what
+// pools exist": every destroy path (server destroy, corpse cleanup,
+// client entity-destroy) routes through it so adding a component means
+// updating one function, not four. (clear_entities does a bulk wipe of
+// the same set — keep the two in sync.)
+void          remove_all_components(World& world, u32 id);
+
 // Transform a unit into a different unit type in place — same handle,
 // same position, same owner. Swaps every type-derived component (model,
-// movement, combat, vision, classifications, etc.), re-seeds health and
-// states by percentage carry-over, and rebuilds the ability set with
-// the new type's abilities while *keeping* every existing instance so
-// cooldowns continue to tick (an ability that's not in the new type
-// just gets `available = false`). Cancels in-flight cast / attack /
-// movement. Returns false if the handle is stale or the type id is
-// unknown.
+// movement, combat, vision, classifications, etc.) and re-seeds health
+// and states by percentage carry-over. The ability set is left untouched
+// (map Lua manages abilities across the morph). Cancels in-flight cast /
+// attack / movement. Returns false if the handle is stale or the type id
+// is unknown.
 bool morph_unit(World& world, Unit unit, std::string_view new_type_id);
 
 // ── Unit API ───────────────────────────────────────────────────────────────

@@ -19,10 +19,6 @@
 
 namespace uldum::hud {
 
-// Config + context storage. We keep these in static function-local storage
-// per-Hud-instance by storing them inside Hud::Impl — see hud.cpp. For now,
-// pass them in as arguments from hud.cpp's draw_world_overlays_impl.
-
 // Visibility test for a given bar template given a unit's state fraction,
 // hover, and selection flags.
 static bool passes_visibility(const std::vector<VisibilityPolicy>& policies,

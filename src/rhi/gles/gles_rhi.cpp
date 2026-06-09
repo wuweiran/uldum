@@ -1,26 +1,15 @@
 // OpenGL ES 3.1 RHI backend — implementation.
 //
-// This is a SKELETON. Methods are declared and the class shape matches
-// the Vulkan backend, but most bodies are TODO. Each section below is
-// labeled with the work needed to finish it.
-//
-// Build status: file compiles when ULDUM_BACKEND_GLES is enabled on
-// Android. Most methods return invalid handles or log a warning, so the
-// engine will fail-soft at runtime until the implementation is filled in.
-//
-// Implementation roadmap (rough sequencing):
-//   1. EGL context + ANativeWindow surface (init / shutdown / recreate_surface)
-//   2. Buffers (create_buffer, destroy_buffer, mapped_ptr)
-//   3. Textures (create_texture, destroy_texture; image upload)
-//   4. Samplers (create_sampler, destroy_sampler)
-//   5. Shader modules (compile GLSL ES 3.10 source from the bundle)
-//   6. Descriptor sets (record binding-table state; flushed at draw time)
-//   7. Pipeline layout + pipeline (link program; record vertex format)
-//   8. CommandList method bodies (in gles/command_list.cpp)
-//   9. Frame loop (eglSwapBuffers, default framebuffer setup)
+// Active on Android when ULDUM_BACKEND_GLES is enabled. Mirrors the
+// Vulkan backend's class shape over EGL + ES 3.1: EGL context/surface,
+// buffers, textures, samplers, GLSL ES 3.10 shader modules, descriptor
+// binding-table emulation, program-linked pipelines, and the
+// eglSwapBuffers frame loop. CommandList bodies live in
+// gles/command_list.cpp.
 
 #include "rhi/gles/gles_rhi.h"
 #include "rhi/gles/gles_records.h"
+#include "rhi/detail/slot_table.h"
 #include "platform/platform.h"
 #include "core/log.h"
 
@@ -75,25 +64,15 @@ struct Rhi::Impl {
     u32     last_base_instance = 0xFFFFFFFFu;  // force first upload
 };
 
-// ── Slab-allocator helpers (mirror the Vulkan backend) ──────────────
+// ── Slab-allocator helpers (shared with the Vulkan backend) ─────────
 
 namespace {
-template <typename Rec>
-u32 acquire_slot(std::vector<Rec>& table, std::vector<u32>& free_list) {
-    if (!free_list.empty()) {
-        u32 idx = free_list.back();
-        free_list.pop_back();
-        return idx;
-    }
-    table.emplace_back();
-    return static_cast<u32>(table.size() - 1);
-}
-
-template <typename Rec>
-u32 bump_generation(Rec& rec) {
-    rec.generation = (rec.generation + 1) ? (rec.generation + 1) : 1;
-    return rec.generation;
-}
+// acquire_slot / bump_generation / lookup live in
+// rhi/detail/slot_table.h. Pull them into this TU's unqualified scope
+// so call sites read unchanged.
+using detail::acquire_slot;
+using detail::bump_generation;
+using detail::lookup;
 } // namespace
 
 // ── Format / usage translation ──────────────────────────────────────
@@ -1037,39 +1016,25 @@ void Rhi::destroy_pipeline(PipelineHandle h) {
 // ── Record accessors (used by CommandList in command_list.cpp) ───────
 
 const Rhi::BufferRecord* Rhi::buffer_record(BufferHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->buffers.size()) return nullptr;
-    const auto& rec = m_impl->buffers[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->buffers, h);
 }
 const Rhi::TextureRecord* Rhi::texture_record(TextureHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->textures.size()) return nullptr;
-    const auto& rec = m_impl->textures[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->textures, h);
 }
 const Rhi::SamplerRecord* Rhi::sampler_record(SamplerHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->samplers.size()) return nullptr;
-    const auto& rec = m_impl->samplers[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->samplers, h);
 }
 const Rhi::DescriptorSetRecord* Rhi::descriptor_set_record(DescriptorSetHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->dset_records.size()) return nullptr;
-    const auto& rec = m_impl->dset_records[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->dset_records, h);
 }
 const Rhi::DescriptorSetLayoutRecord* Rhi::descriptor_set_layout_record(DescriptorSetLayoutHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->dsl_records.size()) return nullptr;
-    const auto& rec = m_impl->dsl_records[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->dsl_records, h);
 }
 const Rhi::PipelineLayoutRecord* Rhi::pipeline_layout_record(PipelineLayoutHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->pl_records.size()) return nullptr;
-    const auto& rec = m_impl->pl_records[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->pl_records, h);
 }
 const Rhi::PipelineRecord* Rhi::pipeline_record(PipelineHandle h) const {
-    if (!h.is_valid() || h.index >= m_impl->pipeline_records.size()) return nullptr;
-    const auto& rec = m_impl->pipeline_records[h.index];
-    return rec.generation == h.generation ? &rec : nullptr;
+    return detail::lookup(m_impl->pipeline_records, h);
 }
 
 } // namespace uldum::rhi

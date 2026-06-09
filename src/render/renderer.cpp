@@ -341,7 +341,6 @@ void Renderer::shutdown() {
     }
     m_mesh_cache.clear();
 
-    // Destroy instance/indirect/mega buffers
     for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
         m_rhi->destroy_buffer(m_instance_buffer[f]);
         m_rhi->destroy_buffer(m_indirect_buffer[f]);
@@ -353,7 +352,6 @@ void Renderer::shutdown() {
     m_rhi->destroy_buffer(m_mega_vb);
     m_rhi->destroy_buffer(m_mega_ib);
 
-    // Destroy bindless resources
     if (m_bindless_set.is_valid()) m_rhi->free_descriptor_set(m_bindless_set);
     m_rhi->destroy_descriptor_set_layout(m_bindless_layout);
 #if defined(ULDUM_BACKEND_GLES)
@@ -361,11 +359,9 @@ void Renderer::shutdown() {
     if (m_unit_tex_array.is_valid())   m_rhi->destroy_texture(m_unit_tex_array);
 #endif
 
-    // Destroy fog resources
     if (m_fog_texture.texture.is_valid()) destroy_texture(*m_rhi, m_fog_texture);
     m_rhi->destroy_buffer(m_fog_staging_buffer);
 
-    // Destroy textures
     destroy_texture(*m_rhi, m_corpse_texture);
     destroy_texture(*m_rhi, m_default_texture);
     if (m_terrain_material.layer_array.texture.is_valid()) destroy_texture(*m_rhi, m_terrain_material.layer_array);
@@ -373,14 +369,12 @@ void Renderer::shutdown() {
     if (m_transition_noise.texture.is_valid()) destroy_texture(*m_rhi, m_transition_noise);
     if (m_water_normal.texture.is_valid()) destroy_texture(*m_rhi, m_water_normal);
 
-    // Destroy shadow resources
     destroy_shadow_map(*m_rhi, m_shadow_map);
     destroy_shadow_buffer(*m_rhi, m_shadow_ubo);
     m_rhi->destroy_buffer(m_env_ubo_buffer);
     m_env_ubo_buffer = {};
     if (m_default_cubemap.texture.is_valid()) destroy_texture(*m_rhi, m_default_cubemap);
 
-    // Destroy pipelines
     m_rhi->destroy_pipeline(m_particle_pipeline);
     m_rhi->destroy_pipeline_layout(m_particle_pipeline_layout);
     m_rhi->destroy_pipeline(m_skinned_shadow_pipeline);
@@ -406,7 +400,6 @@ void Renderer::shutdown() {
     m_rhi->destroy_pipeline(m_mesh_mask_pipeline);
     m_rhi->destroy_pipeline_layout(m_mesh_pipeline_layout);
 
-    // Destroy descriptor infrastructure
     m_rhi->destroy_descriptor_set_layout(m_bone_desc_layout);
     m_rhi->destroy_descriptor_set_layout(m_shadow_desc_layout);
     m_rhi->destroy_descriptor_set_layout(m_terrain_desc_layout);
@@ -1115,52 +1108,13 @@ u32 Renderer::register_unit_texture(const GpuTexture& tex, const u8* pixels, u32
         upload_pixels = resized.data();
     }
 
-    // Stage via a one-shot upload buffer + copy_buffer_to_image.
-    const u64 layer_bytes = static_cast<u64>(UNIT_TEX_SIZE) * UNIT_TEX_SIZE * 4;
-    rhi::BufferDesc bd{};
-    bd.size   = layer_bytes;
-    bd.usage  = rhi::BufferUsage::TransferSrc;
-    bd.memory = rhi::MemoryUsage::HostSequential;
-    auto staging = m_rhi->create_buffer(bd);
-    if (!staging.is_valid()) {
-        log::error(TAG, "register_unit_texture: staging buffer alloc failed");
+    // Stage + barrier + copy into our layer of the array — shared with the
+    // bulk array/cubemap uploaders via upload_array_layer.
+    if (!upload_array_layer(*m_rhi, m_unit_tex_array, idx,
+                            upload_pixels, UNIT_TEX_SIZE, UNIT_TEX_SIZE)) {
+        --m_bindless_count;
         return 0;
     }
-    std::memcpy(m_rhi->mapped_ptr(staging), upload_pixels, layer_bytes);
-
-    rhi::CommandList cmd = m_rhi->begin_oneshot();
-    rhi::ImageBarrier to_xfer{};
-    to_xfer.image       = m_unit_tex_array;
-    to_xfer.src_stage   = rhi::PipelineStage::TopOfPipe;
-    to_xfer.dst_stage   = rhi::PipelineStage::Transfer;
-    to_xfer.dst_access  = rhi::AccessFlag::TransferWrite;
-    to_xfer.old_layout  = rhi::ImageLayout::Undefined;
-    to_xfer.new_layout  = rhi::ImageLayout::TransferDstOptimal;
-    to_xfer.base_layer  = idx;
-    to_xfer.layer_count = 1;
-    cmd.image_barrier(to_xfer);
-
-    rhi::BufferImageCopy region{};
-    region.image_extent_w   = UNIT_TEX_SIZE;
-    region.image_extent_h   = UNIT_TEX_SIZE;
-    region.base_array_layer = idx;
-    region.layer_count      = 1;
-    cmd.copy_buffer_to_image(staging, m_unit_tex_array, std::span{&region, 1});
-
-    rhi::ImageBarrier to_shader{};
-    to_shader.image       = m_unit_tex_array;
-    to_shader.src_stage   = rhi::PipelineStage::Transfer;
-    to_shader.src_access  = rhi::AccessFlag::TransferWrite;
-    to_shader.dst_stage   = rhi::PipelineStage::FragmentShader;
-    to_shader.dst_access  = rhi::AccessFlag::ShaderRead;
-    to_shader.old_layout  = rhi::ImageLayout::TransferDstOptimal;
-    to_shader.new_layout  = rhi::ImageLayout::ShaderReadOnlyOptimal;
-    to_shader.base_layer  = idx;
-    to_shader.layer_count = 1;
-    cmd.image_barrier(to_shader);
-    m_rhi->end_oneshot(cmd);
-
-    m_rhi->destroy_buffer(staging);
     return idx;
 #else
     (void)pixels; (void)width; (void)height;
@@ -2083,7 +2037,6 @@ f32 Renderer::clip_duration(std::string_view model_path, std::string_view clip_n
 // ── Model loading + mesh cache ────────────────────────────────────────────
 
 LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
-    // Check cache first
     auto it = m_model_cache.find(model_path);
     if (it != m_model_cache.end()) return &it->second;
 

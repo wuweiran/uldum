@@ -1,4 +1,5 @@
 #include "rhi/vulkan/vulkan_rhi.h"
+#include "rhi/detail/slot_table.h"
 #include "platform/platform.h"
 #include "core/log.h"
 
@@ -94,17 +95,9 @@ void Rhi::shutdown() {
 
     destroy_swapchain();
 
-    // Drop any resources that callers forgot to destroy. In practice
-    // every consumer destroys at end-of-session, so these loops are
-    // normally no-ops — but the safety net matters during the migration
-    // when handle-based teardown coexists with raw cleanup. Order:
-    // samplers and textures (free `vk*`) before VMA destruction; the
-    // allocator owns the underlying memory for buffers and images.
-    // Pipelines / layouts / descriptor sets / descriptor set layouts /
-    // descriptor pools — drop these *before* samplers/textures/buffers
-    // because they reference those (the device-side dependency order
-    // doesn't strictly matter for vkDestroy*, but it makes the cleanup
-    // log easier to reason about if something goes wrong).
+    // Safety-net teardown for any handles a caller leaked. Destroy in
+    // dependency order: pipelines / layouts / descriptors first, then
+    // samplers and textures (which free `vk*`), before VMA destruction.
     for (auto& rec : m_pipeline_records) {
         if (rec.pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(m_device, rec.pipeline, nullptr);
@@ -402,7 +395,6 @@ bool Rhi::pick_physical_device() {
 // ---------------------------------------------------------------------------
 
 bool Rhi::create_device() {
-    // Find queue families
     u32 family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(m_physical_device, &family_count, nullptr);
     std::vector<VkQueueFamilyProperties> families(family_count);
@@ -432,7 +424,6 @@ bool Rhi::create_device() {
         return false;
     }
 
-    // Create queues
     float priority = 1.0f;
     std::vector<VkDeviceQueueCreateInfo> queue_cis;
 
@@ -639,12 +630,10 @@ bool Rhi::create_swapchain(u32 width, u32 height) {
     m_swapchain_format = chosen_format.format;
     m_swapchain_extent = extent;
 
-    // Get images
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, nullptr);
     m_swapchain_images.resize(image_count);
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, m_swapchain_images.data());
 
-    // Create image views
     m_swapchain_views.resize(image_count);
     for (u32 i = 0; i < image_count; ++i) {
         VkImageViewCreateInfo view_ci{};
@@ -957,14 +946,13 @@ ShaderModuleHandle Rhi::create_shader_module(std::span<const u8> spirv) {
 }
 
 void Rhi::destroy_shader_module(ShaderModuleHandle h) {
-    if (!h.is_valid() || h.index >= m_shader_modules.size()) return;
-    auto& rec = m_shader_modules[h.index];
-    if (rec.generation != h.generation) return;  // stale handle
-    if (rec.module != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(m_device, rec.module, nullptr);
-        rec.module = VK_NULL_HANDLE;
+    auto* rec = detail::lookup(m_shader_modules, h);
+    if (!rec) return;  // invalid / stale
+    if (rec->module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(m_device, rec->module, nullptr);
+        rec->module = VK_NULL_HANDLE;
     }
-    rec.generation = 0;  // mark slot free
+    rec->generation = 0;  // mark slot free
     m_shader_modules_free.push_back(h.index);
 }
 
@@ -974,27 +962,12 @@ void Rhi::destroy_shader_module(ShaderModuleHandle h) {
 
 namespace {
 
-// Tiny generic helper: pick a free index from the recycled list or push
-// a fresh slot. Returns the index; caller fills the record.
-template <typename Rec>
-u32 acquire_slot(std::vector<Rec>& records, std::vector<u32>& free_list) {
-    if (!free_list.empty()) {
-        u32 idx = free_list.back();
-        free_list.pop_back();
-        return idx;
-    }
-    u32 idx = static_cast<u32>(records.size());
-    records.emplace_back();
-    return idx;
-}
-
-// Bump-with-skip-0: generation 0 means "slot free".
-template <typename Rec>
-u32 bump_generation(Rec& rec) {
-    rec.generation += 1;
-    if (rec.generation == 0) rec.generation = 1;
-    return rec.generation;
-}
+// acquire_slot / bump_generation / lookup live in rhi/detail/slot_table.h
+// (shared with the GLES backend). Pull them into this TU's unqualified
+// scope so the existing call sites read unchanged.
+using detail::acquire_slot;
+using detail::bump_generation;
+using detail::lookup;
 
 VkBufferUsageFlags to_vk_buffer_usage(BufferUsage u) {
     VkBufferUsageFlags f = 0;
@@ -1156,33 +1129,28 @@ BufferHandle Rhi::create_buffer(const BufferDesc& desc) {
 }
 
 void Rhi::destroy_buffer(BufferHandle h) {
-    if (!h.is_valid() || h.index >= m_buffers.size()) return;
-    auto& rec = m_buffers[h.index];
-    if (rec.generation != h.generation) return;
-    if (rec.buffer != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(m_allocator, rec.buffer, rec.alloc);
-        rec.buffer = VK_NULL_HANDLE;
-        rec.alloc  = VK_NULL_HANDLE;
-        rec.mapped = nullptr;
+    auto* rec = detail::lookup(m_buffers, h);
+    if (!rec) return;
+    if (rec->buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(m_allocator, rec->buffer, rec->alloc);
+        rec->buffer = VK_NULL_HANDLE;
+        rec->alloc  = VK_NULL_HANDLE;
+        rec->mapped = nullptr;
     }
-    rec.generation = 0;
+    rec->generation = 0;
     m_buffers_free.push_back(h.index);
 }
 
 // resolve(BufferHandle) — inlined in vulkan_rhi.h
 
 VmaAllocation Rhi::alloc_of(BufferHandle h) const {
-    if (!h.is_valid() || h.index >= m_buffers.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_buffers[h.index];
-    if (rec.generation != h.generation) return VK_NULL_HANDLE;
-    return rec.alloc;
+    const auto* rec = detail::lookup(m_buffers, h);
+    return rec ? rec->alloc : VK_NULL_HANDLE;
 }
 
 void* Rhi::mapped_ptr(BufferHandle h) const {
-    if (!h.is_valid() || h.index >= m_buffers.size()) return nullptr;
-    const auto& rec = m_buffers[h.index];
-    if (rec.generation != h.generation) return nullptr;
-    return rec.mapped;
+    const auto* rec = detail::lookup(m_buffers, h);
+    return rec ? rec->mapped : nullptr;
 }
 
 TextureHandle Rhi::create_texture(const TextureDesc& desc) {
@@ -1258,23 +1226,20 @@ TextureHandle Rhi::create_texture(const TextureDesc& desc) {
 }
 
 void Rhi::destroy_texture(TextureHandle h) {
-    if (!h.is_valid() || h.index >= m_textures.size()) return;
-    auto& rec = m_textures[h.index];
-    if (rec.generation != h.generation) return;
-    if (rec.view  != VK_NULL_HANDLE) vkDestroyImageView(m_device, rec.view, nullptr);
-    if (rec.image != VK_NULL_HANDLE) vmaDestroyImage(m_allocator, rec.image, rec.alloc);
-    rec.view = VK_NULL_HANDLE; rec.image = VK_NULL_HANDLE; rec.alloc = VK_NULL_HANDLE;
-    rec.generation = 0;
+    auto* rec = detail::lookup(m_textures, h);
+    if (!rec) return;
+    if (rec->view  != VK_NULL_HANDLE) vkDestroyImageView(m_device, rec->view, nullptr);
+    if (rec->image != VK_NULL_HANDLE) vmaDestroyImage(m_allocator, rec->image, rec->alloc);
+    rec->view = VK_NULL_HANDLE; rec->image = VK_NULL_HANDLE; rec->alloc = VK_NULL_HANDLE;
+    rec->generation = 0;
     m_textures_free.push_back(h.index);
 }
 
 // resolve(TextureHandle) / resolve_view — inlined in vulkan_rhi.h
 
 VmaAllocation Rhi::alloc_of(TextureHandle h) const {
-    if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_textures[h.index];
-    if (rec.generation != h.generation) return VK_NULL_HANDLE;
-    return rec.alloc;
+    const auto* rec = detail::lookup(m_textures, h);
+    return rec ? rec->alloc : VK_NULL_HANDLE;
 }
 
 SamplerHandle Rhi::create_sampler(const SamplerDesc& desc) {
@@ -1309,14 +1274,13 @@ SamplerHandle Rhi::create_sampler(const SamplerDesc& desc) {
 }
 
 void Rhi::destroy_sampler(SamplerHandle h) {
-    if (!h.is_valid() || h.index >= m_samplers.size()) return;
-    auto& rec = m_samplers[h.index];
-    if (rec.generation != h.generation) return;
-    if (rec.sampler != VK_NULL_HANDLE) {
-        vkDestroySampler(m_device, rec.sampler, nullptr);
-        rec.sampler = VK_NULL_HANDLE;
+    auto* rec = detail::lookup(m_samplers, h);
+    if (!rec) return;
+    if (rec->sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(m_device, rec->sampler, nullptr);
+        rec->sampler = VK_NULL_HANDLE;
     }
-    rec.generation = 0;
+    rec->generation = 0;
     m_samplers_free.push_back(h.index);
 }
 
@@ -1452,14 +1416,13 @@ DescriptorSetLayoutHandle Rhi::create_descriptor_set_layout(const DescriptorSetL
 }
 
 void Rhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
-    if (!h.is_valid() || h.index >= m_dsl_records.size()) return;
-    auto& rec = m_dsl_records[h.index];
-    if (rec.generation != h.generation) return;
-    if (rec.layout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(m_device, rec.layout, nullptr);
-        rec.layout = VK_NULL_HANDLE;
+    auto* rec = detail::lookup(m_dsl_records, h);
+    if (!rec) return;
+    if (rec->layout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(m_device, rec->layout, nullptr);
+        rec->layout = VK_NULL_HANDLE;
     }
-    rec.generation = 0;
+    rec->generation = 0;
     m_dsl_free.push_back(h.index);
 }
 
@@ -1636,14 +1599,13 @@ PipelineLayoutHandle Rhi::create_pipeline_layout(const PipelineLayoutDesc& desc)
 }
 
 void Rhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
-    if (!h.is_valid() || h.index >= m_pl_records.size()) return;
-    auto& rec = m_pl_records[h.index];
-    if (rec.generation != h.generation) return;
-    if (rec.layout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(m_device, rec.layout, nullptr);
-        rec.layout = VK_NULL_HANDLE;
+    auto* rec = detail::lookup(m_pl_records, h);
+    if (!rec) return;
+    if (rec->layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(m_device, rec->layout, nullptr);
+        rec->layout = VK_NULL_HANDLE;
     }
-    rec.generation = 0;
+    rec->generation = 0;
     m_pl_free.push_back(h.index);
 }
 
@@ -1791,14 +1753,13 @@ PipelineHandle Rhi::create_graphics_pipeline(const GraphicsPipelineDesc& desc) {
 }
 
 void Rhi::destroy_pipeline(PipelineHandle h) {
-    if (!h.is_valid() || h.index >= m_pipeline_records.size()) return;
-    auto& rec = m_pipeline_records[h.index];
-    if (rec.generation != h.generation) return;
-    if (rec.pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(m_device, rec.pipeline, nullptr);
-        rec.pipeline = VK_NULL_HANDLE;
+    auto* rec = detail::lookup(m_pipeline_records, h);
+    if (!rec) return;
+    if (rec->pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_device, rec->pipeline, nullptr);
+        rec->pipeline = VK_NULL_HANDLE;
     }
-    rec.generation = 0;
+    rec->generation = 0;
     m_pipeline_free.push_back(h.index);
 }
 
@@ -1814,12 +1775,9 @@ CommandList Rhi::begin_frame() {
         m_swapchain_dirty = false;
         vkDeviceWaitIdle(m_device);
 
-        // The acquire may have signaled the semaphore even on failure (driver-dependent).
-        // Recreate it to guarantee it starts unsignaled.
-        if (result != VK_ERROR_OUT_OF_DATE_KHR) {
-            // Suboptimal or dirty — acquire succeeded, semaphore is signaled.
-            // We must wait on it to reset it (submit a dummy wait).
-        }
+        // The acquire may have signaled the semaphore even on failure
+        // (driver-dependent). Recreate it unconditionally to guarantee it
+        // starts unsignaled before the next acquire.
         vkDestroySemaphore(m_device, m_image_available[m_frame_index], nullptr);
         VkSemaphoreCreateInfo sem_ci{};
         sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;

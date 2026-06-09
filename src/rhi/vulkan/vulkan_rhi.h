@@ -20,6 +20,7 @@
 #include "rhi/handles.h"
 #include "rhi/types.h"
 #include "rhi/command_list.h"
+#include "rhi/detail/slot_table.h"
 
 namespace uldum::platform { class Platform; }
 
@@ -326,49 +327,40 @@ private:
 // + Vk call into a single function and skip the cross-TU jump.
 
 inline VkShaderModule Rhi::resolve(ShaderModuleHandle h) const {
-    if (!h.is_valid() || h.index >= m_shader_modules.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_shader_modules[h.index];
-    return rec.generation == h.generation ? rec.module : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_shader_modules, h);
+    return rec ? rec->module : VK_NULL_HANDLE;
 }
 inline VkBuffer Rhi::resolve(BufferHandle h) const {
-    if (!h.is_valid() || h.index >= m_buffers.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_buffers[h.index];
-    return rec.generation == h.generation ? rec.buffer : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_buffers, h);
+    return rec ? rec->buffer : VK_NULL_HANDLE;
 }
 inline VkImage Rhi::resolve(TextureHandle h) const {
-    if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_textures[h.index];
-    return rec.generation == h.generation ? rec.image : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_textures, h);
+    return rec ? rec->image : VK_NULL_HANDLE;
 }
 inline VkImageView Rhi::resolve_view(TextureHandle h) const {
-    if (!h.is_valid() || h.index >= m_textures.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_textures[h.index];
-    return rec.generation == h.generation ? rec.view : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_textures, h);
+    return rec ? rec->view : VK_NULL_HANDLE;
 }
 inline VkSampler Rhi::resolve(SamplerHandle h) const {
-    if (!h.is_valid() || h.index >= m_samplers.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_samplers[h.index];
-    return rec.generation == h.generation ? rec.sampler : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_samplers, h);
+    return rec ? rec->sampler : VK_NULL_HANDLE;
 }
 inline VkDescriptorSetLayout Rhi::resolve(DescriptorSetLayoutHandle h) const {
-    if (!h.is_valid() || h.index >= m_dsl_records.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_dsl_records[h.index];
-    return rec.generation == h.generation ? rec.layout : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_dsl_records, h);
+    return rec ? rec->layout : VK_NULL_HANDLE;
 }
 inline VkDescriptorSet Rhi::resolve(DescriptorSetHandle h) const {
-    if (!h.is_valid() || h.index >= m_dset_records.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_dset_records[h.index];
-    return rec.generation == h.generation ? rec.set : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_dset_records, h);
+    return rec ? rec->set : VK_NULL_HANDLE;
 }
 inline VkPipelineLayout Rhi::resolve(PipelineLayoutHandle h) const {
-    if (!h.is_valid() || h.index >= m_pl_records.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_pl_records[h.index];
-    return rec.generation == h.generation ? rec.layout : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_pl_records, h);
+    return rec ? rec->layout : VK_NULL_HANDLE;
 }
 inline VkPipeline Rhi::resolve(PipelineHandle h) const {
-    if (!h.is_valid() || h.index >= m_pipeline_records.size()) return VK_NULL_HANDLE;
-    const auto& rec = m_pipeline_records[h.index];
-    return rec.generation == h.generation ? rec.pipeline : VK_NULL_HANDLE;
+    const auto* rec = detail::lookup(m_pipeline_records, h);
+    return rec ? rec->pipeline : VK_NULL_HANDLE;
 }
 
 } // namespace uldum::rhi

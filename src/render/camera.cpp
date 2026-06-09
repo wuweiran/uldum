@@ -32,10 +32,10 @@ void Camera::update(const platform::InputState& input, f32 dt) {
     glm::vec3 right{std::cos(m_yaw_rad), std::sin(m_yaw_rad), 0.0f};
 
     glm::vec3 move{0.0f};
-    if (input.key_w) move += forward;
-    if (input.key_s) move -= forward;
-    if (input.key_d) move += right;
-    if (input.key_a) move -= right;
+    if (input.key('w')) move += forward;
+    if (input.key('s')) move -= forward;
+    if (input.key('d')) move += right;
+    if (input.key('a')) move -= right;
 
     if (glm::length(move) > 0.001f) {
         move = glm::normalize(move) * m_move_speed * dt;
@@ -45,8 +45,8 @@ void Camera::update(const platform::InputState& input, f32 dt) {
         m_dirty = true;
     }
 
-    if (input.key_q) { m_distance += m_zoom_speed * dt; m_dirty = true; }
-    if (input.key_e) { m_distance -= m_zoom_speed * dt; m_dirty = true; }
+    if (input.key('q')) { m_distance += m_zoom_speed * dt; m_dirty = true; }
+    if (input.key('e')) { m_distance -= m_zoom_speed * dt; m_dirty = true; }
     if (m_distance < kMinDistance) m_distance = kMinDistance;
 }
 

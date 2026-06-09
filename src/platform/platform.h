@@ -18,14 +18,6 @@ struct Config {
 
 struct InputState {
     bool key_escape = false;
-    bool key_w = false;
-    bool key_a = false;
-    bool key_s = false;
-    bool key_d = false;
-    bool key_q = false;  // down
-    bool key_e = false;  // up
-    bool key_h = false;
-    bool key_p = false;
     bool key_f1 = false;
     bool key_f2 = false;
     bool key_f3 = false;
@@ -77,6 +69,16 @@ struct InputState {
     f32  touch_x[MAX_TOUCHES]  = {};
     f32  touch_y[MAX_TOUCHES]  = {};
     i32  touch_id[MAX_TOUCHES] = { -1, -1, -1, -1 };
+
+    // Held state of a letter key by character ('a'..'z' or 'A'..'Z').
+    // Reads the single key_letter[26] bitmap that the platform backends
+    // fill for every A–Z press; replaces the per-letter key_w/key_a/...
+    // bools that used to mirror it. Non-letters return false.
+    bool key(char c) const {
+        if (c >= 'a' && c <= 'z') return key_letter[c - 'a'];
+        if (c >= 'A' && c <= 'Z') return key_letter[c - 'A'];
+        return false;
+    }
 };
 
 class Platform {

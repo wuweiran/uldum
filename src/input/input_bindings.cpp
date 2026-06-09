@@ -12,14 +12,6 @@ using KeyPtr = bool platform::InputState::*;
 static const std::unordered_map<std::string, KeyPtr>& key_table() {
     static const std::unordered_map<std::string, KeyPtr> table = {
         {"Escape", &platform::InputState::key_escape},
-        {"W",      &platform::InputState::key_w},
-        {"A",      &platform::InputState::key_a},
-        {"S",      &platform::InputState::key_s},
-        {"D",      &platform::InputState::key_d},
-        {"Q",      &platform::InputState::key_q},
-        {"E",      &platform::InputState::key_e},
-        {"H",      &platform::InputState::key_h},
-        {"P",      &platform::InputState::key_p},
         {"F1",     &platform::InputState::key_f1},
         {"F2",     &platform::InputState::key_f2},
         {"F3",     &platform::InputState::key_f3},

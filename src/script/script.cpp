@@ -200,7 +200,6 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         log::info("Lua", "{}", msg);
     };
 
-    // Register usertypes
     lua.new_usertype<simulation::Unit>("Unit",
         "id", &simulation::Unit::id,
         "is_valid", &simulation::Unit::is_valid,
@@ -2060,7 +2059,6 @@ void ScriptEngine::bind_api() {
 void ScriptEngine::bind_trigger_api() {
     auto& lua = *m_lua;
 
-    // Expose priority constants
     lua["TRIGGER_PRIORITY_LOW"]    = static_cast<i32>(TriggerPriority::Low);
     lua["TRIGGER_PRIORITY_NORMAL"] = static_cast<i32>(TriggerPriority::Normal);
     lua["TRIGGER_PRIORITY_HIGH"]   = static_cast<i32>(TriggerPriority::High);
@@ -2587,7 +2585,6 @@ void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::
     // target_filter, not script-overridable from this hook.
     if (m_commands) {
         m_commands->set_order_observer([this](const simulation::GameCommand& cmd) {
-            // Decompose command into context
             m_ctx_order_player = cmd.player.id;
             m_ctx_order_queued = cmd.queued;
             m_ctx_order_target_x = 0;

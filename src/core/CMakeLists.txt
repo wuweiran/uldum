@@ -1,6 +1,5 @@
 add_library(uldum_core STATIC
     log.cpp
-    allocator.cpp
     hash.cpp
     settings.cpp
 )

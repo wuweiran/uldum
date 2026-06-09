@@ -10,9 +10,12 @@ namespace uldum::simulation {
 
 static constexpr const char* TAG = "World";
 
-// ── Helper: remove all components for a handle ID ──────────────────────────
+// ── Canonical per-entity teardown ──────────────────────────────────────────
+// Declared in world.h. Every destroy path routes through this so the
+// "list of all component pools" lives in exactly one place. See the
+// header comment for the contract (doesn't free the handle).
 
-static void remove_all_components(World& world, u32 id) {
+void remove_all_components(World& world, u32 id) {
     world.transforms.remove(id);
     world.handle_infos.remove(id);
     world.healths.remove(id);
@@ -440,8 +443,7 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
     // previously summed in from passive abilities on the unit are gone.
     // Re-run the modifier roll-up so any passive still on the ability
     // set (i.e., not removed by the map's morph helper) gets its
-    // modifiers applied to the fresh block. Today this is a stub; the
-    // call is in the right place for when the modifier system lands.
+    // modifiers applied to the fresh block.
     recalculate_modifiers(world, id);
 
     log::trace(TAG, "Morphed unit {} → '{}'", id, std::string(new_type_id));

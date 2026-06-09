@@ -282,17 +282,7 @@ void NetworkManager::host_finish_scene_switch() {
 }
 
 bool NetworkManager::all_connected_peers_seated() const {
-    if (m_mode != Mode::Host) return true;
-    for (const auto& peer : m_peers) {
-        bool seated = false;
-        for (const auto& a : m_lobby.slots) {
-            if (a.occupant == SlotOccupant::Human && a.peer_id == peer.peer_id) {
-                seated = true; break;
-            }
-        }
-        if (!seated) return false;
-    }
-    return true;
+    return seatless_peer_count() == 0;
 }
 
 u32 NetworkManager::seatless_peer_count() const {
@@ -948,7 +938,6 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         if (on_set_sun_direction) on_set_sun_direction(x, y, z);
         break;
     }
-    case MsgType::S_EFFECT:          client_handle_effect(data); break;
     case MsgType::S_EFFECT_CREATE:   client_handle_effect_create(data); break;
     case MsgType::S_EFFECT_DESTROY:  client_handle_effect_destroy(data); break;
     case MsgType::S_PROJECTILE_DYING: client_handle_projectile_dying(data); break;
@@ -1141,11 +1130,6 @@ void NetworkManager::client_handle_state(std::span<const u8> data) {
 void NetworkManager::client_handle_sound(std::span<const u8> data) {
     auto s = parse_sound(data);
     if (on_sound) on_sound(s.path, s.pos);
-}
-
-void NetworkManager::client_handle_effect(std::span<const u8> data) {
-    auto e = parse_effect(data);
-    if (on_effect) on_effect(e.name, e.entity_id, e.pos, e.attach_point);
 }
 
 void NetworkManager::client_handle_effect_create(std::span<const u8> data) {
@@ -1399,10 +1383,7 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
         // ability-driven refcounts arrive through AbilityAdd/Remove
         // already and compose with this via recompute_effective_flags
         // inside set_unit_status.
-        simulation::Unit unit;
-        unit.id = u.entity_id;
-        auto* info = world.handle_infos.get(u.entity_id);
-        unit.generation = info ? info->generation : 0;
+        simulation::Unit unit = world.unit(u.entity_id);
         simulation::set_unit_status(world, unit, u.uint_value, u.bool_value);
         break;
     }
@@ -1540,40 +1521,13 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
 }
 
 void NetworkManager::destroy_client_entity(u32 entity_id) {
-    auto& world = m_client_world;
-    // Mirror the per-entity pool list in World::clear_entities. Anything
-    // left behind here resurrects on the next entity that gets this id
-    // back from the allocator — manifests as ghost mana / cooldowns /
-    // active-ability flags on the new occupant, plus pure memory growth
-    // across long sessions.
-    world.transforms.remove(entity_id);
-    world.handle_infos.remove(entity_id);
-    world.healths.remove(entity_id);
-    world.state_blocks.remove(entity_id);
-    world.attribute_blocks.remove(entity_id);
-    world.selectables.remove(entity_id);
-    world.owners.remove(entity_id);
-    world.movements.remove(entity_id);
-    world.combats.remove(entity_id);
-    world.sights.remove(entity_id);
-    world.order_queues.remove(entity_id);
-    world.ability_sets.remove(entity_id);
-    world.classifications.remove(entity_id);
-    world.inventories.remove(entity_id);
-    world.buildings.remove(entity_id);
-    world.constructions.remove(entity_id);
-    world.destructables.remove(entity_id);
-    world.doodads.remove(entity_id);
-    world.pathing_blockers.remove(entity_id);
-    world.item_infos.remove(entity_id);
-    world.carriables.remove(entity_id);
-    world.projectiles.remove(entity_id);
-    world.dead_states.remove(entity_id);
-    world.renderables.remove(entity_id);
-    world.status_flags.remove(entity_id);
-    world.true_sight_vis.remove(entity_id);
-    world.forced_vis.remove(entity_id);
-    world.anim_queues.remove(entity_id);
+    // Route through the canonical per-entity teardown so the client
+    // mirror can't drift from the master pool list. The client world
+    // never sets on_pathing_unblock, so the building-footprint callback
+    // inside remove_all_components is skipped (the guard is null) — the
+    // remaining pool removes are all harmless no-ops for absent
+    // components.
+    simulation::remove_all_components(m_client_world, entity_id);
 }
 
 // ── Client fog of war ───────────────────────────────────────────────────

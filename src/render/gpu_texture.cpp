@@ -14,10 +14,15 @@ namespace {
 
 // One-shot UNDEFINED → TRANSFER_DST → copy → SHADER_READ_ONLY transition
 // shared by upload_texture_rgba / _array / _cubemap. `regions` describes
-// which buffer offsets feed which image layers/mips.
+// which buffer offsets feed which image layers/mips. `base_layer` is the
+// first array layer the barriers cover — 0 for whole-image uploads, or a
+// specific layer when streaming a single slice into an existing array
+// (see upload_array_layer); the copy regions still carry their own
+// base_array_layer.
 void upload_pixels_to_image(rhi::Rhi& rhi, rhi::TextureHandle image, u32 layer_count,
                             rhi::BufferHandle staging,
-                            std::span<const rhi::BufferImageCopy> regions) {
+                            std::span<const rhi::BufferImageCopy> regions,
+                            u32 base_layer = 0) {
     rhi::CommandList cmd = rhi.begin_oneshot();
 
     rhi::ImageBarrier to_xfer{};
@@ -27,6 +32,7 @@ void upload_pixels_to_image(rhi::Rhi& rhi, rhi::TextureHandle image, u32 layer_c
     to_xfer.dst_access  = rhi::AccessFlag::TransferWrite;
     to_xfer.old_layout  = rhi::ImageLayout::Undefined;
     to_xfer.new_layout  = rhi::ImageLayout::TransferDstOptimal;
+    to_xfer.base_layer  = base_layer;
     to_xfer.layer_count = layer_count;
     cmd.image_barrier(to_xfer);
 
@@ -40,6 +46,7 @@ void upload_pixels_to_image(rhi::Rhi& rhi, rhi::TextureHandle image, u32 layer_c
     to_shader.dst_access  = rhi::AccessFlag::ShaderRead;
     to_shader.old_layout  = rhi::ImageLayout::TransferDstOptimal;
     to_shader.new_layout  = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    to_shader.base_layer  = base_layer;
     to_shader.layer_count = layer_count;
     cmd.image_barrier(to_shader);
 
@@ -249,6 +256,28 @@ void destroy_texture(rhi::Rhi& rhi, GpuTexture& tex) {
     rhi.destroy_sampler(tex.sampler);
     rhi.destroy_texture(tex.texture);
     tex = {};
+}
+
+bool upload_array_layer(rhi::Rhi& rhi, rhi::TextureHandle array_tex, u32 layer,
+                        const u8* pixels, u32 width, u32 height) {
+    if (!array_tex.is_valid() || !pixels || width == 0 || height == 0) return false;
+
+    const u64 layer_bytes = static_cast<u64>(width) * height * 4;
+    auto staging = make_staging(rhi, layer_bytes);
+    if (!staging.is_valid()) {
+        log::error(TAG, "upload_array_layer: staging buffer alloc failed");
+        return false;
+    }
+    std::memcpy(rhi.mapped_ptr(staging), pixels, layer_bytes);
+
+    rhi::BufferImageCopy region{};
+    region.base_array_layer = layer;
+    region.image_extent_w   = width;
+    region.image_extent_h   = height;
+    upload_pixels_to_image(rhi, array_tex, 1, staging, std::span{&region, 1}, layer);
+
+    rhi.destroy_buffer(staging);
+    return true;
 }
 
 } // namespace uldum::render

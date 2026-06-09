@@ -48,9 +48,6 @@ public:
     // Volume control (0.0 to 1.0)
     void set_volume(Channel channel, f32 volume);
 
-    // Set the map root for resolving sound paths
-    void set_map_root(std::string_view root) { m_map_root = root; }
-
     // Stop every active sound and free per-session caches. Called by
     // App::end_session() so the next session starts with no leftover
     // SFX, ambient loops, or registered sound bytes from the previous
@@ -94,7 +91,6 @@ private:
     };
     std::vector<ActiveSFX> m_active_sfx;
 
-    std::string m_map_root;
     bool m_initialized = false;
 
     // Sound bytes loaded from packages, kept alive for miniaudio's resource

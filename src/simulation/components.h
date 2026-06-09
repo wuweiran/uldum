@@ -176,6 +176,20 @@ struct Sight {
 struct OrderQueue {
     std::optional<Order> current;
     std::deque<Order>    queued;
+
+    // Finish the current order and promote the next queued one (if any)
+    // into `current`. The "reset current, pop queued front" pair was
+    // hand-written at every order-completion site; routing them through
+    // one method keeps the two halves from drifting (e.g. resetting
+    // without promoting, or promoting without clearing first).
+    void advance() {
+        if (!queued.empty()) {
+            current = std::move(queued.front());
+            queued.pop_front();
+        } else {
+            current.reset();
+        }
+    }
 };
 
 struct AbilityInstance {

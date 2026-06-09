@@ -314,8 +314,6 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
     auto& types = sim.types();
     std::string types_dir = m_map_root + "/types/";
 
-    // Load using the handle directly — need a different approach since load_*_types
-    // takes a path. We'll load via absolute path support.
     std::string unit_path = types_dir + "units.json";
     std::string dest_path = types_dir + "destructables.json";
     std::string item_path = types_dir + "items.json";
