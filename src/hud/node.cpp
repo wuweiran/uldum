@@ -39,16 +39,44 @@ void Label::draw(HudRenderInterface& r) const {
 
     f32 ascent      = r.text_ascent_px(px_size);
     f32 line_height = r.text_line_height_px(px_size);
-    f32 y_baseline  = rect.y + (rect.h - line_height) * 0.5f + ascent;
 
-    f32 x_left = rect.x;
-    if (align != Align::Left) {
-        f32 w = r.text_width_px(rendered, px_size);
-        if (align == Align::Center) x_left = rect.x + (rect.w - w) * 0.5f;
-        else                        x_left = rect.x + (rect.w - w);  // Right
+    // Split on '\n' and render each line on its own baseline. The
+    // low-level draw_text / text_width_px primitives are single-line
+    // (draw_text drops '\n' with no Y advance; text_width_px stops at
+    // the first '\n'), so multi-line layout has to happen here — a
+    // label whose localized string contains newlines would otherwise
+    // draw every line overlapping on one baseline and mis-align.
+    //
+    // Count lines first to vertically center the whole block in the
+    // rect (matches the single-line centering when there's one line).
+    auto count_lines = [](std::string_view s) {
+        u32 n = 1;
+        for (char c : s) if (c == '\n') ++n;
+        return n;
+    };
+    const u32 line_count = count_lines(rendered);
+    const f32 block_h = static_cast<f32>(line_count) * line_height;
+    f32 line_top = rect.y + (rect.h - block_h) * 0.5f;
+
+    std::string_view rest{rendered};
+    for (;;) {
+        const size_t nl = rest.find('\n');
+        std::string_view line = (nl == std::string_view::npos)
+            ? rest : rest.substr(0, nl);
+
+        f32 x_left = rect.x;
+        if (align != Align::Left) {
+            f32 w = r.text_width_px(line, px_size);
+            if (align == Align::Center) x_left = rect.x + (rect.w - w) * 0.5f;
+            else                        x_left = rect.x + (rect.w - w);  // Right
+        }
+        r.draw_text(x_left, line_top + ascent, line, color, px_size);
+        line_top += line_height;
+
+        if (nl == std::string_view::npos) break;
+        rest.remove_prefix(nl + 1);
     }
 
-    r.draw_text(x_left, y_baseline, rendered, color, px_size);
     Node::draw(r);
 }
 

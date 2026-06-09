@@ -70,8 +70,28 @@ public:
     }
 
     void clear() {
-        m_slots.clear();
+        // Bump every slot's generation and mark it dead instead of
+        // dropping the slots. If we cleared m_slots outright, the
+        // generations would reset to 0 and the next add() would hand
+        // out Handle{0,0} — which a stale Handle{0,0} held from before
+        // the clear (e.g. an asset handle surviving a map reload) would
+        // match, silently aliasing a different object instead of safely
+        // resolving to nullptr. Keeping the slots + bumping generations
+        // preserves the use-after-clear safety contract; the freed
+        // indices go back on the free list so storage is still reused.
         m_free_list.clear();
+        m_free_list.reserve(m_slots.size());
+        for (u32 i = 0; i < m_slots.size(); ++i) {
+            auto& slot = m_slots[i];
+            if (slot.alive) {
+                slot.alive = false;
+                slot.data = T{};
+            }
+            ++slot.generation;
+            // Rebuild the free list in reverse so add() reuses low
+            // indices first (matches the fresh-pool fill order).
+            m_free_list.push_back(static_cast<u32>(m_slots.size()) - 1 - i);
+        }
         m_count = 0;
     }
 

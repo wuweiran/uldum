@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "rhi/handles.h"
@@ -165,8 +166,14 @@ private:
     struct Shelf { u32 y; u32 height; u32 next_x; };
     std::vector<Shelf> m_shelves;
     bool m_atlas_full = false;
+    bool m_logged_atlas_full = false;  // gate the warn so it fires once, not per-glyph-per-frame
 
     std::unordered_map<u32, Glyph> m_glyphs;
+    // Negative cache: codepoints that failed to rasterize (atlas full,
+    // unsupported glyph, FT error). Without this, get_glyph re-runs the
+    // (expensive) FreeType load+render every frame for the same missing
+    // codepoint — log flood + wasted CPU once a CJK atlas fills.
+    std::unordered_set<u32> m_failed_glyphs;
 };
 
 } // namespace uldum::hud

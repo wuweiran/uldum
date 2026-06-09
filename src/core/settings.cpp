@@ -20,8 +20,17 @@ Value Store::get(std::string_view key) const {
 }
 
 bool Store::get_bool(std::string_view key, bool fallback) const {
-    auto v = get(key);
-    if (auto* b = std::get_if<bool>(&v)) return *b;
+    // A missing key must return the fallback. We can't rely on
+    // get()+get_if<bool> here: get() returns a default-constructed
+    // Value{}, and the variant's first alternative is `bool`, so an
+    // unset key yields a variant that genuinely holds bool(false) —
+    // get_if<bool> would succeed and return false, swallowing the
+    // fallback. (f32/i32 don't have this problem: the default variant
+    // holds bool, not their type, so their get_if fails into the
+    // fallback correctly.) Check presence explicitly first.
+    auto it = m_values.find(std::string(key));
+    if (it == m_values.end()) return fallback;
+    if (auto* b = std::get_if<bool>(&it->second)) return *b;
     return fallback;
 }
 

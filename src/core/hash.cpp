@@ -22,6 +22,10 @@ inline u32 rotr(u32 x, u32 n) { return (x >> n) | (x << (32 - n)); }
 } // namespace
 
 Sha256::Sha256() {
+    reset();
+}
+
+void Sha256::reset() {
     m_state[0] = 0x6a09e667;
     m_state[1] = 0xbb67ae85;
     m_state[2] = 0x3c6ef372;
@@ -30,6 +34,8 @@ Sha256::Sha256() {
     m_state[5] = 0x9b05688c;
     m_state[6] = 0x1f83d9ab;
     m_state[7] = 0x5be0cd19;
+    m_bit_count = 0;
+    m_buffer_len = 0;
 }
 
 void Sha256::compress(const u8 block[64]) {
@@ -110,6 +116,11 @@ std::array<u8, 32> Sha256::finalize() {
         out[i*4 + 2] = static_cast<u8>(m_state[i] >> 8);
         out[i*4 + 3] = static_cast<u8>(m_state[i]);
     }
+    // Re-seed so the object can be reused for another digest. finalize
+    // mutated m_state/bit_count/buffer via the padding compress; leaving
+    // them as-is would make a second finalize continue from here and
+    // produce garbage.
+    reset();
     return out;
 }
 

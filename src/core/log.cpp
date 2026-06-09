@@ -3,6 +3,7 @@
 #include <print>
 #include <chrono>
 #include <fstream>
+#include <mutex>
 #include <string>
 
 #ifdef ULDUM_PLATFORM_WINDOWS
@@ -25,6 +26,16 @@ static bool  s_use_stderr = false;  // workers flip this on at startup
 static std::ofstream& log_file() {
     static std::ofstream f("run.log", std::ios::out | std::ios::trunc);
     return f;
+}
+
+// Serializes the desktop sink (stdout/stderr FILE, the shared ofstream,
+// and OutputDebugString) across threads. log::write is called from the
+// main thread plus, in uldum_server, the reaper / watchdog / HTTP
+// handler threads — without this the unsynchronized `f << line` /
+// std::print race on the streambuf and interleave or corrupt output.
+static std::mutex& log_mutex() {
+    static std::mutex m;
+    return m;
 }
 #endif
 
@@ -76,6 +87,10 @@ void write(Level level, std::string_view tag, std::string_view message) {
     auto time = std::chrono::floor<std::chrono::milliseconds>(now);
 
     auto line = std::format("[{:%H:%M:%S}] [{}] [{}] {}\n", time, level_str(level), tag, message);
+
+    // One lock for the whole sink sequence so a line never interleaves
+    // with another thread's mid-write.
+    std::lock_guard<std::mutex> lk(log_mutex());
 
     // Default sink is stdout. The worker calls `redirect_to_stderr` at
     // startup so its stdout stays a clean structured-output channel for

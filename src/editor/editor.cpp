@@ -156,6 +156,14 @@ bool Editor::init(const std::string& map_path) {
             m_map.terrain().set_water_layers(shallow, deep);
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
+            // Apply pre-placed building / destructable footprints to the
+            // runtime pathing bitmap. set_terrain clears it, and
+            // load_map's load_placements only adds PathingBlocker
+            // components — sync_pathing_blockers stamps them into the
+            // cell grid that footprint_clear_at / can_place_at read.
+            // Without this the editor can't see existing footprints and
+            // lets you stack a new building on a pre-placed one.
+            m_simulation.sync_pathing_blockers();
         }
         log::info(TAG, "Map loaded: {} ({} scenes)", m_map_path, m_scenes.size());
     } else {
@@ -1058,8 +1066,16 @@ bool Editor::footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells) c
         for (i32 dx = 0; dx < cw; ++dx) {
             i32 cx = cx0 + dx;
             i32 cy = cy0 + dy;
-            if (cx < 0 || cy < 0) return false;
-            if (m_simulation.pathfinder().is_cell_blocked(cx, cy)) return false;
+            // can_occupy_cell rejects out-of-range cells (both the -X/-Y
+            // AND +X/+Y edges — the old `cx<0||cy<0` guard only caught
+            // the former, letting footprints hang off the east/north
+            // border), impassable terrain, deep water, and runtime
+            // blocks in one call. A footprint is clear only if every
+            // cell it covers is a valid, unblocked Ground cell.
+            if (!m_simulation.pathfinder().can_occupy_cell(
+                    cx, cy, simulation::MoveType::Ground)) {
+                return false;
+            }
         }
     }
     return true;
@@ -1689,6 +1705,10 @@ void Editor::rebuild_terrain_mesh() {
     m_rhi.wait_idle();
     m_renderer.set_terrain(&m_map.terrain());
     m_simulation.set_terrain(&m_map.terrain());
+    // set_terrain cleared the runtime pathing bitmap; re-stamp the
+    // existing PathingBlocker components so footprint validation stays
+    // correct after a terrain-mesh rebuild.
+    m_simulation.sync_pathing_blockers();
 
     // Update entities after terrain edit: adjust Z, remove units on impassable tiles
     auto& td = m_map.terrain();
@@ -1728,6 +1748,8 @@ void Editor::switch_scene(const std::string& scene_name) {
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
+            // New scene's pre-placed footprints → runtime pathing bitmap.
+            m_simulation.sync_pathing_blockers();
         }
         // Region focus tied to the previous scene's index space — drop
         // it so the panel doesn't try to read a deleted region.
@@ -1810,6 +1832,9 @@ void Editor::open_map(const std::string& path) {
             m_map.terrain().set_water_layers(shallow, deep);
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
+            // Pre-placed footprints → runtime pathing bitmap (see the
+            // matching call in the initial map-load path above).
+            m_simulation.sync_pathing_blockers();
         }
         log::info(TAG, "Opened map: {}", m_map_path);
     } else {

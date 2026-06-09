@@ -327,6 +327,8 @@ void Font::shutdown() {
     m_glyphs.clear();
     m_shelves.clear();
     m_atlas_full = false;
+    m_logged_atlas_full = false;
+    m_failed_glyphs.clear();
     m_rhi = nullptr;
 }
 
@@ -505,9 +507,17 @@ void Font::set_locale(std::string_view bcp47) {
     m_glyphs.clear();
     m_shelves.clear();
     m_atlas_full = false;
+    m_logged_atlas_full = false;
+    m_failed_glyphs.clear();
 }
 
 bool Font::rasterize_glyph(u32 codepoint, Glyph& out) {
+    // Atlas is full — no point running FreeType load+render across the
+    // whole fallback chain just to fail at the packing step. Bail before
+    // any FT work. (get_glyph's negative cache also prevents re-entry,
+    // but this guards direct callers and keeps the early-out local.)
+    if (m_atlas_full) return false;
+
     // Walk the chain: primary first, then each registered fallback.
     // First face with a glyph for `codepoint` wins. Whitespace glyphs (no
     // outline) count as "present" — they have an advance and stop the
@@ -569,9 +579,16 @@ bool Font::rasterize_glyph_from(void* face_handle, u32 codepoint, Glyph& out) {
                                        : (m_shelves.back().y + m_shelves.back().height + kCellGap);
         if (next_y + bh > kAtlasSize) {
             // Atlas full. Drop further rasterization requests — eviction
-            // is deferred (LRU or rebuild).
+            // is deferred (LRU or rebuild). Warn ONCE: get_glyph's
+            // negative cache + rasterize_glyph's early-out stop the
+            // per-glyph-per-frame retry, but this guards against a flood
+            // from the very first frame that overflows.
             m_atlas_full = true;
-            log::warn(TAG, "glyph atlas full — codepoint {} skipped", codepoint);
+            if (!m_logged_atlas_full) {
+                log::warn(TAG, "glyph atlas full — further codepoints will not render "
+                               "(no eviction; consider a larger atlas or multi-page support)");
+                m_logged_atlas_full = true;
+            }
             return false;
         }
         m_shelves.push_back({ next_y, bh, bw + kCellGap });
@@ -614,8 +631,16 @@ const Font::Glyph* Font::get_glyph(u32 codepoint) {
     auto it = m_glyphs.find(codepoint);
     if (it != m_glyphs.end()) return &it->second;
 
+    // Negative cache: a codepoint that already failed (atlas full /
+    // unsupported / FT error) won't succeed on retry within this
+    // session — skip the expensive FreeType load+render and the log.
+    if (m_failed_glyphs.count(codepoint)) return nullptr;
+
     Glyph g{};
-    if (!rasterize_glyph(codepoint, g)) return nullptr;
+    if (!rasterize_glyph(codepoint, g)) {
+        m_failed_glyphs.insert(codepoint);
+        return nullptr;
+    }
     auto [ins, _] = m_glyphs.emplace(codepoint, g);
     return &ins->second;
 }

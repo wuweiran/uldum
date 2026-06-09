@@ -17,6 +17,9 @@ namespace uldum {
 //   h.update(bytes1); h.update(bytes2); ...
 //   auto digest = h.finalize();
 //
+// finalize() re-seeds the object, so it's safe to reuse for another
+// digest after calling it (update again, finalize again).
+//
 // One-shot:
 //   auto digest = sha256(bytes);
 class Sha256 {
@@ -28,6 +31,12 @@ public:
 
 private:
     void compress(const u8 block[64]);
+    // Re-seed m_state/bit_count/buffer to the SHA-256 initial vector.
+    // Called by the ctor and at the end of finalize() so the object is
+    // safe to reuse for another digest (finalize mutates state via the
+    // padding compress; without the re-seed a second finalize would
+    // continue from the already-finalized state and corrupt the hash).
+    void reset();
 
     u32 m_state[8];
     u64 m_bit_count = 0;
