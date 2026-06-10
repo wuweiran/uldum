@@ -815,6 +815,20 @@ bool Engine::start_session() {
         m_server.simulation().world().on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
         };
+        // Birth-clip gate: a unit plays its birth animation only when
+        // spawned in the local player's sight. Mirrors the network
+        // client, which derives the same from the S_SPAWN newly_created
+        // flag. create_unit consults this; null on the headless server.
+        m_server.simulation().world().spawn_visible_to_viewer =
+            [this](f32 x, f32 y) -> bool {
+                auto& sim = m_server.simulation();
+                const auto* terrain = sim.terrain();
+                if (!terrain) return true;   // pre-terrain spawns: don't suppress
+                glm::ivec2 t = terrain->world_to_tile(x, y);
+                if (t.x < 0 || t.y < 0) return false;
+                return sim.vision().is_visible(simulation::Player{m_args.local_slot},
+                                               static_cast<u32>(t.x), static_cast<u32>(t.y));
+            };
         m_server.script().set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
             return m_renderer.get_attachment_point(entity_id, bone);
         });

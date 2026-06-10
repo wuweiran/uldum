@@ -74,6 +74,16 @@ struct World {
     // Handle allocator
     HandleAllocator handles;
 
+    // Optional predicate: "can the local viewer see world position (x, y)
+    // right now?" Set by the host/single-player app from its Vision +
+    // local player; left null on the headless server and on the network
+    // client. create_unit consults it to decide whether a newly-spawned
+    // unit plays its birth clip — a unit born outside the viewer's sight
+    // comes up already Idle (skip_birth), matching the client, whose
+    // skip_birth arrives from the S_SPAWN newly_created flag. Null → birth
+    // plays (nothing renders headless; the client path governs itself).
+    std::function<bool(f32 x, f32 y)> spawn_visible_to_viewer;
+
     // Type registry (not owned — set during init)
     const TypeRegistry* types = nullptr;
     // Ability registry (not owned — set during init). Used by create_unit

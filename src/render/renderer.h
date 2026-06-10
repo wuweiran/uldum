@@ -411,7 +411,11 @@ private:
     EffectManager   m_effect_manager;
 
     // Get or create animation instance for an entity using its model.
-    AnimationInstance& get_or_create_anim(u32 entity_id, LoadedModel& model);
+    // `play_birth` decides the INITIAL state on creation: a freshly-born
+    // unit in the player's sight starts in Birth, anything else (revealed
+    // out of fog, or flagged skip_birth) starts in Idle. Ignored once the
+    // instance exists.
+    AnimationInstance& get_or_create_anim(u32 entity_id, LoadedModel& model, bool play_birth);
 };
 
 } // namespace uldum::render

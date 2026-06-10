@@ -12,6 +12,7 @@
 #include <glm/gtc/constants.hpp>
 
 #include <cmath>
+#include <optional>
 
 namespace uldum::simulation {
 
@@ -49,75 +50,55 @@ static f32 angle_diff(f32 from, f32 to) {
 
 // ── Movement system ───────────────────────────────────────────────────────
 
-// Local steering: adjust direction to avoid a nearby unit blocking the path.
-// Returns adjusted direction. If no blocker, returns original forward.
-// prefer_left: deterministic side preference based on unit ID + time.
-static glm::vec3 local_steer(const World& world, const SpatialGrid& grid, const Pathfinder& pathfinder,
-                              u32 self_id, glm::vec3 pos, glm::vec3 forward, f32 self_radius,
-                              MoveType move_type, bool prefer_left) {
-    f32 look_ahead = self_radius * 4.0f;
+// Move-time hard block against OTHER PLAYERS' units. Units are transient
+// (collision radius only, no pathfinding footprint — buildings own that),
+// so the planner never routes around them; instead a unit simply may not
+// step into a foreign unit's collision circle. Same-player units are NOT
+// blocked here — they're allowed to crowd and the collision push spreads
+// them out afterward. Neutral/unowned movers don't block (no owner to
+// compare).
+//
+// Escape valve: a step is only rejected if it would sit inside the
+// foreign circle AND lands no further from that unit's center than the
+// current position. A unit that starts overlapping (teleport / knockback
+// / SetUnitX) can therefore always walk outward — it just can't push
+// deeper in. Without this a shoved-into-enemy unit would freeze.
+static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
+                                u32 self_id, const Owner* self_owner,
+                                f32 self_radius, glm::vec2 from, glm::vec2 to,
+                                MoveType move_type) {
+    if (!self_owner) return false;          // unowned movers ignore this layer
+    if (move_type == MoveType::Air) return false;
+
     UnitFilter filter;
     filter.exclude_buildings = true;
-    auto nearby = grid.units_in_range(world, pos, look_ahead, filter);
-
-    // Find closest blocker ahead
-    f32 best_dist = look_ahead;
-    const Transform* blocker_t = nullptr;
-
+    auto nearby = grid.units_in_range(world, glm::vec3{to.x, to.y, 0.0f},
+                                      self_radius * 4.0f, filter);
     for (auto& other : nearby) {
         if (other.id == self_id) continue;
         if (world.dead_states.has(other.id)) continue;
 
+        const auto* other_owner = world.owners.get(other.id);
+        if (other_owner && other_owner->player.id == self_owner->player.id) continue;
+
         auto* ot = world.transforms.get(other.id);
         if (!ot) continue;
-        auto* om = world.movements.get(other.id);
-        f32 other_radius = om ? om->collision_radius : 16.0f;
-        f32 combined = self_radius + other_radius;
+        const auto* om = world.movements.get(other.id);
+        f32 other_radius = om ? om->collision_radius : 32.0f;
+        f32 min_dist = self_radius + other_radius;
 
-        glm::vec3 to_other = ot->position - pos;
-        to_other.z = 0;
-        f32 d = glm::length(to_other);
-        if (d < 0.01f || d > look_ahead) continue;
-
-        f32 dot = glm::dot(to_other / d, forward);
-        if (dot < 0.3f) continue;  // not ahead
-
-        f32 forward_dist = d * dot;
-        f32 lateral = std::sqrt(std::max(0.0f, d * d - forward_dist * forward_dist));
-        if (lateral < combined && d < best_dist) {
-            best_dist = d;
-            blocker_t = ot;
-        }
+        glm::vec2 oc{ot->position.x, ot->position.y};
+        f32 d_to   = glm::length(to   - oc);
+        if (d_to >= min_dist) continue;     // step stays clear of this unit
+        f32 d_from = glm::length(from - oc);
+        if (d_to < d_from) return true;     // would push deeper in → block
+        // else: already overlapping but moving outward → allow (escape)
     }
-
-    if (!blocker_t) return forward;
-
-    // Steer to the preferred side (deterministic per unit per time window)
-    glm::vec3 perp = prefer_left ? glm::vec3{-forward.y, forward.x, 0}
-                                  : glm::vec3{forward.y, -forward.x, 0};
-    glm::vec3 steer = glm::normalize(perp * 0.6f + forward * 0.4f);
-
-    // Validate: steered position must be on a passable tile
-    f32 test_step = self_radius;
-    f32 test_x = pos.x + steer.x * test_step;
-    f32 test_y = pos.y + steer.y * test_step;
-    if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, move_type)) {
-        // Try the other side
-        steer = glm::normalize(-perp * 0.6f + forward * 0.4f);
-        test_x = pos.x + steer.x * test_step;
-        test_y = pos.y + steer.y * test_step;
-        if (!pathfinder.can_move_to(pos.x, pos.y, test_x, test_y, move_type)) {
-            return forward;  // both sides blocked by terrain — just go forward
-        }
-    }
-
-    return steer;
+    return false;
 }
 
 void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                      const SpatialGrid& grid, const map::TerrainData* terrain) {
-    static u32 steer_tick = 0;
-    ++steer_tick;
 
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
@@ -134,6 +115,94 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 continue;
             }
         }
+
+        // A step is permitted only if terrain/buildings allow it (cell
+        // pathing) AND it doesn't drive the unit into a different player's
+        // unit (foreign collision circle). Same-player crowding is allowed
+        // through — the collision push resolves it. Every position commit
+        // below routes through this so the two gates stay in lockstep.
+        const Owner* self_owner = world.owners.get(id);
+        f32 self_radius = mov.collision_radius;
+        auto can_step = [&](f32 ox, f32 oy, f32 nx, f32 ny) -> bool {
+            if (!pathfinder.can_move_to(ox, oy, nx, ny, mov.type)) return false;
+            if (foreign_unit_blocks(world, grid, id, self_owner, self_radius,
+                                    {ox, oy}, {nx, ny}, mov.type)) return false;
+            return true;
+        };
+
+        // Local-avoidance probe: when the straight line to the current
+        // target is blocked, find a detour heading that clears EVERY nearby
+        // obstacle at once — not just the nearest one.
+        //
+        // We fan candidate headings outward from `heading` (0° first, then
+        // ±STEP, ±2·STEP, … right-before-left for a deterministic keep-right
+        // start) and return the first whose probe step passes can_step —
+        // which already tests terrain + buildings + ALL foreign units. So a
+        // surviving candidate is clear of the whole A-B-C wall jointly, not
+        // sequentially. This is what kills the old oscillation: steering at
+        // the *nearest* blocker's tangent was self-defeating (dodging B made
+        // C nearest, whose goalward tangent pointed back at B); the fan is
+        // self-reinforcing (rounding one end of the wall makes that end the
+        // smaller-deflection clear heading next tick, so it commits).
+        //
+        // Probe length is collision-aware: sized so a deflected candidate
+        // lands OUTSIDE the nearest foreign blocker's circle (a too-short
+        // probe was the "stuck in front of one unit" bug). We find the
+        // nearest blocker ahead only to size the probe; if none, a default.
+        // nullopt → boxed in → caller forces an early repath. find_bypass
+        // runs only on the block→detour edge (re-probed on arrival).
+        auto find_bypass = [&](glm::vec2 from, glm::vec2 heading) -> std::optional<glm::vec2> {
+            auto rot = [](glm::vec2 v, f32 a) -> glm::vec2 {
+                f32 c = std::cos(a), s = std::sin(a);
+                return { v.x * c - v.y * s, v.x * s + v.y * c };
+            };
+
+            // Nearest foreign unit roughly ahead — used ONLY to size the probe.
+            UnitFilter filter;
+            filter.exclude_buildings = true;
+            auto nearby = grid.units_in_range(world, glm::vec3{from.x, from.y, 0.0f},
+                                              self_radius * 6.0f, filter);
+            f32 blk_fd = 0.0f, blk_R = 0.0f;
+            for (auto& o : nearby) {
+                if (o.id == id) continue;
+                if (world.dead_states.has(o.id)) continue;
+                const Owner* oo = world.owners.get(o.id);
+                if (oo && self_owner && oo->player.id == self_owner->player.id) continue;
+                auto* ot = world.transforms.get(o.id);
+                if (!ot) continue;
+                glm::vec2 rel{ot->position.x - from.x, ot->position.y - from.y};
+                f32 fd = glm::dot(rel, heading);
+                if (fd <= 0.0f) continue;                       // behind us
+                f32 lat = glm::length(rel - heading * fd);
+                const auto* om = world.movements.get(o.id);
+                f32 oR = om ? om->collision_radius : 32.0f;
+                f32 R = self_radius + oR;
+                if (lat < R && fd > blk_fd) { blk_fd = fd; blk_R = R; }
+            }
+
+            // Reach past the nearest blocker's far edge so a deflected
+            // candidate can clear its circle; clamp to a sane span. With no
+            // blocker ahead (terrain-only block), use a default forward probe.
+            f32 probe = (blk_R > 0.0f)
+                ? (blk_fd + blk_R + self_radius * 0.5f)
+                : (self_radius * 3.0f);
+            probe = glm::clamp(probe, self_radius, self_radius * 8.0f);
+
+            // Fan all candidate headings; first clear one wins.
+            constexpr f32 MAX_DEFLECT = 2.0943951f;             // 120°: round a wall end
+            constexpr f32 STEP_DEFLECT = 0.2617994f;            // 15°
+            if (can_step(from.x, from.y,
+                         from.x + heading.x * probe, from.y + heading.y * probe)) {
+                return from + heading * probe;                  // straight is clear
+            }
+            for (f32 a = STEP_DEFLECT; a <= MAX_DEFLECT + 1e-3f; a += STEP_DEFLECT) {
+                glm::vec2 r = from + rot(heading, -a) * probe;  // right (CW) first
+                if (can_step(from.x, from.y, r.x, r.y)) return r;
+                glm::vec2 l = from + rot(heading,  a) * probe;  // then left (CCW)
+                if (can_step(from.x, from.y, l.x, l.y)) return l;
+            }
+            return std::nullopt;
+        };
 
         // ── MoveDirection short-circuit ──────────────────────────────────
         // Action-preset continuous move. No pathfinding: desired velocity
@@ -165,7 +234,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     f32 step  = mov.speed * dt;
                     f32 new_x = transform->position.x + dir.x * step;
                     f32 new_y = transform->position.y + dir.y * step;
-                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.type)) {
+                    if (can_step(transform->position.x, transform->position.y, new_x, new_y)) {
                         transform->position.x = new_x;
                         transform->position.y = new_y;
                     } else {
@@ -174,10 +243,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                         // vertical wall slides vertically, diagonal into
                         // a horizontal wall slides horizontally, corner
                         // impact stops movement.
-                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.type)) {
+                        if (can_step(transform->position.x, transform->position.y, new_x, transform->position.y)) {
                             transform->position.x = new_x;
                         }
-                        if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.type)) {
+                        if (can_step(transform->position.x, transform->position.y, transform->position.x, new_y)) {
                             transform->position.y = new_y;
                         }
                     }
@@ -323,6 +392,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             const f32 jitter = static_cast<f32>(id % 16) * (1.0f / 16.0f) * 0.25f;
             mov.repath_timer = base + jitter;
             mov.path_dest = goal2d;
+            // Fresh A* route → any local detour splice is stale. Drop it;
+            // the new corridor reflects current blockers (an early repath
+            // forced by find_bypass returning none re-plans around them).
+            mov.has_detour = false;
             auto corridor = pathfinder.find_corridor(pos2d, goal2d, mov.cliff_level, mov.type);
             if (corridor.valid && !corridor.cells.empty()) {
                 mov.corridor = std::move(corridor.cells);
@@ -462,16 +535,62 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
         glm::vec3 forward{to_wp.x / wp_dist, to_wp.y / wp_dist, 0.0f};
 
-        // Local steering: avoid nearby units (1/4 frequency, staggered by ID)
-        glm::vec3 dir = forward;
-        if ((id + steer_tick) % 4 == 0) {
-            // Deterministic side preference: stable per unit for ~0.3s
-            u32 time_bucket = steer_tick / 10;  // flips every ~10 ticks (~0.3s at 32Hz)
-            bool prefer_left = ((id + time_bucket) % 2) == 0;
-            dir = local_steer(world, grid, pathfinder, id,
-                              transform->position, forward, mov.collision_radius,
-                              mov.type, prefer_left);
+        // ── Local avoidance: transient detour splice ─────────────────────
+        // A* gave us the corridor (terrain + buildings). Foreign units and
+        // string-pull grazes are NOT in it, so the straight line to the
+        // waypoint can be blocked. Rather than blend forces (which stalls
+        // in the pocket between two blockers), we splice ONE detour point
+        // to walk toward, dropped the moment the corridor clears again and
+        // always wiped on repath. Steering target = detour if active, else
+        // the waypoint.
+        //
+        // Probe one turn-room slice ahead (same scale find_bypass uses);
+        // if that slice is blocked, fan for a bypass. If none, the gap is
+        // truly sealed → force an early A* repath (treats blockers fresh).
+        {
+            f32 turn = (mov.turn_rate > 0.01f) ? mov.turn_rate : 3.0f;
+            f32 probe_dist = glm::clamp(mov.speed * glm::half_pi<f32>() / turn,
+                                        mov.collision_radius, mov.collision_radius * 6.0f);
+            glm::vec2 target = mov.has_detour ? mov.detour : mov.waypoint;
+            glm::vec2 to_t = target - pos2d;
+            f32 t_dist = glm::length(to_t);
+            glm::vec2 heading = (t_dist > 1e-3f)
+                ? to_t / t_dist
+                : glm::vec2{forward.x, forward.y};
+            glm::vec2 probe = pos2d + heading * std::min(probe_dist, t_dist);
+
+            if (can_step(pos2d.x, pos2d.y, probe.x, probe.y)) {
+                // Slice clear. If detouring, drop the splice once it's
+                // consumed (reached) or the corridor waypoint is itself
+                // reachable again (blocker walked off) — rejoin the path.
+                if (mov.has_detour) {
+                    bool reached = t_dist < std::max(8.0f, probe_dist * 0.5f);
+                    glm::vec2 wp_to = mov.waypoint - pos2d;
+                    f32 wp_d = glm::length(wp_to);
+                    glm::vec2 wp_head = (wp_d > 1e-3f) ? wp_to / wp_d : heading;
+                    glm::vec2 wp_probe = pos2d + wp_head * std::min(probe_dist, wp_d);
+                    bool corridor_clear =
+                        can_step(pos2d.x, pos2d.y, wp_probe.x, wp_probe.y);
+                    if (reached || corridor_clear) mov.has_detour = false;
+                }
+            } else if (!mov.has_detour) {
+                // Hard blocker in the slice and no splice yet → probe one.
+                if (auto bp = find_bypass(pos2d, heading)) {
+                    mov.detour = *bp;
+                    mov.has_detour = true;
+                } else {
+                    mov.repath_timer = 0;   // boxed in → hand it to A* now
+                }
+            }
         }
+
+        // Resolve the steering target after the detour decision.
+        glm::vec2 steer_target = mov.has_detour ? mov.detour : mov.waypoint;
+        glm::vec2 steer_to = steer_target - pos2d;
+        f32 steer_dist = glm::length(steer_to);
+        glm::vec3 dir = (steer_dist > 1e-3f)
+            ? glm::vec3{steer_to.x / steer_dist, steer_to.y / steer_dist, 0.0f}
+            : forward;
 
         f32 desired_facing = std::atan2(dir.y, dir.x);
         f32 face_diff = angle_diff(transform->facing, desired_facing);
@@ -487,26 +606,27 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // Step forward (only if roughly facing the right direction)
         if (std::abs(face_diff) < glm::half_pi<f32>()) {
             f32 step = mov.speed * dt;
-            if (step > wp_dist) step = wp_dist;
+            if (step > steer_dist) step = steer_dist;   // don't overshoot detour/waypoint
             f32 new_x = transform->position.x + dir.x * step;
             f32 new_y = transform->position.y + dir.y * step;
 
-            if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, new_y, mov.type)) {
+            if (can_step(transform->position.x, transform->position.y, new_x, new_y)) {
                 transform->position.x = new_x;
                 transform->position.y = new_y;
             } else {
                 bool slid = false;
-                if (pathfinder.can_move_to(transform->position.x, transform->position.y, new_x, transform->position.y, mov.type)) {
+                if (can_step(transform->position.x, transform->position.y, new_x, transform->position.y)) {
                     transform->position.x = new_x;
                     slid = true;
                 }
-                if (pathfinder.can_move_to(transform->position.x, transform->position.y, transform->position.x, new_y, mov.type)) {
+                if (can_step(transform->position.x, transform->position.y, transform->position.x, new_y)) {
                     transform->position.y = new_y;
                     slid = true;
                 }
                 if (!slid) {
                     mov.corridor.clear();
                     mov.has_waypoint = false;
+                    mov.has_detour = false;   // splice is stale if we can't move at all
                 }
             }
         }
@@ -1018,18 +1138,18 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     }
                     if (inst && inst->cooldown_remaining <= 0) {
                         // Engine-enforced ability cost. WC3 semantics:
-                        // mana / state cost is spent at cast START (the
-                        // instant the cast begins), not at effect fire —
-                        // an interrupted foreswing still costs. The HUD's
-                        // can_afford greying gates the click; this gates
-                        // the actual sim cast so scripted / queued casts
-                        // pay too. cost is empty for free abilities.
+                        // mana / state cost is spent when the spell's
+                        // EFFECT fires (foreswing completes / channel
+                        // resolves), NOT at cast start — an interrupted
+                        // foreswing or a cancelled channel costs nothing.
+                        // We still gate the START on can_afford so a cast
+                        // that could never be paid never begins; the
+                        // actual deduction happens at the effect points
+                        // below. cost is empty for free abilities.
                         auto& lvl = def->level_data(inst->level);
                         if (!simulation::ability_can_afford(world, id, lvl.cost)) {
                             oq->current.reset();  // can't afford — drop the order
                         } else {
-                            simulation::ability_pay_cost(world, id, lvl.cost);
-
                             aset.casting_id       = cast_order->ability_id;
                             aset.cast_target_unit = cast_order->target_unit;
                             aset.cast_target_pos  = cast_order->target_pos;
@@ -1147,7 +1267,9 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 aset.cast_timer = lvl.channel_time;
                             } else {
                                 // Non-channeled: effect fires now, cooldown
-                                // begins, transition to Backswing.
+                                // begins, transition to Backswing. Pay the
+                                // cost here (effect point), not at cast start.
+                                simulation::ability_pay_cost(world, id, lvl.cost);
                                 if (world.on_ability_effect) {
                                     world.on_ability_effect(caster, aset.casting_id,
                                                             aset.cast_target_unit, target_pos,
@@ -1197,6 +1319,10 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                                          aset.cast_target_unit, target_pos,
                                                          aset.cast_source_item);
                             }
+                            // Channel resolved → effect fires. Pay the cost
+                            // here (effect point); an interrupted channel
+                            // above returns without paying.
+                            simulation::ability_pay_cost(world, id, lvl.cost);
                             if (world.on_ability_effect) {
                                 world.on_ability_effect(caster, aset.casting_id,
                                                         aset.cast_target_unit, target_pos,
@@ -1671,22 +1797,16 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
         filter.exclude_buildings = true;
         auto nearby = grid.units_in_range(world, transform->position, self_radius * 4.0f, filter);
 
-        const auto* self_owner = world.owners.get(id);
         for (auto& other : nearby) {
             if (other.id <= id) continue;
             if (world.dead_states.has(other.id)) continue;
 
-            // Push only between units owned by the same player. Enemy /
-            // neutral units pass through each other at this layer — combat
-            // does the gating that matters there. Without this, a kiting
-            // enemy could shove your held units off-position, and two
-            // hostile mobs collide-jostling looks awful.
-            const auto* other_owner = world.owners.get(other.id);
-            if (!self_owner || !other_owner ||
-                self_owner->player.id != other_owner->player.id) {
-                continue;
-            }
-
+            // Push resolves ANY overlap regardless of owner. Move-time
+            // blocking (foreign_unit_blocks in system_movement) already
+            // stops a unit walking INTO a different player's unit, so the
+            // only overlaps that reach here are same-player crowding and
+            // residuals from teleport / knockback / SetUnitX|Y — all of
+            // which must de-overlap no matter who owns the two units.
             auto* other_t = world.transforms.get(other.id);
             if (!other_t) continue;
             auto* other_mov = world.movements.get(other.id);

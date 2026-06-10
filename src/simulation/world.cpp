@@ -136,7 +136,15 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // Renderable
     if (!def->model_path.empty()) {
-        world.renderables.add(id, Renderable{def->model_path, true});
+        Renderable r{def->model_path, true};
+        // Birth clip plays only for a unit spawned in the local viewer's
+        // sight. A unit born outside sight (or on a host with no viewer
+        // predicate set) comes up Idle — matching the network client,
+        // which derives the same from the S_SPAWN newly_created flag.
+        if (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y)) {
+            r.skip_birth = true;
+        }
+        world.renderables.add(id, std::move(r));
     }
 
     // Inventory (if type has inventory_size > 0)

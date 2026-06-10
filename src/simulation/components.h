@@ -111,6 +111,16 @@ struct Movement {
     glm::vec2 waypoint{0};             // current straight-line target (world XY)
     bool      has_waypoint = false;
 
+    // Transient local-avoidance splice. When the straight line to `waypoint`
+    // is blocked by a hard obstacle the A* corridor didn't know about (a
+    // foreign unit, or terrain the string-pull grazes), local steering sets
+    // ONE detour point to walk toward instead. It's ephemeral: consumed on
+    // arrival, dropped the moment the corridor clears again, and always
+    // wiped on repath (A* owns the real route; this just survives until the
+    // next replan). has_detour=false → steer straight to `waypoint`.
+    glm::vec2 detour{0};
+    bool      has_detour = false;
+
     // Re-path timer and destination tracking
     f32       repath_timer = 0;
     glm::vec2 path_dest{0};            // destination used for last pathfind (for repath detection)
@@ -429,7 +439,7 @@ struct ProjectileComp {
 struct Renderable {
     std::string model_path;
     bool        visible = true;
-    bool        skip_birth = false;  // skip birth animation (entity revealed, not newly created)
+    bool        skip_birth = false;  // skip birth animation (entity revealed/spawned out of viewer sight, not born in view)
     f32         visual_alpha = 1.0f; // 0..1 multiplier on fragment alpha (SetUnitAlpha)
 };
 

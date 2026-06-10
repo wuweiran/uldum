@@ -427,7 +427,7 @@ static i32 find_clip_by_name(const asset::ModelData& model, std::string_view nam
     return -1;
 }
 
-AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& model) {
+AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& model, bool play_birth) {
     auto it = m_anim_instances.find(entity_id);
     if (it != m_anim_instances.end()) return it->second;
 
@@ -442,8 +442,12 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
     inst.state_to_clip[static_cast<u8>(AnimState::Death)]  = find_clip_by_name(model.data, "death");
     inst.state_to_clip[static_cast<u8>(AnimState::Birth)]  = find_clip_by_name(model.data, "birth");
 
-    // Start with birth animation if available
-    if (inst.state_to_clip[static_cast<u8>(AnimState::Birth)] >= 0) {
+    // Start in Birth only for a unit actually born in this player's sight.
+    // A unit revealed out of fog (or flagged skip_birth) was created long
+    // before we first saw it — it must come up already Idle, never replay
+    // its birth. The caller passes that decision as play_birth so we never
+    // enter Birth just to undo it a line later.
+    if (play_birth && inst.state_to_clip[static_cast<u8>(AnimState::Birth)] >= 0) {
         inst.current_state = AnimState::Birth;
         inst.looping = false;
     }
@@ -3119,14 +3123,15 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             if (!cull_frustum.is_sphere_visible(transform->interp_position(alpha),
                                                 cull_radius)) continue;
 
-            auto& anim = get_or_create_anim(id, *lm);
-
-            // Skip birth animation for revealed entities (not newly created)
-            if (renderable.skip_birth && anim.current_state == AnimState::Birth) {
-                anim.current_state = AnimState::Idle;
-                anim.looping = true;
-                anim.time = 0;
-            }
+            // Birth plays only for a unit spawned in this viewer's sight.
+            //   * client world — skip_birth comes from the S_SPAWN
+            //     newly_created flag (born-this-tick AND visible-to-peer).
+            //   * server world (host / single-player) — create_unit set
+            //     skip_birth from the spawn_visible_to_viewer predicate.
+            // Either way the decision is made at spawn; here we just honor
+            // it. (The Birth→Idle decay still lives in derive_anim_state.)
+            const bool play_birth = !renderable.skip_birth;
+            auto& anim = get_or_create_anim(id, *lm, play_birth);
 
             // Script-driven animation override (SetUnitAnimation /
             // QueueUnitAnimation). Death always wins — if the unit is
