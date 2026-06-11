@@ -131,75 +131,47 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         };
 
         // Local-avoidance probe: when the straight line to the current
-        // target is blocked, find a detour heading that clears EVERY nearby
-        // obstacle at once — not just the nearest one.
+        // target is blocked by a foreign unit, fan candidate headings
+        // outward from `heading` (straight first, then ±15°, ±30°, …
+        // ±120°, right-before-left) and return a detour point along the
+        // FIRST direction the unit can actually STEP in.
         //
-        // We fan candidate headings outward from `heading` (0° first, then
-        // ±STEP, ±2·STEP, … right-before-left for a deterministic keep-right
-        // start) and return the first whose probe step passes can_step —
-        // which already tests terrain + buildings + ALL foreign units. So a
-        // surviving candidate is clear of the whole A-B-C wall jointly, not
-        // sequentially. This is what kills the old oscillation: steering at
-        // the *nearest* blocker's tangent was self-defeating (dodging B made
-        // C nearest, whose goalward tangent pointed back at B); the fan is
-        // self-reinforcing (rounding one end of the wall makes that end the
-        // smaller-deflection clear heading next tick, so it commits).
-        //
-        // Probe length is collision-aware: sized so a deflected candidate
-        // lands OUTSIDE the nearest foreign blocker's circle (a too-short
-        // probe was the "stuck in front of one unit" bug). We find the
-        // nearest blocker ahead only to size the probe; if none, a default.
-        // nullopt → boxed in → caller forces an early repath. find_bypass
-        // runs only on the block→detour edge (re-probed on arrival).
+        // The candidate test is a step-sized move (≈ one tick / one body
+        // radius), NOT a far endpoint: can_step / foreign_unit_blocks is a
+        // point test (is the destination inside a foreign circle?), so a
+        // far endpoint *past* the blocker reads as "clear" even though the
+        // straight line to it crosses the blocker — which made the unit set
+        // a detour pointing straight through a single blocker and then
+        // stall, unable to take the first step. Testing a step-sized move
+        // makes point≈segment, so a direction is accepted only if the unit
+        // can immediately move that way — the first such direction is the
+        // real sidestep (~90° when a unit sits dead ahead). nullopt → boxed
+        // in → caller forces an early repath.
         auto find_bypass = [&](glm::vec2 from, glm::vec2 heading) -> std::optional<glm::vec2> {
             auto rot = [](glm::vec2 v, f32 a) -> glm::vec2 {
                 f32 c = std::cos(a), s = std::sin(a);
                 return { v.x * c - v.y * s, v.x * s + v.y * c };
             };
 
-            // Nearest foreign unit roughly ahead — used ONLY to size the probe.
-            UnitFilter filter;
-            filter.exclude_buildings = true;
-            auto nearby = grid.units_in_range(world, glm::vec3{from.x, from.y, 0.0f},
-                                              self_radius * 6.0f, filter);
-            f32 blk_fd = 0.0f, blk_R = 0.0f;
-            for (auto& o : nearby) {
-                if (o.id == id) continue;
-                if (world.dead_states.has(o.id)) continue;
-                const Owner* oo = world.owners.get(o.id);
-                if (oo && self_owner && oo->player.id == self_owner->player.id) continue;
-                auto* ot = world.transforms.get(o.id);
-                if (!ot) continue;
-                glm::vec2 rel{ot->position.x - from.x, ot->position.y - from.y};
-                f32 fd = glm::dot(rel, heading);
-                if (fd <= 0.0f) continue;                       // behind us
-                f32 lat = glm::length(rel - heading * fd);
-                const auto* om = world.movements.get(o.id);
-                f32 oR = om ? om->collision_radius : 32.0f;
-                f32 R = self_radius + oR;
-                if (lat < R && fd > blk_fd) { blk_fd = fd; blk_R = R; }
-            }
+            // Step-sized probe so the point test approximates the swept
+            // step; at least one real tick's travel so a validated
+            // direction is actually steppable this tick.
+            const f32 test  = std::max(self_radius, mov.speed * dt);
+            const f32 reach = std::max(self_radius * 3.0f, test * 2.0f);
+            auto step_clear = [&](glm::vec2 d) -> bool {
+                glm::vec2 p = from + d * test;
+                return can_step(from.x, from.y, p.x, p.y);
+            };
 
-            // Reach past the nearest blocker's far edge so a deflected
-            // candidate can clear its circle; clamp to a sane span. With no
-            // blocker ahead (terrain-only block), use a default forward probe.
-            f32 probe = (blk_R > 0.0f)
-                ? (blk_fd + blk_R + self_radius * 0.5f)
-                : (self_radius * 3.0f);
-            probe = glm::clamp(probe, self_radius, self_radius * 8.0f);
-
-            // Fan all candidate headings; first clear one wins.
             constexpr f32 MAX_DEFLECT = 2.0943951f;             // 120°: round a wall end
             constexpr f32 STEP_DEFLECT = 0.2617994f;            // 15°
-            if (can_step(from.x, from.y,
-                         from.x + heading.x * probe, from.y + heading.y * probe)) {
-                return from + heading * probe;                  // straight is clear
-            }
-            for (f32 a = STEP_DEFLECT; a <= MAX_DEFLECT + 1e-3f; a += STEP_DEFLECT) {
-                glm::vec2 r = from + rot(heading, -a) * probe;  // right (CW) first
-                if (can_step(from.x, from.y, r.x, r.y)) return r;
-                glm::vec2 l = from + rot(heading,  a) * probe;  // then left (CCW)
-                if (can_step(from.x, from.y, l.x, l.y)) return l;
+            for (f32 a = 0.0f; a <= MAX_DEFLECT + 1e-3f; a += STEP_DEFLECT) {
+                glm::vec2 r = rot(heading, -a);                 // right (CW) first
+                if (step_clear(r)) return from + r * reach;
+                if (a > 0.0f) {
+                    glm::vec2 l = rot(heading, a);              // then left (CCW)
+                    if (step_clear(l)) return from + l * reach;
+                }
             }
             return std::nullopt;
         };
@@ -536,50 +508,63 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         glm::vec3 forward{to_wp.x / wp_dist, to_wp.y / wp_dist, 0.0f};
 
         // ── Local avoidance: transient detour splice ─────────────────────
-        // A* gave us the corridor (terrain + buildings). Foreign units and
-        // string-pull grazes are NOT in it, so the straight line to the
-        // waypoint can be blocked. Rather than blend forces (which stalls
-        // in the pocket between two blockers), we splice ONE detour point
-        // to walk toward, dropped the moment the corridor clears again and
-        // always wiped on repath. Steering target = detour if active, else
-        // the waypoint.
-        //
-        // Probe one turn-room slice ahead (same scale find_bypass uses);
-        // if that slice is blocked, fan for a bypass. If none, the gap is
-        // truly sealed → force an early A* repath (treats blockers fresh).
+        // A* gave us the corridor (terrain + buildings). Foreign units are
+        // NOT in it, so the straight line to the waypoint can be blocked by
+        // an enemy. Each tick we probe one step toward the current target
+        // (detour if set, else waypoint):
+        //   * clear  → walk it; if on a detour, drop it once reached or the
+        //              straight line to the waypoint is clear again.
+        //   * blocked→ (re)pick a detour toward the WAYPOINT via find_bypass
+        //              — EVERY tick it's blocked, even if a detour already
+        //              exists, so a committed detour that seals up is
+        //              replaced instead of leaving the unit to walk into it
+        //              and stall. No local way around → force an early A*
+        //              repath. The detour is wiped on repath.
         {
-            f32 turn = (mov.turn_rate > 0.01f) ? mov.turn_rate : 3.0f;
-            f32 probe_dist = glm::clamp(mov.speed * glm::half_pi<f32>() / turn,
-                                        mov.collision_radius, mov.collision_radius * 6.0f);
+            // Step-sized lookahead: the slice we test must be the distance
+            // the unit can actually MOVE this tick (point test ≈ swept step).
+            // A long probe would jump its endpoint *past* a near blocker and
+            // read "clear", so find_bypass never fires and the small real
+            // step stalls into the blocker. One body radius (or a tick's
+            // travel, whichever is larger) keeps detection honest.
+            f32 probe_dist = std::max(mov.collision_radius, mov.speed * dt);
+
+            // Heading toward the real corridor waypoint (the actual goal).
+            glm::vec2 wp_to = mov.waypoint - pos2d;
+            f32 wp_d = glm::length(wp_to);
+            glm::vec2 wp_head = (wp_d > 1e-3f) ? wp_to / wp_d
+                                               : glm::vec2{forward.x, forward.y};
+
+            // Current steering target + heading (detour overrides waypoint).
             glm::vec2 target = mov.has_detour ? mov.detour : mov.waypoint;
             glm::vec2 to_t = target - pos2d;
             f32 t_dist = glm::length(to_t);
-            glm::vec2 heading = (t_dist > 1e-3f)
-                ? to_t / t_dist
-                : glm::vec2{forward.x, forward.y};
+            glm::vec2 heading = (t_dist > 1e-3f) ? to_t / t_dist : wp_head;
             glm::vec2 probe = pos2d + heading * std::min(probe_dist, t_dist);
 
             if (can_step(pos2d.x, pos2d.y, probe.x, probe.y)) {
-                // Slice clear. If detouring, drop the splice once it's
-                // consumed (reached) or the corridor waypoint is itself
-                // reachable again (blocker walked off) — rejoin the path.
+                // Step toward the current target is clear. If on a detour,
+                // drop it once reached or the straight line to the waypoint
+                // is clear again (blocker moved off) — rejoin the corridor.
                 if (mov.has_detour) {
                     bool reached = t_dist < std::max(8.0f, probe_dist * 0.5f);
-                    glm::vec2 wp_to = mov.waypoint - pos2d;
-                    f32 wp_d = glm::length(wp_to);
-                    glm::vec2 wp_head = (wp_d > 1e-3f) ? wp_to / wp_d : heading;
                     glm::vec2 wp_probe = pos2d + wp_head * std::min(probe_dist, wp_d);
-                    bool corridor_clear =
-                        can_step(pos2d.x, pos2d.y, wp_probe.x, wp_probe.y);
+                    bool corridor_clear = can_step(pos2d.x, pos2d.y, wp_probe.x, wp_probe.y);
                     if (reached || corridor_clear) mov.has_detour = false;
                 }
-            } else if (!mov.has_detour) {
-                // Hard blocker in the slice and no splice yet → probe one.
-                if (auto bp = find_bypass(pos2d, heading)) {
+            } else {
+                // Step toward the current target is BLOCKED. Re-pick a detour
+                // EVERY tick this happens — even if one is already set (the
+                // committed detour just sealed up). Without this, a stale
+                // detour is never replaced and the unit walks into it and
+                // stalls. Always re-pick toward the WAYPOINT so the fresh
+                // detour heads at the goal, not around the dead direction.
+                if (auto bp = find_bypass(pos2d, wp_head)) {
                     mov.detour = *bp;
                     mov.has_detour = true;
                 } else {
-                    mov.repath_timer = 0;   // boxed in → hand it to A* now
+                    mov.has_detour = false;   // no way around locally → let A* retry
+                    mov.repath_timer = 0;     // force an early repath
                 }
             }
         }
@@ -1818,6 +1803,24 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
             f32 d = glm::length(diff);
 
             if (d < min_dist) {
+                const Owner* self_owner  = world.owners.get(id);
+                const Owner* other_owner = world.owners.get(other.id);
+                MoveType other_type = other_mov ? other_mov->type : MoveType::Ground;
+                // A push is just another position change, so it obeys the
+                // SAME rule as a voluntary step: never drive a unit DEEPER
+                // into a foreign unit's circle. Without this, a chain of
+                // same-player pushes (A→B) can shove B into an enemy C, then
+                // the B↔C pair shoves C — letting a player push enemies by
+                // proxy. foreign_unit_blocks' escape valve still lets a unit
+                // teleported ONTO an enemy push outward to de-overlap.
+                auto push_ok = [&](glm::vec2 from, glm::vec2 to, const Owner* owner,
+                                   f32 radius, MoveType mt) -> bool {
+                    if (!pathfinder.can_move_to(from.x, from.y, to.x, to.y, mt)) return false;
+                    if (foreign_unit_blocks(world, grid, /*self_id unused for push*/ UINT32_MAX,
+                                            owner, radius, from, to, mt)) return false;
+                    return true;
+                };
+
                 if (d > 0.01f) {
                     glm::vec3 n = diff / d;
                     f32 half = (min_dist - d) * 0.5f;
@@ -1825,13 +1828,13 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
                     f32 ay = transform->position.y + n.y * half;
                     f32 bx = other_t->position.x - n.x * half;
                     f32 by = other_t->position.y - n.y * half;
-                    // Only push if it doesn't cross a cliff
-                    if (pathfinder.can_move_to(transform->position.x, transform->position.y, ax, ay, mov->type)) {
+                    if (push_ok({transform->position.x, transform->position.y}, {ax, ay},
+                                self_owner, self_radius, mov->type)) {
                         transform->position.x = ax;
                         transform->position.y = ay;
                     }
-                    MoveType other_type = other_mov ? other_mov->type : MoveType::Ground;
-                    if (pathfinder.can_move_to(other_t->position.x, other_t->position.y, bx, by, other_type)) {
+                    if (push_ok({other_t->position.x, other_t->position.y}, {bx, by},
+                                other_owner, other_radius, other_type)) {
                         other_t->position.x = bx;
                         other_t->position.y = by;
                     }
