@@ -79,7 +79,7 @@ bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter&
     // Owner check
     if (filter.owner.is_valid()) {
         auto* o = world.owners.get(unit.id);
-        if (!o || !(o->player == filter.owner)) return false;
+        if (!o || !(*o == filter.owner)) return false;
     }
 
     // Enemy check: exclude allies (uses alliance system if available, falls back to same-player check)
@@ -87,9 +87,9 @@ bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter&
         auto* o = world.owners.get(unit.id);
         if (o) {
             if (m_sim) {
-                if (m_sim->is_allied(filter.enemy_of, o->player)) return false;
+                if (m_sim->is_allied(filter.enemy_of, *o)) return false;
             } else {
-                if (o->player == filter.enemy_of) return false;
+                if (*o == filter.enemy_of) return false;
             }
         }
     }

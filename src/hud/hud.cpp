@@ -644,8 +644,8 @@ void Hud::update_focus(f32 /*dt*/) {
         if (!o) continue;
         // Enemy filter — same alliance check the spatial grid uses.
         if (s.world_ctx->simulation
-            ? s.world_ctx->simulation->is_allied(hero_owner->player, o->player)
-            : (o->player == hero_owner->player)) {
+            ? s.world_ctx->simulation->is_allied(*hero_owner, *o)
+            : (*o == *hero_owner)) {
             continue;
         }
         const auto& etf = world.transforms.data()[i];
@@ -658,7 +658,7 @@ void Hud::update_focus(f32 /*dt*/) {
         f32 dot = (dv.x * hero_dx + dv.y * hero_dy) / dlen;
         if (dot < cosf_half) continue;
         if (!focus_visible(*s.world_ctx, etf.position)) continue;
-        simulation::Unit cand{ id, o->player.id };  // owner.id != generation; fix below
+        simulation::Unit cand{ id, o->id };  // owner.id != generation; fix below
         // Resolve generation for a stable handle.
         if (auto* hi = world.handle_infos.get(id)) {
             cand.generation = hi->generation;
@@ -1113,8 +1113,8 @@ Hud::TargetingIntent Hud::cursor_intent() const {
     if (auto unit = ctx.pick_target(sx, sy); unit.is_valid()) {
         const auto* owner = ctx.world->owners.get(unit.id);
         if (!owner) return TargetingIntent::Neutral;
-        if (owner->player.id == ctx.local_player.id) return TargetingIntent::Ally;
-        if (ctx.simulation && ctx.simulation->is_allied(ctx.local_player, owner->player)) {
+        if (owner->id == ctx.local_player.id) return TargetingIntent::Ally;
+        if (ctx.simulation && ctx.simulation->is_allied(ctx.local_player, *owner)) {
             return TargetingIntent::Ally;
         }
         return TargetingIntent::Enemy;

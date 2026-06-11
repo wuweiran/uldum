@@ -756,7 +756,7 @@ bool MapManager::save_objects(const simulation::World& world, std::string_view s
             pu.x      = t->position.x;
             pu.y      = t->position.y;
             pu.facing = t->facing;
-            if (const auto* owner = world.owners.get(id)) pu.owner = owner->player.id;
+            if (const auto* owner = world.owners.get(id)) pu.owner = owner->id;
             snapshot.units.push_back(std::move(pu));
             break;
         }

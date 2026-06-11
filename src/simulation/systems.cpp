@@ -64,7 +64,7 @@ static f32 angle_diff(f32 from, f32 to) {
 // / SetUnitX) can therefore always walk outward — it just can't push
 // deeper in. Without this a shoved-into-enemy unit would freeze.
 static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
-                                u32 self_id, const Owner* self_owner,
+                                u32 self_id, const Player* self_owner,
                                 f32 self_radius, glm::vec2 from, glm::vec2 to,
                                 MoveType move_type) {
     if (!self_owner) return false;          // unowned movers ignore this layer
@@ -79,7 +79,7 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
         if (world.dead_states.has(other.id)) continue;
 
         const auto* other_owner = world.owners.get(other.id);
-        if (other_owner && other_owner->player.id == self_owner->player.id) continue;
+        if (other_owner && other_owner->id == self_owner->id) continue;
 
         auto* ot = world.transforms.get(other.id);
         if (!ot) continue;
@@ -121,7 +121,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // unit (foreign collision circle). Same-player crowding is allowed
         // through — the collision push resolves it. Every position commit
         // below routes through this so the two gates stay in lockstep.
-        const Owner* self_owner = world.owners.get(id);
+        const Player* self_owner = world.owners.get(id);
         f32 self_radius = mov.collision_radius;
         auto can_step = [&](f32 ox, f32 oy, f32 nx, f32 ny) -> bool {
             if (!pathfinder.can_move_to(ox, oy, nx, ny, mov.type)) return false;
@@ -793,7 +793,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
         if (target_valid) {
             auto* owner = world.owners.get(id);
-            if (owner && !grid.is_visible_to(world, target.id, owner->player)) {
+            if (owner && !grid.is_visible_to(world, target.id, *owner)) {
                 target_valid = false;
             }
         }
@@ -832,8 +832,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;
-                    filter.enemy_of   = owner->player;
-                    filter.visible_to = owner->player;  // skip fogged / unexplored
+                    filter.enemy_of   = *owner;
+                    filter.visible_to = *owner;  // skip fogged / unexplored
                     filter.alive_only = true;
                     auto enemies = grid.units_in_range(world, transform->position, acquire_r, filter);
                     Unit best;
@@ -1352,8 +1352,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 if (lvl.aura_radius <= 0 || lvl.aura_ability.empty()) continue;
 
                 UnitFilter filter;
-                if (def->target_filter.ally)  filter.owner = owner->player;
-                if (def->target_filter.enemy) filter.enemy_of = owner->player;
+                if (def->target_filter.ally)  filter.owner = *owner;
+                if (def->target_filter.enemy) filter.enemy_of = *owner;
                 auto nearby = grid.units_in_range(world, aura_transform->position, lvl.aura_radius, filter);
 
                 Unit source_unit = world.unit(id);
@@ -1803,8 +1803,8 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
             f32 d = glm::length(diff);
 
             if (d < min_dist) {
-                const Owner* self_owner  = world.owners.get(id);
-                const Owner* other_owner = world.owners.get(other.id);
+                const Player* self_owner  = world.owners.get(id);
+                const Player* other_owner = world.owners.get(other.id);
                 MoveType other_type = other_mov ? other_mov->type : MoveType::Ground;
                 // A push is just another position change, so it obeys the
                 // SAME rule as a voluntary step: never drive a unit DEEPER
@@ -1813,7 +1813,7 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
                 // the B↔C pair shoves C — letting a player push enemies by
                 // proxy. foreign_unit_blocks' escape valve still lets a unit
                 // teleported ONTO an enemy push outward to de-overlap.
-                auto push_ok = [&](glm::vec2 from, glm::vec2 to, const Owner* owner,
+                auto push_ok = [&](glm::vec2 from, glm::vec2 to, const Player* owner,
                                    f32 radius, MoveType mt) -> bool {
                     if (!pathfinder.can_move_to(from.x, from.y, to.x, to.y, mt)) return false;
                     if (foreign_unit_blocks(world, grid, /*self_id unused for push*/ UINT32_MAX,

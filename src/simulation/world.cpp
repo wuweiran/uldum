@@ -90,7 +90,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     }
 
     // Unit
-    world.owners.add(id, Owner{owner});
+    world.owners.add(id, Player{owner});
     {
         Movement m;
         m.speed = def->move_speed;
@@ -492,7 +492,7 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
     if (source.is_valid() && world.validate(source)) {
         auto* src_owner = world.owners.get(source.id);
         auto* tgt_owner = world.owners.get(target.id);
-        bool same_owner = src_owner && tgt_owner && src_owner->player.id == tgt_owner->player.id;
+        bool same_owner = src_owner && tgt_owner && src_owner->id == tgt_owner->id;
         if (!same_owner) {
             auto* oq = world.order_queues.get(target.id);
             auto* combat = world.combats.get(target.id);
@@ -545,7 +545,7 @@ void issue_order(World& world, Unit unit, Order order) {
         auto* a = world.owners.get(caster.id);
         auto* b = world.owners.get(target.id);
         if (!a || !b) return false;
-        return a->player.id != b->player.id;
+        return a->id != b->id;
     };
     if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
         u32 tf = target_flags(atk->target);
@@ -670,7 +670,7 @@ void set_position(World& world, Unit unit, f32 x, f32 y) {
 Player get_owner(const World& world, Unit unit) {
     if (!world.validate(unit)) return {};
     auto* o = world.owners.get(unit.id);
-    return o ? o->player : Player{};
+    return o ? *o : Player{};
 }
 
 bool is_alive(const World& world, Unit unit) {

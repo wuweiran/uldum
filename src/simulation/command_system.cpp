@@ -23,7 +23,7 @@ void CommandSystem::submit(const GameCommand& cmd) {
 
         // Validate ownership: unit must belong to the commanding player
         auto* owner = m_world->owners.get(unit.id);
-        if (!owner || owner->player.id != cmd.player.id) continue;
+        if (!owner || owner->id != cmd.player.id) continue;
 
         Order order;
         order.payload = cmd.order;

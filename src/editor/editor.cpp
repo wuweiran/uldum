@@ -1485,9 +1485,9 @@ void Editor::place_mode_draw_panel() {
             u32 nplayers = static_cast<u32>(m_map.manifest().players.size());
             if (nplayers == 0) nplayers = 1;
             if (auto* o = world.owners.get(sel_id)) {
-                int owner = static_cast<int>(o->player.id);
+                int owner = static_cast<int>(o->id);
                 if (ImGui::SliderInt("Owner", &owner, 0, static_cast<int>(nplayers - 1))) {
-                    o->player.id = static_cast<u32>(owner);
+                    o->id = static_cast<u32>(owner);
                 }
             }
             if (auto* t = world.transforms.get(sel_id)) {

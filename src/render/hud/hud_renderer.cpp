@@ -716,7 +716,7 @@ static bool command_bar_slots_active(const Hud::Impl& s) {
         s.world_ctx->selection->selected().empty()) return false;
     u32 lead = s.world_ctx->selection->selected().front().id;
     const auto* own = s.world_ctx->world ? s.world_ctx->world->owners.get(lead) : nullptr;
-    return own && own->player.id == s.world_ctx->local_player.id;
+    return own && own->id == s.world_ctx->local_player.id;
 }
 
 // ── Inline draw primitive impls used by composite helpers below ──────────
@@ -1328,7 +1328,7 @@ static Color minimap_dot_color(const WorldContext& ctx, u32 unit_id,
     if (!ctx.world) return style.neutral_dot_color;
     const auto* owner = ctx.world->owners.get(unit_id);
     if (!owner) return style.neutral_dot_color;
-    simulation::Player p = owner->player;
+    simulation::Player p = *owner;
     if (p == ctx.local_player) return style.own_dot_color;
     return style.enemy_dot_color;
 }

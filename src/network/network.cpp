@@ -582,7 +582,7 @@ void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
         if (!transform) continue;
 
         const auto* owner = world.owners.get(id);
-        u8 owner_id = owner ? static_cast<u8>(owner->player.id) : 0;
+        u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
 
         // Projectiles don't appear in the type registry — their model
         // is set per-spawn (auto-attack arrow vs custom glTF). Carry
@@ -659,7 +659,7 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
                 const auto* transform = world.transforms.get(id);
                 if (!transform) continue;
                 const auto* owner = world.owners.get(id);
-                u8 owner_id = owner ? static_cast<u8>(owner->player.id) : 0;
+                u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
 
                 bool newly_created = !last_tick.contains(id);
 
@@ -1359,7 +1359,7 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
     }
     case UpdateType::Owner: {
         auto* owner = world.owners.get(u.entity_id);
-        if (owner) owner->player.id = u.uint_value;
+        if (owner) owner->id = u.uint_value;
         break;
     }
     case UpdateType::AbilityModifier: {
@@ -1494,7 +1494,7 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
     t.prev_facing = facing;
     t.scale = scale;
     world.transforms.add(entity_id, std::move(t));
-    world.owners.add(entity_id, simulation::Owner{simulation::Player{owner}});
+    world.owners.add(entity_id, simulation::Player{owner});
     world.renderables.add(entity_id, simulation::Renderable{model_path, true, !newly_created});
     world.healths.add(entity_id, simulation::Health{max_health, max_health, 0});
     world.movements.add(entity_id, simulation::Movement{});

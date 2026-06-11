@@ -142,7 +142,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
         const auto* caster_owner = w.owners.get(caster.id);
         const auto* target_owner = w.owners.get(target.id);
         if (!caster_owner || !target_owner) return false;
-        bool allied = is_allied(caster_owner->player, target_owner->player);
+        bool allied = is_allied(*caster_owner, *target_owner);
         if (allied) {
             if (!filter.ally) return false;
         } else {

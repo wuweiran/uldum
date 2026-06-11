@@ -48,7 +48,7 @@ Handle (u32 id + u32 generation)
 │   │
 │   │   The three Widget subtypes — the core gameplay objects:
 │   │
-│   ├── Unit (Widget + Owner + Movement + Combat + Sight + OrderQueue + AbilitySet)
+│   ├── Unit (Widget + Player[owner] + Movement + Combat + Sight + OrderQueue + AbilitySet)
 │   │   │
 │   │   │   Unit subtypes are NOT separate categories. They are regular
 │   │   │   units with extra components + classification flags:
@@ -101,7 +101,7 @@ handle (base)                 Handle { id, generation }    (not exposed)
 ├── unit                      Unit   : Handle              Unit
 ├── destructable              Destructable : Handle        Destructable
 ├── item                      Item   : Handle              Item
-└── player                    Player { id }                Player
+└── player                    Player { u32 id }            Player
 ```
 
 Each typed handle holds an `id` (index into component storage) and a `generation`
@@ -123,7 +123,7 @@ struct Handle { u32 id; u32 generation; };
 struct Unit          : Handle {};
 struct Destructable  : Handle {};
 struct Item          : Handle {};
-struct Player        { PlayerId id; };
+struct Player        { u32 id; };
 ```
 
 ## 3. Component Design
@@ -183,9 +183,10 @@ damage handler reads them from the attacker/target and applies its own formula.
 ### Unit Components
 
 ```
-Owner {
-    PlayerId  player
-}
+// Owning player. Stored directly in the `owners` pool as a Player value —
+// there is no wrapper component. world.owners.get(id) → Player* (null if
+// unowned). `Player { u32 id }`; `id` is the raw player id.
+Player { u32 id }
 
 Movement {
     f32       speed            // game units per second (WC3 scale: footman ~270)
@@ -890,8 +891,8 @@ Systems are functions that iterate over component tuples each simulation tick:
 |--------|------------|----------------|
 | `MovementSystem` | Transform, Movement, OrderQueue | Move units toward targets, handle pathfinding |
 | `CombatSystem` | Transform, Combat, OrderQueue | Acquire targets, attack flow (dmg_time fore-swing, backsw_time recovery), spawn projectiles |
-| `AbilitySystem` | AbilitySet, OrderQueue, Transform, Owner | Tick cooldowns, execute cast orders, tick applied ability durations, remove expired, scan aura radii and apply/remove |
-| `Vision` (subsystem) | Transform, Sight, Owner, AttributeBlock, StatusFlags | Per-player fog of war + true-sight detection |
+| `AbilitySystem` | AbilitySet, OrderQueue, Transform, owners | Tick cooldowns, execute cast orders, tick applied ability durations, remove expired, scan aura radii and apply/remove |
+| `Vision` (subsystem) | Transform, Sight, owners, AttributeBlock, StatusFlags | Per-player fog of war + true-sight detection |
 | `ProjectileSystem` | Projectile, Transform | Move projectiles, check hit, fire impact event |
 | `HealthSystem` | Health | Apply regen, check death (HP ≤ 0), fire death event |
 | `StateSystem` | StateBlock | Tick regen for all map-defined states (mana, energy, etc.) |
@@ -918,7 +919,7 @@ struct World {
     SparseSet<StateBlock>             state_blocks;
     SparseSet<AttributeBlock>         attribute_blocks;
     SparseSet<Selectable>             selectables;
-    SparseSet<Owner>                  owners;
+    SparseSet<Player>                 owners;   // unit id -> owning player
     SparseSet<Movement>               movements;
     SparseSet<Combat>                 combats;
     SparseSet<Sight>                  sights;
@@ -946,7 +947,7 @@ struct World {
 struct Unit          { u32 id; u32 generation; };
 struct Destructable  { u32 id; u32 generation; };
 struct Item          { u32 id; u32 generation; };
-struct Player        { PlayerId id; };
+struct Player        { u32 id; };
 
 // ── Creation (free functions) ──────────────────────────────────
 // create_unit handles ALL unit subtypes. The type definition JSON
@@ -1141,7 +1142,7 @@ Flagged units get a status-icon strip near the HP bar (same place WC3's buff ico
 
 - Handle (`id` + `generation`) and `HandleInfo.category` (still Unit).
 - `Transform.position`, `facing`, `prev_position`, `prev_facing`.
-- `Owner.player`.
+- Owning player (the `Player` in the `owners` pool).
 - `Inventory` contents (slot count not resized; map handles item drops if it cares).
 - **`AbilitySet`** — engine deliberately doesn't touch it. The map's morph helper handles Remove/Add of type-listed abilities. Lua-added abilities, item-granted passives, and applied buffs from other units survive unchanged.
 

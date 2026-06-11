@@ -2060,7 +2060,7 @@ void Engine::run() {
                                 samples.push_back({sx, sy, sz});
                             }
                             const auto* owner = world.owners.get(unit.id);
-                            bool is_local = owner && owner->player.id == m_args.local_slot;
+                            bool is_local = owner && owner->id == m_args.local_slot;
                             m_world_overlays.add_path(samples, kSelectionStroke,
                                                      is_local ? kColorLocal : kColorOther,
                                                      TexId::SelectionRing);
@@ -2331,8 +2331,8 @@ void Engine::run() {
                             simulation::Player local{m_args.local_slot};
                             hud::Color tint = s.intents.neutral;
                             if (const auto* owner = world.owners.get(aim.snapped_id)) {
-                                if (owner->player.id == local.id ||
-                                    m_server.simulation().is_allied(local, owner->player)) {
+                                if (owner->id == local.id ||
+                                    m_server.simulation().is_allied(local, *owner)) {
                                     tint = s.intents.ally;
                                 } else {
                                     tint = s.intents.enemy;

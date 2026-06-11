@@ -147,7 +147,7 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 }
                 if (unit.is_valid()) {
                     auto* own = ctx.simulation.world().owners.get(unit.id);
-                    bool is_own = own && own->player.id == sel.player().id;
+                    bool is_own = own && own->id == sel.player().id;
                     if (input.key_shift && is_own) sel.toggle(unit);
                     else                           sel.select(unit);
                 }
@@ -354,7 +354,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             auto* target_owner = ctx.simulation.world().owners.get(target.id);
             bool is_enemy = false;
             if (target_owner) {
-                is_enemy = ctx.simulation.is_enemy(sel.player(), target_owner->player);
+                is_enemy = ctx.simulation.is_enemy(sel.player(), *target_owner);
             }
 
             GameCommand cmd;
@@ -465,7 +465,7 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
             if (!simulation::has_classification(flags, "hero")) continue;
 
             auto* own = world.owners.get(id);
-            if (!own || own->player.id != sel.player().id) continue;
+            if (!own || own->id != sel.player().id) continue;
 
             if (found == hero_index) {
                 auto* info = world.handle_infos.get(id);

@@ -92,10 +92,6 @@ struct Selectable {
 
 // ── Unit Components ────────────────────────────────────────────────────────
 
-struct Owner {
-    Player player;
-};
-
 struct Movement {
     f32       speed     = 0;
     f32       turn_rate = 0;  // radians per second

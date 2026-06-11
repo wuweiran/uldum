@@ -85,7 +85,7 @@ void Vision::update(World& world, const Simulation& sim) {
         if (!owner || !transform) continue;
         if (world.dead_states.has(id)) continue;
 
-        u32 player_id = owner->player.id;
+        u32 player_id = owner->id;
         if (player_id >= m_player_count) continue;
 
         // Sub-tile precision: use exact position within the tile grid.
@@ -149,10 +149,10 @@ void Vision::update(World& world, const Simulation& sim) {
         const auto* d_owner = world.owners.get(detector_id);
         const auto* d_transform = world.transforms.get(detector_id);
         if (!d_owner || !d_transform) continue;
-        if (d_owner->player.id >= 32) continue;  // mask is u32
+        if (d_owner->id >= 32) continue;  // mask is u32
 
         UnitFilter filter;
-        filter.enemy_of  = d_owner->player;
+        filter.enemy_of  = *d_owner;
         filter.alive_only = true;
         filter.include_untargetable = true;  // wind walk often pairs with untargetable
         filter.predicate = [&world](Unit u) -> bool {
@@ -162,7 +162,7 @@ void Vision::update(World& world, const Simulation& sim) {
 
         auto revealed = grid_q.units_in_range(world, d_transform->position,
                                               it->second, filter);
-        u32 bit = 1u << d_owner->player.id;
+        u32 bit = 1u << d_owner->id;
         for (Unit target : revealed) {
             auto* existing = tsv.get(target.id);
             if (existing) existing->revealed_to_mask |= bit;
@@ -178,8 +178,8 @@ bool Vision::is_unit_visible_to(const World& world, const Simulation& sim,
 
     // Friendly (own / allied) — always visible
     const auto* owner = world.owners.get(entity_id);
-    if (owner && owner->player.id == player.id) return true;
-    if (owner && sim.is_allied(player, owner->player)) return true;
+    if (owner && owner->id == player.id) return true;
+    if (owner && sim.is_allied(player, *owner)) return true;
 
     // UnitReveal — explicit per-player override, bypasses invisibility + fog
     const auto* fv = world.forced_vis.get(entity_id);

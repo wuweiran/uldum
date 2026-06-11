@@ -97,7 +97,7 @@ static i18n::LocalizedString parse_localized_string(sol::object o,
 
 // Parse an `opts.players` field into a u32 bitmask.
 //   nil / absent     → 0xFFFFFFFF (broadcast)
-//   single Player    → 1 << id
+//   single player    → 1 << id
 //   list of Players  → OR of bits
 // UINT32_MAX is the canonical "broadcast" sentinel (every bit set).
 static u32 parse_players_mask(sol::object v) {
@@ -1129,7 +1129,7 @@ void ScriptEngine::bind_api() {
     // Owner
     lua["GetUnitOwner"] = [&, player_or_nil](simulation::Unit u) -> sol::object {
         auto* o = sim.world().owners.get(u.id);
-        return o ? player_or_nil(o->player) : sol::make_object(*m_lua, sol::nil);
+        return o ? player_or_nil(*o) : sol::make_object(*m_lua, sol::nil);
     };
 
     // SetUnitOwner — change ownership in place. Vision is re-stamped
@@ -1144,7 +1144,7 @@ void ScriptEngine::bind_api() {
         if (!sim.world().validate(u)) return;
         auto* o = sim.world().owners.get(u.id);
         if (!o) return;
-        o->player = p;
+        *o = p;
         if (m_unit_update_fn) {
             auto pkt = network::build_update_owner(u.id, static_cast<u8>(p.id));
             m_unit_update_fn(u.id, pkt);

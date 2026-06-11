@@ -27,7 +27,7 @@ struct World {
     SparseSet<StateBlock>           state_blocks;
     SparseSet<AttributeBlock>       attribute_blocks;
     SparseSet<Selectable>           selectables;
-    SparseSet<Owner>                owners;
+    SparseSet<Player>               owners;   // unit id -> owning player id
     SparseSet<Movement>             movements;
     SparseSet<Combat>               combats;
     SparseSet<Sight>                sights;

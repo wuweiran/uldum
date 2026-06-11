@@ -170,15 +170,15 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
 
         if (player.is_valid()) {
             auto* own = owners.get(id);
-            if (!own || own->player.id != player.id) continue;
+            if (!own || own->id != player.id) continue;
         }
 
         // Fog filter — entities under the fog of war can't be clicked
-        // on. Player's own units pass through (fog hides what the
+        // on. player's own units pass through (fog hides what the
         // player hasn't scouted, not their own troops).
         if (m_local_player.is_valid()) {
             auto* own = owners.get(id);
-            bool is_own = own && own->player.id == m_local_player.id;
+            bool is_own = own && own->id == m_local_player.id;
             if (!is_own && !fog_visible(m_vision, m_local_player, m_terrain, transform->position)) continue;
         }
 
@@ -280,7 +280,7 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
             sf && (sf->flags & simulation::status::Untargetable)) continue;
 
         auto* own = owners.get(id);
-        if (!own || own->player.id != player.id) continue;
+        if (!own || own->id != player.id) continue;
 
         auto* transform = transforms.get(id);
         if (!transform) continue;
