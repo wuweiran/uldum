@@ -92,7 +92,7 @@
         "hidden": true,
         "max_level": 1,
         "levels": [
-            { "flags": ["no_acquire"],
+            { "flags": ["no_acquire", "phased"],
               "modifiers": { "visual_alpha_percent": 0 } }
         ]
     },
@@ -102,7 +102,7 @@
         "hidden": true,
         "max_level": 1,
         "levels": [
-            { "flags": ["invisible", "no_acquire"],
+            { "flags": ["invisible", "no_acquire", "phased"],
               "duration": 10.0 }
         ]
     },

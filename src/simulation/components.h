@@ -272,8 +272,9 @@ namespace status {
     constexpr u32 Paused       = 1u << 9;
     constexpr u32 Invisible    = 1u << 10;
     constexpr u32 NoAcquire    = 1u << 11;  // Block auto-acquire scan; drop current auto-acquired target.
+    constexpr u32 Phased       = 1u << 12;  // Ignore unit-vs-unit collision (move/push through any unit). Terrain + buildings still block. DOTA "phased" (Phase Boots).
 
-    constexpr u32 Count = 12;  // number of distinct flag bits used above
+    constexpr u32 Count = 13;  // number of distinct flag bits used above
 }
 
 // Effective `flags` is the OR of two layers:

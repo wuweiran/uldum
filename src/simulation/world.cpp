@@ -1070,6 +1070,7 @@ void flag_refcount_delta(World& world, u32 id,
         if (s == "paused")       return status::Paused;
         if (s == "invisible")    return status::Invisible;
         if (s == "no_acquire")   return status::NoAcquire;
+        if (s == "phased")       return status::Phased;
         return 0;
     };
     for (auto& name : flag_names) {

@@ -69,6 +69,9 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
                                 MoveType move_type) {
     if (!self_owner) return false;          // unowned movers ignore this layer
     if (move_type == MoveType::Air) return false;
+    // Phased units (DOTA Phase Boots / Wind Walk) pass through any unit —
+    // unit-vs-unit collision off. Terrain + buildings still block (A*).
+    if (auto* sf = world.status_flags.get(self_id); sf && (sf->flags & status::Phased)) return false;
 
     UnitFilter filter;
     filter.exclude_buildings = true;
@@ -77,6 +80,8 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
     for (auto& other : nearby) {
         if (other.id == self_id) continue;
         if (world.dead_states.has(other.id)) continue;
+        // A phased OTHER unit is also passed through.
+        if (auto* osf = world.status_flags.get(other.id); osf && (osf->flags & status::Phased)) continue;
 
         const auto* other_owner = world.owners.get(other.id);
         if (other_owner && other_owner->id == self_owner->id) continue;
@@ -1782,9 +1787,17 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
         filter.exclude_buildings = true;
         auto nearby = grid.units_in_range(world, transform->position, self_radius * 4.0f, filter);
 
+        // Phased units (Phase Boots / Wind Walk) have unit-vs-unit collision
+        // off — they don't get pushed. The intended overlap resolves on the
+        // next tick once the flag drops.
+        if (auto* sf = world.status_flags.get(id); sf && (sf->flags & status::Phased)) continue;
+
         for (auto& other : nearby) {
             if (other.id <= id) continue;
             if (world.dead_states.has(other.id)) continue;
+
+            // A phased OTHER unit is also passed through.
+            if (auto* osf = world.status_flags.get(other.id); osf && (osf->flags & status::Phased)) continue;
 
             // Push resolves ANY overlap regardless of owner. Move-time
             // blocking (foreign_unit_blocks in system_movement) already
