@@ -15,6 +15,8 @@
 
 #include <GLES3/gl32.h>
 
+#include <algorithm>
+
 namespace uldum::rhi {
 
 static constexpr const char* TAG = "RHI.GLES.Cmd";
@@ -262,7 +264,18 @@ static const Rhi::PipelineRecord* flush_for_draw(Rhi& rhi) {
                          ppl->push_constant_ubo);
     }
     if (const auto* pl = rhi.pipeline_layout_record(cs.sets_layout)) {
-        apply_descriptor_bindings(rhi, *pl, std::span{cs.sets.data(), cs.sets.size()});
+        // Replay only the sets THIS layout declares — not the whole cs.sets
+        // array. bind_descriptor_sets never clears slots, so cs.sets holds
+        // stale handles from earlier passes. Most binding types separate by
+        // the (set*kBindingsPerSet+binding) slot formula, but SSBOs collapse
+        // to their binding VALUE alone (see apply_descriptor_bindings), so a
+        // stale set's SSBO at binding 0 would overwrite the current set's at
+        // the same GL slot. Clamping to the layout's set count mirrors
+        // Vulkan (which scopes sets to the bound layout) and stops e.g. the
+        // skinned-mesh bone SSBO (set 2) from clobbering the skinned-shadow
+        // bone SSBO (set 0) in the next pass.
+        const usize n = std::min(cs.sets.size(), pl->set_layouts.size());
+        apply_descriptor_bindings(rhi, *pl, std::span{cs.sets.data(), n});
     }
     apply_vertex_input(rhi, *p);
     if (cs.index_buffer.is_valid()) {
