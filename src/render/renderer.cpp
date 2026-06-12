@@ -124,6 +124,58 @@ static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal) {
     return glm::rotate(glm::mat4{1.0f}, angle, axis);
 }
 
+// Projectiles are airborne: they don't hug the ground slope, and an arcing
+// one pitches its nose along the curve. This returns the motion-derived
+// pitch rotation (about the world lateral axis for `vis_facing`), or
+// identity for non-projectiles and level flight. Render-only — derived from
+// the tick motion delta (Δz over horizontal travel), exactly like
+// slope_tilt is derived from the terrain normal; the sim stores no pitch.
+// Applied OUTSIDE the yaw so the already-aimed nose tilts up/down, robust
+// to the model's own forward-axis convention. Use is_projectile() to also
+// gate OFF the ground slope-tilt for the same entities.
+static bool is_projectile(const simulation::World& world, u32 id) {
+    return world.projectiles.has(id);
+}
+static glm::mat4 projectile_pitch_matrix(const simulation::World& world, u32 id,
+                                         const simulation::Transform& t, f32 vis_facing) {
+    if (!world.projectiles.has(id)) return glm::mat4{1.0f};
+    glm::vec3 m = t.position - t.prev_position;
+    f32 dh = std::sqrt(m.x * m.x + m.y * m.y);
+    if (dh < 1e-4f) return glm::mat4{1.0f};
+    f32 pitch = std::atan2(m.z, dh);
+    if (std::abs(pitch) < 1e-4f) return glm::mat4{1.0f};
+    glm::vec3 right{std::sin(vis_facing), -std::cos(vis_facing), 0.0f};
+    return glm::rotate(glm::mat4{1.0f}, pitch, right);
+}
+
+// The one place the per-entity model matrix is built. Every draw site (static
+// main + fallback, skinned pass + shadow) routes through here so a transform
+// tweak — slope tilt, projectile pitch, the Y-up→Z-up flip — is a single edit.
+// Composition order (right-applied): translate → slope tilt → projectile pitch
+// → yaw → scale → Y-up→Z-up flip. `native_z_up` is the per-mesh flag: a model
+// authored Z-up needs neither the +90° yaw offset nor the axis flip; glTF
+// Y-up models (all skinned) need both, so skinned callers pass false.
+static glm::mat4 build_entity_model_matrix(const map::TerrainData* terrain,
+                                           const simulation::World& world, u32 id,
+                                           const simulation::Transform& transform,
+                                           f32 alpha, bool native_z_up) {
+    glm::vec3 vis_pos = lerp_position(transform, alpha);
+    f32 vis_facing = lerp_facing(transform, alpha);
+    glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
+    if (terrain && !is_projectile(world, id)) {
+        glm::vec3 normal = map::sample_normal(*terrain, vis_pos.x, vis_pos.y);
+        model = model * slope_tilt_matrix(normal);
+    }
+    model = model * projectile_pitch_matrix(world, id, transform, vis_facing);
+    f32 facing = native_z_up ? vis_facing : vis_facing + glm::half_pi<f32>();
+    model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
+    model = glm::scale(model, glm::vec3{transform.scale});
+    if (!native_z_up) {
+        model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+    }
+    return model;
+}
+
 // ── Init / Shutdown ────────────────────────────────────────────────────────
 
 bool Renderer::init(rhi::Rhi& rhi) {
@@ -2574,17 +2626,7 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
 
             cmd.bind_descriptor_set(m_skinned_shadow_pipeline_layout, 0, anim.bone_descriptor[fi]);
 
-            glm::vec3 vis_pos = lerp_position(*transform, alpha);
-            f32 vis_facing = lerp_facing(*transform, alpha);
-            glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-            if (m_terrain_data) {
-                glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
-                model = model * slope_tilt_matrix(normal);
-            }
-            model = glm::rotate(model, vis_facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
-            model = glm::scale(model, glm::vec3{transform->scale});
-            // glTF Y-up → game Z-up
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+            glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, false);
 
             glm::mat4 light_mvp = light_vp * model;
             cmd.push_constants(m_skinned_shadow_pipeline_layout, rhi::ShaderStage::Vertex,
@@ -2747,20 +2789,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
             // Frustum-cull-safe model matrix + per-submesh emit below.
             // (We reuse the same per-submesh body by aliasing `submeshes`.)
             // For clarity, just do it inline:
-            glm::vec3 vis_pos = pos;
-            f32 vis_facing = lerp_facing(*transform, alpha);
-            glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-            if (m_terrain_data) {
-                glm::vec3 normal = map::sample_normal(*m_terrain_data, vis_pos.x, vis_pos.y);
-                model = model * slope_tilt_matrix(normal);
-            }
-            f32 facing = vis_facing;
-            if (!mesh.native_z_up) facing += glm::half_pi<f32>();
-            model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
-            model = glm::scale(model, glm::vec3{transform->scale});
-            if (!mesh.native_z_up) {
-                model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
-            }
+            glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, mesh.native_z_up);
 
             GroupKey key{fallback.mesh.first_index, fallback.mesh.index_count,
                          static_cast<i32>(fallback.mesh.first_vertex), 0, 0};
@@ -2797,19 +2826,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         if (!frustum.is_sphere_visible(vis_pos, lm->mesh.bounding_radius * transform->scale)) continue;
 
         // Compute the per-entity model matrix once.
-        f32 vis_facing = lerp_facing(*transform, alpha);
-        glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-        if (m_terrain_data) {
-            glm::vec3 normal = map::sample_normal(*m_terrain_data, vis_pos.x, vis_pos.y);
-            model = model * slope_tilt_matrix(normal);
-        }
-        f32 facing = vis_facing;
-        if (!lm->mesh.native_z_up) facing += glm::half_pi<f32>();
-        model = glm::rotate(model, facing, glm::vec3{0.0f, 0.0f, 1.0f});
-        model = glm::scale(model, glm::vec3{transform->scale});
-        if (!lm->mesh.native_z_up) {
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
-        }
+        glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, lm->mesh.native_z_up);
 
         bool is_corpse = world.dead_states.has(id);
         f32  entity_alpha = effective_visual_alpha(world, id, renderable);
@@ -3267,17 +3284,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                 cmd.bind_descriptor_sets(m_skinned_mesh_pipeline_layout, 0, std::span{sets, 3});
             }
 
-            glm::vec3 vis_pos = lerp_position(*transform, alpha);
-            f32 vis_facing = lerp_facing(*transform, alpha);
-            glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
-            if (m_terrain_data) {
-                glm::vec3 normal = map::sample_normal(*m_terrain_data,vis_pos.x, vis_pos.y);
-                model = model * slope_tilt_matrix(normal);
-            }
-            model = glm::rotate(model, vis_facing + glm::half_pi<f32>(), glm::vec3{0.0f, 0.0f, 1.0f});
-            model = glm::scale(model, glm::vec3{transform->scale});
-            // glTF Y-up → game Z-up
-            model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+            glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, false);
 
             glm::mat4 mvp = vp * model;
             struct { glm::mat4 mvp; glm::mat4 model; } push{mvp, model};

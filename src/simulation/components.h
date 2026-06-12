@@ -145,6 +145,19 @@ struct Movement {
 
 enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };
 
+// Ranged auto-attack delivery. Presence of this on a Combat means the
+// attack fires a missile instead of dealing melee damage instantly.
+struct ProjectileSpec {
+    std::string model;             // model path ("" = placeholder mesh)
+    f32         speed = 20.0f;     // travel speed (game units/sec)
+    f32         arc   = 0;         // ballistic arc peak height (game units); 0 = flat shot
+    // Spawn offset in the attacker's facing frame, in MODEL-LOCAL units
+    // (multiplied by the source's render scale at spawn — author once, it
+    // tracks any model_scale). x=forward along facing, y=lateral (right),
+    // z=height above feet. Lets the arrow leave the bow, not the ground.
+    glm::vec3   launch{0.0f};
+};
+
 struct Combat {
     f32         damage          = 0;
     f32         range           = 1.0f;
@@ -152,8 +165,7 @@ struct Combat {
     f32         dmg_time        = 0.3f;    // seconds: fore-swing before damage
     f32         backsw_time     = 0.3f;    // seconds: backswing after damage
     f32         dmg_pt          = 0.5f;    // fraction of attack animation at damage point
-    bool        is_ranged       = false;
-    f32         projectile_speed = 20.0f;  // for ranged attacks
+    std::optional<ProjectileSpec> projectile;  // set → ranged; unset → melee
     f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range
     // Runtime state
     AttackState attack_state    = AttackState::Idle;
@@ -405,6 +417,7 @@ struct ProjectileComp {
     Unit        target;                  // homing target (invalid for Linear)
     glm::vec3   target_pos{0.0f};        // linear terminus or fallback for Homing on target loss
     f32         speed         = 0;
+    f32         arc_height    = 0;       // peak height of a ballistic arc (game units). 0 = straight/flat flight.
     f32         damage        = 0;       // engine consumes for is_attack; Lua can set/get for any
     bool        is_attack     = false;   // engine routes hits through deal_attack_damage
     f32         hit_radius    = 32.0f;

@@ -107,8 +107,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         combat.dmg_time         = def->dmg_time;
         combat.backsw_time      = def->backsw_time;
         combat.dmg_pt           = def->dmg_pt;
-        combat.is_ranged        = def->is_ranged;
-        combat.projectile_speed = def->projectile_speed;
+        combat.projectile       = def->projectile;
         combat.acquire_range    = def->acquire_range;
         world.combats.add(id, std::move(combat));
     }
@@ -395,8 +394,7 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
         c->dmg_time         = new_def->dmg_time;
         c->backsw_time      = new_def->backsw_time;
         c->dmg_pt           = new_def->dmg_pt;
-        c->is_ranged        = new_def->is_ranged;
-        c->projectile_speed = new_def->projectile_speed;
+        c->projectile       = new_def->projectile;
         c->acquire_range    = new_def->acquire_range;
         c->target           = Unit{};
         c->attack_state     = AttackState::Idle;

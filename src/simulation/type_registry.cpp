@@ -114,8 +114,22 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.attack_cooldown  = c.value("cooldown", 1.0f);
             def.dmg_time         = c.value("dmg_time", 0.3f);
             def.backsw_time      = c.value("backsw_time", 0.3f);
-            def.is_ranged        = c.value("ranged", false);
-            def.projectile_speed = c.value("projectile_speed", 20.0f);
+            // Ranged attack: a `projectile` block makes this attack fire a
+            // missile. Its presence replaces the old `ranged` flag.
+            if (c.contains("projectile")) {
+                auto& pj = c["projectile"];
+                ProjectileSpec spec;
+                spec.model = pj.value("model", "");
+                spec.speed = pj.value("speed", 20.0f);
+                spec.arc   = pj.value("arc", 0.0f);
+                if (pj.contains("launch")) {
+                    auto& l = pj["launch"];
+                    spec.launch = {l.value("forward", 0.0f),
+                                   l.value("side", 0.0f),
+                                   l.value("height", 0.0f)};
+                }
+                def.projectile = std::move(spec);
+            }
             def.acquire_range    = c.value("acquire_range", 10.0f);
         }
 

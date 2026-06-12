@@ -330,7 +330,7 @@ void     flag_refcount_delta(World& world, u32 id,
 // path + speed + target and starts the flight. Between create and emit
 // the projectile sits at the source point — Lua uses this window to
 // attach triggers and side-table state.
-Unit create_projectile(World& world, Unit source, const std::string& model);
+Unit create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local = glm::vec3{0.0f});
 void emit_projectile_target(World& world, Unit projectile, Unit target, f32 speed, f32 arc_height);
 void emit_projectile_loc(World& world, Unit projectile, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance);

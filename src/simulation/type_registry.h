@@ -1,6 +1,7 @@
 #pragma once
 
 #include "simulation/handle_types.h"
+#include "simulation/components.h"
 
 #include <map>
 #include <optional>
@@ -51,8 +52,7 @@ struct UnitTypeDef {
     f32 dmg_pt = 0.5f;            // fraction of attack animation at damage point
     f32 cast_pt = 0.5f;           // fraction of spell animation at cast point
     f32 walk_speed = 0;            // movement speed at which walk anim plays at 1x (0 = use move_speed)
-    bool is_ranged = false;
-    f32 projectile_speed = 20.0f;
+    std::optional<ProjectileSpec> projectile;  // set → ranged auto-attack; unset → melee
     f32 acquire_range = 10.0f;
 
     // Vision

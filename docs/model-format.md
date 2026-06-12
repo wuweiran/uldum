@@ -28,6 +28,7 @@ The loader is tuned for skeletal-animated unit models. Authors hitting an unsupp
 ### Supported
 
 - Geometry: `TRIANGLES` primitives only. Indexed and non-indexed both work.
+- Node transforms: translation / rotation / scale (or a node `matrix`), composed up the hierarchy. Static meshes bake the node's world transform into their vertices; skinned meshes are placed by the skeleton. (See [Scale → Node transforms](#node-transforms-sizing--placing-a-model).)
 - Vertex attributes: `POSITION` (required), `NORMAL`, `TEXCOORD_0`, `JOINTS_0`, `WEIGHTS_0`.
 - Skin: first `skins[0]` only. Up to 128 bones. 4 bone influences per vertex.
 - Bone-parented un-skinned meshes (e.g., a weapon node parented to a hand bone) are auto-converted to skinned with 100% weight on the parent bone.
@@ -177,3 +178,13 @@ All units use WC3-style scale:
 | Map size | 8192 x 8192 (64x64 tiles) |
 
 Models should be authored at this scale, or use `transform.scale` in the unit type definition to adjust.
+
+### Node transforms (sizing / placing a model)
+
+The loader respects glTF **node transforms** (translation / rotation / scale, or a node `matrix`), composed up the hierarchy — standard glTF behavior. For static meshes the node's world transform is **baked into the vertices at load**; for skinned meshes the skeleton owns placement (vertices stay in bind-pose space).
+
+Practical upshot for authoring (e.g. in Blender):
+
+- **You do NOT need to Apply Transforms.** Object-level scale/rotation/position you set in Blender is exported as node TRS and the engine honors it. (Applying transforms also works — it just bakes the same result into the mesh instead.)
+- To resize a too-small/too-large model, set the object scale in Blender and re-export; no code or per-type field needed. (Per-instance `transform.scale` in the unit/projectile type def still stacks on top if you want runtime variation.)
+- The bake uses the inverse-transpose for normals, so **non-uniform** node scale won't skew lighting.

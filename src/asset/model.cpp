@@ -389,6 +389,19 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
         return glm::make_mat4(mat);
     };
 
+    // Helper: a node's WORLD transform — its local TRS composed with every
+    // ancestor's, up to the scene root. Static meshes bake this into their
+    // vertices so node-placed/scaled/rotated geometry lands correctly
+    // (standard glTF: a vertex's final position is the chain of ancestor
+    // node transforms × the accessor position). Skinned meshes don't use
+    // this — their vertices are bind-pose (model) space and the skeleton
+    // owns placement.
+    auto node_world_transform = [](const cgltf_node* node) -> glm::mat4 {
+        cgltf_float mat[16];
+        cgltf_node_transform_world(node, mat);
+        return glm::make_mat4(mat);
+    };
+
     // Helper: find which bone a node is parented to.
     // Returns bone index and the node's local transform (relative to bone parent).
     struct BoneParentInfo { i32 bone_index = -1; glm::mat4 transform{1.0f}; };
@@ -535,10 +548,16 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
                 md.indices = std::move(indices);
                 md.vertices.resize(vertex_count);
 
+                // Bake the node's world transform into the vertices so
+                // node-level placement / scale / rotation (the standard
+                // glTF + Blender export path) is honored. Normals use the
+                // inverse-transpose so non-uniform scale doesn't skew them.
+                const glm::mat4 nw  = node_world_transform(&node);
+                const glm::mat3 nwN = glm::transpose(glm::inverse(glm::mat3(nw)));
                 for (cgltf_size vi = 0; vi < vertex_count; ++vi) {
                     auto& v = md.vertices[vi];
-                    v.position = read_vec3(pos_acc, vi);
-                    if (norm_acc) v.normal   = read_vec3(norm_acc, vi);
+                    v.position = glm::vec3(nw * glm::vec4(read_vec3(pos_acc, vi), 1.0f));
+                    if (norm_acc) v.normal   = glm::normalize(nwN * read_vec3(norm_acc, vi));
                     if (uv_acc)   v.texcoord = read_vec2(uv_acc, vi);
                 }
 

@@ -644,21 +644,32 @@ static void deal_attack_damage(World& world, Unit source, Unit target, f32 amoun
 // and doesn't move or collide; this is the window where Lua sets
 // side-table state, attaches PROJECTILE_HIT / PROJECTILE_DESTROYED
 // triggers, and (for the engine) marks is_attack + damage.
-Unit create_projectile(World& world, Unit source, const std::string& model) {
+Unit create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local) {
     auto* src_t = world.transforms.get(source.id);
     if (!src_t) return Unit{};
     Handle h = world.handles.allocate();
+    // Launch point: offset from the source in its facing frame, scaled by
+    // the source's render scale so the authored (model-local) offset tracks
+    // any model_scale. x=forward, y=lateral(right), z=height. Zero = feet.
+    glm::vec3 spawn = src_t->position;
+    if (launch_local != glm::vec3{0.0f}) {
+        f32 f = src_t->facing;
+        glm::vec3 fwd{std::cos(f), std::sin(f), 0.0f};
+        glm::vec3 right{std::sin(f), -std::cos(f), 0.0f};
+        glm::vec3 up{0.0f, 0.0f, 1.0f};
+        spawn += src_t->scale * (launch_local.x * fwd + launch_local.y * right + launch_local.z * up);
+    }
     ProjectileComp proj;
     proj.source     = source;
-    proj.spawn_pos  = src_t->position;
-    proj.target_pos = src_t->position;
+    proj.spawn_pos  = spawn;
+    proj.target_pos = spawn;
     // Render scale: placeholder mesh is a tiny stub; glTF projectiles
     // render at their authored size (model authors enlarge in Blender
     // rather than relying on an engine-side multiplier).
     f32 scale = model.empty() ? 0.3f : 1.0f;
     Transform t;
-    t.position      = src_t->position;
-    t.prev_position = src_t->position;   // prevent first-frame interpolation from world origin
+    t.position      = spawn;
+    t.prev_position = spawn;   // prevent first-frame interpolation from world origin
     t.scale         = scale;
     world.transforms.add(h.id, std::move(t));
     world.handle_infos.add(h.id, HandleInfo{"projectile", Category::Projectile, h.generation});
@@ -677,13 +688,14 @@ Unit create_projectile(World& world, Unit source, const std::string& model) {
     return u;
 }
 
-void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed, f32 /*arc_height*/) {
+void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed, f32 arc_height) {
     auto* p = world.projectiles.get(proj_unit.id);
     if (!p) return;
-    p->path     = ProjectileComp::Path::Homing;
-    p->target   = target;
-    p->speed    = speed;
-    p->emitted  = true;
+    p->path       = ProjectileComp::Path::Homing;
+    p->target     = target;
+    p->speed      = speed;
+    p->arc_height = arc_height;
+    p->emitted    = true;
     if (auto* tt = world.transforms.get(target.id)) p->target_pos = tt->position;
 }
 
@@ -704,13 +716,13 @@ void emit_projectile_loc(World& world, Unit proj_unit, glm::vec3 loc, f32 speed,
 // step with is_attack=true. Will be inlined / removed once the combat
 // system uses the full Lua-style API directly.
 static Unit spawn_attack_projectile(World& world, Unit source, Unit target,
-                                     f32 damage, f32 speed) {
-    Unit u = create_projectile(world, source, "");  // default "projectile" mesh
+                                     f32 damage, const ProjectileSpec& spec) {
+    Unit u = create_projectile(world, source, spec.model, spec.launch);  // "" → default "projectile" mesh
     if (!u.is_valid()) return u;
     auto* p = world.projectiles.get(u.id);
     p->damage    = damage;
     p->is_attack = true;
-    emit_projectile_target(world, u, target, speed, 0);
+    emit_projectile_target(world, u, target, spec.speed, spec.arc);
     return u;
 }
 
@@ -988,8 +1000,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 // position for the attack sound below, so capture it now.
                 const glm::vec3 attack_pos = transform->position;
 
-                if (combat.is_ranged) {
-                    spawn_attack_projectile(world, self, target, combat.damage, combat.projectile_speed);
+                if (combat.projectile) {
+                    spawn_attack_projectile(world, self, target, combat.damage, *combat.projectile);
                 } else {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
@@ -1666,6 +1678,41 @@ void system_projectile(World& world, float dt) {
             } else {
                 aim = proj.target_pos;
             }
+            if (proj.arc_height > 0.0f) {
+                // Ballistic arc: step HORIZONTALLY toward the aim, then set
+                // z analytically as a launch→land lerp plus a parabolic bump
+                // (peak = arc_height at the midpoint). Computing z each tick
+                // (not accumulating) keeps the next tick's horizontal aim
+                // clean — the integrator never fights the arc it just added.
+                glm::vec2 to_h{aim.x - transform->position.x, aim.y - transform->position.y};
+                f32 dist_h = glm::length(to_h);
+                if (dist_h < proj.hit_radius) {
+                    Unit pu = world.unit(id);
+                    if (world.validate(proj.target) && world.on_projectile_hit)
+                        world.on_projectile_hit(pu, proj.target);
+                    if (proj.is_attack && world.validate(proj.target))
+                        deal_attack_damage(world, proj.source, proj.target, proj.damage);
+                    begin_destroy_projectile(world, id);
+                    continue;
+                }
+                f32 step = proj.speed * dt;
+                if (step > dist_h) step = dist_h;
+                glm::vec2 dir_h = to_h / dist_h;
+                transform->position.x += dir_h.x * step;
+                transform->position.y += dir_h.y * step;
+                // Horizontal progress 0→1, self-normalizing so a moving
+                // target just re-shapes the remaining arc.
+                f32 dh_from = glm::length(glm::vec2{transform->position.x - proj.spawn_pos.x,
+                                                    transform->position.y - proj.spawn_pos.y});
+                f32 dh_to   = glm::length(glm::vec2{aim.x - transform->position.x,
+                                                    aim.y - transform->position.y});
+                f32 total = dh_from + dh_to;
+                f32 t = (total > 1e-3f) ? dh_from / total : 1.0f;
+                f32 base_z = proj.spawn_pos.z + (aim.z - proj.spawn_pos.z) * t;
+                transform->position.z = base_z + 4.0f * proj.arc_height * t * (1.0f - t);
+                transform->facing = std::atan2(dir_h.y, dir_h.x);
+                proj.traveled += step;
+            } else {
             glm::vec3 to = aim - transform->position;
             f32 dist = glm::length(to);
             if (dist < proj.hit_radius) {
@@ -1686,6 +1733,7 @@ void system_projectile(World& world, float dt) {
             // path — important for arrows / arms etc.
             transform->facing = std::atan2(to.y, to.x);
             proj.traveled += step;
+            }
         } else {
             // Linear: fly toward target_pos. Pierce — every unit within
             // hit_radius that we haven't hit yet fires the hit callback.
