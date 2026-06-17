@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/engine.h"
+#include "core/settings.h"
 #include "core/types.h"
 #include "network/lobby.h"
 #include "network/network.h"
@@ -48,7 +49,6 @@ public:
         ClaimSlot, ReleaseSlot,
         StartGame, LeaveLobby,
         EndSession, Quit,
-        SetLocale,
     };
     struct Action {
         ActionType  type = ActionType::None;
@@ -57,15 +57,16 @@ public:
         u16         port = 7777;
         // Lobby-edit payload (used by Claim/Release).
         u32         slot = 0;
-        // SetLocale payload — BCP 47 code (e.g. "en", "zh-CN").
-        std::string locale_code;
     };
 
     // Seed the locale input with the current value so the field
     // reflects what's active (initial CLI / settings value).
     void set_active_locale(std::string code);
 
-    bool init(rhi::Rhi& rhi, platform::Platform& platform);
+    // The settings panel reads/writes this store live; `save` persists it
+    // to disk (the Engine owns the actual path). Both injected at init.
+    bool init(rhi::Rhi& rhi, platform::Platform& platform,
+              settings::Store& settings, std::function<void()> save);
     void shutdown();
 
     // Per-frame. `update()` runs the ImGui logic (must happen outside the
@@ -106,9 +107,13 @@ private:
     void draw_session_overlay(network::NetworkManager& net);
     void draw_pause_overlay(network::NetworkManager& net);
     void draw_disconnected_overlay();
+    void draw_settings_panel();
 
     rhi::Rhi*     m_rhi = nullptr;
     platform::Platform* m_platform = nullptr;  // for input feed + map enumeration
+    settings::Store*    m_settings = nullptr;  // injected at init; panel reads/writes
+    std::function<void()> m_save_settings;     // persists m_settings to disk
+    bool                m_show_settings = false;
     void*               m_imgui_pool = nullptr;  // VkDescriptorPool, opaque here
     bool                m_initialized = false;
 

@@ -14,7 +14,7 @@
 // (audio, renderer, input) react automatically to UI changes without
 // needing to know about the UI layer.
 //
-// Keys use dot-namespaced strings: "audio.master_enabled", "graphics.fullscreen".
+// Keys use dot-namespaced strings: "audio.master_volume", "graphics.fullscreen".
 // Values are a small variant of types we actually need — bool, f32, i32,
 // string. Expand when a real use case demands it.
 //
@@ -48,6 +48,17 @@ public:
     // the listener with the new value. Listeners aren't called on `get()`.
     // No unsubscribe for now — lifetime is engine-scoped.
     void subscribe(std::string_view key, Listener listener);
+
+    // True if a value has been stored under `key` (vs. never set). Lets the
+    // engine apply a default only when load() didn't already populate it.
+    bool has(std::string_view key) const;
+
+    // Persistence. Each value is written with an explicit variant tag so a
+    // bool isn't read back as i32 (the variant's first alternative is bool).
+    // save() writes the whole store; load() replays every stored key through
+    // set() so subscribed subsystems converge to the loaded state.
+    void save(const std::string& path) const;
+    bool load(const std::string& path);
 
 private:
     std::unordered_map<std::string, Value> m_values;

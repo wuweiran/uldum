@@ -50,6 +50,11 @@ public:
 
     void handle_resize(u32 width, u32 height);
 
+    // Toggle vsync at runtime. On → FIFO (frame-locked); off → MAILBOX if
+    // the device supports it (else FIFO). Triggers a swapchain rebuild on
+    // the next begin_frame() via the same dirty-flag path as resize.
+    void set_vsync(bool enabled);
+
     // Android lifecycle plumbing: called when the ANativeWindow the
     // surface was bound to has been replaced (foreground → background →
     // foreground, or rotation). Destroys the old VkSurfaceKHR +
@@ -239,6 +244,7 @@ private:
     u32  m_frame_index = 0;
     u32  m_current_image_index = 0;
     bool m_swapchain_dirty = false;
+    bool m_prefer_vsync = true;   // FIFO when true; MAILBOX (if avail) when false
     bool m_frame_active = false;
 
     // Per-swapchain-image: which in-flight fence was last submitted with this image.

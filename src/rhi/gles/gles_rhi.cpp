@@ -508,6 +508,14 @@ void Rhi::handle_resize(u32 width, u32 height) {
     // to do here unless we have an offscreen MSAA target (not yet).
 }
 
+void Rhi::set_vsync(bool enabled) {
+    // eglSwapInterval(1) locks presentation to vblank (vsync on); 0 means
+    // present as fast as the compositor allows. Applies from the next
+    // eglSwapBuffers; no surface rebuild needed. Requires a current context.
+    if (m_impl->egl_display == EGL_NO_DISPLAY) return;
+    eglSwapInterval(m_impl->egl_display, enabled ? 1 : 0);
+}
+
 void Rhi::recreate_surface(platform::Platform& platform) {
     // Android handoff: the previous ANativeWindow has been invalidated.
     // Drop the old EGL surface, build a new one against the platform's

@@ -51,14 +51,14 @@ void SampleGameApp::show_options() {
     auto& s = m_engine->shell();
     s.load_document("shell/options.rml");
     auto refresh = [this] {
-        bool on = m_engine->settings().get_bool("audio.master_enabled", true);
+        bool on = m_engine->settings().get_f32("audio.master_volume", 1.0f) > 0.0f;
         m_engine->shell().set_element_text("sound_toggle",
                                             on ? "Sound: ON" : "Sound: OFF");
     };
     refresh();
     s.bind("sound_toggle", [this, refresh] {
-        bool on = m_engine->settings().get_bool("audio.master_enabled", true);
-        m_engine->settings().set("audio.master_enabled", !on);
+        bool on = m_engine->settings().get_f32("audio.master_volume", 1.0f) > 0.0f;
+        m_engine->settings().set("audio.master_volume", on ? 0.0f : 1.0f);
         refresh();
     });
     s.bind("back", [this] { show_main_menu(); });

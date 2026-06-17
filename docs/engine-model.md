@@ -161,6 +161,55 @@ bindings without worrying about stale closures from prior screens.
 `bind` registers a closure invoked when an element with the given id
 fires a click event.
 
+## Engine settings
+
+`engine.settings()` returns a `settings::Store` — a typed key/value bus
+(`bool` / `f32` / `i32` / `string`). A game's options menu calls
+`set(key, value)`; the engine subsystem that subscribed to that key
+reacts. Values are persisted to `settings.json` in the platform's
+writable data dir (`%LOCALAPPDATA%/Uldum` on Windows, the app's
+`internalDataPath` on Android), loaded at boot and saved on shutdown.
+
+### Keys the engine exposes
+
+| Key | Type | When it applies |
+|---|---|---|
+| `audio.master_volume` | f32 0..1 | **live** |
+| `audio.sfx_volume` | f32 0..1 | **live** |
+| `audio.music_volume` | f32 0..1 | **live** |
+| `audio.ambient_volume` | f32 0..1 | **live** |
+| `audio.voice_volume` | f32 0..1 | **live** |
+| `input.action_bar_hotkey_mode` | string `ability`\|`positional` | **live** |
+| `graphics.vsync` | bool | **live** (brief swapchain rebuild) |
+| `graphics.fullscreen` | bool | **live** — Win32 only; no-op on Android (always fullscreen) |
+| `i18n.locale` | string (BCP 47) | **session-locked** — see below |
+
+### "Live" vs "session-locked" — the contract for menu authors
+
+Most settings apply the instant you `set()` them, including mid-session.
+A few are **session-locked**: changing them during an active session is
+**deferred, not applied**. The value is still stored and persisted (so it
+takes effect on the next session / launch), but the running session keeps
+the old value, and the engine logs a `[WARN]` so you catch it in testing:
+
+```
+[WARN ] [App] Locale change to 'zh-CN' deferred — session in progress
+```
+
+Today `i18n.locale` is the only session-locked key (the string atlas and
+font face are fixed for a session's duration). The rule for adding a new
+session-locked setting is the same pattern: the subscriber checks
+`m_session_active` and returns early with a warning rather than applying a
+change the running session can't absorb.
+
+**If you build your own options menu** (pause screen, etc.): you don't have
+to special-case anything — writing a session-locked key mid-session is safe
+(it just defers). But for the best UX, gate session-locked controls behind
+`engine.is_session_active()` — disable or hide them during play with an
+"applies next session" hint — so players aren't surprised when the change
+doesn't take immediately. The engine's own dev settings panel is reachable
+only from the menu (pre-session) for exactly this reason.
+
 ## Concrete example — sound toggle
 
 `sample_game/shell/options.rml` has an element `<div id="sound_toggle">`.
@@ -172,14 +221,14 @@ void SampleGameApp::show_options() {
     auto& s = m_engine->shell();
     s.load_document("shell/options.rml");
     auto refresh = [this] {
-        bool on = m_engine->settings().get_bool("audio.master_enabled", true);
+        bool on = m_engine->settings().get_f32("audio.master_volume", 1.0f) > 0.0f;
         m_engine->shell().set_element_text("sound_toggle",
                                             on ? "Sound: ON" : "Sound: OFF");
     };
     refresh();
     s.bind("sound_toggle", [this, refresh] {
-        bool on = m_engine->settings().get_bool("audio.master_enabled", true);
-        m_engine->settings().set("audio.master_enabled", !on);
+        bool on = m_engine->settings().get_f32("audio.master_volume", 1.0f) > 0.0f;
+        m_engine->settings().set("audio.master_volume", on ? 0.0f : 1.0f);
         refresh();
     });
     s.bind("back", [this] { show_main_menu(); });
@@ -188,8 +237,10 @@ void SampleGameApp::show_options() {
 
 The engine has no `if (id == "sound_toggle")` anywhere — it just
 dispatches the click event to the closure the App bound. The audio
-subsystem (which subscribed to `audio.master_enabled` at startup) gets
+subsystem (which subscribed to `audio.master_volume` at startup) gets
 notified by the settings system regardless of who flipped the value.
+(This toggle drives the master volume between 0 and 1 — the same key the
+volume slider in the dev settings panel uses.)
 
 ## Runtime execution
 

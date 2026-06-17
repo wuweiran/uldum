@@ -30,9 +30,12 @@ namespace uldum {
 
 static constexpr const char* TAG = "DevUI";
 
-bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform) {
+bool DevConsole::init(rhi::Rhi& rhi, platform::Platform& platform,
+                      settings::Store& settings, std::function<void()> save) {
     m_rhi      = &rhi;
     m_platform = &platform;
+    m_settings = &settings;
+    m_save_settings = std::move(save);
 
 #if defined(ULDUM_BACKEND_VULKAN)
     // Descriptor pool — ImGui's Vulkan backend allocates COMBINED_IMAGE_SAMPLER
@@ -331,6 +334,10 @@ void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::Networ
         break;
     }
 
+    // Settings panel — a floating window toggled from the menu, drawn on
+    // top of whatever screen is active.
+    if (m_show_settings) draw_settings_panel();
+
     ImGui::Render();
 }
 
@@ -466,33 +473,14 @@ void DevConsole::draw_menu_screen() {
         ImGui::TextUnformatted("Session");
         ImGui::Separator();
 
-        // Locale picker — pre-session. Hardcoded list of common BCP 47
-        // codes so authors can verify localization without a registry
-        // file. Game builds wire their own picker UI from settings.Store.
-        // Codes-only (no display names) because ImGui's built-in font is
-        // Latin-only — "中文" would render as missing-glyph boxes.
-        {
-            static const char* kLocaleOptions[] = {
-                "en", "zh-CN",
-            };
-            const char* preview = m_locale_input.empty() ? "en" : m_locale_input.c_str();
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::BeginCombo("##locale", preview)) {
-                for (const char* code : kLocaleOptions) {
-                    bool is_active = (m_locale_input == code);
-                    if (ImGui::Selectable(code, is_active)) {
-                        m_locale_input        = code;
-                        m_pending.type        = ActionType::SetLocale;
-                        m_pending.locale_code = code;
-                    }
-                    if (is_active) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::TextDisabled("Locale");
-            ImGui::Dummy(ImVec2(0, 4 * s));
-            ImGui::Separator();
+        // Settings panel toggle — volumes, hotkey mode, locale, graphics.
+        // (The locale picker used to live inline here; it now lives in the
+        // settings panel alongside the rest.)
+        if (ImGui::Button("Settings...", btn)) {
+            m_show_settings = !m_show_settings;
         }
+        ImGui::Dummy(ImVec2(0, 4 * s));
+        ImGui::Separator();
 
         ImGui::BeginDisabled(selected_path == nullptr);
         if (ImGui::Button("Offline", btn)) {
@@ -803,6 +791,118 @@ void DevConsole::draw_disconnected_overlay() {
     }
 
     ImGui::End();
+}
+
+void DevConsole::draw_settings_panel() {
+    if (!m_settings) return;
+    const float s = ImGui::GetIO().FontGlobalScale > 0.0f
+                  ? ImGui::GetIO().FontGlobalScale : 1.0f;
+
+    ImVec2 vp_pos, vp_size;
+    get_safe_viewport(m_platform, vp_pos, vp_size);
+    ImVec2 panel_size{ 440.0f * s, 440.0f * s };
+    ImVec2 panel_pos{ vp_pos.x + (vp_size.x - panel_size.x) * 0.5f,
+                      vp_pos.y + (vp_size.y - panel_size.y) * 0.5f };
+    ImGui::SetNextWindowPos (panel_pos,  ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(panel_size, ImGuiCond_Appearing);
+
+    bool open = true;
+    ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse);
+
+    // ── Audio volumes ───────────────────────────────────────────────
+    ImGui::TextUnformatted("Audio");
+    ImGui::Separator();
+    struct VolRow { const char* key; const char* label; };
+    static const VolRow kVols[] = {
+        { "audio.master_volume",  "Master" },
+        { "audio.sfx_volume",     "SFX" },
+        { "audio.music_volume",   "Music" },
+        { "audio.ambient_volume", "Ambient" },
+        { "audio.voice_volume",   "Voice" },
+    };
+    for (const auto& r : kVols) {
+        f32 v = m_settings->get_f32(r.key, 1.0f);
+        ImGui::SetNextItemWidth(-120.0f * s);
+        if (ImGui::SliderFloat(r.label, &v, 0.0f, 1.0f, "%.2f")) {
+            m_settings->set(r.key, v);   // live apply via subscriber
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0, 6 * s));
+
+    // ── Graphics ────────────────────────────────────────────────────
+    ImGui::TextUnformatted("Graphics");
+    ImGui::Separator();
+    {
+        bool vsync = m_settings->get_bool("graphics.vsync", true);
+        if (ImGui::Checkbox("VSync", &vsync)) m_settings->set("graphics.vsync", vsync);
+        bool fs = m_settings->get_bool("graphics.fullscreen", false);
+        if (ImGui::Checkbox("Fullscreen", &fs)) m_settings->set("graphics.fullscreen", fs);
+    }
+
+    ImGui::Dummy(ImVec2(0, 6 * s));
+
+    // ── Input ───────────────────────────────────────────────────────
+    ImGui::TextUnformatted("Input");
+    ImGui::Separator();
+    {
+        // Action-bar hotkey mode: ability (WC3 mnemonic) vs positional (grid).
+        std::string mode = "ability";
+        settings::Value mode_v = m_settings->get("input.action_bar_hotkey_mode");
+        if (auto* str = std::get_if<std::string>(&mode_v)) mode = *str;
+        const char* modes[] = { "ability", "positional" };
+        ImGui::SetNextItemWidth(-120.0f * s);
+        if (ImGui::BeginCombo("Hotkeys", mode.c_str())) {
+            for (const char* m : modes) {
+                bool sel = (mode == m);
+                if (ImGui::Selectable(m, sel)) m_settings->set("input.action_bar_hotkey_mode", std::string(m));
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0, 6 * s));
+
+    // ── Language ────────────────────────────────────────────────────
+    // Codes-only (no display names): ImGui's built-in font is Latin-only,
+    // so "中文" would render as missing-glyph boxes. Locale changes apply
+    // immediately outside a session; mid-session changes are deferred by
+    // the engine's i18n.locale subscriber.
+    ImGui::TextUnformatted("Language");
+    ImGui::Separator();
+    {
+        std::string locale = "en";
+        settings::Value loc_v = m_settings->get("i18n.locale");
+        if (auto* str = std::get_if<std::string>(&loc_v))
+            if (!str->empty()) locale = *str;
+        const char* locales[] = { "en", "zh-CN" };
+        ImGui::SetNextItemWidth(-120.0f * s);
+        if (ImGui::BeginCombo("Locale", locale.c_str())) {
+            for (const char* l : locales) {
+                bool sel = (locale == l);
+                if (ImGui::Selectable(l, sel)) {
+                    m_settings->set("i18n.locale", std::string(l));
+                    m_locale_input = l;
+                }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::Dummy(ImVec2(0, 10 * s));
+    ImGui::Separator();
+    if (ImGui::Button("Save", ImVec2(120.0f * s, 0))) {
+        if (m_save_settings) m_save_settings();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(120.0f * s, 0))) {
+        m_show_settings = false;
+    }
+
+    ImGui::End();
+    if (!open) m_show_settings = false;
 }
 
 void DevConsole::render(rhi::CommandList& cmd) {

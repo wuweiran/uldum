@@ -1,6 +1,7 @@
 #include "platform/windows/win32_platform.h"
 #include "core/log.h"
 
+#include <cstdlib>
 #include <filesystem>
 
 namespace uldum::platform {
@@ -142,6 +143,52 @@ void Win32Platform::set_cursor_visible(bool visible) {
     // effect when the counter crosses 0 / -1.
     ShowCursor(visible ? TRUE : FALSE);
     m_cursor_visible = visible;
+}
+
+void Win32Platform::set_fullscreen(bool fullscreen) {
+    if (!m_hwnd || fullscreen == m_fullscreen) return;  // idempotent
+
+    if (fullscreen) {
+        // Save the current windowed placement so we can restore it later,
+        // then strip the window chrome and size to the monitor the window
+        // is on. Borderless-fullscreen (no exclusive mode-set): plays nice
+        // with alt-tab and avoids display-mode churn.
+        GetWindowPlacement(m_hwnd, &m_windowed_placement);
+        MONITORINFO mi = { sizeof(MONITORINFO) };
+        if (GetMonitorInfo(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+            LONG style = GetWindowLong(m_hwnd, GWL_STYLE);
+            SetWindowLong(m_hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+            SetWindowPos(m_hwnd, HWND_TOP,
+                         mi.rcMonitor.left, mi.rcMonitor.top,
+                         mi.rcMonitor.right  - mi.rcMonitor.left,
+                         mi.rcMonitor.bottom - mi.rcMonitor.top,
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        }
+    } else {
+        // Restore the bordered style and the saved windowed placement. The
+        // resulting WM_SIZE sets m_resized → swapchain rebuilds.
+        LONG style = GetWindowLong(m_hwnd, GWL_STYLE);
+        SetWindowLong(m_hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(m_hwnd, &m_windowed_placement);
+        SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    m_fullscreen = fullscreen;
+}
+
+std::string Win32Platform::writable_data_dir() const {
+    // Device-local app data (settings, not meant to roam between machines).
+    char* base = nullptr;
+    size_t len = 0;
+    std::string dir;
+    if (_dupenv_s(&base, &len, "LOCALAPPDATA") == 0 && base) {
+        dir = std::string(base) + "\\Uldum";
+        free(base);
+    } else {
+        dir = ".";  // last-resort fallback (CWD)
+    }
+    return dir;
 }
 
 f32 Win32Platform::ui_scale() const {

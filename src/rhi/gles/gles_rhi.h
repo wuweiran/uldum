@@ -70,6 +70,7 @@ public:
 
     // Lifecycle
     void handle_resize(u32 width, u32 height);
+    void set_vsync(bool enabled);  // eglSwapInterval(1/0) — applies next swap
     void recreate_surface(platform::Platform& platform);
     void wait_idle();  // glFinish
 

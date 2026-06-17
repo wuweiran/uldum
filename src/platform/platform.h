@@ -153,6 +153,18 @@ public:
     // platforms without a system cursor (Android).
     virtual void set_cursor_visible(bool /*visible*/) {}
 
+    // Switch the window between borderless-fullscreen and windowed. The
+    // resulting size change flows through the normal resize path
+    // (was_resized()), so the swapchain rebuilds automatically. Default
+    // no-op for platforms that are always fullscreen (Android).
+    virtual void set_fullscreen(bool /*fullscreen*/) {}
+
+    // Absolute path to a per-user, app-private directory the engine may
+    // write to (settings, future profiles). The engine appends its own
+    // subpath/filename. Windows: %LOCALAPPDATA%/Uldum. Android: the app's
+    // internalDataPath. Returns "." if no writable location is available.
+    virtual std::string writable_data_dir() const { return "."; }
+
     static std::unique_ptr<Platform> create();
 
 protected:

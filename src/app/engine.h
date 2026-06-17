@@ -85,6 +85,9 @@ public:
     rhi::Rhi&                  rhi()      { return m_rhi; }
     platform::Platform&        platform() { return *m_platform; }
     settings::Store&           settings() { return m_settings; }
+    // Persist the settings store to its resolved path now (e.g. from a
+    // settings menu's Save button). No-op if persistence is unavailable.
+    void                       save_settings() { if (!m_settings_path.empty()) m_settings.save(m_settings_path); }
     network::NetworkManager&   network()  { return m_network; }
 #ifdef ULDUM_SHELL_UI
     // Shell UI is only present in game-flavor builds. The App is
@@ -210,6 +213,7 @@ private:
     render::WorldOverlays    m_world_overlays;
     audio::AudioEngine       m_audio;
     settings::Store          m_settings;
+    std::string              m_settings_path;   // resolved at init; "" = no persistence
     i18n::LocaleManager      m_i18n;
     hud::Hud                 m_hud;
     hud::HudRenderer         m_hud_renderer;

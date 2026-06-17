@@ -209,11 +209,32 @@ bool Engine::init(const LaunchArgs& args) {
     // the Shell UI flips values via click handlers (or, in Tier 2, via
     // Lua / data binding). Defaults are applied by calling set() once
     // so listeners get a consistent initial state.
-    m_settings.subscribe("audio.master_enabled", [this](const settings::Value& v) {
-        bool enabled = std::get_if<bool>(&v) ? std::get<bool>(v) : true;
-        m_audio.set_volume(audio::Channel::Master, enabled ? 1.0f : 0.0f);
-    });
-    m_settings.set("audio.master_enabled", true);
+    //
+    // Applicability contract (see docs/engine-model.md "Engine settings"):
+    // most keys apply LIVE (the subscriber acts immediately, mid-session is
+    // fine). A SESSION-LOCKED key (today only i18n.locale, below) instead
+    // checks `m_session_active` and returns early with a [WARN] when a
+    // session is running — the value is stored/persisted but applied next
+    // session. Follow that same guard pattern for any future setting the
+    // running session can't absorb.
+    // Per-channel audio volumes (0..1). Each maps to a miniaudio sound
+    // group via AudioEngine::set_volume — fully runtime. Defaults are
+    // applied below after load(), only for keys the saved file didn't set.
+    struct VolBinding { const char* key; audio::Channel ch; f32 def; };
+    static constexpr VolBinding kVolumes[] = {
+        { "audio.master_volume",  audio::Channel::Master,  1.0f },
+        { "audio.sfx_volume",     audio::Channel::SFX,     1.0f },
+        { "audio.music_volume",   audio::Channel::Music,   1.0f },
+        { "audio.ambient_volume", audio::Channel::Ambient, 1.0f },
+        { "audio.voice_volume",   audio::Channel::Voice,   1.0f },
+    };
+    for (const auto& vb : kVolumes) {
+        audio::Channel ch = vb.ch;
+        m_settings.subscribe(vb.key, [this, ch](const settings::Value& v) {
+            f32 vol = std::get_if<f32>(&v) ? std::get<f32>(v) : 1.0f;
+            m_audio.set_volume(ch, std::clamp(vol, 0.0f, 1.0f));
+        });
+    }
 
     // Action-bar hotkey mode — "ability" (WC3 mnemonic) or "positional"
     // (MOBA grid). Player-level preference, not per-map. HUD consults
@@ -226,7 +247,29 @@ bool Engine::init(const LaunchArgs& args) {
                     : hud::ActionBarHotkeyMode::Ability;
         m_hud.action_bar_set_hotkey_mode(mode);
     });
-    m_settings.set("input.action_bar_hotkey_mode", std::string("ability"));
+
+    // Graphics: vsync (RHI present mode) + fullscreen (window restyle).
+    // Both apply live — vsync rebuilds the swapchain, fullscreen restyles
+    // the window (the resulting resize rebuilds the swapchain too).
+    m_settings.subscribe("graphics.vsync", [this](const settings::Value& v) {
+        m_rhi.set_vsync(std::get_if<bool>(&v) ? std::get<bool>(v) : true);
+    });
+    m_settings.subscribe("graphics.fullscreen", [this](const settings::Value& v) {
+        if (m_platform) m_platform->set_fullscreen(std::get_if<bool>(&v) ? std::get<bool>(v) : false);
+    });
+
+    // Load persisted settings (fires the subscribers above), then apply
+    // defaults only for keys the file didn't carry — so a fresh install
+    // starts sane and an existing settings.json wins where present.
+    m_settings_path = m_platform->writable_data_dir() + "/settings.json";
+    m_settings.load(m_settings_path);
+    for (const auto& vb : kVolumes) {
+        if (!m_settings.has(vb.key)) m_settings.set(vb.key, vb.def);
+    }
+    if (!m_settings.has("input.action_bar_hotkey_mode"))
+        m_settings.set("input.action_bar_hotkey_mode", std::string("ability"));
+    if (!m_settings.has("graphics.vsync"))      m_settings.set("graphics.vsync", true);
+    if (!m_settings.has("graphics.fullscreen")) m_settings.set("graphics.fullscreen", false);
 
     // Hardcoded local player name for now — carried over C_JOIN, shown in
     // lobbies, and surfaced to Lua as GetPlayerName(player). User-configurable
@@ -280,12 +323,19 @@ bool Engine::init(const LaunchArgs& args) {
         // users).
         m_hud_renderer.set_locale(*code);
     });
-    // Apply CLI flag (highest priority), else stay on default "en".
-    if (!m_args.locale.empty()) {
-        m_settings.set("i18n.locale", m_args.locale);
-    } else {
-        m_settings.set("i18n.locale", std::string(m_i18n.active()));
+    // Apply locale with priority: CLI flag > persisted value > default.
+    // load() already put any saved locale in the store, but it ran before
+    // this subscriber was registered, so nothing has applied it yet.
+    // Resolve the winner and set() it — that fires the subscriber above
+    // (actually switching the locale) and leaves the store holding the
+    // truth, so quit/relaunch round-trips the player's choice.
+    std::string locale = "en";
+    {
+        settings::Value v = m_settings.get("i18n.locale");
+        if (auto* s = std::get_if<std::string>(&v); s && !s->empty()) locale = *s;
     }
+    if (!m_args.locale.empty()) locale = m_args.locale;  // CLI overrides saved
+    m_settings.set("i18n.locale", locale);
 #ifdef ULDUM_DEV_UI
     if (m_app) {
         static_cast<DevApp*>(m_app.get())
@@ -2433,6 +2483,8 @@ void Engine::run() {
 void Engine::shutdown() {
     log::info(TAG, "=== Shutting down engine subsystems ===");
     if (m_session_active) end_session();
+    // Persist settings so menu changes survive restart.
+    if (!m_settings_path.empty()) m_settings.save(m_settings_path);
     // App's destructor handles whatever subsystems it owns (DevApp
     // tears down its DevConsole here, etc.).
     m_app.reset();

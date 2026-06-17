@@ -22,7 +22,8 @@ DevApp::~DevApp() {
 void DevApp::on_init(Engine& engine) {
     m_engine = &engine;
     m_console = std::make_unique<DevConsole>();
-    if (!m_console->init(m_engine->rhi(), m_engine->platform())) {
+    if (!m_console->init(m_engine->rhi(), m_engine->platform(),
+                         m_engine->settings(), [eng = m_engine] { eng->save_settings(); })) {
         log::error(TAG, "DevConsole init failed");
         m_console.reset();
     }
@@ -94,8 +95,6 @@ void DevApp::on_update(f32 dt) {
         m_engine->set_state(AppState::Menu);
     } else if (action.type == A::Quit) {
         m_engine->request_quit();
-    } else if (action.type == A::SetLocale && !action.locale_code.empty()) {
-        m_engine->settings().set("i18n.locale", action.locale_code);
     }
 }
 

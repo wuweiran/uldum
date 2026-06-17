@@ -565,18 +565,25 @@ bool Rhi::create_swapchain(u32 width, u32 height) {
         ci.preTransform = caps.currentTransform;
     }
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    // Prefer MAILBOX (uncapped, low latency) if available, fall back to FIFO (vsync)
+    // FIFO (vsync, always supported) when vsync is on; otherwise prefer
+    // MAILBOX (uncapped, low latency) and fall back to FIFO if the device
+    // doesn't offer it. m_prefer_vsync is runtime-togglable via set_vsync().
     ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    {
+    if (!m_prefer_vsync) {
         u32 mode_count = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(m_physical_device, m_surface, &mode_count, nullptr);
         std::vector<VkPresentModeKHR> modes(mode_count);
         vkGetPhysicalDeviceSurfacePresentModesKHR(m_physical_device, m_surface, &mode_count, modes.data());
+        bool found_mailbox = false;
         for (auto mode : modes) {
             if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
                 ci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                found_mailbox = true;
                 break;
             }
+        }
+        if (!found_mailbox) {
+            log::info(TAG, "VSync off requested but MAILBOX unavailable; using FIFO");
         }
     }
     ci.clipped          = VK_TRUE;
@@ -861,6 +868,14 @@ bool Rhi::create_sync_objects() {
 
 void Rhi::handle_resize(u32 width, u32 height) {
     if (width == 0 || height == 0) return;
+    m_swapchain_dirty = true;
+}
+
+void Rhi::set_vsync(bool enabled) {
+    if (enabled == m_prefer_vsync) return;
+    m_prefer_vsync = enabled;
+    // Reuse the resize recreate path: the next begin_frame() rebuilds the
+    // swapchain, which re-reads m_prefer_vsync to pick the present mode.
     m_swapchain_dirty = true;
 }
 

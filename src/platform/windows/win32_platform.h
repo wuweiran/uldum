@@ -36,6 +36,8 @@ public:
     std::vector<std::string> list_files(std::string_view prefix) const override;
 
     void set_cursor_visible(bool visible) override;
+    void set_fullscreen(bool fullscreen) override;
+    std::string writable_data_dir() const override;
 
 private:
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
@@ -47,6 +49,8 @@ private:
     bool      m_quit       = false;
     bool      m_resized    = false;
     bool      m_cursor_visible = true;
+    bool      m_fullscreen = false;
+    WINDOWPLACEMENT m_windowed_placement = { sizeof(WINDOWPLACEMENT) };  // saved before going fullscreen
     InputState m_input     = {};
 };
 

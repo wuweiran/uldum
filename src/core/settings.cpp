@@ -1,6 +1,14 @@
 #include "core/settings.h"
+#include "core/log.h"
+
+#include <nlohmann/json.hpp>
+
+#include <filesystem>
+#include <fstream>
 
 namespace uldum::settings {
+
+static constexpr const char* TAG = "Settings";
 
 void Store::set(std::string_view key, Value value) {
     std::string key_str(key);
@@ -48,6 +56,71 @@ i32 Store::get_i32(std::string_view key, i32 fallback) const {
 
 void Store::subscribe(std::string_view key, Listener listener) {
     m_listeners[std::string(key)].push_back(std::move(listener));
+}
+
+bool Store::has(std::string_view key) const {
+    return m_values.find(std::string(key)) != m_values.end();
+}
+
+void Store::save(const std::string& path) const {
+    nlohmann::json root = nlohmann::json::object();
+    for (const auto& [key, value] : m_values) {
+        nlohmann::json entry;
+        std::visit([&entry](auto&& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, bool>)             { entry["type"] = "bool";   entry["v"] = v; }
+            else if constexpr (std::is_same_v<T, f32>)         { entry["type"] = "f32";    entry["v"] = v; }
+            else if constexpr (std::is_same_v<T, i32>)         { entry["type"] = "i32";    entry["v"] = v; }
+            else if constexpr (std::is_same_v<T, std::string>) { entry["type"] = "string"; entry["v"] = v; }
+        }, value);
+        root[key] = std::move(entry);
+    }
+
+    std::filesystem::path p(path);
+    std::error_code ec;
+    if (p.has_parent_path() && !std::filesystem::exists(p.parent_path(), ec)) {
+        std::filesystem::create_directories(p.parent_path(), ec);
+        if (ec) {
+            log::warn(TAG, "Settings dir '{}' not writable ({}); not saved",
+                      p.parent_path().string(), ec.message());
+            return;
+        }
+    }
+
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        log::error(TAG, "Failed to write settings to '{}'", path);
+        return;
+    }
+    file << root.dump(2);
+    log::info(TAG, "Settings saved to '{}'", path);
+}
+
+bool Store::load(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return false;  // no file yet — defaults apply
+
+    nlohmann::json root;
+    try {
+        root = nlohmann::json::parse(file);
+    } catch (const nlohmann::json::exception& e) {
+        log::warn(TAG, "Failed to parse settings '{}': {}", path, e.what());
+        return false;
+    }
+    if (!root.is_object()) return false;
+
+    for (auto& [key, entry] : root.items()) {
+        if (!entry.is_object() || !entry.contains("type") || !entry.contains("v")) continue;
+        const std::string type = entry["type"].get<std::string>();
+        const auto& v = entry["v"];
+        // Route through set() so subscribers react to the loaded value.
+        if      (type == "bool"   && v.is_boolean())        set(key, v.get<bool>());
+        else if (type == "f32"    && v.is_number())         set(key, v.get<f32>());
+        else if (type == "i32"    && v.is_number_integer()) set(key, v.get<i32>());
+        else if (type == "string" && v.is_string())         set(key, v.get<std::string>());
+    }
+    log::info(TAG, "Settings loaded from '{}'", path);
+    return true;
 }
 
 } // namespace uldum::settings

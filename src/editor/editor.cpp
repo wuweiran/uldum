@@ -105,6 +105,10 @@ bool Editor::init(const std::string& map_path) {
         return false;
     }
 
+    // Editor uses uncapped MAILBOX. TODO: FIFO/vsync tears during camera
+    // pan on Windows windowed — investigate; until then keep vsync off here.
+    m_rhi.set_vsync(false);
+
     // Asset manager
     if (!m_asset.init("engine")) {
         log::error(TAG, "AssetManager init failed");

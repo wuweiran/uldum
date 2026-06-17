@@ -5,3 +5,4 @@ add_library(uldum_core STATIC
 )
 
 target_include_directories(uldum_core PUBLIC ${ULDUM_SRC})
+target_link_libraries(uldum_core PUBLIC nlohmann_json::nlohmann_json)
