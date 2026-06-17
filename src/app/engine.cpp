@@ -1703,23 +1703,15 @@ void Engine::run() {
             break;
 
         case AppState::Loading: {
-            // Do the heavy map-content + renderer-setup load the first time
-            // we enter Loading. `m_session_active` is flipped on at the end
-            // of start_session() so the work runs exactly once.
+            // The heavy start_session() is synchronous and freezes the loop.
+            // We don't run it here — we request it (m_load_pending) and let
+            // the post-present block (end of the loop) run it, so the loading
+            // screen the UI drew this frame is what's on screen during the
+            // freeze. Request once, on the first Loading frame before the
+            // session exists; then just wait for the load + ready handshake.
             if (!m_session_active) {
-                if (!start_session()) {
-                    log::error(TAG, "Session failed to start → Menu");
-                    end_session();
-                    set_state(AppState::Menu);
-                    break;
-                }
-                // Signal "I'm loaded". Host marks self locally; Client sends
-                // C_LOAD_DONE. Offline skips the handshake entirely.
-                if (m_args.net_mode == network::Mode::Host) {
-                    m_network.mark_self_loaded();
-                } else if (m_args.net_mode == network::Mode::Client) {
-                    m_network.send_load_done();
-                }
+                m_load_pending = true;
+                break;  // nothing else to do until the load actually runs
             }
             m_network.update(frame_dt);
 
@@ -2472,6 +2464,28 @@ void Engine::run() {
                 m_rhi.begin_rendering();
                 m_app->on_render(cmd);
                 m_rhi.end_frame();
+            }
+        }
+
+        // Deferred session load. Runs AFTER this frame was presented, so the
+        // last thing on screen is the loading screen the UI drew (dev console
+        // or game shell) — the synchronous load then freezes with "Loading…"
+        // visible instead of a stale prior frame. The Loading case below only
+        // *requests* the load (sets m_load_pending); it never blocks.
+        if (m_load_pending) {
+            m_load_pending = false;
+            if (!start_session()) {
+                log::error(TAG, "Session failed to start → Menu");
+                end_session();
+                set_state(AppState::Menu);
+            } else {
+                // Signal "I'm loaded". Host marks self locally; Client sends
+                // C_LOAD_DONE. Offline skips the handshake entirely.
+                if (m_args.net_mode == network::Mode::Host) {
+                    m_network.mark_self_loaded();
+                } else if (m_args.net_mode == network::Mode::Client) {
+                    m_network.send_load_done();
+                }
             }
         }
     }

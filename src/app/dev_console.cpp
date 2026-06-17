@@ -338,6 +338,16 @@ void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::Networ
     // top of whatever screen is active.
     if (m_show_settings) draw_settings_panel();
 
+    // StartGame was just requested this frame (Lobby "Start" click). The
+    // engine flips to Loading and runs the synchronous load AFTER this frame
+    // presents — but our immediate-mode panels were built from the current
+    // (still Lobby) state, so without this the click frame would present the
+    // Lobby and freeze. Draw the loading screen now so it's what's on screen
+    // during the load. (Retained-UI game builds get this from on_state_changed.)
+    if (m_pending.type == ActionType::StartGame) {
+        draw_loading_screen(net.lobby_state());
+    }
+
     ImGui::Render();
 }
 

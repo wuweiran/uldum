@@ -241,6 +241,7 @@ private:
     std::unique_ptr<input::InputPreset> m_input_preset;
     map::MapManager          m_map;
     bool                     m_session_active = false;
+    bool                     m_load_pending = false;   // Loading state asked for start_session; run it after present
 
     // Whether enter_lobby() has prepared a session. The LobbyState itself
     // lives on NetworkManager (authoritative for Host; mirrored for Client;

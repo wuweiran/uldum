@@ -783,3 +783,8 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 - **Shadow cascades** — replace the fixed world-space shadow box with view-frustum cascades for uniform shadow resolution regardless of map size.
 - **Rendering audit pass** — sweep for other "works because nothing's stressed it" shortcuts: ambient uniform, post-process pipeline, SSAO, anisotropic filtering, HUD/world gamma mismatch. Promote individual findings out as they bite.
 - Rich custom shader decorators (game-project art concern).
+
+**Startup & UX**
+
+- **Boot splash** — `Engine::init()` runs synchronously before the first frame, so launch shows a black/white window until it finishes. Present a splash during that gap. Must be engine-drawn (the UI layer isn't up yet — it's the thing being covered), customized only by data: the game ships a splash image; dev gets a fallback with no image.
+- **`AppState::Splash`** — default-initial, App-drawn welcome state entered after init (game shows a branded splash + auto-advances; dev jumps to `Menu`). Independent of the boot splash above.
