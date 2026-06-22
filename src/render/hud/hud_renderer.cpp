@@ -1989,10 +1989,15 @@ void HudRenderer::draw_tree() {
 
     if (!s.is_mobile) {
         const auto& style = s.cast_indicator_cfg.style;
-        bool targeting = m_hud->aim_state().active;
+        const auto aim = m_hud->aim_state();
+        bool targeting = aim.active;
+        // When an AoE indicator is on screen, it already shows where the
+        // cast lands — the target cursor on top is redundant clutter, so
+        // suppress it. The plain (non-targeting) cursor is unaffected.
+        bool suppress_for_aoe = targeting && aim.has_area;
         const std::string& path = targeting ? style.cursor_target_path
                                             : style.cursor_default_path;
-        if (!path.empty()) {
+        if (!path.empty() && !suppress_for_aoe) {
             f32 size = (style.cursor_size > 0.0f) ? style.cursor_size : 20.0f;
             f32 ax = targeting ? size * 0.5f : 0.0f;
             f32 ay = targeting ? size * 0.5f : 0.0f;

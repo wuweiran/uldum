@@ -13,6 +13,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 namespace uldum::hud { class Hud; }
@@ -154,5 +155,27 @@ public:
 
 // Create an input preset by name ("rts", future: "action_rpg").
 std::unique_ptr<InputPreset> create_preset(std::string_view name);
+
+// The WC3-style "target acquired" ping is feedback for *local input* only —
+// it must never fire on script / AI orders, so it's derived here at the
+// input layer (not in CommandSystem::submit, which scripts also go through)
+// and emitted once at each human-input commit site. The color is a property
+// of *what you targeted*, not which order you issued: pull the target out of
+// the order, then color by its relationship to the commanding player.
+//   • target is an enemy unit → Enemy  (red)
+//   • target is an ally  unit → Ally   (green)
+//   • target is an item       → Item   (yellow)
+//   • no target (ground move / attack-move / non-target cast) → no ping
+// Coloring by target (not order kind) means move/attack/cast onto the same
+// unit all ping the same — and new targeted order types are handled for free.
+// Position is sampled from the target's current transform. Returns nullopt
+// when the order isn't target-bound or the target has no transform.
+struct DerivedPing {
+    simulation::Unit unit;
+    glm::vec3        pos;
+    InputContext::TargetPingKind kind;
+};
+std::optional<DerivedPing> derive_target_ping(const simulation::GameCommand& cmd,
+                                              const simulation::Simulation& sim);
 
 } // namespace uldum::input

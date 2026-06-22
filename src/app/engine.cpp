@@ -491,6 +491,16 @@ void Engine::leave_lobby() {
     m_lobby_active = false;
 }
 
+void Engine::fire_local_ping(const simulation::GameCommand& cmd) {
+    if (auto ping = input::derive_target_ping(cmd, m_server.simulation())) {
+        m_target_ping.unit     = ping->unit;
+        m_target_ping.pos      = ping->pos;
+        m_target_ping.kind     = ping->kind;
+        m_target_ping.age      = 0.0f;
+        m_target_ping.lifespan = 0.45f;
+    }
+}
+
 bool Engine::start_session() {
     if (!m_lobby_active) {
         log::error(TAG, "start_session called without a prepared lobby");
@@ -682,6 +692,7 @@ bool Engine::start_session() {
                 return;   // unknown command — drop silently
             }
             m_commands.submit(cmd);
+            fire_local_ping(cmd);   // mobile command-bar drag: ping like desktop
         });
 
     // Inventory slot tap → cast the slot's first ability with the item
@@ -2243,8 +2254,8 @@ void Engine::run() {
                         auto phase_color = [&](hud::Color base) -> glm::vec4 {
                             switch (aim.phase) {
                                 case Phase::Normal:     return unpack(base);
-                                case Phase::OutOfRange: return unpack(s.out_of_range_tint);
-                                case Phase::Cancelling: return unpack(s.cancel_tint);
+                                case Phase::OutOfRange: return unpack(s.phase_out_of_range);
+                                case Phase::Cancelling: return unpack(s.phase_cancel);
                             }
                             return unpack(base);
                         };
@@ -2276,7 +2287,7 @@ void Engine::run() {
                                     }
                                     if (!aim.is_unit_target || aim.snapped_id != UINT32_MAX) {
                                         m_world_overlays.add_quad(area_at, aim.area_radius,
-                                                                  phase_color(s.area_color),
+                                                                  phase_color(s.phase_normal),
                                                                   TexId::AoeCircle);
                                     }
                                     break;
@@ -2300,7 +2311,7 @@ void Engine::run() {
                                         };
                                         std::vector<glm::vec3> samples = { caster, end };
                                         m_world_overlays.add_path(samples, aim.area_width,
-                                                                  phase_color(s.area_color),
+                                                                  phase_color(s.phase_normal),
                                                                   TexId::AoeLine);
                                     }
                                     break;
@@ -2318,7 +2329,7 @@ void Engine::run() {
                                                              * 3.14159265358979323846f / 180.0f;
                                         m_world_overlays.add_cone(caster, dir, half_angle_rad,
                                                                   aim.range,
-                                                                  phase_color(s.area_color),
+                                                                  phase_color(s.phase_normal),
                                                                   TexId::AoeCone);
                                     }
                                     break;
@@ -2362,24 +2373,15 @@ void Engine::run() {
                         //    column over the snapped target so the
                         //    player can see the lock at a glance even
                         //    when their finger covers the unit. The
-                        //    column is tinted from the intent palette
-                        //    (ally / enemy / neutral) — ability filters
-                        //    already gate which units the snap can land
-                        //    on, but the color reads at a glance which
-                        //    relationship the snap holds.
+                        //    column is tinted purely by PHASE (normal /
+                        //    out-of-range / cancelling) via phase_color,
+                        //    the same palette the AoE indicator uses — it
+                        //    answers "will this gesture succeed?", not
+                        //    "is the target friend or foe" (ability target
+                        //    filters already gate what the snap lands on).
                         if (aim.is_unit_target
                             && aim.snapped_id != UINT32_MAX
                             && aim.is_drag_cast) {
-                            simulation::Player local{m_args.local_slot};
-                            hud::Color tint = s.intents.neutral;
-                            if (const auto* owner = world.owners.get(aim.snapped_id)) {
-                                if (owner->id == local.id ||
-                                    m_server.simulation().is_allied(local, *owner)) {
-                                    tint = s.intents.ally;
-                                } else {
-                                    tint = s.intents.enemy;
-                                }
-                            }
                             glm::vec3 base{ aim.snapped_x, aim.snapped_y,
                                             aim.snapped_z + s.snap_target_base_offset };
                             glm::vec3 cam_pos = m_renderer.camera().position();
@@ -2387,7 +2389,7 @@ void Engine::run() {
                                                        s.snap_target_height,
                                                        s.snap_target_width,
                                                        cam_pos,
-                                                       phase_color(tint),
+                                                       phase_color(s.phase_normal),
                                                        TexId::SnapTarget);
                         }
                     }

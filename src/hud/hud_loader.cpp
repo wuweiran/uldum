@@ -801,10 +801,10 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         // Snap-target indicator (mobile drag-cast). Vertical light
         // column over the snapped target — visual-agnostic, the
         // texture drives the entire look (gradient, shape, etc.).
-        // height / width / base_offset are world units. Color is
-        // not configured here — it comes from the intent palette
-        // (ally / enemy / neutral) so the column reads as a friendly
-        // or hostile target at a glance.
+        // height / width / base_offset are world units. Color is not
+        // configured here — the column is tinted by the unified phase
+        // palette (`targeting.colors`) so it reads "will this gesture
+        // succeed?" (normal / out-of-range / cancelling).
         if (auto st = tg->find("snap_target"); st != tg->end() && st->is_object()) {
             if (auto v = st->find("texture");     v != st->end() && v->is_string())
                 cfg.style.snap_target_texture = v->get<std::string>();
@@ -818,7 +818,9 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
 
         // AoE preview (target_point shape decals). Each shape has its
         // own texture slot in the renderer; empty strings here fall back
-        // to the engine's procedural default for that shape.
+        // to the engine's procedural default for that shape. Color is not
+        // set here — AoE shapes are tinted by the unified phase palette
+        // (`targeting.colors`, parsed below).
         if (auto a = tg->find("aoe"); a != tg->end() && a->is_object()) {
             if (auto v = a->find("circle_texture"); v != a->end() && v->is_string())
                 cfg.style.area_texture = v->get<std::string>();
@@ -826,7 +828,6 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 cfg.style.area_cone_texture = v->get<std::string>();
             if (auto v = a->find("line_texture"); v != a->end() && v->is_string())
                 cfg.style.area_line_texture = v->get<std::string>();
-            if (auto v = a->find("color"); v != a->end()) cfg.style.area_color = resolve_color(*v);
         }
 
         // Entity ping (post-commit ring on the targeted unit / item).
@@ -842,10 +843,13 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 cfg.style.entity_ping_lifespan = v->get<f32>();
         }
 
-        // Out-of-range / cancel tints (existing behavior, just relocated).
-        if (auto pt = tg->find("phase_tints"); pt != tg->end() && pt->is_object()) {
-            if (auto v = pt->find("out_of_range"); v != pt->end()) cfg.style.out_of_range_tint = parse_color(*v);
-            if (auto v = pt->find("cancelling");   v != pt->end()) cfg.style.cancel_tint       = parse_color(*v);
+        // Unified aim-phase palette. Drives the AoE shapes + the mobile
+        // snap-target pillar (normal = resting; out_of_range / cancelling
+        // = global warnings every phase-colored visual obeys).
+        if (auto co = tg->find("colors"); co != tg->end() && co->is_object()) {
+            if (auto v = co->find("normal");       v != co->end()) cfg.style.phase_normal       = parse_color(*v);
+            if (auto v = co->find("out_of_range"); v != co->end()) cfg.style.phase_out_of_range = parse_color(*v);
+            if (auto v = co->find("cancelling");   v != co->end()) cfg.style.phase_cancel       = parse_color(*v);
         }
 
         // Selection ring slot — not strictly targeting (drawn under

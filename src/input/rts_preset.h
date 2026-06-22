@@ -74,6 +74,12 @@ private:
     void dispatch_command(const InputContext& ctx,
                           std::string_view command_id);
 
+    // The single local-input commit point: submit the order AND fire the
+    // target ping derived from it (derive_target_ping). Every order this
+    // preset issues from a player gesture goes through here, so the ping
+    // rule lives in one place instead of being hand-stapled per branch.
+    void commit(const InputContext& ctx, const simulation::GameCommand& cmd);
+
     // Box selection state
     bool  m_box_dragging = false;
     f32   m_box_start_x = 0;

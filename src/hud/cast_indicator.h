@@ -54,24 +54,27 @@ struct CastIndicatorStyle {
     Color reticle_color  = rgba(180, 220, 255, 220);
     f32   reticle_radius = 18.0f;
 
-    // AoE indicator (ring + tick pattern decal for shape=area). For
-    // target_unit + has_area, anchored at the snapped unit. Default
-    // is a soft white — neutral for any spell. Authors override per
-    // ability or per map via `area_color` in hud.json.
-    Color area_color = rgba(230, 235, 255, 220);
-
     // Snapped target-unit ring color (around the unit when unit-snap
     // is engaged).
     Color target_unit_color     = rgba(255, 255, 255, 180);
     f32   target_unit_thickness = 5.0f;
 
-    // Per-phase tint applied to "active" indicators (everything except
-    // the range ring). Multiplies the base color's RGB component-wise
-    // and replaces the alpha. Phase Normal is the identity (treated as
-    // white-1.0); OutOfRange recolors to a cool blue, Cancelling to a
-    // warm red.
-    Color out_of_range_tint = rgba(108, 168, 255, 200);
-    Color cancel_tint       = rgba(255, 80,  80, 230);
+    // Unified aim-phase palette (hud.json `targeting.colors`). The aim
+    // visuals that read "will this gesture succeed?" — the AoE shape
+    // decals and the mobile snap-target pillar — are colored from these
+    // three by phase, nothing else:
+    //   • normal       → resting color while the cast is valid
+    //   • out_of_range → drag is beyond range (a global warning)
+    //   • cancelling   → drag is in the cancel zone (a global warning)
+    // The two warnings are global: every phase-colored visual (incl. the
+    // aim arrow) flashes them. `normal` is the shared resting tint for the
+    // AoE + pillar only — the arrow keeps its own `cast_curve.color`, and
+    // the range ring its own `range_ring.color` (neither is phased).
+    // Engine defaults are deliberately pure primaries so an uncustomized
+    // map reads as "not yet themed"; maps override with tuned values.
+    Color phase_normal       = rgba(255, 255, 255, 255);  // white
+    Color phase_out_of_range = rgba(  0,   0, 255, 255);  // blue
+    Color phase_cancel       = rgba(255,   0,   0, 255);  // red
 
     // Optional texture path overrides — one per WorldOverlays slot
     // the cast indicator drives. Empty string means "use the engine's
@@ -98,12 +101,12 @@ struct CastIndicatorStyle {
     // camera-yaw-aligned billboard pillar; the texture supplies the
     // entire look (alpha gradient, color glow, etc.) and the engine
     // just stretches it over the height/width given here. Color is
-    // *not* configured — the intent palette tints the column
-    // ally / enemy / neutral so it reads at a glance which
-    // relationship the snap holds. Sizes are world units;
-    // base_offset shifts the column's bottom along Z (default 0 =
-    // ground), positive values lift it for taller units, negative
-    // sinks it slightly into the terrain for a more grounded look.
+    // *not* configured here — it's tinted by PHASE (normal / out-of-
+    // range / cancelling), the same palette the AoE indicator uses, so
+    // it reads as one thing: whether the gesture will succeed. Sizes are
+    // world units; base_offset shifts the column's bottom along Z
+    // (default 0 = ground), positive values lift it for taller units,
+    // negative sinks it slightly into the terrain for a grounded look.
     std::string snap_target_texture;
     f32 snap_target_height       = 200.0f;
     f32 snap_target_width        =  32.0f;

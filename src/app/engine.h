@@ -179,6 +179,13 @@ private:
     // the VM and clears prior callbacks).
     void register_script_camera_callbacks();
 
+    // Fire the WC3-style target ping for a locally-committed order, if it
+    // landed on a unit/item (input::derive_target_ping decides). Used by the
+    // mobile HUD commit callbacks, which build orders here in the App rather
+    // than in the RTS preset — so they'd otherwise miss the ping the preset
+    // emits on desktop. Lua/AI orders never reach this, so they never ping.
+    void fire_local_ping(const simulation::GameCommand& cmd);
+
     // Route a camera command to every player in `players_mask`. For
     // each set bit: apply locally if it's the host's own slot, else
     // send the corresponding S_CAMERA_* packet to that peer.

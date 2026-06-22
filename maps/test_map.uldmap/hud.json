@@ -53,7 +53,9 @@
         { "anchor": "tl", "x": 134, "y": 48, "w": 40, "h": 40, "hotkey": "R" },
         { "anchor": "tl", "x":  48, "y":  5, "w": 40, "h": 40, "hotkey": "T" },
         { "anchor": "tl", "x":  91, "y":  5, "w": 40, "h": 40, "hotkey": "Y" }
-      ]
+      ],
+
+      "cancel_zone": { "anchor": "mr", "x": -16, "y": -96, "w": 64, "h": 64 }
     },
 
     "inventory": {
@@ -109,6 +111,11 @@
     "range_ring":   { "texture": "textures/overlays/ring_stroke.ktx2" },
     "cast_curve":   { "texture": "textures/overlays/curve_stroke.ktx2" },
     "snap_target":  { "texture": "textures/overlays/snap_target.ktx2" },
+    "colors": {
+      "normal":       "#E6EBFFDC",
+      "out_of_range": "#6CA8FFC8",
+      "cancelling":   "#FF5050E6"
+    },
     "aoe": {
       "circle_texture": "textures/overlays/aoe_circle.ktx2",
       "cone_texture":   "textures/overlays/aoe_cone.ktx2",

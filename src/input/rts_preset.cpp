@@ -18,6 +18,17 @@ static bool key_pressed(bool current, bool& prev) {
     return pressed;
 }
 
+void RtsPreset::commit(const InputContext& ctx, const GameCommand& cmd) {
+    ctx.commands.submit(cmd);
+    // Local-input feedback: flash the target ping if this order landed on a
+    // unit/item. Derived from the command so every gesture gets it for free.
+    if (ctx.target_ping_fn) {
+        if (auto ping = derive_target_ping(cmd, ctx.simulation)) {
+            ctx.target_ping_fn(ping->unit, ping->pos, ping->kind);
+        }
+    }
+}
+
 void RtsPreset::update(const InputContext& ctx, f32 dt) {
     handle_selection(ctx);
     handle_orders(ctx);
@@ -222,7 +233,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                     cmd.units  = sel.selected();
                     cmd.order  = simulation::orders::Cast{m_target_ability_id, target, {}};
                     cmd.queued = input.key_shift;
-                    ctx.commands.submit(cmd);
+                    commit(ctx, cmd);   // cast on a unit → fires Enemy/Ally ping
                     cancel_targeting();
                     return;
                 }
@@ -255,19 +266,32 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         return;
     }
 
-    // Move-targeting mode (command_bar "move"): next left-click on the
-    // ground commits a Move order. If the click misses terrain
-    // (shouldn't happen in-bounds, but defensive), exit mode anyway.
+    // Move-targeting mode (command_bar "move"): the "no-attack smart click".
+    // Next left-click on a unit (ally OR enemy) follows it; on the ground,
+    // moves to the point. Unlike smart-click it never attacks — Move on an
+    // enemy trails it instead of engaging.
     if (m_target_mode == TargetingMode::Move && input.mouse_left_pressed) {
         if (!sel.empty()) {
-            glm::vec3 world_pos;
-            if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
-                GameCommand cmd;
-                cmd.player = sel.player();
-                cmd.units  = sel.selected();
-                cmd.order  = simulation::orders::Move{world_pos};
-                cmd.queued = input.key_shift;
-                ctx.commands.submit(cmd);
+            GameCommand cmd;
+            cmd.player = sel.player();
+            cmd.units  = sel.selected();
+            cmd.queued = input.key_shift;
+
+            auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+            if (target.is_valid()) {
+                // Follow any unit — Move with target_unit set; the sim
+                // re-resolves the goal from its position each tick.
+                simulation::orders::Move m;
+                m.target_unit = target;
+                m.range       = 96.0f;   // same follow distance as smart-click
+                cmd.order     = std::move(m);
+                commit(ctx, cmd);        // submits + fires Enemy/Ally ping
+            } else {
+                glm::vec3 world_pos;
+                if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+                    cmd.order = simulation::orders::Move{world_pos};
+                    ctx.commands.submit(cmd);   // ground move — no ping
+                }
             }
         }
         cancel_targeting();
@@ -287,14 +311,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 cmd.units  = sel.selected();
                 cmd.order  = simulation::orders::Attack{target};
                 cmd.queued = input.key_shift;
-                ctx.commands.submit(cmd);
-                // A-click on a unit always reads as hostile — flash red.
-                if (ctx.target_ping_fn) {
-                    if (auto* t = ctx.simulation.world().transforms.get(target.id)) {
-                        ctx.target_ping_fn(target, t->position,
-                                           InputContext::TargetPingKind::Enemy);
-                    }
-                }
+                commit(ctx, cmd);   // submits + fires the red Enemy ping
             } else {
                 // A-click on ground: AttackMove
                 glm::vec3 world_pos;
@@ -335,14 +352,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             cmd.units  = sel.selected();
             cmd.order  = simulation::orders::PickupItem{picked_item};
             cmd.queued = input.key_shift;
-            ctx.commands.submit(cmd);
-            // Pickup ping — flash yellow at the item.
-            if (ctx.target_ping_fn) {
-                if (auto* t = ctx.simulation.world().transforms.get(picked_item.id)) {
-                    ctx.target_ping_fn(simulation::Unit{picked_item}, t->position,
-                                       InputContext::TargetPingKind::Item);
-                }
-            }
+            commit(ctx, cmd);   // submits + fires the yellow Item ping
             return;
         }
 
@@ -378,17 +388,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 m.range       = 96.0f;   // follow distance — beyond collision_radius * 2
                 cmd.order     = std::move(m);
             }
-            ctx.commands.submit(cmd);
-            // Target ping — red on enemy, green on friendly. Position
-            // sampled from the target's transform so the ring lands
-            // exactly under the model.
-            if (ctx.target_ping_fn) {
-                if (auto* t = ctx.simulation.world().transforms.get(target.id)) {
-                    ctx.target_ping_fn(target, t->position,
-                        is_enemy ? InputContext::TargetPingKind::Enemy
-                                 : InputContext::TargetPingKind::Ally);
-                }
-            }
+            commit(ctx, cmd);   // submits + fires Enemy(red)/Ally(green) ping
         } else {
             // Clicking on ground — move order. No target ping (it
             // would clutter every right-click; only entity targets
