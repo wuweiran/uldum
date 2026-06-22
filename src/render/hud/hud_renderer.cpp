@@ -915,6 +915,22 @@ static void draw_action_bar_classic_rts(HudRenderer::Impl& r, Hud::Impl& s) {
         } else if (any_armed) {
             emit_rect(r, icon_rect, cfg.style.disabled_tint);
         } else {
+            // Affordability and cooldown are independent dim states that STACK.
+            // Draw the mana/affordability dim first, then the cooldown pie +
+            // countdown on top — so a slot that's both unaffordable AND cooling
+            // down shows both (the cooldown no longer hides the mana dim).
+            if (def && inst && s.world_ctx && s.world_ctx->world
+                && is_castable_form(def->form)) {
+                u32 unit_id = s.world_ctx->selection
+                                ? s.world_ctx->selection->selected().front().id
+                                : UINT32_MAX;
+                if (unit_id != UINT32_MAX
+                    && !can_afford(*s.world_ctx->world, unit_id,
+                                   def->level_data(inst->level))) {
+                    emit_rect(r, icon_rect, cfg.style.disabled_tint);
+                }
+            }
+
             bool on_cooldown = def && inst && inst->cooldown_remaining > 0.05f
                             && def->level_data(inst->level).cooldown > 0.0f;
             if (on_cooldown) {
@@ -932,16 +948,6 @@ static void draw_action_bar_classic_rts(HudRenderer::Impl& r, Hud::Impl& s) {
                     f32 tx = icon_rect.x + (icon_rect.w - tw) * 0.5f;
                     f32 ty = icon_rect.y + (icon_rect.h - line_h) * 0.5f + ascent;
                     emit_text(r, tx, ty, buf, cfg.style.cooldown_text_color, px);
-                }
-            } else if (def && inst && s.world_ctx && is_castable_form(def->form)) {
-                u32 unit_id = s.world_ctx->selection
-                                ? s.world_ctx->selection->selected().front().id
-                                : UINT32_MAX;
-                if (unit_id != UINT32_MAX && s.world_ctx->world) {
-                    if (!can_afford(*s.world_ctx->world, unit_id,
-                                    def->level_data(inst->level))) {
-                        emit_rect(r, icon_rect, cfg.style.disabled_tint);
-                    }
                 }
             }
         }
@@ -1030,6 +1036,20 @@ static void draw_action_bar_moba(HudRenderer::Impl& r, Hud::Impl& s) {
         } else if (any_armed) {
             draw_disc(r, cx, cy, button_r, cfg.style.disabled_tint);
         } else {
+            // Affordability and cooldown are independent dim states that STACK
+            // (see the rect-icon path above). Mana dim first, cooldown on top.
+            if (def && inst && s.world_ctx && s.world_ctx->world
+                && is_castable_form(def->form)) {
+                u32 unit_id = s.world_ctx->selection
+                                ? s.world_ctx->selection->selected().front().id
+                                : UINT32_MAX;
+                if (unit_id != UINT32_MAX
+                    && !can_afford(*s.world_ctx->world, unit_id,
+                                   def->level_data(inst->level))) {
+                    draw_disc(r, cx, cy, button_r, cfg.style.disabled_tint);
+                }
+            }
+
             bool on_cooldown = def && inst && inst->cooldown_remaining > 0.05f
                             && def->level_data(inst->level).cooldown > 0.0f;
             if (on_cooldown) {
@@ -1056,16 +1076,6 @@ static void draw_action_bar_moba(HudRenderer::Impl& r, Hud::Impl& s) {
                     f32 tx = cx - tw * 0.5f;
                     f32 ty = cy - line_h * 0.5f + ascent;
                     emit_text(r, tx, ty, buf, cfg.style.cooldown_text_color, px);
-                }
-            } else if (def && inst && s.world_ctx && is_castable_form(def->form)) {
-                u32 unit_id = s.world_ctx->selection
-                                ? s.world_ctx->selection->selected().front().id
-                                : UINT32_MAX;
-                if (unit_id != UINT32_MAX && s.world_ctx->world) {
-                    if (!can_afford(*s.world_ctx->world, unit_id,
-                                    def->level_data(inst->level))) {
-                        draw_disc(r, cx, cy, button_r, cfg.style.disabled_tint);
-                    }
                 }
             }
         }
@@ -1430,6 +1440,13 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
             }
             const auto* abil_def = s.world_ctx->abilities->get(fa);
             if (inst && abil_def && is_castable_form(abil_def->form)) {
+                // Affordability and cooldown stack (see action-bar paths).
+                // Mana dim first, cooldown pie + countdown on top.
+                if (!can_afford(*s.world_ctx->world, carrier_id,
+                                abil_def->level_data(inst->level))) {
+                    emit_rect(r, icon_rect, cfg.style.disabled_tint);
+                }
+
                 bool on_cooldown = inst->cooldown_remaining > 0.05f
                                 && abil_def->level_data(inst->level).cooldown > 0.0f;
                 if (on_cooldown) {
@@ -1448,9 +1465,6 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
                         f32 ty = icon_rect.y + (icon_rect.h - line_h) * 0.5f + ascent;
                         emit_text(r, tx, ty, buf, cfg.style.cooldown_text_color, px);
                     }
-                } else if (!can_afford(*s.world_ctx->world, carrier_id,
-                                       abil_def->level_data(inst->level))) {
-                    emit_rect(r, icon_rect, cfg.style.disabled_tint);
                 }
             }
         }
