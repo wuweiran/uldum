@@ -8,6 +8,7 @@
 #include "render/shadow.h"
 #include "render/animation.h"
 #include "render/particles.h"
+#include "render/glow_system.h"
 #include "render/effect.h"
 #include "core/handle.h"
 #include "asset/model.h"
@@ -155,6 +156,7 @@ private:
     bool create_mesh_pipeline();
     bool create_skinned_mesh_pipeline();
     bool create_particle_pipeline();
+    bool create_glow_pipeline();
     bool create_terrain_pipeline();
     bool create_water_pipeline();
     bool create_shadow_pipeline();
@@ -387,6 +389,11 @@ private:
     rhi::PipelineLayoutHandle m_particle_pipeline_layout{};
     rhi::PipelineHandle       m_particle_pipeline{};
 
+    // Glow pipeline (additive, depth test on, depth write off) — engine
+    // light visuals (volumetric Tyndall shafts). Push constant: mat4 vp + float time.
+    rhi::PipelineLayoutHandle m_glow_pipeline_layout{};
+    rhi::PipelineHandle       m_glow_pipeline{};
+
     // Fog of war texture (R8, tiles_x * tiles_y, updated per frame)
     GpuTexture  m_fog_texture{};
     rhi::BufferHandle m_fog_staging_buffer{};
@@ -405,8 +412,9 @@ private:
     // Per-entity animation instances (entity id → AnimationInstance)
     std::unordered_map<u32, AnimationInstance> m_anim_instances;
 
-    // Particle system + effect system
+    // Particle system + glow system + effect system
     ParticleSystem  m_particles;
+    GlowSystem      m_glow;
     EffectRegistry  m_effect_registry;
     EffectManager   m_effect_manager;
 

@@ -205,6 +205,8 @@ bool Renderer::init(rhi::Rhi& rhi) {
     }
     if (!m_particles.init(rhi)) return false;  // must be before particle pipeline (creates desc layout)
     if (!create_particle_pipeline()) return false;
+    if (!m_glow.init(rhi)) return false;
+    if (!create_glow_pipeline()) return false;
     if (!create_terrain_pipeline()) return false;
     if (!create_water_pipeline()) return false;
     if (!create_skybox_pipeline()) return false;
@@ -212,6 +214,7 @@ bool Renderer::init(rhi::Rhi& rhi) {
     if (!create_shadow_pipeline()) return false;
     m_effect_registry.register_defaults();
     m_effect_manager.set_particles(&m_particles);
+    m_effect_manager.set_glow(&m_glow);
     m_effect_manager.set_registry(&m_effect_registry);
 
     // Mega vertex/index buffers — all static meshes share one VB + IB (Phase 14b)
@@ -429,6 +432,9 @@ void Renderer::shutdown() {
 
     m_rhi->destroy_pipeline(m_particle_pipeline);
     m_rhi->destroy_pipeline_layout(m_particle_pipeline_layout);
+    m_rhi->destroy_pipeline(m_glow_pipeline);
+    m_rhi->destroy_pipeline_layout(m_glow_pipeline_layout);
+    m_glow.shutdown();
     m_rhi->destroy_pipeline(m_skinned_shadow_pipeline);
     m_rhi->destroy_pipeline_layout(m_skinned_shadow_pipeline_layout);
     m_rhi->destroy_pipeline(m_skinned_mesh_pipeline);
@@ -1785,6 +1791,88 @@ bool Renderer::create_particle_pipeline() {
     return true;
 }
 
+bool Renderer::create_glow_pipeline() {
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/glow.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/glow.frag.spv");
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
+        log::error(TAG, "Failed to load glow shaders");
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
+        return false;
+    }
+
+    // Push constant: mat4 vp + float time (16 floats + 1).
+    rhi::PushConstantRange pc{};
+    pc.stages = rhi::ShaderStage::Vertex;
+    pc.size   = sizeof(glm::mat4);
+
+    rhi::PipelineLayoutDesc pl_desc{};
+    pl_desc.push_constants = std::span{&pc, 1};
+    m_glow_pipeline_layout = m_rhi->create_pipeline_layout(pl_desc);
+    if (!m_glow_pipeline_layout.is_valid()) {
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
+        return false;
+    }
+
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
+
+    rhi::VertexBindingDesc binding{ 0, sizeof(GlowVertex), false };
+    rhi::VertexAttributeDesc attrs[5]{
+        { 0, 0, offsetof(GlowVertex, position), rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(GlowVertex, color),    rhi::TextureFormat::R32G32B32A32_SFLOAT },
+        { 2, 0, offsetof(GlowVertex, texcoord), rhi::TextureFormat::R32G32_SFLOAT },
+        { 3, 0, offsetof(GlowVertex, tyndall),  rhi::TextureFormat::R32_SFLOAT },
+        { 4, 0, offsetof(GlowVertex, fade),     rhi::TextureFormat::R32_SFLOAT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 5};
+
+    rhi::RasterizerState rs{};
+    rs.cull_mode = rhi::CullMode::None;  // shafts are double-sided billboards
+
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = false;  // emissive, transparent
+    ds.depth_compare      = rhi::CompareOp::Less;
+
+    // Additive blend — overlapping shafts accumulate and bloom.
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::One;
+    ba.dst_color_factor = rhi::BlendFactor::One;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::One;
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_glow_pipeline_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_glow_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    if (!m_glow_pipeline.is_valid()) return false;
+
+    log::info(TAG, "Glow pipeline created (additive)");
+    return true;
+}
+
 bool Renderer::create_terrain_pipeline() {
     auto vert_h = load_shader(*m_rhi, "engine/shaders/terrain.vert.spv");
     auto frag_h = load_shader(*m_rhi, "engine/shaders/terrain.frag.spv");
@@ -2948,15 +3036,20 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                     const std::function<void()>& on_after_terrain) {
     if (extent.width == 0 || extent.height == 0) return;
 
-    // Collect point lights from active glow particles
+    // Collect one point light per live glow effect. Glows are the engine's
+    // light-emitting effect; particles never emit light (sparks/spray are
+    // pure billboards — the orb/droplet sprites must NOT light the scene).
     {
-        auto particles = m_particles.particle_data();
-        for (auto& p : particles) {
-            if (p.texture_id == ParticleSystem::SHAPE_GLOW && p.life > 0) {
-                f32 life_frac = p.life / p.max_life;
-                glm::vec3 color{p.start_color.r, p.start_color.g, p.start_color.b};
-                add_point_light(p.position, color, p.size * 20.0f, 0.6f * life_frac);
-            }
+        auto glows = m_glow.glow_data();
+        for (auto& g : glows) {
+            f32 t    = (g.params.life > 0) ? (g.age / g.params.life) : 1.0f;
+            f32 fade = std::sin(std::clamp(t, 0.0f, 1.0f) * 3.14159265f);  // 0→1→0
+            glm::vec3 color{g.color.r, g.color.g, g.color.b};
+            // Light reach derives from the beam width; brightness from intensity.
+            // (The shaft is thin; the light it throws spans several beam-widths.)
+            f32 reach = g.params.radius * 6.0f + 60.0f;
+            glm::vec3 lp = g.base + glm::vec3{0, 0, g.params.height * 0.35f};
+            add_point_light(lp, color, reach, g.params.intensity * fade);
         }
     }
 
@@ -3410,6 +3503,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
 
         m_particles.update(frame_dt);
         m_particles.upload(cam_right, cam_up);
+        m_glow.update(frame_dt);
 
         cmd.bind_pipeline(m_particle_pipeline);
         cmd.set_viewport(0, 0, vw, vh);
@@ -3420,6 +3514,18 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                            0, sizeof(glm::mat4), &particle_vp);
 
         m_particles.draw(cmd);
+
+        // ── Glow pass (additive static volumetric light shafts) ───────────
+        if (m_glow_pipeline.is_valid()) {
+            m_glow.upload(m_camera.position());
+            cmd.bind_pipeline(m_glow_pipeline);
+            cmd.set_viewport(0, 0, vw, vh);
+            cmd.set_scissor(0, 0, extent.width, extent.height);
+            glm::mat4 glow_vp = vp;
+            cmd.push_constants(m_glow_pipeline_layout, rhi::ShaderStage::Vertex,
+                               0, sizeof(glm::mat4), &glow_vp);
+            m_glow.draw(cmd);
+        }
     }
 }
 

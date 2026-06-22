@@ -1,63 +1,58 @@
 {
     "frost_aura": {
-        "count": 1, "emit_rate": 18, "speed": 30, "life": 0.8, "size": 14,
-        "gravity": -8, "spread": 0.7,
-        "texture": "glow",
-        "start_color": { "r": 0.55, "g": 0.85, "b": 1.0, "a": 0.85 },
-        "end_color":   { "r": 0.20, "g": 0.45, "b": 0.95, "a": 0.0 }
+        "type": "glow",
+        "height": 160, "radius": 22, "life": 0.8,
+        "tyndall": 0.55, "intensity": 0.7,
+        "color": { "r": 0.55, "g": 0.85, "b": 1.0, "a": 0.85 }
     },
     "frost_hit": {
+        "type": "spark",
         "count": 30, "speed": 240, "life": 0.55, "size": 10,
         "gravity": -120, "spread": 0.35,
-        "texture": "spark",
-        "start_color": { "r": 0.85, "g": 0.97, "b": 1.0, "a": 1.0 },
-        "end_color":   { "r": 0.20, "g": 0.45, "b": 1.0, "a": 0.0 }
+        "color": { "r": 0.85, "g": 0.97, "b": 1.0, "a": 1.0 }
     },
     "portal_rim": {
+        "type": "spark",
         "count": 1, "emit_rate": 14, "speed": 60, "life": 1.4, "size": 9, "gravity": 20,
-        "start_color": { "r": 1.0, "g": 0.85, "b": 0.25, "a": 0.9 },
-        "end_color":   { "r": 1.0, "g": 0.55, "b": 0.10, "a": 0.0 }
+        "color": { "r": 1.0, "g": 0.85, "b": 0.25, "a": 0.9 }
     },
     "hit_spark": {
+        "type": "spark",
         "count": 5, "speed": 80, "life": 0.3, "size": 6, "gravity": -100,
-        "texture": "spark",
-        "start_color": { "r": 1, "g": 0.7, "b": 0.2, "a": 1 },
-        "end_color": { "r": 1, "g": 0.3, "b": 0, "a": 0 }
+        "color": { "r": 1, "g": 0.7, "b": 0.2, "a": 1 }
     },
     "death_burst": {
+        "type": "spray",
         "count": 20, "speed": 150, "life": 0.6, "size": 10, "gravity": -200,
-        "texture": "blood",
-        "start_color": { "r": 0.8, "g": 0.1, "b": 0.1, "a": 1 },
-        "end_color": { "r": 0.3, "g": 0, "b": 0, "a": 0 }
+        "color": { "r": 0.8, "g": 0.1, "b": 0.1, "a": 1 }
     },
     "heal_glow": {
-        "count": 24, "radius": 25, "speed": 80, "life": 0.9, "size": 35, "gravity": 0,
-        "texture": "glow",
-        "start_color": { "r": 1, "g": 0.85, "b": 0.2, "a": 1 },
-        "end_color": { "r": 1, "g": 0.7, "b": 0.1, "a": 0 }
+        "type": "glow",
+        "height": 150, "radius": 45, "life": 0.9,
+        "fade_in": 0.05, "fade_out": 0.3,
+        "tyndall": 0.6, "intensity": 1.1,
+        "color": { "r": 1, "g": 0.85, "b": 0.2, "a": 1 }
     },
     "heal_potion": {
+        "type": "spray",
         "count": 12, "speed": 80, "life": 0.7, "size": 7, "gravity": -120, "spread": 0.08,
-        "texture": "blood",
-        "start_color": { "r": 0.85, "g": 0.15, "b": 0.15, "a": 1 },
-        "end_color":   { "r": 0.35, "g": 0.0,  "b": 0.0,  "a": 0 }
+        "color": { "r": 0.85, "g": 0.15, "b": 0.15, "a": 1 }
     },
     "spell_cast": {
+        "type": "spark",
         "count": 15, "speed": 100, "life": 0.4, "size": 7, "gravity": -50,
-        "texture": "spark",
-        "start_color": { "r": 0.3, "g": 0.5, "b": 1, "a": 1 },
-        "end_color": { "r": 0.1, "g": 0.2, "b": 0.8, "a": 0 }
+        "color": { "r": 0.3, "g": 0.5, "b": 1, "a": 1 }
     },
     "consecration_burst": {
-        "count": 80, "speed": 280, "life": 0.9, "size": 20, "gravity": -120, "spread": 0.20,
-        "texture": "glow",
-        "start_color": { "r": 1.0, "g": 0.85, "b": 0.35, "a": 1 },
-        "end_color":   { "r": 1.0, "g": 0.55, "b": 0.10, "a": 0 }
+        "type": "glow",
+        "height": 240, "radius": 40, "life": 0.9,
+        "tyndall": 0.65, "intensity": 1.3,
+        "color": { "r": 1.0, "g": 0.85, "b": 0.35, "a": 1 }
     },
     "devotion_pulse": {
-        "count": 6, "speed": 80, "life": 0.5, "size": 14, "gravity": 0, "spread": 0.05,
-        "texture": "glow",
-        "start_color": { "r": 1.0, "g": 0.9, "b": 0.4, "a": 0.9 },
-        "end_color":   { "r": 1.0, "g": 0.7, "b": 0.2, "a": 0 }
+        "type": "glow",
+        "height": 140, "radius": 18, "life": 0.5,
+        "tyndall": 0.55, "intensity": 0.9,
+        "color": { "r": 1.0, "g": 0.9, "b": 0.4, "a": 0.9 }
     }
 }

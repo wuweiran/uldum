@@ -9,6 +9,7 @@ add_library(uldum_render STATIC
     animation.cpp
     procedural_skeleton.cpp
     particles.cpp
+    glow_system.cpp
     effect.cpp
     world_overlays.cpp
     hud/font.cpp

@@ -54,18 +54,7 @@ void ParticleSystem::shutdown() {
     m_rhi = nullptr;
 }
 
-// ── Emitter management ───────────────────────────────────────────────────
-
-u32 ParticleSystem::add_emitter(const ParticleEmitter& emitter) {
-    ParticleEmitter e = emitter;
-    e.id = ++m_next_emitter_id;
-    m_emitters.push_back(e);
-    return e.id;
-}
-
-void ParticleSystem::remove_emitter(u32 id) {
-    std::erase_if(m_emitters, [id](const ParticleEmitter& e) { return e.id == id; });
-}
+// ── Burst ────────────────────────────────────────────────────────────────
 
 void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity, u32 texture_id, f32 spread, f32 radius) {
     ParticleEmitter e;
@@ -78,12 +67,10 @@ void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 s
     e.particle_speed = speed;
     e.particle_life  = life;
     e.particle_size  = size;
-    e.start_color    = color;
-    e.end_color      = glm::vec4(color.r, color.g, color.b, 0);
+    e.color          = color;
     e.gravity        = gravity;
     e.burst_count    = count;
     e.active         = true;
-    e.duration       = 0;
     e.texture_id     = texture_id;
     m_emitters.push_back(e);
 }
@@ -94,8 +81,7 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
     for (u32 i = 0; i < count && m_particles.size() < MAX_PARTICLES; ++i) {
         Particle p;
         p.position    = emitter.position;
-        p.start_color = emitter.start_color;
-        p.end_color   = emitter.end_color;
+        p.color       = emitter.color;
         p.life        = emitter.particle_life;
         p.max_life    = emitter.particle_life;
         p.size        = emitter.particle_size;
@@ -133,41 +119,13 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
 // ── Update ───────────────────────────────────────────────────────────────
 
 void ParticleSystem::update(f32 dt) {
-    // Process emitters
+    // Each emitter is a one-shot burst: spawn its particles, then retire it.
     for (auto& emitter : m_emitters) {
         if (!emitter.active) continue;
-
-        // Burst
-        if (emitter.burst_count > 0) {
-            spawn_from_emitter(emitter, emitter.burst_count);
-            emitter.burst_count = 0;
-            emitter.active = false;
-            continue;
-        }
-
-        // Continuous emission
-        if (emitter.emit_rate > 0) {
-            emitter.accumulator += emitter.emit_rate * dt;
-            u32 to_spawn = static_cast<u32>(emitter.accumulator);
-            if (to_spawn > 0) {
-                emitter.accumulator -= static_cast<f32>(to_spawn);
-                spawn_from_emitter(emitter, to_spawn);
-            }
-        }
-
-        // Duration
-        if (emitter.duration >= 0) {
-            emitter.elapsed += dt;
-            if (emitter.elapsed >= emitter.duration) {
-                emitter.active = false;
-            }
-        }
+        spawn_from_emitter(emitter, emitter.burst_count);
+        emitter.active = false;
     }
-
-    // Remove dead emitters
-    std::erase_if(m_emitters, [](const ParticleEmitter& e) {
-        return !e.active && e.burst_count == 0;
-    });
+    std::erase_if(m_emitters, [](const ParticleEmitter& e) { return !e.active; });
 
     // Simulate particles
     for (auto& p : m_particles) {
@@ -192,9 +150,10 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
     for (u32 i = 0; i < max_quads; ++i) {
         auto& p = m_particles[i];
 
-        // Lerp color over lifetime
-        f32 t = 1.0f - (p.life / p.max_life);
-        glm::vec4 color = glm::mix(p.start_color, p.end_color, t);
+        // Built-in disappearance: hold the tint, fade its alpha linearly to 0
+        // over the particle's life (life/max_life goes 1→0).
+        glm::vec4 color = p.color;
+        color.a *= (p.max_life > 0) ? (p.life / p.max_life) : 0.0f;
 
         // Billboard quad corners
         f32 half = p.size * 0.5f;

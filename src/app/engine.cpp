@@ -527,7 +527,6 @@ bool Engine::start_session() {
     {
         std::string effects_path = m_map.map_root() + "/types/effects.json";
         m_renderer.effect_registry().load_from_json(effects_path);
-        m_renderer.effect_registry().resolve_textures(m_renderer.particles());
     }
     {
         std::vector<u8> shallow, deep;

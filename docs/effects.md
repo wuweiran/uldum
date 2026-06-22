@@ -2,30 +2,57 @@
 
 ## Overview
 
-The effect system renders visual effects attached to units or positions. Maps define all effect content — the engine provides particle rendering. Effects are currently particle-only; model-based effects are not yet implemented.
+The effect system renders visual effects attached to units or positions. Maps
+define all effect content as named, parameterized **presets**; the engine owns
+the **rendering backends** that draw them. The two are separate layers — a preset
+picks a *phenomenon* (`type`), and the engine decides how to render it.
+
+An effect's `type` names an orthogonal visual phenomenon (not a particle shape):
+
+| `type` | Backend | What it is |
+|---|---|---|
+| `spark` | particle | Energetic bright bits — impacts, magic, soft auras. |
+| `spray` | particle | A liquid arc — blood or water (the color decides which). |
+| `glow`  | **glow system** | Engine-owned light visual: rising volumetric Tyndall light shafts today (WC3 level-up look); the home for future light effects like persistent "hero glow". No texture knob — the look is procedural. |
+
+Particle **shape** (the soft orb / teardrop sprite) is an internal engine detail
+— authors never pick it. You pick the phenomenon; the engine maps it to a shape
+(or to the glow backend). One effect = exactly one `type`; no composition.
 
 ## Effect Definition
 
-Effect definitions live in `types/effects.json` inside each `.uldmap` (and engine-shipped effects in `engine/types/effects.json`). They're loaded by both host and client at session start, so the registries stay symmetric — there's no Lua-side `DefineEffect` API, by design.
+Effect definitions live in `types/effects.json` inside each `.uldmap`. They're
+loaded by both host and client at session start, so the registries stay symmetric
+— there's no Lua-side `DefineEffect` API, by design.
 
 ```json
 {
     "fire_burst": {
+        "type": "spark",
         "count": 15, "speed": 120, "life": 0.5, "size": 8, "gravity": -100,
-        "texture": "spark",
-        "start_color": { "r": 1, "g": 0.6, "b": 0.1, "a": 1 },
-        "end_color":   { "r": 1, "g": 0.2, "b": 0,   "a": 0 }
+        "color": { "r": 1, "g": 0.6, "b": 0.1, "a": 1 }
     },
-    "aura_glow": {
-        "count": 1, "emit_rate": 10, "speed": 30, "life": 0.8, "size": 5,
-        "gravity": 40,
-        "start_color": { "r": 0.4, "g": 0.6, "b": 1, "a": 0.6 },
-        "end_color":   { "r": 0.2, "g": 0.3, "b": 0.8, "a": 0 }
+    "level_up": {
+        "type": "glow",
+        "height": 240, "radius": 26, "life": 1.3, "tyndall": 0.65, "intensity": 1.2,
+        "color": { "r": 1.0, "g": 0.92, "b": 0.55, "a": 1.0 }
     }
 }
 ```
 
-Fields (see `src/render/effect.h` for the full struct):
+### Common fields (all types)
+
+| Field | Default | Meaning |
+|---|---|---|
+| `type` | `spark` | The phenomenon: `spark`, `spray`, or `glow`. Selects the backend + param set below. |
+
+Color: every type takes a single **`color`** (RGBA). For particles (`spark`/
+`spray`) the particle spawns at this color and its **alpha fades linearly to 0**
+over each particle's `life` — a built-in disappearance, no second color needed.
+For `glow` it's the steady shaft/light tint; brightness rises and falls via the
+fade envelope (`fade_in`/`fade_out`).
+
+### Particle fields (`spark` / `spray`)
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -37,8 +64,33 @@ Fields (see `src/render/effect.h` for the full struct):
 | `gravity` | -200 | Per-second downward acceleration |
 | `spread` | 1.0 | `0` = straight up, `1` = full sphere |
 | `radius` | 0 | `> 0` = ring emitter, particles arranged on a horizontal circle |
-| `texture` | (default soft circle) | Built-in name: `spark`, `blood`, `glow`, `droplet` |
-| `start_color`, `end_color` | yellow → red | RGBA at birth and at death |
+
+### Glow fields (`glow`)
+
+Engine-owned light shaft; no texture/shape knob — the look is procedural. A
+single **static** vertical shaft (no motion) with one **`color`**, lit by a
+Tyndall scattering envelope: it blooms in, then as it dies the scattering halo
+**retracts toward the bright core and weakens** (not a flat alpha fade) — light
+scattering away, like a door closing in the dark. Emits one point light while it
+plays (reach + brightness derived from `radius` + `intensity`).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `color` | — | RGBA tint of the shaft + the light it casts |
+| `height` | 220 | Shaft height (world units) |
+| `radius` | 24 | Beam width (world units); also scales the light's reach |
+| `life` | 1.2 | Total fade-in→hold→fade-out duration (seconds) |
+| `fade_in` | 0 | Seconds to ramp on (linear). `0` = half of `life` |
+| `fade_out` | 0 | Seconds to ramp off (linear). `0` = half of `life` |
+| `tyndall` | 0.6 | Volumetric striation strength (`0` = clean shaft) |
+| `intensity` | 1.0 | Brightness of the beam and the light it casts |
+
+With `fade_in`/`fade_out` both unset the glow uses a symmetric ramp (half `life`
+each). Set them in seconds to control on/off speed independently — e.g.
+`"fade_in": 0.1, "fade_out": 0.6` snaps on then drifts away. If the two together
+exceed `life` they're scaled to fit (the peak lands where they meet).
+
+(see `src/render/effect.h` for the full structs)
 
 ## Lua API
 

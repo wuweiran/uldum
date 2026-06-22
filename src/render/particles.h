@@ -8,7 +8,6 @@
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
-#include <span>
 #include <vector>
 
 namespace uldum::rhi { class Rhi; }
@@ -20,15 +19,14 @@ struct ParticleVertex {
     glm::vec3 position;
     glm::vec4 color;
     glm::vec2 texcoord;
-    u32       texture_id = 0;  // index into particle texture array
+    u32       texture_id = 0;  // procedural shape id (SHAPE_*), not a texture index
 };
 
 // Single particle state (CPU)
 struct Particle {
     glm::vec3 position{0};
     glm::vec3 velocity{0};
-    glm::vec4 start_color{1};
-    glm::vec4 end_color{1, 1, 1, 0};
+    glm::vec4 color{1};      // tint; alpha fades to 0 over life (built-in disappearance)
     f32 life     = 0;
     f32 max_life = 1;
     f32 size     = 8;
@@ -39,27 +37,24 @@ struct Particle {
 // Emitter shapes
 enum class EmitterShape : u8 { Point, Sphere, Ring };
 
-// A particle emitter — spawns particles over time or as a burst
+// A particle emitter — a one-shot burst. `burst()` pushes one of these per
+// call; update() spawns its particles on the next frame, then drops it.
+// Continuous emission is driven at the effect layer (EffectManager::update
+// calls burst() repeatedly), not here.
 struct ParticleEmitter {
     glm::vec3    position{0};
     EmitterShape shape        = EmitterShape::Point;
-    f32          emit_rate    = 0;         // particles per second (0 = burst only)
-    f32          accumulator  = 0;
     f32          particle_life  = 1.0f;
     f32          particle_speed = 100.0f;
     f32          particle_size  = 8.0f;
-    glm::vec4    start_color{1.0f, 0.8f, 0.2f, 1.0f};
-    glm::vec4    end_color{1.0f, 0.2f, 0.0f, 0.0f};
+    glm::vec4    color{1.0f, 0.8f, 0.2f, 1.0f};   // tint; alpha fades to 0 over life
     f32          spread       = 1.0f;      // 0 = up only, 1 = full sphere
     f32          gravity      = -200.0f;   // Z acceleration
 
     bool         active       = true;
-    f32          duration     = -1;        // -1 = infinite, >0 = auto-destroy
-    f32          elapsed      = 0;
-    u32          burst_count  = 0;         // >0: spawn this many immediately, then deactivate
+    u32          burst_count  = 0;         // particles to spawn, then deactivate
 
-    u32          id           = 0;         // for external tracking
-    u32          texture_id   = 0;         // particle texture (0 = default soft circle)
+    u32          texture_id   = 0;         // procedural shape id (SHAPE_*)
     f32          radius       = 0;         // Ring shape: radius of the circle
 };
 
@@ -70,10 +65,6 @@ public:
 
     bool init(rhi::Rhi& rhi);
     void shutdown();
-
-    // Add an emitter. Returns its id for later removal.
-    u32 add_emitter(const ParticleEmitter& emitter);
-    void remove_emitter(u32 id);
 
     // Spawn a one-shot burst at a position. If `radius > 0`, the emitter
     // uses Ring shape; otherwise shape is chosen from `spread`.
@@ -94,23 +85,17 @@ public:
     // next scene.
     void clear() { m_particles.clear(); m_emitters.clear(); m_quad_count = 0; }
 
-    u32 particle_count() const { return static_cast<u32>(m_particles.size()); }
-    u32 quad_count()     const { return m_quad_count; }
-    std::span<const Particle> particle_data() const { return m_particles; }
-
-    // Procedural shape IDs (computed in fragment shader, no textures needed)
-    static constexpr u32 SHAPE_DEFAULT = 0;  // soft circle
-    static constexpr u32 SHAPE_SPARK   = 1;  // 4-pointed star
-    static constexpr u32 SHAPE_BLOOD   = 2;  // irregular splatter
-    static constexpr u32 SHAPE_GLOW    = 3;  // gaussian orb
-    static constexpr u32 SHAPE_DROPLET = 4;  // teardrop
+    // Procedural shape IDs (computed in fragment shader, no textures needed).
+    // The engine owns the mapping from effect type → shape (see effect.cpp
+    // shape_for); these are the two sprites that mapping actually uses.
+    static constexpr u32 SHAPE_ORB     = 0;  // soft gaussian orb (default) — sparks
+    static constexpr u32 SHAPE_DROPLET = 1;  // teardrop — spray / water
 
 private:
     void spawn_from_emitter(ParticleEmitter& emitter, u32 count);
 
     std::vector<Particle>         m_particles;
     std::vector<ParticleEmitter>  m_emitters;
-    u32 m_next_emitter_id = 0;
 
     // GPU vertex buffer (dynamic, updated every frame)
     rhi::BufferHandle m_vertex_buffer{};
