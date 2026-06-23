@@ -14,7 +14,6 @@ layout(location = 2) in vec2 in_texcoord;
 layout(location = 3) in uint in_layer_corners;
 layout(location = 4) in uint in_case_info;
 
-layout(location = 0) out vec3 frag_world_normal;
 layout(location = 1) out vec2 frag_texcoord;
 layout(location = 2) centroid out vec2 frag_tile_uv;
 layout(location = 3) out vec3 frag_world_pos;
@@ -31,7 +30,6 @@ void main() {
     vec3 pos = in_position + vec3(0.0, 0.0, WATER_Z_OFFSET);
     vec4 world_pos = pc.model * vec4(pos, 1.0);
     gl_Position = pc.mvp * vec4(pos, 1.0);
-    frag_world_normal = mat3(pc.model) * in_normal;
     frag_texcoord = in_texcoord;
     frag_tile_uv = in_position.xy / 128.0;
     frag_world_pos = world_pos.xyz;

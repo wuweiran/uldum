@@ -34,7 +34,6 @@ layout(binding = 30, std140) uniform PushConstants {
     vec4  camera_pos;
 } pc;
 
-layout(location = 0) in vec3 frag_world_normal;
 layout(location = 1) in vec2 frag_texcoord;
 layout(location = 2) centroid in vec2 frag_tile_uv;
 layout(location = 3) in vec3 frag_world_pos;
@@ -160,102 +159,129 @@ void main() {
 
     if (water_alpha < 0.01) discard;
 
+    // ── Surface color tint (shallow→deep) ───────────────────────────────
     vec3 tint_color = mix(pc.shallow_color.rgb, pc.deep_color.rgb, deep_blend);
 
     vec2 wpos = frag_world_pos.xy;
-    float wt = pc.time;
-    vec3 water_n;
-    float wh = 0.0;
-    float pnoise = texture(transition_noise, wpos * 0.002).r * 6.28;
+    float wt  = pc.time;
 
-    if (deep_blend < 0.5) {
-        vec2 uv1 = wpos * 0.0008 + wt * vec2(0.006, 0.0035);
-        vec2 uv2 = wpos * 0.0013 + wt * vec2(-0.0045, 0.0055);
-        vec3 n1 = texture(water_normal_map, uv1).rgb * 2.0 - 1.0;
-        vec3 n2 = texture(water_normal_map, uv2).rgb * 2.0 - 1.0;
-        water_n = normalize(vec3(n1.xy + n2.xy, n1.z + n2.z));
-        wh = (n1.x + n1.y + n2.x + n2.y) * 0.25;
-    } else {
-        float nx = 0.0, ny = 0.0, nz = 0.0;
-        {
-            vec2 D = normalize(vec2(0.85, 0.5));
-            float w = 0.012, A = 0.8, phi = 0.5, Q = 0.85;
-            float phase = dot(D, wpos) * w + wt * phi + pnoise;
-            float S = sin(phase), C = cos(phase);
-            nx += D.x * w * A * C; ny += D.y * w * A * C; nz += Q * w * A * S; wh += A * S;
+    // ── Surface normal — two models, blended by deep_blend ──────────────
+    // SHALLOW: world-anchored scrolling normal map (ripples stay put over the
+    //   bed). DEEP: sum of travelling sine waves (crests propagate, nothing
+    //   anchored) — a scrolling texture would slide a rigid pattern and form
+    //   standing "whirlpool" nodes.
+    float wt2 = wt;
+
+    // Shallow scrolling-texture normal.
+    float s_scale = 0.0011;
+    vec2 warp = (texture(water_normal_map, wpos * s_scale * 0.25
+                         + wt2 * vec2(0.0008, 0.0011)).xy * 2.0 - 1.0) * 0.10;
+    vec2 uv1 = wpos * s_scale       + wt2 * vec2( 0.006,  0.0035) + warp;
+    vec2 uv2 = wpos * s_scale * 1.7 + wt2 * vec2(-0.0045, 0.0055) + warp * 0.7;
+    vec3 n1 = texture(water_normal_map, uv1).rgb * 2.0 - 1.0;
+    vec3 n2 = texture(water_normal_map, uv2).rgb * 2.0 - 1.0;
+    vec3 shallow_n = normalize(vec3((n1.xy + n2.xy) * 0.55, n1.z + n2.z));
+
+    // Deep travelling-wave normal. Ridged waves (height = -abs(sin) → sharp
+    // crests, broad troughs). Flat-ish spectrum so no single swell dominates
+    // (a dominant swell sweeps a "white cloud" of reflection); a low-freq
+    // domain warp bends the crest lines so they don't repeat at large scale.
+    vec3 deep_n = shallow_n;
+    float sea_crest = 0.0;   // 0..1 crest height, carried to the foam stage
+    if (deep_blend > 0.001) {
+        const float WAVE_STEEPNESS = 9.0;
+        vec2 dwarp = (texture(water_normal_map, wpos * 0.00035
+                              + wt2 * vec2(0.0015, -0.0011)).xy * 2.0 - 1.0) * 60.0;
+        vec2 p = wpos + dwarp;
+        vec2 grad = vec2(0.0);
+        float h = 0.0, hmax = 0.0;
+        float freq = 0.012, amp = 1.0, spd = 0.45;
+        for (int i = 0; i < 4; i++) {   // big swells + mid waves
+            float a = float(i) * 2.39996 + 0.7;   // golden-angle direction fan
+            vec2 D = vec2(cos(a), sin(a));
+            float ph = dot(D, p) * freq + wt2 * spd;
+            float s  = sin(ph);
+            grad += D * (-sign(s) * cos(ph)) * freq * amp;   // d(-abs(sin))/dph
+            h    += -abs(s) * amp;
+            hmax += amp;
+            freq *= 1.47;   // non-harmonic
+            amp  *= 0.66;
+            spd  *= 1.18;
         }
-        {
-            vec2 D = normalize(vec2(-0.5, 0.87));
-            float w = 0.03, A = 0.5, phi = 0.9, Q = 0.75;
-            float phase = dot(D, wpos) * w + wt * phi + pnoise * 0.8;
-            float S = sin(phase), C = cos(phase);
-            nx += D.x * w * A * C; ny += D.y * w * A * C; nz += Q * w * A * S; wh += A * S;
-        }
-        {
-            vec2 D = normalize(vec2(0.3, -0.95));
-            float w = 0.06, A = 0.3, phi = 1.5, Q = 0.6;
-            float phase = dot(D, wpos) * w + wt * phi + pnoise * 1.1;
-            float S = sin(phase), C = cos(phase);
-            nx += D.x * w * A * C; ny += D.y * w * A * C; nz += Q * w * A * S; wh += A * S;
-        }
-        water_n = normalize(vec3(-nx, -ny, 1.0 - nz));
+        // High-freq wind chop: one fast sine, outside the swell spectrum, on
+        // the warped position so swells bend it. Not added to h (foam tracks
+        // real crests, not chop). ~16-unit ripples.
+        const float WIND_CHOP = 0.015;
+        vec2  wdir = normalize(vec2(0.7, -0.5));
+        float wph  = dot(wdir, p) * 0.39 + wt2 * 1.5;
+        grad += wdir * cos(wph) * WIND_CHOP;
+        deep_n = normalize(vec3(-grad * WAVE_STEEPNESS, 1.0));
+        sea_crest = (h / hmax + 1.0) * deep_blend;   // 0 trough .. 1 crest
     }
 
+    vec3 water_n = normalize(mix(shallow_n, deep_n, deep_blend));
+
+    // ── Lighting ─────────────────────────────────────────────────────────
+    vec3 N = water_n;
     vec3 light_dir = normalize(env.sun_direction.xyz);
-    vec3 view_dir = normalize(pc.camera_pos.xyz - frag_world_pos);
-    vec3 surface_normal = normalize(vec3(water_n.xy * 0.6, 1.0));
-    vec3 half_vec = normalize(light_dir + view_dir);
-    float ndoth = max(dot(surface_normal, half_vec), 0.0);
-    float spec = pow(ndoth, 48.0);
+    vec3 view_dir  = normalize(pc.camera_pos.xyz - frag_world_pos);
 
-    float wave_intensity = max(water_n.x + water_n.y, 0.0) * 0.5;
+    // Fresnel-Schlick: overhead shows tint/bed, grazing & steep facets show sky.
+    float ndotv  = max(dot(N, view_dir), 0.0);
+    float fresnel = 0.02 + 0.98 * pow(1.0 - ndotv, 5.0);
 
-    vec3 reflected = reflect(-view_dir, water_n);
+    vec3 reflected   = reflect(-view_dir, N);
     vec3 env_reflect = texture(env_cubemap, reflected).rgb;
 
+    vec3 half_vec = normalize(light_dir + view_dir);
+
+    // Sun glint. Higher shininess = tighter, sparser highlights.
+    float shininess = mix(220.0, 175.0, deep_blend);
+    float spec      = pow(max(dot(N, half_vec), 0.0), shininess);
+
+    // Large-scale brightness variation + deep troughs (deep only).
+    float shade1 = texture(transition_noise, wpos * 0.001  + wt * vec2( 0.004, 0.003)).r;
+    float shade2 = texture(transition_noise, wpos * 0.0015 + wt * vec2(-0.003, 0.005)).r;
+    float shade  = (shade1 + shade2) - 1.0;
+    vec3  base   = tint_color * (1.0 + shade * 0.30 * deep_blend);
+
+    vec3 lit_color = mix(base, env_reflect, fresnel) + vec3(spec * 0.35);
+
+    // ── Fog ──────────────────────────────────────────────────────────────
     float fog = 1.0;
     if (pc.fog_enabled > 0.5) {
         fog = texture(fog_tex, frag_fog_uv).r;
     }
 
-    float reflect_strength = 0.1 + wave_intensity * 0.3;
-    vec3 shallow_color = mix(tint_color, env_reflect, reflect_strength) + vec3(spec * 0.3);
-    float shallow_alpha = (spec * 0.8 + wave_intensity * 0.4 + 0.1) * water_alpha;
+    // ── Opacity ──────────────────────────────────────────────────────────
+    // Shallow ≈ clear (riverbed shows through); deep ramps to opaque. Fresnel
+    // and the glint lift opacity where the surface reflects sky.
+    float shallow_base = 0.10;
+    float body_alpha = mix(shallow_base, 1.0, deep_blend);
+    body_alpha = max(body_alpha, fresnel);
+    float final_alpha = clamp(max(body_alpha, spec) * water_alpha, 0.0, 1.0);
 
-    {
-        const float WATER_DEPTH = 2.0;
-        const float ABSORPTION  = 0.08;
-        float view_cos = max(view_dir.z, 0.05);
-        float thickness = 1.0 - exp(-(WATER_DEPTH / view_cos) * ABSORPTION);
-        shallow_alpha = mix(shallow_alpha, water_alpha, thickness * 0.5);
-    }
-
-    float fresnel = (1.0 - smoothstep(0.0, 0.5, water_alpha)) * water_alpha * 2.0;
+    // ── Shore foam ───────────────────────────────────────────────────────
+    // Rides the SDF shoreline (water_alpha); the animated tap only modulates
+    // intensity, never position, so it can't drift off the curve.
+    float shore_coverage = (1.0 - smoothstep(0.0, 0.5, water_alpha)) * water_alpha * 2.0;
     float foam_shimmer = texture(transition_noise, wpos * 0.005 + wt * vec2(0.04, 0.03)).r;
-    float foam = clamp(fresnel * (0.65 + foam_shimmer * 0.6), 0.0, 1.0);
-    shallow_color = mix(shallow_color, vec3(1.0), foam);
-    shallow_alpha = clamp(shallow_alpha + foam * 0.55, 0.0, 1.0);
+    float foam = clamp(shore_coverage * (0.65 + foam_shimmer * 0.6), 0.0, 1.0);
+    vec3  final_color = mix(lit_color, vec3(1.0), foam);
+    final_alpha = clamp(final_alpha + foam * 0.55, 0.0, 1.0);
 
-    float shade1 = texture(transition_noise, wpos * 0.001 + wt * vec2(0.004, 0.003)).r;
-    float shade2 = texture(transition_noise, wpos * 0.0015 + wt * vec2(-0.003, 0.005)).r;
-    float shade = (shade1 + shade2) - 1.0;
-
-    float amp_mod = texture(transition_noise, wpos * 0.0008 + wt * vec2(0.002, 0.001)).r;
-    {
-        vec2 D = normalize(vec2(0.8, 0.55));
-        float w = 0.015, A = 0.6 * amp_mod, phi = 0.5, Q = 0.8;
-        float phase = dot(D, wpos) * w + wt * phi + pnoise * 2.0;
-        float S = sin(phase);
-        wh += A * S;
+    // ── Open-sea whitecaps (emitted from wave crests) ────────────────────
+    // Foam rides sea_crest, so it sits on the crests and travels with them; the
+    // noise tap only breaks the crest line into froth, it doesn't position it.
+    const bool WHITECAP_ENABLE = true;
+    if (WHITECAP_ENABLE && sea_crest > 0.001) {
+        const float WHITECAP_THRESHOLD = 0.82;   // higher = foam on fewer, taller crests
+        float froth = texture(transition_noise, wpos * 0.01 + wt * vec2(0.03, -0.02)).r;
+        float caps  = smoothstep(WHITECAP_THRESHOLD, 0.98, sea_crest) * (0.4 + froth * 0.9);
+        caps = clamp(caps, 0.0, 1.0);
+        final_color = mix(final_color, vec3(1.0), caps);
+        final_alpha = clamp(final_alpha + caps * 0.6, 0.0, 1.0);
     }
-
-    vec3 deep_base = tint_color * (1.0 + shade * 0.35 + wh * 0.25);
-    float deep_reflect = 0.1 + wave_intensity * 0.35;
-    vec3 deep_color = mix(deep_base, env_reflect, deep_reflect) + vec3(spec * 0.15);
-    float deep_alpha = water_alpha;
-
-    vec3 final_color = mix(shallow_color, deep_color, deep_blend);
-    float final_alpha = mix(shallow_alpha, deep_alpha, deep_blend);
 
     out_color = vec4(final_color * fog, final_alpha * fog);
 }
