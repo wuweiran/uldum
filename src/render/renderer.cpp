@@ -1082,6 +1082,7 @@ bool Renderer::create_bindless_resources() {
     td.width        = UNIT_TEX_SIZE;
     td.height       = UNIT_TEX_SIZE;
     td.array_layers = UNIT_TEX_LAYERS;
+    td.type         = rhi::TextureType::Texture2DArray;
     td.format       = rhi::TextureFormat::R8G8B8A8_SRGB;
     td.usage        = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
     m_unit_tex_array = m_rhi->create_texture(td);

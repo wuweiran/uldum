@@ -681,7 +681,7 @@ TextureHandle Rhi::create_texture(const TextureDesc& desc) {
     GLenum target = GL_TEXTURE_2D;
     if (desc.type == TextureType::TextureCube) {
         target = GL_TEXTURE_CUBE_MAP;
-    } else if (desc.array_layers > 1) {
+    } else if (desc.type == TextureType::Texture2DArray) {
         target = GL_TEXTURE_2D_ARRAY;
     }
 

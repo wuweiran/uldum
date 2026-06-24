@@ -1188,7 +1188,8 @@ TextureHandle Rhi::create_texture(const TextureDesc& desc) {
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     switch (desc.type) {
-        case TextureType::Texture2D:   ici.imageType = VK_IMAGE_TYPE_2D; break;
+        case TextureType::Texture2D:      ici.imageType = VK_IMAGE_TYPE_2D; break;
+        case TextureType::Texture2DArray: ici.imageType = VK_IMAGE_TYPE_2D; break;
         case TextureType::TextureCube: ici.imageType = VK_IMAGE_TYPE_2D;
                                        ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
                                        break;
@@ -1211,12 +1212,10 @@ TextureHandle Rhi::create_texture(const TextureDesc& desc) {
     vci.image    = img;
     vci.format   = ici.format;
     switch (desc.type) {
-        case TextureType::Texture2D:
-            vci.viewType = (desc.array_layers > 1) ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                                   : VK_IMAGE_VIEW_TYPE_2D;
-            break;
-        case TextureType::TextureCube: vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE; break;
-        case TextureType::Texture3D:   vci.viewType = VK_IMAGE_VIEW_TYPE_3D;   break;
+        case TextureType::Texture2D:      vci.viewType = VK_IMAGE_VIEW_TYPE_2D;       break;
+        case TextureType::Texture2DArray: vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; break;
+        case TextureType::TextureCube:    vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE;     break;
+        case TextureType::Texture3D:      vci.viewType = VK_IMAGE_VIEW_TYPE_3D;       break;
     }
     vci.subresourceRange.aspectMask     = aspect_for_usage(desc.usage);
     vci.subresourceRange.baseMipLevel   = 0;

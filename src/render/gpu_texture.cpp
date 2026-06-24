@@ -157,6 +157,7 @@ GpuTexture upload_texture_array(rhi::Rhi& rhi, const u8** layers_data, u32 layer
     td.width        = width;
     td.height       = height;
     td.array_layers = layer_count;
+    td.type         = rhi::TextureType::Texture2DArray;
     td.format       = srgb ? rhi::TextureFormat::R8G8B8A8_SRGB : rhi::TextureFormat::R8G8B8A8_UNORM;
     td.usage        = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
     tex.texture = rhi.create_texture(td);

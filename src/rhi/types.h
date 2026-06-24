@@ -109,6 +109,7 @@ constexpr bool any(TextureUsage value, TextureUsage flag) {
 
 enum class TextureType : u8 {
     Texture2D,
+    Texture2DArray,   // always a layered view, even with array_layers == 1
     TextureCube,
     Texture3D,
 };
