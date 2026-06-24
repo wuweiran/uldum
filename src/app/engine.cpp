@@ -87,7 +87,12 @@ bool Engine::init(const LaunchArgs& args) {
     // Platform
     m_platform = platform::Platform::create();
     platform::Config platform_config{};
-    platform_config.title  = "Uldum Engine";
+    // Window title: the game's name (compile-def from game.json), "Uldum" for dev.
+#ifdef ULDUM_APP_NAME
+    platform_config.title  = ULDUM_APP_NAME;
+#else
+    platform_config.title  = "Uldum";
+#endif
     platform_config.width  = 960;
     platform_config.height = 540;
 
@@ -261,7 +266,11 @@ bool Engine::init(const LaunchArgs& args) {
     // Load persisted settings (fires the subscribers above), then apply
     // defaults only for keys the file didn't carry — so a fresh install
     // starts sane and an existing settings.json wins where present.
-    m_settings_path = m_platform->writable_data_dir() + "/settings.json";
+#ifdef ULDUM_APP_ID
+    m_settings_path = m_platform->user_data_dir(ULDUM_APP_ID) + "/settings.json";
+#else
+    m_settings_path = m_platform->user_data_dir("Uldum") + "/settings.json";
+#endif
     m_settings.load(m_settings_path);
     for (const auto& vb : kVolumes) {
         if (!m_settings.has(vb.key)) m_settings.set(vb.key, vb.def);

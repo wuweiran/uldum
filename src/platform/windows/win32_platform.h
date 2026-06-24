@@ -37,7 +37,7 @@ public:
 
     void set_cursor_visible(bool visible) override;
     void set_fullscreen(bool fullscreen) override;
-    std::string writable_data_dir() const override;
+    std::string user_data_dir(std::string_view key) const override;
 
 private:
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);

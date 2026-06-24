@@ -159,11 +159,13 @@ public:
     // no-op for platforms that are always fullscreen (Android).
     virtual void set_fullscreen(bool /*fullscreen*/) {}
 
-    // Absolute path to a per-user, app-private directory the engine may
-    // write to (settings, future profiles). The engine appends its own
-    // subpath/filename. Windows: %LOCALAPPDATA%/Uldum. Android: the app's
-    // internalDataPath. Returns "." if no writable location is available.
-    virtual std::string writable_data_dir() const { return "."; }
+    // Per-user writable directory namespaced by `key`; the caller appends only
+    // a filename. Windows appends `key` to %LOCALAPPDATA% (shared across
+    // programs); Android ignores it (internalDataPath is already per-install).
+    // Returns "." if no writable location is available.
+    virtual std::string user_data_dir(std::string_view key) const {
+        return std::string(key);
+    }
 
     static std::unique_ptr<Platform> create();
 

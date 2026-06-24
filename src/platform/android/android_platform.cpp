@@ -292,10 +292,10 @@ void* AndroidPlatform::asset_manager() const {
     return m_app ? m_app->activity->assetManager : nullptr;
 }
 
-std::string AndroidPlatform::writable_data_dir() const {
+std::string AndroidPlatform::user_data_dir(std::string_view /*key*/) const {
     // App-private internal storage — always writable, no runtime permission.
-    // GameActivity exposes it as internalDataPath. The engine appends its
-    // own filename; we return the bare dir.
+    // internalDataPath is ALREADY scoped per-install by the OS, so `key` is
+    // ignored here (unlike Windows). The caller appends only a filename.
     if (m_app && m_app->activity && m_app->activity->internalDataPath) {
         return std::string(m_app->activity->internalDataPath);
     }

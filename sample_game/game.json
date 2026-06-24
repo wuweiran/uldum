@@ -1,12 +1,7 @@
 {
     "name": "Uldum Sample",
     "version": "0.1.0",
-    "window": {
-        "title": "Uldum Sample",
-        "width": 1920,
-        "height": 1080
-    },
-    "default_port": 7777,
+    "app_id": "uldum-sample",
 
     "maps": ["simple_map"],
     "default_map": "maps/simple_map.uldmap",

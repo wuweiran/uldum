@@ -177,16 +177,18 @@ void Win32Platform::set_fullscreen(bool fullscreen) {
     m_fullscreen = fullscreen;
 }
 
-std::string Win32Platform::writable_data_dir() const {
-    // Device-local app data (settings, not meant to roam between machines).
+std::string Win32Platform::user_data_dir(std::string_view key) const {
+    // %LOCALAPPDATA% is shared across programs, so append `key` to keep this
+    // program's data separate. Device-local (not roaming). The caller appends
+    // only a filename.
     char* base = nullptr;
     size_t len = 0;
     std::string dir;
     if (_dupenv_s(&base, &len, "LOCALAPPDATA") == 0 && base) {
-        dir = std::string(base) + "\\Uldum";
+        dir = std::string(base) + "\\" + std::string(key);
         free(base);
     } else {
-        dir = ".";  // last-resort fallback (CWD)
+        dir = std::string(key);  // last-resort fallback (relative to CWD)
     }
     return dir;
 }

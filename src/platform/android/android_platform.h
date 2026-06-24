@@ -49,7 +49,7 @@ public:
 
     std::vector<std::string> list_files(std::string_view prefix) const override;
 
-    std::string writable_data_dir() const override;
+    std::string user_data_dir(std::string_view key) const override;
 
     // Called by the GameActivity glue's onAppCmd dispatcher.
     void on_surface_changed(ANativeWindow* window, u32 w, u32 h);

@@ -112,7 +112,7 @@ elseif(ULDUM_GAME_PROJECT_DIR)
     # ── Desktop GAME build ───────────────────────────────────────────────────
     # Invoked by build_game.ps1 with -DULDUM_GAME_PROJECT_DIR=<abs-path>.
     # Produces one shippable uldum_game.exe:
-    #   - exe name from game.json.name ("Uldum Sample" → "UldumSample.exe")
+    #   - exe name from game.json.app_id ("uldum-sample" → "uldum-sample.exe")
     #   - icon from <project>/branding/icon.ico
     #   - only maps listed in game.json.maps[]
     #   - game.json + engine.uldpak bundled alongside
@@ -131,8 +131,8 @@ elseif(ULDUM_GAME_PROJECT_DIR)
 
     file(READ ${ULDUM_GAME_JSON_PATH} ULDUM_GAME_JSON)
     string(JSON ULDUM_GAME_NAME GET ${ULDUM_GAME_JSON} name)
-    # PascalCase exe name: strip spaces from the display name.
-    string(REPLACE " " "" ULDUM_GAME_EXE_NAME ${ULDUM_GAME_NAME})
+    # Exe name is the app_id slug (e.g. "uldum-sample"). Must match build_game.ps1.
+    string(JSON ULDUM_GAME_EXE_NAME GET ${ULDUM_GAME_JSON} app_id)
     message(STATUS "Uldum game: '${ULDUM_GAME_NAME}' -> ${ULDUM_GAME_EXE_NAME}.exe")
 
     # Extract maps list from game.json. Each entry is a map id; resolves to
@@ -234,6 +234,14 @@ elseif(ULDUM_GAME_PROJECT_DIR)
     target_compile_definitions(uldum_game PRIVATE
         ULDUM_APP_HEADER="${ULDUM_APP_HEADER}"
         ULDUM_APP_CLASS=${ULDUM_APP_CLASS})
+    # Identity compile-defs for engine.cpp, from game.json: ULDUM_APP_ID keys
+    # the data folder, ULDUM_APP_NAME is the window title. Non-game builds omit
+    # them and use engine.cpp's "Uldum" fallback.
+    string(JSON ULDUM_GAME_APP_ID ERROR_VARIABLE _app_id_err GET ${ULDUM_GAME_JSON} app_id)
+    if(NOT _app_id_err)
+        target_compile_definitions(uldum_game PRIVATE ULDUM_APP_ID="${ULDUM_GAME_APP_ID}")
+    endif()
+    target_compile_definitions(uldum_game PRIVATE ULDUM_APP_NAME="${ULDUM_GAME_NAME}")
     compile_shaders(uldum_game
         ${ULDUM_SRC}/render/shaders/vulkan
         ${ULDUM_ENGINE_STAGING}/shaders

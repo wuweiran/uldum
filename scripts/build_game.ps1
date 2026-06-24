@@ -63,11 +63,12 @@ if (-not (Test-Path -LiteralPath $gameJsonPath)) {
 }
 
 $gameJson = Get-Content -LiteralPath $gameJsonPath -Raw | ConvertFrom-Json
-if (-not $gameJson.name) { throw "game.json 'name' field is missing" }
+if (-not $gameJson.name)   { throw "game.json 'name' field is missing" }
+if (-not $gameJson.app_id) { throw "game.json 'app_id' field is missing" }
 $gameName = $gameJson.name
-# PascalCase exe name: strip whitespace from display name ("Uldum Sample" ->
-# "UldumSample"). Must match the OUTPUT_NAME computed in src/app/CMakeLists.txt.
-$exeName = $gameName -replace '\s', ''
+# Exe name is the app_id slug ("uldum-sample"). Must match the OUTPUT_NAME
+# computed in src/app/CMakeLists.txt.
+$exeName = $gameJson.app_id
 
 $projectDirName = Split-Path -Leaf $projectAbs
 # Per-config build tree keeps Debug and Release artifacts isolated — a game
