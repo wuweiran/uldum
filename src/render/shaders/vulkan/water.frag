@@ -196,39 +196,40 @@ void main() {
     vec3 n2 = texture(water_normal_map, uv2).rgb * 2.0 - 1.0;
     vec3 shallow_n = normalize(vec3((n1.xy + n2.xy) * 0.55, n1.z + n2.z));
 
-    // Deep travelling-wave normal. Ridged waves (height = -abs(sin) → sharp
-    // crests, broad troughs). Flat-ish spectrum so no single swell dominates
-    // (a dominant swell sweeps a "white cloud" of reflection); a low-freq
-    // domain warp bends the crest lines so they don't repeat at large scale.
+    // Deep travelling-wave normal: a stack of ridged SWELLS (height = -abs(sin)
+    // → sharp crests, broad troughs) rolling in a narrow cone around one wind
+    // direction. The big swell (octave 0) runs straight downwind; finer octaves
+    // fan out, the way a real wind sea organizes (swells track the wind). All
+    // octaves stay in swell range — no fine chop. Non-harmonic frequencies + a
+    // low-freq domain warp keep it from repeating; flat-ish amplitude falloff so
+    // no single swell dominates.
     vec3 deep_n = shallow_n;
     float sea_crest = 0.0;   // 0..1 crest height, carried to the foam stage
     if (deep_blend > 0.001) {
-        const float WAVE_STEEPNESS = 9.0;
+        const float WAVE_STEEPNESS = 10.0;
+        const float WIND   = 2.1;   // wind direction (radians)
+        const float SPREAD = 0.7;   // directional cone half-angle (radians)
         vec2 dwarp = (texture(water_normal_map, wpos * 0.00035
                               + wt2 * vec2(0.0015, -0.0011)).xy * 2.0 - 1.0) * 60.0;
         vec2 p = wpos + dwarp;
         vec2 grad = vec2(0.0);
         float h = 0.0, hmax = 0.0;
         float freq = 0.012, amp = 1.0, spd = 0.45;
-        for (int i = 0; i < 4; i++) {   // big swells + mid waves
-            float a = float(i) * 2.39996 + 0.7;   // golden-angle direction fan
-            vec2 D = vec2(cos(a), sin(a));
+        for (int i = 0; i < 4; i++) {
+            // Direction: big swell downwind, finer octaves fan alternately out.
+            float frac = float(i) * 0.333;                 // 0 .. 1 over 4 octaves
+            float side = (i % 2 == 0) ? 1.0 : -1.0;
+            float a = WIND + side * SPREAD * frac;
+            vec2  D = vec2(cos(a), sin(a));
             float ph = dot(D, p) * freq + wt2 * spd;
             float s  = sin(ph);
             grad += D * (-sign(s) * cos(ph)) * freq * amp;   // d(-abs(sin))/dph
             h    += -abs(s) * amp;
             hmax += amp;
-            freq *= 1.47;   // non-harmonic
+            freq *= 1.47;   // non-harmonic; finest octave stays a mid-swell, not chop
             amp  *= 0.66;
             spd  *= 1.18;
         }
-        // High-freq wind chop: one fast sine, outside the swell spectrum, on
-        // the warped position so swells bend it. Not added to h (foam tracks
-        // real crests, not chop). ~16-unit ripples.
-        const float WIND_CHOP = 0.015;
-        vec2  wdir = normalize(vec2(0.7, -0.5));
-        float wph  = dot(wdir, p) * 0.39 + wt2 * 1.5;
-        grad += wdir * cos(wph) * WIND_CHOP;
         deep_n = normalize(vec3(-grad * WAVE_STEEPNESS, 1.0));
         sea_crest = (h / hmax + 1.0) * deep_blend;   // 0 trough .. 1 crest
     }
