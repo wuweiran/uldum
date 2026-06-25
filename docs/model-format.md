@@ -86,6 +86,26 @@ A mesh is treated as skinned if the model has a `skins[]` entry AND the mesh pri
 - **Maximum 128 bones** per skeleton (SSBO-based GPU skinning)
 - 4 bone influences per vertex
 
+## Attachment Points
+
+Effects and projectiles attach to a unit at **named bones** in the glTF
+skeleton — the engine looks up the bone by name and reads its animated
+world-space transform each frame, so the attached visual follows the pose. Add
+these as extra bones in the rig (named exactly), parented to the relevant body
+part. If a requested name doesn't exist, the engine falls back to the model
+origin (no crash).
+
+| Name | Location | Typical use |
+|------|----------|-------------|
+| `origin` | Model origin (feet / base) | Ground effects, birth |
+| `chest` | Center of torso | Hit effects, buffs |
+| `overhead` | Above the head | Status icons, heal glow |
+| `right_hand` | Right hand | Weapon trails, attack effects |
+| `left_hand` | Left hand | Shield / off-hand effects |
+
+These are conventions, not hard requirements — a map may reference any bone
+name. See [effects.md](effects.md) for the full attachment + effect API.
+
 ## Animation Clips
 
 Clips are glTF `animations[]` entries. The engine matches clips to gameplay states by the animation's `name` field (case-sensitive):
@@ -105,6 +125,7 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **Playback**: Animations run at render framerate (not simulation tick rate). The engine reads simulation state each frame to determine which clip to play
 - **Attack timing**: The `attack` clip is uniformly scaled to fit `attack_cooldown`. The `animation.dmg_pt` fraction (from `units.json`) defines where the visual hit lands in the clip. The engine uses `combat.dmg_time` and `combat.backsw_time` (seconds) for gameplay timing
 - **Spell timing**: The `spell` clip uses two-phase scaling. The `animation.cast_pt` fraction defines where the visual cast fires. The ability's `cast_time` and `backsw_time` (seconds) control gameplay timing
+- **Flying units**: There is **no separate `fly` state** (this matches WC3). A flyer is a gameplay/movement property of the unit, not an animation tag — the model just plays `walk` while it moves through the air, so author the **wing-flap loop as the `walk` clip** (and a hover/glide as `idle`). The other clips (`attack`, `spell`, `death`) work the same as for ground units.
 
 ### glTF Example
 
