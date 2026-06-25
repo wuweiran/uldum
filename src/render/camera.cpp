@@ -48,6 +48,7 @@ void Camera::update(const platform::InputState& input, f32 dt) {
     if (input.key('q')) { m_distance += m_zoom_speed * dt; m_dirty = true; }
     if (input.key('e')) { m_distance -= m_zoom_speed * dt; m_dirty = true; }
     if (m_distance < kMinDistance) m_distance = kMinDistance;
+    if (m_distance > kMaxDistance) m_distance = kMaxDistance;
 }
 
 void Camera::pan(f32 dx, f32 dy) {
@@ -93,6 +94,7 @@ void Camera::zoom(f32 scroll_delta) {
     f32 step = m_distance * 0.15f * scroll_delta;
     m_distance -= step;
     if (m_distance < kMinDistance) m_distance = kMinDistance;
+    if (m_distance > kMaxDistance) m_distance = kMaxDistance;
     m_dirty = true;
 }
 

@@ -115,6 +115,10 @@ private:
     f32 m_yaw_rad   = 0.0f;     // 0 = looking +Y
 
     static constexpr f32 kMinDistance = 128.0f;
+    // Upper zoom-out limit for PLAYER input (Q key / scroll). Scripted poses
+    // (set_pose / set_distance) honor only kMinDistance, so cinematics can pull
+    // back further — mirrors how xy-bounds let scripts bypass gesture clamps.
+    static constexpr f32 kMaxDistance = 3500.0f;
 
     glm::vec2 m_bounds_min{ -std::numeric_limits<f32>::infinity(),
                             -std::numeric_limits<f32>::infinity() };
