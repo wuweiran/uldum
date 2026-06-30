@@ -148,7 +148,6 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
 
     simulation::Unit best{};
     f32 best_ray_t = 1e9f;
-    i32 best_priority = -1;
 
     auto& transforms = m_world->transforms;
     auto& selectables = m_world->selectables;
@@ -163,7 +162,8 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         if (!transform) continue;
 
         auto* info = handle_infos.get(id);
-        if (!info || info->category != simulation::Category::Unit) continue;
+        if (!info || (info->category != simulation::Category::Unit &&
+                      info->category != simulation::Category::Destructable)) continue;
         if (m_world->dead_states.has(id)) continue;
         if (auto* sf = m_world->status_flags.get(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
@@ -183,7 +183,12 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         }
 
         f32 ray_t;
-        f32 dist = ray_cylinder_dist(origin, dir, transform->position, sel.selection_height, ray_t);
+        // Lift the hit-cylinder to the unit's visual height (fly_height for air,
+        // 0 otherwise) so clicking the flying model selects it — the sim
+        // position is at ground Z but the mesh + ring are up at hull height.
+        glm::vec3 base = transform->position;
+        base.z += simulation::unit_fly_height(*m_world, id);
+        f32 dist = ray_cylinder_dist(origin, dir, base, sel.selection_height, ray_t);
 
 
         // Pick radius covers both the ground circle and the visual model body.
@@ -191,13 +196,14 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         f32 pick_radius = std::max(sel.selection_radius, transform->scale);
         if (dist > pick_radius) continue;
 
-        // Prefer higher priority, then closer along the ray
-        if (sel.priority > best_priority ||
-            (sel.priority == best_priority && ray_t < best_ray_t)) {
+        // Depth-only: the frontmost unit under the cursor wins (smallest ray_t
+        // = nearest the camera). "Click what you see" — a unit behind another
+        // can never steal the click, regardless of selection priority. Priority
+        // is a GROUP concept (box-select lead ordering), not a click rule.
+        if (ray_t < best_ray_t) {
             best.id = id;
             best.generation = info->generation;
             best_ray_t = ray_t;
-            best_priority = sel.priority;
         }
     }
     return best;

@@ -3,10 +3,11 @@
 // Fragment shader for skinned meshes — single diffuse texture per model.
 
 // Push constant: vertex stage writes mvp + model (128 bytes); fragment
-// stage gets a vec4 starting at offset 128, where .x is the visual
-// alpha multiplier (SetUnitAlpha).
+// stage gets two vec4s at offset 128 — .x of `visual` is the alpha
+// multiplier (SetUnitAlpha); `factor` is the material baseColorFactor.
 layout(push_constant) uniform PushConstants {
     layout(offset = 128) vec4 visual;
+    layout(offset = 144) vec4 factor;
 } pc;
 
 // Set 0: material textures
@@ -52,8 +53,8 @@ float shadow_pcf(vec3 light_ndc) {
 void main() {
     vec3 normal = normalize(frag_world_normal);
 
-    // Sample diffuse texture
-    vec3 albedo = texture(diffuse_tex, frag_texcoord).rgb;
+    // Sample diffuse texture, modulated by the material base-color factor.
+    vec3 albedo = texture(diffuse_tex, frag_texcoord).rgb * pc.factor.rgb;
 
     // Directional sun light (game coords: X=right, Y=forward, Z=up)
     vec3 light_dir = normalize(env.sun_direction.xyz);

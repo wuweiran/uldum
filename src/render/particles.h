@@ -90,6 +90,7 @@ public:
     // shape_for); these are the two sprites that mapping actually uses.
     static constexpr u32 SHAPE_ORB     = 0;  // soft gaussian orb (default) — sparks
     static constexpr u32 SHAPE_DROPLET = 1;  // teardrop — spray / water
+    static constexpr u32 SHAPE_RIPPLE  = 2;  // flat expanding ring — water wake (ground-aligned)
 
 private:
     void spawn_from_emitter(ParticleEmitter& emitter, u32 count);

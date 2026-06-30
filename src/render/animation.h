@@ -17,11 +17,11 @@
 namespace uldum::render {
 
 // Animation states — driven by simulation components.
-// Clip names in glTF must match: "idle", "walk", "attack", "spell", "death".
+// Clip names in glTF must match: "idle", "walk", "attack", "spell", "death", "hit".
 // `Custom` is reserved for script-driven overrides (SetUnitAnimation in
 // Lua); state_to_clip[Custom] is populated at runtime from the map
 // author's clip name rather than from a fixed glTF naming convention.
-enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Birth, Custom, Count };
+enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Birth, Hit, Custom, Count };
 
 // Per-entity animation instance with state machine.
 struct AnimationInstance {
@@ -55,6 +55,11 @@ struct AnimationInstance {
 
     // Track attack swings to restart animation on each new attack
     u32 attack_swing_id = 0;
+
+    // Last Health.hit_count the renderer saw; a change means a new damage
+    // event, so the flinch ("hit" clip) restarts. Holds until the clip
+    // finishes, then derive falls back to Idle — clip length is the timing.
+    u32 last_hit_count = 0;
 
     // Two-phase attack animation: wind-up plays at one speed, backswing at another
     f32 attack_dmg_time    = 0.0f;  // clip time where damage point is (dmg_point * clip_dur)

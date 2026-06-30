@@ -3,7 +3,7 @@ precision highp float;
 precision highp int;
 
 // Bindings — flat scheme: set N * 16 + binding M (push UBO at 30).
-//   set 0 binding 0-4 → 0-4   terrain/fog/noise/normals/water_normal_map
+//   set 0 binding 0-4 → 0-4   terrain/fog/noise/normals/water_normal
 //   set 1 binding 2   → 18    EnvironmentData UBO
 //   set 1 binding 3   → 19    env_cubemap
 
@@ -27,12 +27,15 @@ layout(binding = 30, std140) uniform PushConstants {
     vec2 world_size;
     float fog_enabled;
     float time;
-    vec4  shallow_color;
-    vec4  deep_color;
     uint  water_mask;
     uint  deep_mask;
     vec4  camera_pos;
 } pc;
+
+// set 0 binding 5 → 5   per-layer water tint, indexed by layer id
+layout(binding = 5, std140) uniform WaterColors {
+    vec4 tint[16];
+} water_colors;
 
 layout(location = 1) in vec2 frag_texcoord;
 layout(location = 2) centroid in vec2 frag_tile_uv;
@@ -72,10 +75,12 @@ void main() {
 
     float water_alpha;
     float deep_blend;
+    vec3  tint_color;
 
     if (c0 == c1 && c1 == c2 && c2 == c3) {
         water_alpha = 1.0;
         deep_blend = d0;
+        tint_color = water_colors.tint[c0].rgb;
     } else {
         vec2 uv = fract(frag_tile_uv);
         uint ct[4] = uint[4](c0, c1, c2, c3);
@@ -119,12 +124,14 @@ void main() {
             float t = smoothstep(-edge_smooth, edge_smooth, uv.y - wave);
             water_alpha = mix(w0, w2, t);
             deep_blend = mix(d0, d2, t);
+            tint_color = mix(water_colors.tint[c0].rgb, water_colors.tint[c2].rgb, t);
         } else if (is_edge_v) {
             float curve = (1.0 - cos(uv.y * edge_freq)) * 0.5;
             float wave = 0.5 + curve * edge_amp + perturb;
             float t = smoothstep(-edge_smooth, edge_smooth, uv.x - wave);
             water_alpha = mix(w0, w1, t);
             deep_blend = mix(d0, d1, t);
+            tint_color = mix(water_colors.tint[c0].rgb, water_colors.tint[c1].rgb, t);
         } else {
             float best_sdf = 999.0;
             uint best_type = bg;
@@ -143,11 +150,13 @@ void main() {
             if (best_type == bg) {
                 water_alpha = is_water(bg);
                 deep_blend = bg_deep;
+                tint_color = water_colors.tint[bg].rgb;
             } else {
                 float sdf_smooth = (has_deep || !has_land) ? 0.06 : 0.05;
                 float t = 1.0 - smoothstep(-sdf_smooth, sdf_smooth, best_sdf);
                 water_alpha = mix(is_water(bg), is_water(best_type), t);
                 deep_blend = mix(bg_deep, fg_deep, t);
+                tint_color = mix(water_colors.tint[bg].rgb, water_colors.tint[best_type].rgb, t);
             }
         }
     }
@@ -159,8 +168,7 @@ void main() {
 
     if (water_alpha < 0.01) discard;
 
-    // ── Surface color tint (shallow→deep) ───────────────────────────────
-    vec3 tint_color = mix(pc.shallow_color.rgb, pc.deep_color.rgb, deep_blend);
+    // ── Surface color tint (per-layer, blended above) ───────────────────
 
     vec2 wpos = frag_world_pos.xy;
     float wt  = pc.time;
@@ -262,14 +270,16 @@ void main() {
     body_alpha = max(body_alpha, fresnel);
     float final_alpha = clamp(max(body_alpha, spec) * water_alpha, 0.0, 1.0);
 
-    // ── Shore foam ───────────────────────────────────────────────────────
-    // Rides the SDF shoreline (water_alpha); the animated tap only modulates
-    // intensity, never position, so it can't drift off the curve.
+    // ── Shore foam (reflux wash) ─────────────────────────────────────────
+    // Rides the SDF shoreline (water_alpha). A slow cos pulse washes the band
+    // in (bright, wide) and out (faint, thin) so the shore breathes like
+    // backwash; the noise tap only froths it, never positions it.
     float shore_coverage = (1.0 - smoothstep(0.0, 0.5, water_alpha)) * water_alpha * 2.0;
     float foam_shimmer = texture(transition_noise, wpos * 0.005 + wt * vec2(0.04, 0.03)).r;
-    float foam = clamp(shore_coverage * (0.65 + foam_shimmer * 0.6), 0.0, 1.0);
+    float wash = 0.5 + 0.5 * cos(wt * 1.6 + wpos.x * 0.004 + wpos.y * 0.004); // in/out pulse
+    float foam = clamp(shore_coverage * (0.5 + wash * 1.1) * (0.6 + foam_shimmer * 0.6), 0.0, 1.0);
     vec3  final_color = mix(lit_color, vec3(1.0), foam);
-    final_alpha = clamp(final_alpha + foam * 0.55, 0.0, 1.0);
+    final_alpha = clamp(final_alpha + foam * 0.7, 0.0, 1.0);
 
     // ── Open-sea whitecaps (emitted from wave crests) ────────────────────
     // Foam rides sea_crest, so it sits on the crests and travels with them; the

@@ -242,8 +242,10 @@ private:
 
     // Footprint overlap check. fw/fh are in TILES when in_cells=false
     // (buildings) or CELLS when in_cells=true (destructables). Returns
-    // true iff none of the covered cells is currently blocked.
-    bool footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells) const;
+    // true iff every covered cell is occupiable by move_type and not
+    // currently blocked.
+    bool footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells,
+                            simulation::MoveType move_type) const;
 
     // Ghost-entity preview rendered at the cursor while in Object/Place.
     // A real entity in the sim (the editor never ticks, so gameplay

@@ -19,7 +19,7 @@ A glTF model can contain:
 | Meshes | `meshes[]` | Yes | Triangle primitives only. Each primitive becomes its own draw with its own material (static models). |
 | Skeleton | `skins[0]` | No | First skin used. Up to 128 bones |
 | Animations | `animations[]` | No | Matched to engine states by name |
-| Materials | `materials[]` | No | Per-primitive on **static** models (texture + baseColorFactor + alphaMode + doubleSided). Skinned models still use `materials[0]` for the whole entity. |
+| Materials | `materials[]` | No | Per-primitive on both static and skinned models (texture + baseColorFactor + alphaMode + doubleSided). Each primitive draws with its own material. |
 
 ## Supported subset of glTF 2.0
 
@@ -39,7 +39,7 @@ The loader is tuned for skeletal-animated unit models. Authors hitting an unsupp
   - `pbrMetallicRoughness.baseColorFactor` → per-instance multiplier in the fragment shader. Modulates the diffuse texture, or supplies a flat color for color-only primitives.
   - `alphaMode`: `OPAQUE` and `MASK` (alpha-test discard with `alphaCutoff`) both fully supported, including correctly shaped shadows for masked geometry. `BLEND` degrades to `OPAQUE` with a warning (no sorted transparent pass yet).
   - `doubleSided` → flips the cull mode per draw (no-cull for double-sided primitives, back-cull otherwise). Both pass and shadow honor this.
-- **Materials (skinned models):** the loader reads per-primitive material data, but the renderer currently binds a single texture + material per entity (`materials[0]`). Multi-material skinned characters render as if they had one material until the skinned per-submesh pass lands. `alphaMode` / `doubleSided` not yet honored on skinned.
+- **Materials (skinned models):** per-primitive, same as static — each submesh binds its own diffuse texture and `baseColorFactor`. Color-only materials (factor, no texture) render against a white default. `alphaMode` / `doubleSided` are read but the skinned pass draws Opaque + back-cull regardless (per-submesh alpha/cull not yet honored on skinned).
 
 ### Not supported
 
@@ -116,6 +116,7 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 | `walk` | Moving — Move order, AttackMove, or chasing an attack target | Movement or combat chase | Yes |
 | `attack` | Attacking — plays during WindUp + Backswing phases, scaled to `attack_cooldown` | Combat system | No (restarts each swing) |
 | `spell` | Casting an ability — plays during CastPoint + Backswing phases | Ability cast system | No |
+| `hit` | Hit by a normal attack while otherwise idle — brief recoil/flinch (WC3 "Stand Hit") | Idle widgets, normal-attack hits only | No (one-shot) |
 | `death` | Unit has died | Death system | No (holds last frame) |
 
 ### Behavior
@@ -125,6 +126,7 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **Playback**: Animations run at render framerate (not simulation tick rate). The engine reads simulation state each frame to determine which clip to play
 - **Attack timing**: The `attack` clip is uniformly scaled to fit `attack_cooldown`. The `animation.dmg_pt` fraction (from `units.json`) defines where the visual hit lands in the clip. The engine uses `combat.dmg_time` and `combat.backsw_time` (seconds) for gameplay timing
 - **Spell timing**: The `spell` clip uses two-phase scaling. The `animation.cast_pt` fraction defines where the visual cast fires. The ability's `cast_time` and `backsw_time` (seconds) control gameplay timing
+- **Hit flinch**: `hit` plays only on an otherwise-idle widget struck by a **normal attack** — spells, damage-over-time and splash don't flinch. Walking, attacking, casting and dying always outrank it, so a busy unit never flinches (no jitter, no throttle). Authoring it is optional; with no `hit` clip the widget simply doesn't recoil. Best for destructibles (crate/tree wobble) and idle units. Plays once for the clip's own length, then returns to `idle` — a new hit retriggers it.
 - **Flying units**: There is **no separate `fly` state** (this matches WC3). A flyer is a gameplay/movement property of the unit, not an animation tag — the model just plays `walk` while it moves through the air, so author the **wing-flap loop as the `walk` clip** (and a hover/glide as `idle`). The other clips (`attack`, `spell`, `death`) work the same as for ground units.
 
 ### glTF Example

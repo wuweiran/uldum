@@ -1049,7 +1049,8 @@ void Editor::clear_selection() {
 // CELL units when in_cells=true. Both paths query the pathfinder's
 // cell grid (is_cell_blocked); the tile path simply expands by
 // PATHING_SUBDIV first.
-bool Editor::footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells) const {
+bool Editor::footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells,
+                                simulation::MoveType move_type) const {
     if (fw == 0 || fh == 0) return true;
     const auto& td = m_map.terrain();
     if (!td.is_valid()) return true;
@@ -1073,11 +1074,11 @@ bool Editor::footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells) c
             // can_occupy_cell rejects out-of-range cells (both the -X/-Y
             // AND +X/+Y edges — the old `cx<0||cy<0` guard only caught
             // the former, letting footprints hang off the east/north
-            // border), impassable terrain, deep water, and runtime
-            // blocks in one call. A footprint is clear only if every
-            // cell it covers is a valid, unblocked Ground cell.
-            if (!m_simulation.pathfinder().can_occupy_cell(
-                    cx, cy, simulation::MoveType::Ground)) {
+            // border), terrain the move type can't traverse, and runtime
+            // blocks in one call. A footprint is clear only if every cell
+            // it covers is a valid, unblocked cell for this move type
+            // (ground stays out of deep water; water stays in it).
+            if (!m_simulation.pathfinder().can_occupy_cell(cx, cy, move_type)) {
                 return false;
             }
         }
@@ -1092,12 +1093,14 @@ bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
 
     u32 fw = 0, fh = 0;
     f32 my_radius = 0.0f;
+    simulation::MoveType move_type = simulation::MoveType::Ground;
     if (cat == ObjectCategory::Unit) {
         const auto* def = m_simulation.types().get_unit_type(std::string(type));
         if (!def) return false;
         fw = def->pathing_footprint_w;
         fh = def->pathing_footprint_h;
         my_radius = def->collision_radius;
+        move_type = def->move_type;
     } else if (cat == ObjectCategory::Destructable) {
         const auto* def = m_simulation.types().get_destructable_type(std::string(type));
         if (!def) return false;
@@ -1111,34 +1114,40 @@ bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
 
     // Footprint clearance. Buildings (Unit category) author in TILES;
     // destructables author in CELLS. Both check against the pathfinder's
-    // cell grid — the helper handles the unit conversion.
+    // cell grid — the helper handles the unit conversion. Move type picks
+    // the terrain rule (ground rejects deep water, water requires it).
     if (fw > 0 && fh > 0) {
         bool in_cells = (cat == ObjectCategory::Destructable);
-        if (!footprint_clear_at(wx, wy, fw, fh, in_cells)) return false;
+        if (!footprint_clear_at(wx, wy, fw, fh, in_cells, move_type)) return false;
     } else if (my_radius > 0) {
-        // Non-footprint mobile object: refuse placement inside an
-        // existing PathingBlocker's tile.
+        // Non-footprint mobile object: the tile must be occupiable by this
+        // move type (deep water for ships, land for ground, anywhere for
+        // air) and not held by an existing PathingBlocker.
         i32 tx = static_cast<i32>(std::floor((wx - td.origin_x()) / td.tile_size));
         i32 ty = static_cast<i32>(std::floor((wy - td.origin_y()) / td.tile_size));
         if (tx < 0 || ty < 0) return false;
-        if (m_simulation.pathfinder().is_tile_blocked(static_cast<u32>(tx),
-                                                      static_cast<u32>(ty))) {
+        if (!m_simulation.pathfinder().can_occupy(static_cast<u32>(tx),
+                                                  static_cast<u32>(ty), move_type)) {
             return false;
         }
     }
 
-    // Collision-radius overlap with any other entity. Skip the preview
-    // entity (it sits at the cursor and would always fail). Also skip
-    // self-via-handle isn't necessary here because this runs *before*
-    // creation, so the new entity doesn't exist yet.
+    // Collision-radius overlap with any other entity IN THE SAME collision
+    // layer. Air units fly above the surface, so they don't block (and aren't
+    // blocked by) ground/water units — only same-layer pairs (air↔air,
+    // surface↔surface) can't share a spot. Skip the preview entity (it sits at
+    // the cursor and would always fail).
     if (my_radius > 0) {
+        bool my_air = (move_type == simulation::MoveType::Air);
         const auto& world = m_simulation.world();
         for (u32 i = 0; i < world.movements.count(); ++i) {
             u32 id = world.movements.ids()[i];
             if (id == m_preview_handle.id) continue;
+            const auto& other = world.movements.data()[i];
+            // Different collision layer (air vs surface) → no overlap.
+            if ((other.type == simulation::MoveType::Air) != my_air) continue;
             const auto* t = world.transforms.get(id);
             if (!t) continue;
-            const auto& other = world.movements.data()[i];
             f32 dx = t->position.x - wx;
             f32 dy = t->position.y - wy;
             f32 min_dist = my_radius + other.collision_radius;

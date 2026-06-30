@@ -160,6 +160,10 @@ static glm::mat4 build_entity_model_matrix(const map::TerrainData* terrain,
                                            const simulation::Transform& transform,
                                            f32 alpha, bool native_z_up) {
     glm::vec3 vis_pos = lerp_position(transform, alpha);
+    // Air units float: lift the visual Z by the type's fly_height. Gameplay
+    // stays 2D (sim Z is always 0); this is render-only so it can't desync
+    // pathing or collision. Shared with the selection ring + click pick-test.
+    vis_pos.z += simulation::unit_fly_height(world, id);
     f32 vis_facing = lerp_facing(transform, alpha);
     glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
     if (terrain && !is_projectile(world, id)) {
@@ -298,6 +302,11 @@ bool Renderer::init(rhi::Rhi& rhi) {
     };
     m_placeholder_mesh = upload_to_mega(placeholder);
     m_placeholder_mesh.native_z_up = true;
+    // The box is authored Z-up (height along Z), but upload_to_mega derives pick
+    // dims assuming Y-up glTF. Override with the true Z-up values so placeholder
+    // units get a correct selection cylinder: footprint = half-width, height = h.
+    m_placeholder_mesh.footprint_radius = s;   // 16 → ~32-wide cylinder
+    m_placeholder_mesh.pick_height      = h;   // 64
 
     // Create a small projectile mesh (elongated diamond shape in Z-up game coords)
     {
@@ -428,6 +437,9 @@ void Renderer::shutdown() {
     destroy_shadow_buffer(*m_rhi, m_shadow_ubo);
     m_rhi->destroy_buffer(m_env_ubo_buffer);
     m_env_ubo_buffer = {};
+    m_rhi->destroy_buffer(m_water_color_ubo);
+    m_water_color_ubo = {};
+
     if (m_default_cubemap.texture.is_valid()) destroy_texture(*m_rhi, m_default_cubemap);
 
     m_rhi->destroy_pipeline(m_particle_pipeline);
@@ -499,6 +511,7 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
     inst.state_to_clip[static_cast<u8>(AnimState::Spell)]  = find_clip_by_name(model.data, "spell");
     inst.state_to_clip[static_cast<u8>(AnimState::Death)]  = find_clip_by_name(model.data, "death");
     inst.state_to_clip[static_cast<u8>(AnimState::Birth)]  = find_clip_by_name(model.data, "birth");
+    inst.state_to_clip[static_cast<u8>(AnimState::Hit)]    = find_clip_by_name(model.data, "hit");
 
     // Start in Birth only for a unit actually born in this player's sight.
     // A unit revealed out of fog (or flagged skip_birth) was created long
@@ -634,6 +647,23 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
         return {AnimState::Birth, 0, false};
     }
 
+    // Hit — brief flinch when an otherwise-idle widget took damage and the
+    // model has a "hit" clip. Walk/Attack/Spell/Death outrank it (returned
+    // above), so a busy unit never flinches → no jitter, no throttle needed.
+    // A new damage event bumps Health.hit_count; restart the clip on that
+    // edge and hold the state until the clip finishes — its length is the
+    // timing, then derive falls through to Idle.
+    if (anim.state_to_clip[static_cast<u8>(AnimState::Hit)] >= 0) {
+        if (auto* hp = world.healths.get(id)) {
+            bool new_hit = hp->hit_count != anim.last_hit_count;
+            anim.last_hit_count = hp->hit_count;
+            if (new_hit) return {AnimState::Hit, 0, true};
+            if (anim.current_state == AnimState::Hit && !anim.finished) {
+                return {AnimState::Hit, 0, false};
+            }
+        }
+    }
+
     return {AnimState::Idle, 0, false};
 }
 
@@ -747,6 +777,8 @@ void Renderer::set_terrain(const map::TerrainData* terrain) {
 
     m_terrain = build_terrain_mesh(*m_rhi, *terrain);
     m_terrain_data = terrain;
+
+
 
     // Re-allocate terrain descriptor set.
     if (terrain->is_valid()) {
@@ -914,17 +946,22 @@ bool Renderer::create_descriptor_layouts() {
         }
     }
 
-    // Terrain descriptor set layout: layers + fog + noise + normals + water
+    // Terrain descriptor set layout: layers + fog + noise + normals + water +
+    // per-layer water color UBO (binding 5)
     {
-        rhi::DescriptorSetLayoutBinding bindings[5]{};
+        rhi::DescriptorSetLayoutBinding bindings[6]{};
         for (u32 i = 0; i < 5; ++i) {
             bindings[i].binding = i;
             bindings[i].type    = rhi::DescriptorType::CombinedImageSampler;
             bindings[i].count   = 1;
             bindings[i].stages  = rhi::ShaderStage::Fragment;
         }
+        bindings[5].binding = 5;
+        bindings[5].type    = rhi::DescriptorType::UniformBuffer;
+        bindings[5].count   = 1;
+        bindings[5].stages  = rhi::ShaderStage::Fragment;
         rhi::DescriptorSetLayoutDesc desc{};
-        desc.bindings = std::span{bindings, 5};
+        desc.bindings = std::span{bindings, 6};
         m_terrain_desc_layout = m_rhi->create_descriptor_set_layout(desc);
         if (!m_terrain_desc_layout.is_valid()) {
             log::error(TAG, "Failed to create terrain descriptor set layout");
@@ -996,14 +1033,16 @@ rhi::DescriptorSetHandle Renderer::allocate_terrain_descriptor(const TerrainMate
     const GpuTexture& norm_tex   = mat.normal_array.texture.is_valid() ? mat.normal_array : m_default_texture;
     const GpuTexture& water_norm = m_water_normal.texture.is_valid() ? m_water_normal : m_default_texture;
 
-    rhi::WriteDescriptor ws[5]{};
+    rhi::WriteDescriptor ws[6]{};
     for (auto& w : ws) { w.type = rhi::DescriptorType::CombinedImageSampler; }
     ws[0].binding = 0; ws[0].texture = layer_tex.texture;  ws[0].sampler = layer_tex.sampler;
     ws[1].binding = 1; ws[1].texture = fog_tex.texture;    ws[1].sampler = fog_tex.sampler;
     ws[2].binding = 2; ws[2].texture = mask_tex.texture;   ws[2].sampler = mask_tex.sampler;
     ws[3].binding = 3; ws[3].texture = norm_tex.texture;   ws[3].sampler = norm_tex.sampler;
     ws[4].binding = 4; ws[4].texture = water_norm.texture; ws[4].sampler = water_norm.sampler;
-    m_rhi->update_descriptor_set(set, std::span{ws, 5});
+    ws[5].binding = 5; ws[5].type = rhi::DescriptorType::UniformBuffer;
+    ws[5].buffer = m_water_color_ubo; ws[5].buffer_range = WATER_COLOR_SLOTS * sizeof(glm::vec4);
+    m_rhi->update_descriptor_set(set, std::span{ws, 6});
     return set;
 }
 
@@ -1034,12 +1073,22 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
     gpu.first_index   = m_mega_ib_used;
 
     // Compute bounding sphere radius (max distance from origin in model space)
+    // and the model AABB. glTF models are Y-up; the renderer flips Y→Z at draw,
+    // so for pick sizing: game-height = model-Y extent, game-footprint = model
+    // X/Z extents. (These upload paths only carry real glTF meshes — always Y-up.)
     f32 max_r2 = 0.0f;
+    glm::vec3 aabb_min{1e30f}, aabb_max{-1e30f};
     for (const auto& v : mesh.vertices) {
         f32 r2 = glm::dot(v.position, v.position);
         if (r2 > max_r2) max_r2 = r2;
+        aabb_min = glm::min(aabb_min, v.position);
+        aabb_max = glm::max(aabb_max, v.position);
     }
     gpu.bounding_radius = std::sqrt(max_r2);
+    if (mesh.vertices.empty()) { aabb_min = glm::vec3{0}; aabb_max = glm::vec3{0}; }
+    glm::vec3 ext = aabb_max - aabb_min;               // model-space extents
+    gpu.footprint_radius = 0.5f * std::max(ext.x, ext.z);  // game XY ← model X,Z
+    gpu.pick_height      = ext.y;                          // game Z  ← model Y
 
     auto* vb_dst = static_cast<u8*>(m_rhi->mapped_ptr(m_mega_vb))
                  + m_mega_vb_used * sizeof(asset::Vertex);
@@ -1200,8 +1249,11 @@ u32 Renderer::register_unit_texture(const GpuTexture& tex, const u8* pixels, u32
 // ── Default + terrain textures ────────────────────────────────────────────
 
 bool Renderer::create_default_texture() {
-    // 4x4 warm orange texture for placeholder meshes
-    auto pixels = generate_solid_texture(4, 220, 160, 80);
+    // 4x4 WHITE default diffuse. Untextured (colour-only) materials sample this
+    // and multiply by their baseColorFactor: white * factor = the true factor
+    // colour. A tinted default would corrupt every factor-only material — e.g.
+    // an orange default turned a purple balloon brown. Keep it 1.0 white.
+    auto pixels = generate_solid_texture(4, 255, 255, 255);
     m_default_texture = upload_texture_rgba(*m_rhi, pixels.data(), 4, 4);
     if (!m_default_texture.texture.is_valid()) return false;
 
@@ -1450,19 +1502,21 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
         }
     }
 
-    // Compute water layer masks for water surface rendering
+    // Compute water layer masks + per-layer colors for water surface rendering
     m_water_params = {};
+    glm::vec4 layer_colors[WATER_COLOR_SLOTS];
+    for (auto& c : layer_colors) c = glm::vec4(0.1f, 0.3f, 0.5f, 0.0f);
     for (u32 i = 0; i < layer_count; ++i) {
         auto& tl = tileset.layers[i];
-        if (tl.type == map::LayerType::WaterShallow) {
+        bool water = tl.type == map::LayerType::WaterShallow || tl.type == map::LayerType::WaterDeep;
+        if (water) {
             m_water_params.water_mask |= (1u << tl.id);
-            m_water_params.shallow_color = tl.water_color;
-        } else if (tl.type == map::LayerType::WaterDeep) {
-            m_water_params.water_mask |= (1u << tl.id);
-            m_water_params.deep_mask  |= (1u << tl.id);
-            m_water_params.deep_color = tl.water_color;
+            if (tl.type == map::LayerType::WaterDeep) m_water_params.deep_mask |= (1u << tl.id);
+            if (tl.id < WATER_COLOR_SLOTS) layer_colors[tl.id] = glm::vec4(tl.water_color, 0.0f);
         }
     }
+    if (m_water_color_ubo.is_valid())
+        std::memcpy(m_rhi->mapped_ptr(m_water_color_ubo), layer_colors, sizeof(layer_colors));
 
     log::info(TAG, "Tileset '{}' textures loaded — {} layers (water_mask=0x{:X})",
               tileset.name, layer_count, m_water_params.water_mask);
@@ -1579,14 +1633,14 @@ bool Renderer::create_skinned_mesh_pipeline() {
         return false;
     }
 
-    // Push constants: vertex = mat4 mvp + mat4 model, fragment = vec4 visual (alpha)
+    // Push constants: vertex = mat4 mvp + mat4 model, fragment = vec4 visual + vec4 base_color_factor
     rhi::PushConstantRange pcs[2]{};
     pcs[0].stages = rhi::ShaderStage::Vertex;
     pcs[0].offset = 0;
     pcs[0].size   = 2 * sizeof(glm::mat4);
     pcs[1].stages = rhi::ShaderStage::Fragment;
     pcs[1].offset = 2 * sizeof(glm::mat4);
-    pcs[1].size   = sizeof(glm::vec4);
+    pcs[1].size   = 2 * sizeof(glm::vec4);
 
     rhi::DescriptorSetLayoutHandle set_layouts[] = { m_mesh_desc_layout, m_shadow_desc_layout, m_bone_desc_layout };
     rhi::PipelineLayoutDesc pl_desc{};
@@ -1963,11 +2017,11 @@ bool Renderer::create_water_pipeline() {
         return false;
     }
 
-    // Water push constants: terrain base (144) + water params (40) + pad (8) + camera_pos (16) = 208
+    // Water push constants: terrain base (144) + masks+pad (16) + camera_pos (16) = 176
     rhi::PushConstantRange pc{};
     pc.stages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     pc.size   = 2 * sizeof(glm::mat4) + sizeof(glm::vec2) + 2 * sizeof(f32)
-              + 2 * sizeof(glm::vec4) + 2 * sizeof(u32)
+              + 2 * sizeof(u32)
               + 2 * sizeof(u32) + sizeof(glm::vec4);
 
     rhi::DescriptorSetLayoutHandle set_layouts[] = { m_terrain_desc_layout, m_shadow_desc_layout };
@@ -2188,6 +2242,17 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     // Don't retry paths that already failed
     if (m_model_failed.contains(model_path)) return nullptr;
 
+    // Built-in procedural meshes ("placeholder", "projectile") aren't files —
+    // wrap the prebuilt GpuMesh in a LoadedModel so callers (incl. the selection
+    // back-fill) get its bounds. Not skinned; rendered via the static path.
+    if (model_path == "placeholder" || model_path == "projectile") {
+        LoadedModel lm;
+        lm.mesh = (model_path == "projectile") ? m_projectile_mesh : m_placeholder_mesh;
+        lm.is_skinned = false;
+        m_model_cache[model_path] = std::move(lm);
+        return &m_model_cache[model_path];
+    }
+
     // Path is what the author put in JSON — passed straight to the
     // AssetManager. Mount prefixes do the lookup; no path massaging
     // so the engine doesn't impose a folder convention on author
@@ -2224,6 +2289,7 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     // image share one bindless slot via the image_to_bindless cache.
 
     std::unordered_map<i32, u32> image_to_bindless;
+    std::unordered_map<i32, GpuTexture> image_to_gputex;
     auto resolve_texture = [&](i32 image_idx) -> u32 {
         if (image_idx < 0 ||
             image_idx >= static_cast<i32>(lm.data.textures.size())) {
@@ -2236,6 +2302,7 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
         GpuTexture gt = upload_texture_rgba(*m_rhi, td.pixels.data(), td.width, td.height);
         u32 slot = register_unit_texture(gt, td.pixels.data(), td.width, td.height);
         image_to_bindless[image_idx] = slot;
+        image_to_gputex[image_idx] = gt;
         // Stash the first uploaded image as the legacy single-texture
         // descriptor (still consumed by the skinned-mesh pipeline below
         // until that pipeline is converted to bindless).
@@ -2247,7 +2314,8 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
         return slot;
     };
 
-    auto fill_submesh_material = [&](Submesh& sm, i32 mat_idx) {
+    auto fill_submesh_material = [&](Submesh& sm, i32 mat_idx, bool skinned) {
+        i32 image_idx = -1;
         if (mat_idx >= 0 && mat_idx < static_cast<i32>(lm.data.materials.size())) {
             const auto& mat = lm.data.materials[mat_idx];
             sm.base_color_factor = mat.base_color_factor;
@@ -2255,8 +2323,17 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             sm.alpha_cutoff      = mat.alpha_cutoff;
             sm.double_sided      = mat.double_sided;
             sm.texture_index     = resolve_texture(mat.base_color_texture);
+            image_idx            = mat.base_color_texture;
         } else {
             sm.texture_index = m_default_tex_idx;
+        }
+        // Skinned pipeline isn't bindless: each submesh needs its own diffuse
+        // descriptor. Color-only materials (no texture) fall back to the white
+        // default tex and rely on base_color_factor for their tint.
+        if (skinned) {
+            auto it = image_to_gputex.find(image_idx);
+            const GpuTexture& tex = (it != image_to_gputex.end()) ? it->second : m_default_texture;
+            sm.descriptor_set = allocate_mesh_descriptor(tex);
         }
     };
 
@@ -2291,7 +2368,7 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             sm.mesh.vertex_count  = vertex_counts[i];
             sm.mesh.index_count   = index_counts[i];
             sm.mesh.owns_buffers  = false;
-            fill_submesh_material(sm, lm.data.skinned_meshes[i].material);
+            fill_submesh_material(sm, lm.data.skinned_meshes[i].material, true);
             lm.submeshes.push_back(sm);
         }
         log::info(TAG, "Loaded skinned model '{}': {} primitives, {} verts, {} bones, {} anims",
@@ -2318,10 +2395,13 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             lm.mesh.index_count  += prim_gpu.index_count;
             f32 r = prim_gpu.bounding_radius;
             if (r * r > model_radius_sq) model_radius_sq = r * r;
+            // Pick dims: largest footprint / tallest prim across the model.
+            lm.mesh.footprint_radius = std::max(lm.mesh.footprint_radius, prim_gpu.footprint_radius);
+            lm.mesh.pick_height      = std::max(lm.mesh.pick_height, prim_gpu.pick_height);
 
             Submesh sm;
             sm.mesh = prim_gpu;
-            fill_submesh_material(sm, mdat.material);
+            fill_submesh_material(sm, mdat.material, false);
             lm.submeshes.push_back(sm);
         }
         lm.mesh.bounding_radius = std::sqrt(model_radius_sq);
@@ -2552,6 +2632,24 @@ bool Renderer::create_shadow_resources() {
         }
         EnvironmentUBO defaults{};
         std::memcpy(m_rhi->mapped_ptr(m_env_ubo_buffer), &defaults, sizeof(defaults));
+    }
+
+    // Per-layer water color UBO — vec4[16] indexed by tileset layer id, filled
+    // on tileset load. Lets every water layer carry its own tint (2 shallow +
+    // 1 deep etc.) instead of one shared shallow/deep pair.
+    {
+        rhi::BufferDesc d{};
+        d.size   = WATER_COLOR_SLOTS * sizeof(glm::vec4);
+        d.usage  = rhi::BufferUsage::Uniform;
+        d.memory = rhi::MemoryUsage::HostSequential;
+        m_water_color_ubo = m_rhi->create_buffer(d);
+        if (!m_water_color_ubo.is_valid()) {
+            log::error(TAG, "Failed to create water color UBO");
+            return false;
+        }
+        glm::vec4 def[WATER_COLOR_SLOTS];
+        for (auto& c : def) c = glm::vec4(0.1f, 0.3f, 0.5f, 0.0f);
+        std::memcpy(m_rhi->mapped_ptr(m_water_color_ubo), def, sizeof(def));
     }
 
     // Create default 1x1 cubemap (gray, used when no skybox loaded)
@@ -3037,6 +3135,36 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                     const std::function<void()>& on_after_terrain) {
     if (extent.width == 0 || extent.height == 0) return;
 
+    // Auto-size selection cylinders from the model. A Selectable with
+    // radius/height ≤ 0 hasn't been sized yet; once its model is loaded, fill
+    // the click volume from the model AABB × instance scale. One-time per unit
+    // (filled values are > 0). Lazy: models load on first draw, and a unit is
+    // never clickable before it's drawn, so the timing is always fine.
+    {
+        auto& sel = world.selectables;
+        for (u32 i = 0; i < sel.count(); ++i) {
+            auto& s = sel.data()[i];
+            if (s.selection_radius > 0.0f && s.selection_height > 0.0f) continue;
+            u32 id = sel.ids()[i];
+            const auto* r = world.renderables.get(id);
+            const auto* t = world.transforms.get(id);
+            if (!r || !t) continue;
+            auto* lm = get_or_load_model(r->model_path);
+            if (!lm) continue;
+            f32 sc = t->scale;
+            // Never size the click circle below the unit's gameplay footprint
+            // (collision_radius). A slim mesh — or the small generic placeholder
+            // box — would otherwise give a tiny, hard-to-click circle. Buildings
+            // /destructables have no Movement, so they fall back to the model.
+            f32 min_r = 0.0f;
+            if (const auto* mv = world.movements.get(id)) min_r = mv->collision_radius;
+            if (s.selection_radius <= 0.0f)
+                s.selection_radius = std::max({lm->mesh.footprint_radius * sc, min_r, 1.0f});
+            if (s.selection_height <= 0.0f)
+                s.selection_height = std::max(lm->mesh.pick_height * sc, 1.0f);
+        }
+    }
+
     // Collect one point light per live glow effect. Glows are the engine's
     // light-emitting effect; particles never emit light (sparks/spray are
     // pure billboards — the orb/droplet sprites must NOT light the scene).
@@ -3133,8 +3261,6 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             glm::vec2 world_size;
             f32 fog_enabled;
             f32 time;
-            glm::vec4 shallow_color;
-            glm::vec4 deep_color;
             u32 water_mask;
             u32 deep_mask;
             // Pad up to vec4 alignment for camera_pos (matches the std140-ish
@@ -3148,8 +3274,6 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         water_push.world_size = world_size;
         water_push.fog_enabled = m_fog_enabled ? 1.0f : 0.0f;
         water_push.time = m_elapsed_time;
-        water_push.shallow_color = glm::vec4(m_water_params.shallow_color, 0.0f);
-        water_push.deep_color = glm::vec4(m_water_params.deep_color, 0.0f);
         water_push.water_mask = m_water_params.water_mask;
         water_push.deep_mask = m_water_params.deep_mask;
         water_push.camera_pos = glm::vec4(m_camera.position(), 0.0f);
@@ -3365,18 +3489,13 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                             anim.bone_matrices.size() * sizeof(glm::mat4));
             }
 
-            // Use corpse material only for placeholder models (no real texture)
+            // Corpse override: placeholder models (no real texture) use the
+            // corpse material for every submesh. Models with real textures
+            // bind per-submesh below.
             bool is_corpse = world.dead_states.has(id);
             bool has_own_texture = lm->diffuse_texture.texture.is_valid();
-            auto& mat = (is_corpse && !has_own_texture) ? m_corpse_material : lm->material;
-            if (mat.descriptor_set.is_valid() && m_shadow_desc_set.is_valid()) {
-                rhi::DescriptorSetHandle sets[] = {
-                    mat.descriptor_set,
-                    m_shadow_desc_set,
-                    anim.bone_descriptor[fi],
-                };
-                cmd.bind_descriptor_sets(m_skinned_mesh_pipeline_layout, 0, std::span{sets, 3});
-            }
+            bool use_corpse = is_corpse && !has_own_texture;
+            if (!m_shadow_desc_set.is_valid()) continue;
 
             glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, false);
 
@@ -3386,13 +3505,26 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                                0, sizeof(push), &push);
             f32 alpha_eff = effective_visual_alpha(world, id, renderable);
             if (is_in_fog_memory(world, id)) alpha_eff *= kFoggedMemoryAlpha;
-            glm::vec4 visual{alpha_eff, 0.0f, 0.0f, 0.0f};
-            cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Fragment,
-                               sizeof(push), sizeof(visual), &visual);
 
             cmd.bind_vertex_buffer(0, lm->mesh.vertex_buffer);
             cmd.bind_index_buffer(lm->mesh.index_buffer, 0, rhi::IndexType::U32);
-            cmd.draw_indexed(lm->mesh.index_count);
+
+            // One draw per submesh: bind its diffuse (set 0) + its color factor,
+            // keep shadow (set 1) and bones (set 2) bound across them.
+            for (const auto& sm : lm->submeshes) {
+                rhi::DescriptorSetHandle mat_set = use_corpse ? m_corpse_material.descriptor_set
+                                                              : sm.descriptor_set;
+                if (!mat_set.is_valid()) continue;
+                rhi::DescriptorSetHandle sets[] = { mat_set, m_shadow_desc_set, anim.bone_descriptor[fi] };
+                cmd.bind_descriptor_sets(m_skinned_mesh_pipeline_layout, 0, std::span{sets, 3});
+
+                struct { glm::vec4 visual; glm::vec4 factor; } fpush{
+                    {alpha_eff, 0.0f, 0.0f, 0.0f},
+                    use_corpse ? glm::vec4{1, 1, 1, 1} : sm.base_color_factor };
+                cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Fragment,
+                                   sizeof(push), sizeof(fpush), &fpush);
+                cmd.draw_indexed(sm.mesh.index_count, 1, sm.mesh.first_index, 0, 0);
+            }
         }
     }
 
@@ -3446,43 +3578,75 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         glm::vec3 cam_right{view[0][0], view[1][0], view[2][0]};
         glm::vec3 cam_up{view[0][1], view[1][1], view[2][1]};
 
-        // ── Water splash particles for units on shallow water ──────────
+        // ── Water splash + ripple particles for units on water ─────────
+        // Shallow (wading ground units): a spray + small ripple, only while
+        // MOVING, every ~150ms (footfalls). Deep (ships): a bigger ripple +
+        // light bow spray, emitted CONSTANTLY (a hull always displaces water)
+        // and less often (~400ms — no feet). Two timers, classified per tile.
         if (m_terrain_data && m_water_params.water_mask != 0) {
-            static f32 splash_timer = 0.0f;
-            splash_timer += frame_dt;
-            if (splash_timer >= 0.15f) {  // emit every ~150ms
-                splash_timer = 0.0f;
+            static f32 shallow_timer = 0.0f, deep_timer = 0.0f;
+            shallow_timer += frame_dt;
+            deep_timer    += frame_dt;
+            bool fire_shallow = shallow_timer >= 0.20f;
+            bool fire_deep    = deep_timer    >= 1.20f;
+            if (fire_shallow) shallow_timer = 0.0f;
+            if (fire_deep)    deep_timer    = 0.0f;
+
+            if (fire_shallow || fire_deep) {
                 auto t_ids = transforms.ids();
                 auto t_data = transforms.data();
                 for (u32 i = 0; i < transforms.count(); ++i) {
                     u32 id = t_ids[i];
                     auto& tf = t_data[i];
-                    // Skip units hidden by fog of war
                     if (is_fog_hidden(world, id, tf)) continue;
-                    // Check if unit is moving
-                    glm::vec3 delta = tf.position - tf.prev_position;
-                    f32 speed_sq = delta.x * delta.x + delta.y * delta.y;
-                    if (speed_sq < 1.0f) continue;  // standing still
+                    // Flying units skim above the surface — no splash/ripple.
+                    if (const auto* mov = world.movements.get(id);
+                        mov && mov->type == simulation::MoveType::Air) continue;
 
-                    // Check if on shallow water tile
                     auto tile = m_terrain_data->world_to_tile(tf.position.x, tf.position.y);
                     u32 tx = static_cast<u32>(tile.x);
                     u32 ty = static_cast<u32>(tile.y);
                     if (tx >= m_terrain_data->tiles_x || ty >= m_terrain_data->tiles_y) continue;
 
-                    bool on_shallow = true;
-                    for (u32 vy = ty; vy <= ty + 1 && on_shallow; ++vy)
-                        for (u32 vx = tx; vx <= tx + 1 && on_shallow; ++vx) {
+                    bool on_shallow = true, on_deep = true;
+                    for (u32 vy = ty; vy <= ty + 1; ++vy)
+                        for (u32 vx = tx; vx <= tx + 1; ++vx) {
                             u8 layer = m_terrain_data->tile_layer[vy * m_terrain_data->verts_x() + vx];
-                            on_shallow = (m_water_params.water_mask & (1u << layer)) != 0
-                                      && (m_water_params.deep_mask & (1u << layer)) == 0;
+                            bool is_water = (m_water_params.water_mask & (1u << layer)) != 0;
+                            bool is_deep  = (m_water_params.deep_mask  & (1u << layer)) != 0;
+                            on_shallow = on_shallow && is_water && !is_deep;
+                            on_deep    = on_deep && is_deep;
                         }
 
-                    if (on_shallow) {
+                    if (on_shallow && fire_shallow) {
+                        // Wading: only while moving (footfall spray + ripple).
+                        glm::vec3 delta = tf.position - tf.prev_position;
+                        if (delta.x * delta.x + delta.y * delta.y < 1.0f) continue;
+
                         glm::vec3 splash_pos = tf.position + glm::vec3{0, 0, 3.0f};
                         m_particles.burst(splash_pos, 5,
                             glm::vec4{0.7f, 0.78f, 0.85f, 0.3f},  // subtle blue-white
                             60.0f, 0.5f, 10.0f, -100.0f, ParticleSystem::SHAPE_DROPLET);
+
+                        // Flat expanding ripple ring — a ground-aligned wake decal
+                        // anchored at the unit's spot (speed 0, gravity 0). It grows
+                        // + fades over its life; a moving unit drops a trail of rings.
+                        glm::vec3 ring_pos = tf.position + glm::vec3{0, 0, 2.5f};
+                        m_particles.burst(ring_pos, 1,
+                            glm::vec4{0.78f, 0.84f, 0.9f, 0.11f},  // faint, water-toned
+                            0.0f, 1.4f, 85.0f, 0.0f, ParticleSystem::SHAPE_RIPPLE);
+                    } else if (on_deep && fire_deep) {
+                        // Ships: always emit (a floating hull constantly displaces
+                        // water), bigger + longer-lived ripple, light bow spray.
+                        glm::vec3 spray_pos = tf.position + glm::vec3{0, 0, 3.0f};
+                        m_particles.burst(spray_pos, 4,
+                            glm::vec4{0.72f, 0.8f, 0.88f, 0.25f},  // foam-white
+                            45.0f, 0.6f, 12.0f, -90.0f, ParticleSystem::SHAPE_DROPLET);
+
+                        glm::vec3 ring_pos = tf.position + glm::vec3{0, 0, 2.5f};
+                        m_particles.burst(ring_pos, 1,
+                            glm::vec4{0.8f, 0.86f, 0.92f, 0.13f},  // faint foam ring
+                            0.0f, 2.0f, 150.0f, 0.0f, ParticleSystem::SHAPE_RIPPLE);
                     }
                 }
             }

@@ -40,6 +40,7 @@ struct Submesh {
     asset::AlphaMode  alpha_mode      = asset::AlphaMode::Opaque;
     f32               alpha_cutoff    = 0.5f;
     bool              double_sided    = false;
+    rhi::DescriptorSetHandle descriptor_set{};   // skinned pipeline: per-submesh diffuse (non-bindless)
 };
 
 // A fully loaded model: CPU data + GPU submeshes.
@@ -277,11 +278,11 @@ private:
 
     // Water surface rendering data (computed from tileset)
     struct WaterParams {
-        glm::vec3 shallow_color{0.18f, 0.45f, 0.55f};
-        glm::vec3 deep_color{0.05f, 0.12f, 0.25f};
         u32 water_mask = 0;   // bitmask: which layer IDs are any water
         u32 deep_mask  = 0;   // bitmask: which layer IDs are deep water
     } m_water_params{};
+    static constexpr u32 WATER_COLOR_SLOTS = 16;  // per-layer water tint slots (indexed by layer id)
+    rhi::BufferHandle m_water_color_ubo{};        // vec4[16] tint per tileset layer id
     f32 m_elapsed_time = 0.0f;
 
     // Cached loaded models (model_path → LoadedModel)

@@ -2105,6 +2105,10 @@ void Engine::run() {
                             if (!tf || !sel) continue;
 
                             glm::vec3 ip = tf->interp_position(alpha);
+                            // Air units: lift the ring to the visual hull height
+                            // (same fly_height the mesh renderer adds) so the
+                            // ring sits under the model, not on the ground.
+                            f32 fly = simulation::unit_fly_height(world, unit.id);
                             f32 base_r = (sel->selection_radius > 0.0f) ? sel->selection_radius : 48.0f;
                             // Center the stroke just inside the selection radius
                             // so the outer edge matches `base_r` (matches the
@@ -2117,7 +2121,10 @@ void Engine::run() {
                                 f32 a  = (static_cast<f32>(i % kSelectionSamples) / kSelectionSamples) * 6.28318530718f;
                                 f32 sx = ip.x + ring_r * std::cos(a);
                                 f32 sy = ip.y + ring_r * std::sin(a);
-                                f32 sz = map::sample_height(*terrain, sx, sy);
+                                // Ground ring follows terrain; air ring is a flat
+                                // disc at hull height (fly>0 → ignore terrain bumps).
+                                f32 sz = (fly > 0.0f) ? ip.z + fly
+                                                      : map::sample_height(*terrain, sx, sy);
                                 samples.push_back({sx, sy, sz});
                             }
                             const auto* owner = world.owners.get(unit.id);

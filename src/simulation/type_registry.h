@@ -29,6 +29,7 @@ struct UnitTypeDef {
     f32      turn_rate = 0.6f;
     f32      collision_radius = 32.0f;
     MoveType move_type = MoveType::Ground;
+    f32      fly_height = 0.0f;   // Air units: render-Z lift above ground (visual only)
 
     // Pathing footprint in tiles. Buildings declare this (typically
     // 2×2, 3×3, 4×4); mobile units leave it 0×0. The footprint is the
@@ -54,12 +55,16 @@ struct UnitTypeDef {
     f32 walk_speed = 0;            // movement speed at which walk anim plays at 1x (0 = use move_speed)
     std::optional<ProjectileSpec> projectile;  // set → ranged auto-attack; unset → melee
     f32 acquire_range = 10.0f;
+    u8  target_mask = TARGET_MASK_SURFACE;  // which MoveType layers this attack can hit (JSON: combat.targets)
 
     // Vision
     f32 sight_range = 1400;
 
-    // Selection
-    f32 selection_radius = 1.0f;
+    // Selection. radius/height ≤ 0 = AUTO (derive the click cylinder from the
+    // model's AABB at load). A units.json "selection" block overrides both
+    // (all-or-nothing). priority is independent and always honored.
+    f32 selection_radius = 0.0f;   // 0 = auto from model footprint
+    f32 selection_height = 0.0f;   // 0 = auto from model height
     i32 selection_priority = 5;
 
     // Classification — map-defined string flags

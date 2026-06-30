@@ -17,6 +17,11 @@ struct GpuMesh {
     u32  first_vertex    = 0;    // offset into mega buffer (Phase 14b)
     u32  first_index     = 0;    // offset into mega buffer (Phase 14b)
     f32  bounding_radius = 0.0f; // model-space bounding sphere (frustum culling)
+    // Game-space pick dimensions from the model AABB at upload, honoring the
+    // Y-up→Z-up flip. Multiply by instance scale for world size. Auto-fits the
+    // selection cylinder to the actual model silhouette.
+    f32  footprint_radius = 0.0f; // pick radius: max game-X/Y half-extent
+    f32  pick_height      = 0.0f; // pick cylinder height: full game-Z extent
     bool native_z_up     = false; // true = already in Z-up game coords, skip glTF rotation
     bool is_skinned      = false;
     u32  bone_count      = 0;

@@ -97,10 +97,15 @@ void Vision::update(World& world, const Simulation& sim) {
         f32 cy = (transform->position.y - oy) / m_tile_size;
         f32 radius = sight.sight_range / m_tile_size;
 
-        // Viewer's cliff level (from Movement component or terrain)
+        // Viewer's cliff level (from Movement component or terrain).
+        // Air units see over everything — they fly above the terrain, so no
+        // cliff blocks their line of sight. Max cliff level → has_cliff_los
+        // never finds a higher intermediate tile.
         u8 viewer_cliff = 0;
         const auto* mov = world.movements.get(id);
-        if (mov) {
+        if (mov && mov->type == MoveType::Air) {
+            viewer_cliff = 255;
+        } else if (mov) {
             viewer_cliff = mov->cliff_level;
         } else if (m_terrain) {
             viewer_cliff = m_terrain->cliff_level_at(transform->position.x, transform->position.y);

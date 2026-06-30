@@ -276,6 +276,12 @@ void          remove_all_components(World& world, u32 id);
 // is unknown.
 bool morph_unit(World& world, Unit unit, std::string_view new_type_id);
 
+// Render-only visual Z lift for a unit: fly_height for Air units, else 0. The
+// sim position stays at ground Z; this is what the mesh renderer, selection
+// ring, and click pick-test all add so the visual model, its ring, and its
+// hit-volume agree.
+f32 unit_fly_height(const World& world, u32 id);
+
 // ── Unit API ───────────────────────────────────────────────────────────────
 
 void     issue_order(World& world, Unit unit, Order order);

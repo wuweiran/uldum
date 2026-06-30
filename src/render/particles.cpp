@@ -152,13 +152,27 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
 
         // Built-in disappearance: hold the tint, fade its alpha linearly to 0
         // over the particle's life (life/max_life goes 1→0).
+        f32 life_frac = (p.max_life > 0) ? (p.life / p.max_life) : 0.0f;
         glm::vec4 color = p.color;
-        color.a *= (p.max_life > 0) ? (p.life / p.max_life) : 0.0f;
+        color.a *= life_frac;
 
-        // Billboard quad corners
-        f32 half = p.size * 0.5f;
-        glm::vec3 right = camera_right * half;
-        glm::vec3 up    = camera_up * half;
+        glm::vec3 right, up;
+        if (p.texture_id == SHAPE_RIPPLE) {
+            // Flat expanding ring: ground-aligned (world XY) quad that GROWS as
+            // the particle ages, so the ring spreads outward then fades. Anchored
+            // at its spawn point (velocity 0) → a moving unit drops a trail of
+            // rings, each expanding where it was born. View-independent (it's a
+            // decal on the surface, not a reflection), so visible from any angle.
+            f32 age   = 1.0f - life_frac;                 // 0 at birth → 1 at death
+            f32 half  = p.size * (0.25f + age * 0.75f);   // start 25% → full size
+            right = glm::vec3{half, 0, 0};
+            up    = glm::vec3{0, half, 0};
+        } else {
+            // Camera-facing billboard quad
+            f32 half = p.size * 0.5f;
+            right = camera_right * half;
+            up    = camera_up * half;
+        }
 
         glm::vec3 bl = p.position - right - up;
         glm::vec3 br = p.position + right - up;

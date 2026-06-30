@@ -54,8 +54,10 @@ public:
         m_static_occupiable_ground.clear();
         m_components_ground.clear();
         m_components_amphibious.clear();
+        m_components_water.clear();
         m_components_ground_dirty     = false;
         m_components_amphibious_dirty = false;
+        m_components_water_dirty       = false;
         build_cache();
     }
     const map::TerrainData* terrain() const { return m_terrain; }
@@ -80,6 +82,21 @@ public:
     // Can a unit occupy this cell? Containing tile must be terrain-passable
     // and the cell itself must not be runtime-blocked.
     bool can_occupy_cell(i32 cx, i32 cy, MoveType move_type) const;
+
+    // Radius-aware position test: is a unit of `radius` (world units) centred
+    // at (x,y) fully on occupiable terrain? Checks the centre cell plus a ring
+    // of samples at `radius` — so the unit's whole footprint fits, not just its
+    // centre. Used to keep a wide unit (ship) from parking with its hull over
+    // the shore. radius ≤ 0 falls back to the plain centre-cell test.
+    bool pos_clear_for_radius(f32 x, f32 y, f32 radius, MoveType move_type) const;
+
+    // Pull `goal` back along the line toward `from` until a unit of `radius`
+    // fits there (pos_clear_for_radius passes), in small world-space steps so
+    // the stop point is sub-cell precise. If the goal already fits, returns it
+    // unchanged. If nothing along the segment fits, returns `from`. Cheap:
+    // runs once per path query, not per frame.
+    glm::vec2 clamp_goal_for_radius(glm::vec2 goal, glm::vec2 from,
+                                    f32 radius, MoveType move_type) const;
 
     // Is this cell runtime-blocked (any blocker rect overlaps it)?
     bool is_cell_blocked(i32 cx, i32 cy) const;
@@ -214,8 +231,10 @@ private:
     // flag is never read and the flood never runs.
     mutable std::vector<u32> m_components_ground;
     mutable std::vector<u32> m_components_amphibious;
+    mutable std::vector<u32> m_components_water;
     mutable bool             m_components_ground_dirty     = false;
     mutable bool             m_components_amphibious_dirty = false;
+    mutable bool             m_components_water_dirty       = false;
 };
 
 } // namespace uldum::simulation

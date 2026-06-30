@@ -46,6 +46,9 @@ EVENT_UNIT_ITEM_PICKED_UP  = "unit_item_picked_up"
 EVENT_UNIT_ITEM_DROPPED    = "unit_item_dropped"
 EVENT_UNIT_ISSUED_ORDER    = "unit_issued_order"
 
+-- Destructable-scoped events (TriggerRegisterDestructableEvent)
+EVENT_DESTRUCTABLE_DEATH   = "destructable_death"
+
 -- Player-scoped events (TriggerRegisterPlayerEvent)
 EVENT_PLAYER_ORDER         = "player_order"
 EVENT_PLAYER_DISCONNECT    = "player_disconnect"

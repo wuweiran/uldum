@@ -56,6 +56,7 @@ struct Health {
     f32 current     = 0;
     f32 max         = 0;
     f32 regen_per_sec = 0;
+    u32 hit_count     = 0;   // bumped per normal-attack hit; renderer plays "hit" on change
 };
 
 // Map-defined states beyond HP (mana, energy, rage, etc.).
@@ -85,8 +86,8 @@ struct AttributeBlock {
 };
 
 struct Selectable {
-    f32 selection_radius = 1.0f;
-    f32 selection_height = 100.0f;  // height of selection cylinder (world units)
+    f32 selection_radius = 0.0f;    // 0 = auto (renderer fills from model AABB × scale)
+    f32 selection_height = 0.0f;    // 0 = auto (renderer fills from model AABB × scale)
     i32 priority         = 5;
 };
 
@@ -167,6 +168,7 @@ struct Combat {
     f32         dmg_pt          = 0.5f;    // fraction of attack animation at damage point
     std::optional<ProjectileSpec> projectile;  // set → ranged; unset → melee
     f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range
+    u8          target_mask     = TARGET_MASK_SURFACE;  // which MoveType layers this attack can hit
     // Runtime state
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;

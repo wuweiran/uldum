@@ -12,7 +12,7 @@
         "abilities": [],
         "classifications": ["ground"],
         "sounds": { "attack": "sounds/chop.ogg" },
-        "selection": { "radius": 32, "priority": 5 }
+        "selection": { "priority": 5 }
     },
     "paladin": {
         "display_name": "Paladin",
@@ -32,7 +32,7 @@
         "inventory_size": 6,
         "sounds": { "attack": "sounds/knifeSlice.ogg" },
         "classifications": ["ground", "hero"],
-        "selection": { "radius": 48, "priority": 10 }
+        "selection": { "priority": 10 }
     },
     "archer": {
         "display_name": "Archer",
@@ -42,11 +42,11 @@
         "attributes": { "armor": 0, "armor_type": "light", "attack_type": "pierce" },
         "movement": { "speed": 270, "turn_rate": 0.6, "collision_radius": 28, "type": "ground" },
         "animation": { "dmg_pt": 0.492, "walk_speed": 270 },
-        "combat": { "damage": 80, "range": 600, "cooldown": 2.0, "dmg_time": 0.5, "backsw_time": 0.3, "projectile": { "model": "models/projectiles/arrow.glb", "speed": 900, "arc": 150, "launch": { "forward": 0.2886, "side": 0.0286, "height": 1.6483 } }, "acquire_range": 600 },
+        "combat": { "damage": 80, "range": 600, "cooldown": 2.0, "dmg_time": 0.5, "backsw_time": 0.3, "projectile": { "model": "models/projectiles/arrow.glb", "speed": 900, "arc": 150, "launch": { "forward": 0.2886, "side": 0.0286, "height": 1.6483 } }, "acquire_range": 600, "targets": ["ground", "water", "air"] },
         "vision": { "range": 1400 },
         "abilities": [],
         "classifications": ["ground"],
-        "selection": { "radius": 32, "priority": 5 }
+        "selection": { "priority": 5 }
     },
     "grunt": {
         "display_name": "Grunt",
@@ -59,7 +59,7 @@
         "vision": { "range": 1400 },
         "abilities": [],
         "classifications": ["ground"],
-        "selection": { "radius": 48, "priority": 5 }
+        "selection": { "priority": 5 }
     },
     "creep": {
         "display_name": "Creep",
@@ -73,7 +73,7 @@
         "vision": { "range": 800 },
         "abilities": [],
         "classifications": ["ground"],
-        "selection": { "radius": 24, "priority": 3 }
+        "selection": { "priority": 3 }
     },
     "barracks": {
         "display_name": "Barracks",
@@ -87,6 +87,34 @@
         "abilities": [],
         "building": { "build_time": 60 },
         "classifications": ["ground", "structure"],
-        "selection": { "radius": 128, "priority": 2 }
+        "selection": { "priority": 2 }
+    },
+    "ship": {
+        "display_name": "Ship",
+        "model": "models/ship.glb",
+        "model_scale": 1.6,
+        "health": { "max": 1100, "regen": 1.0 },
+        "attributes": { "armor": 3, "armor_type": "heavy", "attack_type": "pierce" },
+        "movement": { "speed": 180, "turn_rate": 0.2, "collision_radius": 96, "type": "water" },
+        "animation": { "dmg_pt": 0.5, "walk_speed": 180 },
+        "combat": { "damage": 60, "range": 700, "cooldown": 2.2, "dmg_time": 0.4, "backsw_time": 0.3, "projectile": { "model": "models/projectiles/missile.glb", "speed": 500, "arc": 120, "launch": { "forward": 150.838, "side": -1.063, "height": 37.929 } }, "acquire_range": 800, "targets": ["ground", "water", "air"] },
+        "vision": { "range": 1600 },
+        "abilities": [],
+        "classifications": ["water"],
+        "selection": { "radius": 64, "priority": 5 }
+    },
+    "airship": {
+        "display_name": "Airship",
+        "model": "models/airship.glb",
+        "model_scale": 1.2,
+        "health": { "max": 900, "regen": 1.0 },
+        "attributes": { "armor": 2, "armor_type": "light", "attack_type": "pierce" },
+        "movement": { "speed": 220, "turn_rate": 0.3, "collision_radius": 72, "type": "air", "fly_height": 280 },
+        "animation": { "dmg_pt": 0.5, "walk_speed": 220 },
+        "combat": { "damage": 45, "range": 250, "cooldown": 2.0, "dmg_time": 0.4, "backsw_time": 0.3, "projectile": { "model": "models/projectiles/missile.glb", "speed": 250, "arc": 50, "launch": { "forward": 0.0, "side": 0.0, "height": 0.0 } }, "acquire_range": 500, "targets": ["ground", "water", "air"] },
+        "vision": { "range": 800 },
+        "abilities": [],
+        "classifications": ["air"],
+        "selection": { "priority": 5 }
     }
 }

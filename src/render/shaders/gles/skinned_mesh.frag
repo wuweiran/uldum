@@ -2,11 +2,12 @@
 precision highp float;
 precision highp int;
 
-// Push constants — same block as the vertex shader; we only read visual.
+// Push constants — same block as the vertex shader; we read visual + factor.
 layout(binding = 30, std140) uniform PushConstants {
     mat4 mvp;
     mat4 model;
     vec4 visual;
+    vec4 factor;
 } pc;
 
 // set 0 binding 0 → 0   diffuse_tex
@@ -53,7 +54,7 @@ float shadow_pcf(vec3 light_ndc) {
 
 void main() {
     vec3 normal = normalize(frag_world_normal);
-    vec3 albedo = texture(diffuse_tex, frag_texcoord).rgb;
+    vec3 albedo = texture(diffuse_tex, frag_texcoord).rgb * pc.factor.rgb;
 
     vec3 light_dir = normalize(env.sun_direction.xyz);
     float ndotl = max(dot(normal, light_dir), 0.0);

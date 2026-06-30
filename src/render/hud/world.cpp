@@ -138,6 +138,10 @@ void draw_entity_bars_impl(HudRenderer& r,
         // Skip dead units — their corpse is still in the world but shouldn't
         // advertise HP/mana bars.
         if (world.dead_states.get(id)) continue;
+        // Bars are for units only. Destructables carry Health (so combat can
+        // damage them) but must not advertise an HP bar.
+        if (auto* hi = world.handle_infos.get(id);
+            !hi || hi->category != simulation::Category::Unit) continue;
 
         // Interpolated world position for the bar anchor — matches how
         // the renderer (and selection circles) draw moving units so the

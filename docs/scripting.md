@@ -115,6 +115,9 @@ TriggerRegisterUnitEvent(trig, my_hero, EVENT_UNIT_DEATH)
 -- Player-scoped: fires for any order issued by THIS player
 TriggerRegisterPlayerEvent(trig, player, EVENT_PLAYER_ORDER)
 
+-- Destructable-scoped: fires only when THIS destructable dies
+TriggerRegisterDestructableEvent(trig, crate, EVENT_DESTRUCTABLE_DEATH)
+
 -- Projectile-scoped: fires when THIS projectile hits or expires
 TriggerRegisterProjectileEvent(trig, proj, EVENT_PROJECTILE_HIT)
 
@@ -149,7 +152,9 @@ Inside a trigger action, use context functions to read event-specific data:
 ```lua
 -- General
 GetTriggerEvent() → string          -- which event fired this trigger
-GetTriggerUnit() → unit             -- the unit that caused the event
+GetTriggerUnit() → unit             -- the unit that caused the event (nil if a destructable)
+GetTriggerDestructable() → dest     -- the destructable that caused the event (nil if a unit)
+GetTriggerWidget() → unit|dest      -- the widget either way, regardless of kind
 GetTriggerPlayer() → player         -- the player involved
 
 -- Ability
@@ -179,13 +184,21 @@ Event-name constants live in `engine/scripts/constants.lua`. Every event comes i
 
 #### Combat events
 
-| Global | Unit-scoped | Subject (`GetTriggerUnit`) | Notes |
+These four are **widget-level** — they fire for both units and destructables (crates, trees, …). Inside the action, `GetTriggerWidget()` returns whichever it was; `GetTriggerUnit()` returns the unit (nil for a destructable) and `GetTriggerDestructable()` returns the destructable (nil for a unit). On death, units additionally fire `EVENT_UNIT_DEATH` and destructables additionally fire `EVENT_DESTRUCTABLE_DEATH` (scope with `TriggerRegisterDestructableEvent`).
+
+| Global | Unit-scoped | Subject (`GetTriggerWidget`) | Notes |
 |---|---|---|---|
 | `EVENT_GLOBAL_DAMAGE` | `EVENT_UNIT_DAMAGE` | the victim | `GetDamageSource/Target/Amount/Type`; `SetDamageAmount` modifies |
 | `EVENT_GLOBAL_DYING` | `EVENT_UNIT_DYING` | the victim | Fires before death is finalized |
 | `EVENT_GLOBAL_DEATH` | `EVENT_UNIT_DEATH` | the victim | `GetKillingUnit` returns the killer |
 | `EVENT_GLOBAL_HEAL` | `EVENT_UNIT_HEAL` | the healed unit | |
 | `EVENT_GLOBAL_ATTACKED` | `EVENT_UNIT_ATTACKED` | the target | `GetAttacker` returns the attacker |
+
+#### Destructable events
+
+| Destructable-scoped | Subject (`GetTriggerDestructable`) | Notes |
+|---|---|---|
+| `EVENT_DESTRUCTABLE_DEATH` | the dying destructable | Register with `TriggerRegisterDestructableEvent(trig, dest, ...)`. Also fires the widget-level `EVENT_GLOBAL_DEATH` |
 
 #### Ability events
 

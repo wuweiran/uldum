@@ -44,6 +44,13 @@ function TriggerRegisterUnitEvent(trig, unit, event_name) end
 --- @param event_name string
 function TriggerRegisterPlayerEvent(trig, player, event_name) end
 
+--- Register an event scoped to a specific destructable. Inside the
+--- action, GetTriggerDestructable() returns the destructable.
+--- @param trig trigger
+--- @param destructable destructable
+--- @param event_name string  EVENT_DESTRUCTABLE_DEATH
+function TriggerRegisterDestructableEvent(trig, destructable, event_name) end
+
 --- Register an event scoped to a specific projectile. The trigger is
 --- automatically dropped when the projectile is destroyed.
 --- @param trig trigger
@@ -76,9 +83,23 @@ function TriggerAddAction(trig, action) end
 --- @return string
 function GetTriggerEvent() end
 
---- The unit associated with the current event.
---- @return unit
+--- The unit associated with the current event. nil when the trigger
+--- widget is a destructable (use GetTriggerDestructable instead).
+--- @return unit?
 function GetTriggerUnit() end
+
+--- The destructable associated with the current event, or nil when the
+--- trigger widget is a unit. Set for the widget-level events
+--- (damage/dying/death/heal) and EVENT_DESTRUCTABLE_DEATH.
+--- @return destructable?
+function GetTriggerDestructable() end
+
+--- The widget (unit OR destructable) the current event is about,
+--- regardless of category. Returns whichever usertype matches, or nil
+--- when there is no trigger widget. Use when an action handles both
+--- kinds; otherwise prefer GetTriggerUnit / GetTriggerDestructable.
+--- @return unit|destructable|nil
+function GetTriggerWidget() end
 
 --- The player associated with the current event.
 --- @return player
@@ -170,6 +191,20 @@ function GetAttacker() end
 --- @param facing number?   Facing in degrees (default 0, facing +Y)
 --- @return unit
 function CreateUnit(type_id, player, x, y, facing) end
+
+--- Create a destructable (crate, tree, etc.) at the given position. Z is
+--- sampled from the terrain. Returns the handle, or nil if the type id is
+--- unknown. Dies via the normal Health/death path; fires the
+--- widget-level EVENT_GLOBAL_DEATH plus EVENT_DESTRUCTABLE_DEATH (catch
+--- the latter with TriggerRegisterDestructableEvent, read the dying
+--- crate via GetTriggerDestructable).
+--- @param type_id string    Destructable type from map's destructables.json
+--- @param x number          X position (game coords)
+--- @param y number          Y position (game coords)
+--- @param facing number?    Facing in degrees (default 0)
+--- @param variation number? Model variation index (default 0)
+--- @return destructable?
+function CreateDestructable(type_id, x, y, facing, variation) end
 
 --- Remove a unit from the game world.
 --- @param unit unit

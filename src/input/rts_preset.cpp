@@ -366,13 +366,16 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (target_owner) {
                 is_enemy = ctx.simulation.is_enemy(sel.player(), *target_owner);
             }
+            // Ownerless destructables (crates, trees) are smart-attackable.
+            auto* tinfo = ctx.simulation.world().handle_infos.get(target.id);
+            bool is_destructable = tinfo && tinfo->category == simulation::Category::Destructable;
 
             GameCommand cmd;
             cmd.player = sel.player();
             cmd.units  = sel.selected();
             cmd.queued = input.key_shift;
 
-            if (is_enemy) {
+            if (is_enemy || is_destructable) {
                 cmd.order = simulation::orders::Attack{simulation::Unit{target}};
             } else {
                 // Friendly unit — Follow. Same Move order, just with

@@ -91,6 +91,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.turn_rate         = m.value("turn_rate", 0.6f) * 4.0f * glm::pi<f32>();
             def.collision_radius  = m.value("collision_radius", 32.0f);
             def.move_type         = parse_move_type(m.value("type", "ground"));
+            def.fly_height        = m.value("fly_height", 0.0f);
         }
 
         // Pathing footprint — either a 2-element array `[w, h]` or
@@ -131,6 +132,15 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
                 def.projectile = std::move(spec);
             }
             def.acquire_range    = c.value("acquire_range", 10.0f);
+            // Attack target layers. JSON "targets": ["ground","air",...]. Omitted
+            // → surface (ground/water/amphibious), NOT air — units opt into anti-air.
+            if (c.contains("targets") && c["targets"].is_array()) {
+                std::vector<std::string> tl;
+                for (auto& t : c["targets"]) if (t.is_string()) tl.push_back(t.get<std::string>());
+                def.target_mask = parse_target_mask(tl);
+            } else {
+                def.target_mask = TARGET_MASK_SURFACE;
+            }
         }
 
         if (val.contains("animation")) {
@@ -147,7 +157,13 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
 
         if (val.contains("selection")) {
             auto& s = val["selection"];
-            def.selection_radius   = s.value("radius", 1.0f);
+            // All-or-nothing override: an authored "radius" switches OFF auto
+            // sizing and uses the JSON cylinder. height defaults to 2× radius
+            // if omitted. No radius → leave 0 (auto from model). priority always.
+            if (s.contains("radius")) {
+                def.selection_radius = s.value("radius", 1.0f);
+                def.selection_height = s.value("height", def.selection_radius * 2.0f);
+            }
             def.selection_priority = s.value("priority", 5);
         }
 

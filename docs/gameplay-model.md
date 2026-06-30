@@ -171,10 +171,34 @@ StateValue {
 }
 
 Selectable {
-    f32  selection_radius    // circle size when selected
+    f32  selection_radius    // click-cylinder radius; 0 = auto from model AABB
+    f32  selection_height    // click-cylinder height; 0 = auto from model AABB
     i32  priority            // selection priority (heroes > units > buildings)
 }
 ```
+
+**Selection / click hit-testing.** A unit is picked by ray-vs-vertical-cylinder
+(radius × height), WC3-style — not by raycasting mesh triangles. The cylinder is
+**auto-sized from the model's bounding box** at load (radius = footprint
+half-width, height = full model height, both × instance scale), so clicking any
+part of the silhouette — a unit's head, an airship's balloon — selects it with
+zero authoring.
+
+The `selection` block in `units.json` is an optional **override** (the WC3
+"clickHelper"):
+
+- **Omit `radius`** → auto-size the whole cylinder from the model. Best default.
+- **Author `radius`** → use the JSON cylinder (`height` defaults to `2 × radius`
+  if omitted). Needed for shapes the AABB over-fits — e.g. a long ship hull,
+  where the auto footprint would balloon to cover the length.
+- **`priority`** is a **group-lead** weight, not a click rule. **Single click is
+  depth-only** — the frontmost unit under the cursor wins, so a unit behind
+  another can't steal the click regardless of priority ("click what you see").
+  Priority only orders **box / drag** selections (results sorted descending), so
+  a mixed drag — hero + footmen — leads the command card with the hero.
+
+Air units: the cylinder (and the selection ring) lift to the unit's `fly_height`
+so you click the flying model, not the ground beneath it.
 
 Note: `armor`, `armor_type`, and `attack_type` are no longer engine concepts.
 They are map-defined strings stored in unit type definitions. The map's Lua
@@ -692,7 +716,7 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
         "vision": { "day": 1400, "night": 800 },
         "abilities": ["attack", "move", "stop", "hold_position", "defend"],
         "classifications": ["ground"],
-        "selection": { "radius": 0.8, "priority": 5 }
+        "selection": { "priority": 5 }
     }
 }
 ```

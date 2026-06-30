@@ -16,7 +16,12 @@ void main() {
     float alpha = 0.0;
     vec3 color = frag_color.rgb;
 
-    if (frag_texture_id == 1u) {
+    if (frag_texture_id == 2u) {
+        // Ripple — soft wide gaussian annulus; quad grows with age so the ring
+        // expands, frag_color.a fades it. A natural wash, not a drawn circle.
+        float band = (dist - 0.8) / 0.16;
+        alpha = exp(-band * band);
+    } else if (frag_texture_id == 1u) {
         // Droplet (teardrop) — spray / water
         float cy = c.y + 0.05;
         float stretch = 1.0 + max(0.0, cy) * 1.5;

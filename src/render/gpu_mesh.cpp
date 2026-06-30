@@ -2,6 +2,8 @@
 #include "rhi/rhi.h"
 #include "core/log.h"
 
+#include <glm/common.hpp>
+#include <glm/geometric.hpp>
 #include <cstring>
 
 namespace uldum::render {
@@ -52,6 +54,20 @@ GpuMesh upload_skinned_mesh(rhi::Rhi& rhi, const asset::SkinnedMeshData& mesh, u
     if (mesh.vertices.empty()) return gpu;
 
     gpu.vertex_count  = static_cast<u32>(mesh.vertices.size());
+    // Bounding sphere + AABB (model space). glTF is Y-up; renderer flips Y→Z,
+    // so game-height = model-Y extent, game-footprint = model X/Z extents.
+    f32 max_r2 = 0.0f;
+    glm::vec3 aabb_min{1e30f}, aabb_max{-1e30f};
+    for (const auto& v : mesh.vertices) {
+        f32 r2 = glm::dot(v.position, v.position);
+        if (r2 > max_r2) max_r2 = r2;
+        aabb_min = glm::min(aabb_min, v.position);
+        aabb_max = glm::max(aabb_max, v.position);
+    }
+    gpu.bounding_radius = std::sqrt(max_r2);
+    glm::vec3 ext = aabb_max - aabb_min;
+    gpu.footprint_radius = 0.5f * std::max(ext.x, ext.z);
+    gpu.pick_height      = ext.y;
     gpu.vertex_buffer = upload_buffer(rhi, mesh.vertices.data(),
         mesh.vertices.size() * sizeof(asset::SkinnedVertex), rhi::BufferUsage::Vertex);
     if (!gpu.vertex_buffer.is_valid()) {

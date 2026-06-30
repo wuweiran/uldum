@@ -20,6 +20,7 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
     if (move_type == MoveType::Air) return true;
     if (!m_terrain->is_tile_passable(tx, ty)) return false;
     if (move_type == MoveType::Ground && m_terrain->is_tile_deep_water(tx, ty)) return false;
+    if (move_type == MoveType::Water  && !m_terrain->is_tile_deep_water(tx, ty)) return false;
 
     // Runtime blocks (buildings): direct per-tile lookup. WC3-style
     // pathing — a building with a W×H footprint marks exactly W×H
@@ -64,6 +65,7 @@ bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
             // walkable / flyable bits are gone (see terrain_data.h);
             // can_occupy already covers tile-level building blocks.
             if (move_type == MoveType::Ground && td.is_deep_water(vx, vy)) return false;
+            if (move_type == MoveType::Water  && !td.is_deep_water(vx, vy)) return false;
         }
     }
 
@@ -147,6 +149,16 @@ bool Pathfinder::can_occupy_cell(i32 cx, i32 cy, MoveType move_type) const {
     if (move_type == MoveType::Air) return true;
     if (cx < 0 || cy < 0) return false;
     if (static_cast<u32>(cx) >= m_cells_w || static_cast<u32>(cy) >= m_cells_h) return false;
+    // Water is the inverse of Ground: passable only over deep water. The
+    // ground static cache encodes "passable and NOT deep water", so water
+    // can't reuse it — test the tile directly.
+    if (move_type == MoveType::Water) {
+        u32 tx = static_cast<u32>(cx) / PATHING_SUBDIV;
+        u32 ty = static_cast<u32>(cy) / PATHING_SUBDIV;
+        if (!m_terrain->is_tile_deep_water(tx, ty)) return false;
+        if (is_cell_blocked(cx, cy)) return false;
+        return true;
+    }
     // Static cache (terrain passable + not deep water) was filled in
     // build_cache; fall through to the slow path if the map is too
     // small / pre-cache. Runtime blocker check stays per-call — that
@@ -164,10 +176,49 @@ bool Pathfinder::can_occupy_cell(i32 cx, i32 cy, MoveType move_type) const {
     return true;
 }
 
-// Terrain-level tile-to-tile connectivity (cliff levels, deep-water
-// vertices) — the cliff/edge half of are_connected, WITHOUT the runtime-
-// block check. Cell-level A* uses this for cross-tile transitions; the
-// per-cell runtime block is checked separately by can_occupy_cell.
+bool Pathfinder::pos_clear_for_radius(f32 x, f32 y, f32 radius, MoveType move_type) const {
+    // Centre must always be occupiable.
+    glm::ivec2 c = world_to_cell(x, y);
+    if (!can_occupy_cell(c.x, c.y, move_type)) return false;
+    if (radius <= 0.0f) return true;
+
+    // Sample a ring at `radius`. 8 directions catches shore overhang well; the
+    // spacing (radius·0.77 between adjacent samples) is below one cell for the
+    // ship's radius, so it can't skip a blocked cell between samples.
+    static constexpr int N = 8;
+    for (int i = 0; i < N; ++i) {
+        f32 a = (static_cast<f32>(i) / N) * 6.2831853f;
+        f32 sx = x + std::cos(a) * radius;
+        f32 sy = y + std::sin(a) * radius;
+        glm::ivec2 sc = world_to_cell(sx, sy);
+        if (!can_occupy_cell(sc.x, sc.y, move_type)) return false;
+    }
+    return true;
+}
+
+glm::vec2 Pathfinder::clamp_goal_for_radius(glm::vec2 goal, glm::vec2 from,
+                                            f32 radius, MoveType move_type) const {
+    if (move_type == MoveType::Air) return goal;
+    if (pos_clear_for_radius(goal.x, goal.y, radius, move_type)) return goal;
+
+    // Walk from goal back toward `from`, in sub-cell steps, returning the first
+    // point where the footprint fits. World precision — not snapped to a cell.
+    glm::vec2 d = from - goal;
+    f32 len = glm::length(d);
+    if (len < 1e-4f) return from;
+    d /= len;
+    f32 step = cell_size() * 0.25f;            // ~8 units — sub-cell precision
+    for (f32 t = step; t <= len; t += step) {
+        glm::vec2 p = goal + d * t;
+        if (pos_clear_for_radius(p.x, p.y, radius, move_type)) return p;
+    }
+    return from;  // nothing along the segment fits (already-at-from handled above)
+}
+
+// Terrain-level tile-to-tile connectivity (cliff levels, deep-water vertices) —
+// the cliff/edge half of are_connected, WITHOUT the runtime-block check.
+// Cell-level A* uses this for cross-tile transitions; the per-cell runtime
+// block is checked separately by can_occupy_cell.
 static bool tiles_terrain_connected(const map::TerrainData& td,
                                      u32 src_tx, u32 src_ty,
                                      u32 dst_tx, u32 dst_ty,
@@ -179,6 +230,10 @@ static bool tiles_terrain_connected(const map::TerrainData& td,
         if (td.is_tile_deep_water(src_tx, src_ty)) return false;
         if (td.is_tile_deep_water(dst_tx, dst_ty)) return false;
     }
+    if (move_type == MoveType::Water) {
+        if (!td.is_tile_deep_water(src_tx, src_ty)) return false;
+        if (!td.is_tile_deep_water(dst_tx, dst_ty)) return false;
+    }
     i32 src_eff = td.tile_effective_level(src_tx, src_ty);
     i32 dst_eff = td.tile_effective_level(dst_tx, dst_ty);
     if (src_eff != -1 && dst_eff != -1 && src_eff != dst_eff) return false;
@@ -189,6 +244,7 @@ static bool tiles_terrain_connected(const map::TerrainData& td,
     for (u32 vy = min_vy; vy <= max_vy; ++vy) {
         for (u32 vx = min_vx; vx <= max_vx; ++vx) {
             if (move_type == MoveType::Ground && td.is_deep_water(vx, vy)) return false;
+            if (move_type == MoveType::Water  && !td.is_deep_water(vx, vy)) return false;
         }
     }
     return true;
@@ -321,6 +377,7 @@ void Pathfinder::build_cache() {
     m_components_amphibious.assign(static_cast<size_t>(m_cells_w) * m_cells_h, 0);
     m_components_ground_dirty     = true;
     m_components_amphibious_dirty = true;
+    m_components_water_dirty       = true;
 
     log::info("Pathfind", "Connectivity cache built: {}x{} tiles", w, h);
 }
@@ -415,6 +472,11 @@ void Pathfinder::refresh_components_if_dirty(MoveType mt) const {
         flood_components(*m_terrain, *this, MoveType::Amphibious,
                          m_cells_w, m_cells_h, m_components_amphibious);
         m_components_amphibious_dirty = false;
+    } else if (mt == MoveType::Water) {
+        if (!m_components_water_dirty) return;
+        flood_components(*m_terrain, *this, MoveType::Water,
+                         m_cells_w, m_cells_h, m_components_water);
+        m_components_water_dirty = false;
     } else {
         if (!m_components_ground_dirty) return;
         flood_components(*m_terrain, *this, MoveType::Ground,
@@ -503,7 +565,9 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     refresh_components_if_dirty(move_type);
     if (move_type != MoveType::Air) {
         const auto& comps = (move_type == MoveType::Amphibious)
-            ? m_components_amphibious : m_components_ground;
+            ? m_components_amphibious
+            : (move_type == MoveType::Water) ? m_components_water
+                                             : m_components_ground;
         if (!comps.empty()) {
             u32 start_comp = comps[static_cast<u32>(s.y) * cells_x + static_cast<u32>(s.x)];
             const u32 goal_comp  = comps[static_cast<u32>(g.y) * cells_x + static_cast<u32>(g.x)];
@@ -899,6 +963,7 @@ void Pathfinder::block_cells(i32 cx, i32 cy, u32 w, u32 h) {
     // never use Amphibious pay nothing.
     m_components_ground_dirty     = true;
     m_components_amphibious_dirty = true;
+    m_components_water_dirty       = true;
 }
 
 void Pathfinder::unblock_cells(i32 cx, i32 cy, u32 w, u32 h) {
@@ -919,6 +984,7 @@ void Pathfinder::unblock_cells(i32 cx, i32 cy, u32 w, u32 h) {
     // same flag pair, same refresh path.
     m_components_ground_dirty     = true;
     m_components_amphibious_dirty = true;
+    m_components_water_dirty       = true;
 }
 
 void Pathfinder::block_tiles(i32 tx, i32 ty, u32 w, u32 h) {

@@ -44,6 +44,20 @@ static simulation::Unit make_unit(simulation::World& world, u32 id) {
     return u;
 }
 
+static simulation::Destructable make_destructable(simulation::World& world, u32 id) {
+    simulation::Destructable d;
+    d.id = id;
+    auto* info = world.handle_infos.get(id);
+    d.generation = info ? info->generation : 0;
+    return d;
+}
+
+// Category of a trigger widget id, or nullopt if it has no handle record.
+static simulation::Category category_of(simulation::World& world, u32 id) {
+    auto* info = world.handle_infos.get(id);
+    return info ? info->category : simulation::Category::Unit;
+}
+
 // Extract a LocalizedString payload from a Lua arg. Player-facing APIs
 // (CreateTextTag, SetLabelText, ...) require this — they accept only
 // the L() handle, never a plain string. Passing a plain string is a
@@ -217,6 +231,11 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         "is_valid", &simulation::Item::is_valid,
         sol::meta_function::equal_to, [](const simulation::Item& a, const simulation::Item& b) { return a == b; }
     );
+    lua.new_usertype<simulation::Destructable>("Destructable",
+        "id", &simulation::Destructable::id,
+        "is_valid", &simulation::Destructable::is_valid,
+        sol::meta_function::equal_to, [](const simulation::Destructable& a, const simulation::Destructable& b) { return a == b; }
+    );
 
     bind_api();
     bind_trigger_api();
@@ -323,12 +342,20 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         }
     };
 
-    // Hook death callback so system_death fires on_death events
+    // Hook death callback so system_death fires on_death events. WC3-style:
+    // Hook death callback so system_death fires on_death events. Every widget
+    // fires global_death (catch-all). Units also fire unit_death; destructables
+    // also fire destructable_death. Scope is in the name + register function.
     sim.world().on_death = [this](simulation::Unit dying, simulation::Unit killer) {
         set_context_unit(dying.id);
         set_context_killer(killer.is_valid() ? killer.id : UINT32_MAX);
         fire_event("global_death", dying.id);
-        fire_event("unit_death", dying.id);
+        auto* info = m_sim->world().handle_infos.get(dying.id);
+        if (info && info->category == simulation::Category::Unit) {
+            fire_event("unit_death", dying.id);
+        } else if (info && info->category == simulation::Category::Destructable) {
+            fire_event("destructable_death", dying.id);
+        }
     };
 
     // Hook order callback — fires every time a new order survives the
@@ -892,6 +919,18 @@ void ScriptEngine::bind_api() {
         simulation::destroy(sim.world(), unit);
     };
 
+    lua["CreateDestructable"] = [&](const std::string& type_id, f32 x, f32 y,
+                                    sol::optional<f32> facing_deg, sol::optional<u8> variation) -> sol::object {
+        auto& world = sim.world();
+        f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
+        auto d = simulation::create_destructable(world, type_id, x, y, facing_rad, variation.value_or(0));
+        if (d.is_valid()) {
+            if (auto* t = world.transforms.get(d.id)) t->position.z = ::uldum::map::sample_height(terrain_ref, x, y);
+            return sol::make_object(*m_lua, d);
+        }
+        return sol::make_object(*m_lua, sol::nil);
+    };
+
     // Transform a unit into a different type in place. Same handle, same
     // position, same owner. Health / mana carry by percentage. Type-listed
     // abilities flip available true/false so cooldowns ride through morph
@@ -1412,7 +1451,12 @@ void ScriptEngine::bind_api() {
         set_context_unit(unit.id);
         set_context_killer(killer ? killer->id : UINT32_MAX);
         fire_event("global_death", unit.id);
-        fire_event("unit_death", unit.id);
+        auto* info = sim.world().handle_infos.get(unit.id);
+        if (info && info->category == simulation::Category::Destructable) {
+            fire_event("destructable_death", unit.id);
+        } else {
+            fire_event("unit_death", unit.id);
+        }
     };
 
     // ── Spatial Query API ─────────────────────────────────────────────
@@ -2123,6 +2167,22 @@ void ScriptEngine::bind_trigger_api() {
         }
     };
 
+    lua["TriggerRegisterDestructableEvent"] = [&](sol::table t, simulation::Destructable dest, sol::object event_obj) {
+        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
+            log::warn(TAG, "TriggerRegisterDestructableEvent: event name is nil or empty");
+            return;
+        }
+        std::string event_name = event_obj.as<std::string>();
+        u32 id = t["_id"].get<u32>();
+        auto it = m_triggers.find(id);
+        if (it != m_triggers.end()) {
+            Trigger::EventBinding eb;
+            eb.event_name = event_name;
+            eb.unit_id = dest.id;  // reuse unit_id slot — fire_event passes the dying widget id here
+            it->second.events.push_back(std::move(eb));
+        }
+    };
+
     lua["TriggerRegisterPlayerEvent"] = [&](sol::table t, simulation::Player player, sol::object event_obj) {
         if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
             log::warn(TAG, "TriggerRegisterPlayerEvent: event name is nil or empty");
@@ -2220,8 +2280,35 @@ void ScriptEngine::bind_trigger_api() {
     };
 
     lua["GetTriggerEvent"] = [&]() -> std::string { return m_ctx_event; };
+    // GetTriggerUnit — the unit the event is about. nil when the trigger
+    // widget is a destructable (use GetTriggerDestructable) or absent.
     lua["GetTriggerUnit"] = [&, unit_or_nil]() -> sol::object {
+        if (m_ctx_unit == UINT32_MAX) return sol::make_object(*m_lua, sol::nil);
+        if (category_of(sim.world(), m_ctx_unit) != simulation::Category::Unit)
+            return sol::make_object(*m_lua, sol::nil);
         return unit_or_nil(make_unit(sim.world(), m_ctx_unit));
+    };
+    // GetTriggerDestructable — the destructable the event is about. nil
+    // when the trigger widget is a unit (use GetTriggerUnit) or absent.
+    lua["GetTriggerDestructable"] = [&]() -> sol::object {
+        if (m_ctx_unit == UINT32_MAX) return sol::make_object(*m_lua, sol::nil);
+        if (category_of(sim.world(), m_ctx_unit) != simulation::Category::Destructable)
+            return sol::make_object(*m_lua, sol::nil);
+        auto d = make_destructable(sim.world(), m_ctx_unit);
+        return d.is_valid() ? sol::make_object(*m_lua, d) : sol::make_object(*m_lua, sol::nil);
+    };
+    // GetTriggerWidget — the widget (unit OR destructable) the event is
+    // about, regardless of category. Returns whichever usertype matches
+    // so GetUnitX/health work; nil when there's no trigger widget.
+    lua["GetTriggerWidget"] = [&]() -> sol::object {
+        if (m_ctx_unit == UINT32_MAX) return sol::make_object(*m_lua, sol::nil);
+        auto cat = category_of(sim.world(), m_ctx_unit);
+        if (cat == simulation::Category::Destructable) {
+            auto d = make_destructable(sim.world(), m_ctx_unit);
+            return d.is_valid() ? sol::make_object(*m_lua, d) : sol::make_object(*m_lua, sol::nil);
+        }
+        auto u = make_unit(sim.world(), m_ctx_unit);
+        return u.is_valid() ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
     };
     lua["GetTriggerPlayer"] = [&, player_or_nil]() -> sol::object {
         return player_or_nil(simulation::Player{m_ctx_player});

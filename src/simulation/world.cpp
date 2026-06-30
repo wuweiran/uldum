@@ -69,7 +69,9 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // Widget — HP is engine built-in
     world.healths.add(id, Health{def->max_health, def->max_health, def->health_regen});
-    world.selectables.add(id, Selectable{def->selection_radius, def->model_scale * 2.0f, def->selection_priority});
+    // Selection cylinder. radius/height carry the type's values, or 0 = AUTO —
+    // the renderer back-fills auto entries from the model AABB once it loads.
+    world.selectables.add(id, Selectable{def->selection_radius, def->selection_height, def->selection_priority});
 
     // Map-defined states (mana, energy, etc.)
     if (!def->states.empty()) {
@@ -109,6 +111,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         combat.dmg_pt           = def->dmg_pt;
         combat.projectile       = def->projectile;
         combat.acquire_range    = def->acquire_range;
+        combat.target_mask      = def->target_mask;
         world.combats.add(id, std::move(combat));
     }
     world.sights.add(id, Sight{def->sight_range});
@@ -187,7 +190,9 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
     world.healths.add(id, Health{def->max_health, def->max_health, 0});
-    world.selectables.add(id, Selectable{1.0f, 50.0f, 1});
+    // Selection auto-sizes from the model AABB (renderer back-fill), same as
+    // units. 0/0 = auto; the crate/tree mesh drives the click cylinder.
+    world.selectables.add(id, Selectable{0.0f, 0.0f, 1});
     world.destructables.add(id, DestructableComp{std::string(type_id), variation});
 
     if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
@@ -341,7 +346,7 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
     // Selectable.
     if (world.selectables.has(id)) world.selectables.remove(id);
     world.selectables.add(id, Selectable{new_def->selection_radius,
-                                         new_def->model_scale * 2.0f,
+                                         new_def->selection_height,
                                          new_def->selection_priority});
 
     // StateBlock: re-seed; shared ids carry percentage, new ids start
@@ -396,6 +401,7 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
         c->dmg_pt           = new_def->dmg_pt;
         c->projectile       = new_def->projectile;
         c->acquire_range    = new_def->acquire_range;
+        c->target_mask      = new_def->target_mask;
         c->target           = Unit{};
         c->attack_state     = AttackState::Idle;
     }
@@ -484,6 +490,7 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
 
     hp->current -= amount;
     if (hp->current < 0) hp->current = 0;
+    if (damage_type == "attack") ++hp->hit_count;   // normal-attack flinch only (WC3 Stand Hit)
 
     // Fight-back: if target is idle (no order, no current target), attack the source.
     // Only fight back against enemies (different owner).
@@ -639,6 +646,15 @@ void issue_order(World& world, Unit unit, Order order) {
             aset->cast_timer       = 0;
         }
     }
+}
+
+f32 unit_fly_height(const World& world, u32 id) {
+    const auto* mov = world.movements.get(id);
+    if (!mov || mov->type != MoveType::Air || !world.types) return 0.0f;
+    const auto* hi = world.handle_infos.get(id);
+    if (!hi) return 0.0f;
+    const auto* def = world.types->get_unit_type(hi->type_id);
+    return def ? def->fly_height : 0.0f;
 }
 
 f32 get_health(const World& world, Unit unit) {

@@ -343,6 +343,18 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             continue;
         }
 
+        // Radius-aware goal clamp: pull the goal back to where the unit's whole
+        // footprint fits on passable terrain, so a wide unit (ship) stops with
+        // its hull on water instead of parking half on the shore. Sub-cell
+        // precise. Goal-only — A* and the per-tick enforcer are unchanged, so
+        // this can never block a unit (no planner/enforcer disagreement); it
+        // only moves the destination inward. Skipped for Follow/approach where
+        // arrival is governed by a range check, not exact arrival on the goal.
+        if (!is_follow && !is_approach && mov.collision_radius > 0.0f) {
+            goal2d = pathfinder.clamp_goal_for_radius(goal2d, pos2d,
+                                                      mov.collision_radius, mov.type);
+        }
+
         // ── Re-path: compute corridor + straight-line waypoint ──────────
         mov.repath_timer -= dt;
         // Repath only on the timer or a moved goal. "no waypoint" and
@@ -652,6 +664,11 @@ Unit create_projectile(World& world, Unit source, const std::string& model, glm:
     // the source's render scale so the authored (model-local) offset tracks
     // any model_scale. x=forward, y=lateral(right), z=height. Zero = feet.
     glm::vec3 spawn = src_t->position;
+    // Flying units sit at ground Z in the sim (fly_height is a render-only
+    // visual lift), so launch the projectile from their VISUAL height instead
+    // of the ground beneath them — an airship fires from its gondola, not the
+    // sea. Homing then descends naturally to a ground target.
+    spawn.z += unit_fly_height(world, source.id);
     if (launch_local != glm::vec3{0.0f}) {
         f32 f = src_t->facing;
         glm::vec3 fwd{std::cos(f), std::sin(f), 0.0f};
@@ -727,6 +744,15 @@ static Unit spawn_attack_projectile(World& world, Unit source, Unit target,
 }
 
 // ── Combat system ─────────────────────────────────────────────────────────
+
+// Can an attack with `target_mask` hit `target`'s movement layer? Units with no
+// Movement (buildings, destructables) count as Ground/surface. Ground attacks
+// can't hit flyers unless the type opts in with combat.targets including "air".
+static bool can_attack_layer(const World& world, u8 target_mask, Unit target) {
+    const auto* mov = world.movements.get(target.id);
+    MoveType t = mov ? mov->type : MoveType::Ground;
+    return (target_mask & move_type_bit(t)) != 0;
+}
 
 void system_combat(World& world, float dt, const SpatialGrid& grid) {
     for (u32 i = 0; i < world.combats.count(); ++i) {
@@ -814,6 +840,11 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 target_valid = false;
             }
         }
+        // Drop a target this attack can't hit (wrong layer — e.g. a ground
+        // unit force-attacking a flyer, or a target that morphed to air).
+        if (target_valid && !can_attack_layer(world, combat.target_mask, target)) {
+            target_valid = false;
+        }
 
         if (!target_valid) {
             // Target dead or gone — let backswing/cooldown finish before clearing
@@ -864,6 +895,10 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                         auto* sf = world.status_flags.get(e.id);
                         if (sf && (sf->flags & (status::Invulnerable |
                                                 status::Unattackable))) continue;
+                        // Skip enemies on a layer this attack can't hit (e.g.
+                        // ground melee won't auto-acquire a flyer). The unit
+                        // then stays idle rather than chasing what it can't hit.
+                        if (!can_attack_layer(world, combat.target_mask, e)) continue;
                         auto* et = world.transforms.get(e.id);
                         if (!et) continue;
                         f32 d = glm::length(et->position - transform->position);
@@ -1973,11 +2008,12 @@ void system_death(World& world, float dt) {
                 }
             }
 
-            // Fire death callback for script engine — units only. The
-            // callback is typed as Unit; destructables share the handle
-            // layout but the script side fires unit_death events that
-            // would be confusing for environment objects.
-            if (world.on_death && info->category == Category::Unit) {
+            // Fire death callback for the script engine. The script side
+            // routes by category: every widget fires global_death; units
+            // also fire unit_death, destructables also fire
+            // destructable_death. Items are excluded above.
+            if (world.on_death && (info->category == Category::Unit ||
+                                   info->category == Category::Destructable)) {
                 Unit dying;
                 dying.id = id;
                 dying.generation = info->generation;

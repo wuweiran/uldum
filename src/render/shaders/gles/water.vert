@@ -9,8 +9,6 @@ layout(binding = 30, std140) uniform PushConstants {
     float fog_enabled;
     float time;
     // Water-specific (offset 144)
-    vec4  shallow_color;
-    vec4  deep_color;
     uint  water_mask;
     uint  deep_mask;
     vec4  camera_pos;

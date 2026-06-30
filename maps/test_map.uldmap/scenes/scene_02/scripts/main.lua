@@ -41,6 +41,61 @@ function main()
 
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
+    ---------------------------------------------------------------------------
+    -- Splash AoE for the ship + airship. Their attacks land as single-target
+    -- damage (engine projectile); this trigger turns each landed hit into an
+    -- area blast around the impact point. Friendly fire ON — no enemy filter,
+    -- so allies caught in the blast take damage too (WC3 siege/artillery feel).
+    -- A burst VFX marks the impact. Found by type id (units are preplaced).
+    ---------------------------------------------------------------------------
+    local function register_splash(attacker, radius, pct)
+        if not attacker then return end
+        local trig = CreateTrigger()
+        TriggerRegisterEvent(trig, EVENT_GLOBAL_DAMAGE)
+        TriggerAddCondition(trig, function()
+            -- Only the attacker's own auto-attack hits splash. Guard against
+            -- recursion: the splash deals "splash"-typed damage, not "attack",
+            -- so it can't re-trigger itself.
+            return GetDamageType() == "attack" and GetDamageSource() == attacker
+        end)
+        TriggerAddAction(trig, function()
+            local target = GetDamageTarget()
+            if not target then return end
+            local dmg = GetDamageAmount() * pct
+            if dmg <= 0 then return end
+
+            local cx, cy = GetUnitX(target), GetUnitY(target)
+            PlayEffect("splash_burst", cx, cy, 0)
+
+            -- No filter → friendly fire. alive_only so we don't poke corpses.
+            local nearby = GetUnitsInRange(cx, cy, radius, { alive_only = true })
+            local hit = 0
+            for _, u in ipairs(nearby) do
+                if u ~= target then           -- target already took the direct hit
+                    DamageUnit(attacker, u, dmg, "splash")
+                    hit = hit + 1
+                end
+            end
+            if hit > 0 then
+                Log(string.format("[Splash] %.0f to %d units (r=%d)", dmg, hit, radius))
+            end
+        end)
+    end
+
+    local ship, airship
+    -- Ship/airship may be placed far from center (water / open sky), so scan
+    -- the whole map, not just the hero cluster radius above.
+    for _, unit in ipairs(GetUnitsInRange(0, 0, 8192)) do
+        local t = GetUnitTypeId(unit)
+        if t == "ship"    then ship    = unit end
+        if t == "airship" then airship = unit end
+    end
+    register_splash(ship,    220, 0.6)   -- naval barrage: wide, 60% splash
+    register_splash(airship, 180, 0.5)   -- aerial bomb: tighter, 50% splash
+    if ship    then Log("[Scene02] Ship splash AoE registered")    end
+    if airship then Log("[Scene02] Airship splash AoE registered") end
+
+
     -- Engine-authored abilities (holy_light, consecration) are seeded
     -- from the paladin's `abilities` list in units.json at create
     -- time — no Lua AddAbility needed for them. devotion_aura's effects
@@ -146,6 +201,37 @@ function main()
 
     abilities.register_healing_potion()
     Log("[Scene02] Healing-potion charge consumption registered")
+
+    ---------------------------------------------------------------------------
+    -- Crates: a cluster of attackable destructables near the heroes. Each
+    -- one wobbles ("hit" clip) when struck and dies after ~30 dmg. The
+    -- middle crate is the loot crate: it drops a healing potion where it
+    -- stood. CreateDestructable returns nil on failure, so guard before use.
+    ---------------------------------------------------------------------------
+    local loot_crate
+    local loot_x, loot_y
+    local CRATE_Y = -600
+    for i = 0, 4 do
+        local cx = -640 + i * 320
+        local crate = CreateDestructable("crate", cx, CRATE_Y, 0)
+        if crate then
+            if i == 2 then loot_crate, loot_x, loot_y = crate, cx, CRATE_Y end
+        else
+            Log("[Scene02] ERROR: CreateDestructable('crate') failed at " .. cx .. "," .. CRATE_Y)
+        end
+    end
+
+    if loot_crate then
+        local crate_death = CreateTrigger()
+        TriggerRegisterDestructableEvent(crate_death, loot_crate, EVENT_DESTRUCTABLE_DEATH)
+        TriggerAddAction(crate_death, function()
+            local d = GetTriggerDestructable()
+            if not d then return end
+            CreateItem("potion_healing", loot_x, loot_y)
+            Log("[Scene02] Loot crate destroyed — dropped potion_healing at " .. loot_x .. "," .. loot_y)
+        end)
+        Log("[Scene02] Spawned crate cluster (loot crate id=" .. loot_crate.id .. ")")
+    end
 
     -- Portal region. Authored in scene_02/objects.json as the
     -- "portal" region. Walk a hero onto it to swap to scene_01.
