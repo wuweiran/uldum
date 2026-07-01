@@ -102,7 +102,6 @@ struct DestructableTypeDef {
     std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
     u32                      pathing_footprint_w = 0;       // tiles; 0 = no pathing block
     u32                      pathing_footprint_h = 0;
-    f32                      collision_radius = 0;          // half-extent used by combat range checks
 };
 
 // Pure-decoration object: no health, no collision, no pathing block.

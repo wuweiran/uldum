@@ -208,18 +208,12 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
         world.renderables.add(id, Renderable{def->models[idx], true});
     }
 
-    // Movement-with-speed-0 carries the collision radius that combat
-    // range checks read via world.movements.get(target.id). Destructables
-    // never tick movement (no OrderQueue), so the Movement component is
-    // inert apart from this field.
-    if (def->collision_radius > 0) {
-        Movement m{};
-        m.speed = 0;
-        m.turn_rate = 0;
-        m.collision_radius = def->collision_radius;
-        m.type = MoveType::Ground;
-        world.movements.add(id, std::move(m));
-    }
+    // No Movement component: a destructable is not a unit and takes no part
+    // in unit collision. Its pathing_footprint (stamped as a PathingBlocker
+    // by the caller) is what keeps units clear of it — collision_radius would
+    // be redundant with that footprint and only made the crate a spurious
+    // push participant. Combat range/targeting against a destructable reads
+    // a missing Movement gracefully (target_radius 0, layer defaults Ground).
 
     Destructable d;
     d.id = h.id;

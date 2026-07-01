@@ -2231,11 +2231,11 @@ void Engine::run() {
                             // updates uniformly.
                             using PingKind = input::InputContext::TargetPingKind;
                             const auto& intents = m_hud.cast_indicator_style().intents;
-                            hud::Color base = intents.ally;
+                            hud::Color base = intents.neutral;
                             switch (m_target_ping.kind) {
-                                case PingKind::Enemy: base = intents.enemy; break;
-                                case PingKind::Ally:  base = intents.ally;  break;
-                                case PingKind::Item:  base = intents.item;  break;
+                                case PingKind::Enemy:   base = intents.enemy;   break;
+                                case PingKind::Ally:    base = intents.ally;    break;
+                                case PingKind::Neutral: base = intents.neutral; break;
                             }
                             auto unpack = [](hud::Color c) -> glm::vec4 {
                                 return { ((c.rgba >>  0) & 0xFFu) / 255.0f,

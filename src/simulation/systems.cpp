@@ -63,6 +63,14 @@ static f32 angle_diff(f32 from, f32 to) {
 // current position. A unit that starts overlapping (teleport / knockback
 // / SetUnitX) can therefore always walk outward — it just can't push
 // deeper in. Without this a shoved-into-enemy unit would freeze.
+
+// Two units share a collision layer only if they're on the same plane: Air
+// with Air, surface (Ground/Water/Amphibious) with surface. Air units fly
+// over everything, so they never block or push ground/water units (WC3-style).
+static bool same_collision_layer(MoveType a, MoveType b) {
+    return (a == MoveType::Air) == (b == MoveType::Air);
+}
+
 static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
                                 u32 self_id, const Player* self_owner,
                                 f32 self_radius, glm::vec2 from, glm::vec2 to,
@@ -89,6 +97,9 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
         auto* ot = world.transforms.get(other.id);
         if (!ot) continue;
         const auto* om = world.movements.get(other.id);
+        // Different collision layer (air vs surface) → never blocks.
+        MoveType other_type = om ? om->type : MoveType::Ground;
+        if (!same_collision_layer(move_type, other_type)) continue;
         f32 other_radius = om ? om->collision_radius : 32.0f;
         f32 min_dist = self_radius + other_radius;
 
@@ -1891,6 +1902,9 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
             auto* other_t = world.transforms.get(other.id);
             if (!other_t) continue;
             auto* other_mov = world.movements.get(other.id);
+            // Different collision layer (air vs surface) → no push between them.
+            MoveType other_mt = other_mov ? other_mov->type : MoveType::Ground;
+            if (!same_collision_layer(mov->type, other_mt)) continue;
             f32 other_radius = other_mov ? other_mov->collision_radius : 32.0f;
             f32 min_dist = self_radius + other_radius;
 
@@ -1917,26 +1931,42 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
                     return true;
                 };
 
+                // Static colliders (speed 0 — buildings and any rooted/
+                // immobile unit) are immovable: they obstruct but are never
+                // repositioned. The dynamic partner absorbs the FULL overlap
+                // instead of half. speed is set once at create time and never
+                // mutated at runtime, so it's a stable "is this thing
+                // pushable" flag. (Destructables have no Movement at all and
+                // never reach this loop — their footprint blocks pathing.)
+                bool self_static  = mov->speed <= 0.0f;
+                bool other_static = !other_mov || other_mov->speed <= 0.0f;
+                if (self_static && other_static) continue;   // two obstacles — nothing to resolve
+
+                f32 self_share  = self_static ? 0.0f : (other_static ? 1.0f : 0.5f);
+                f32 other_share = 1.0f - self_share;
+
                 if (d > 0.01f) {
                     glm::vec3 n = diff / d;
-                    f32 half = (min_dist - d) * 0.5f;
-                    f32 ax = transform->position.x + n.x * half;
-                    f32 ay = transform->position.y + n.y * half;
-                    f32 bx = other_t->position.x - n.x * half;
-                    f32 by = other_t->position.y - n.y * half;
-                    if (push_ok({transform->position.x, transform->position.y}, {ax, ay},
+                    f32 overlap = min_dist - d;
+                    f32 ax = transform->position.x + n.x * overlap * self_share;
+                    f32 ay = transform->position.y + n.y * overlap * self_share;
+                    f32 bx = other_t->position.x - n.x * overlap * other_share;
+                    f32 by = other_t->position.y - n.y * overlap * other_share;
+                    if (self_share > 0.0f &&
+                        push_ok({transform->position.x, transform->position.y}, {ax, ay},
                                 self_owner, self_radius, mov->type)) {
                         transform->position.x = ax;
                         transform->position.y = ay;
                     }
-                    if (push_ok({other_t->position.x, other_t->position.y}, {bx, by},
+                    if (other_share > 0.0f &&
+                        push_ok({other_t->position.x, other_t->position.y}, {bx, by},
                                 other_owner, other_radius, other_type)) {
                         other_t->position.x = bx;
                         other_t->position.y = by;
                     }
                 } else {
-                    transform->position.x += self_radius;
-                    other_t->position.x -= other_radius;
+                    transform->position.x += self_radius * self_share * 2.0f;
+                    other_t->position.x   -= other_radius * other_share * 2.0f;
                 }
             }
         }

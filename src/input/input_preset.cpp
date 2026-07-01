@@ -15,7 +15,6 @@ std::optional<DerivedPing> derive_target_ping(const simulation::GameCommand& cmd
     // Pull the target unit/item out of whatever order this is. Each order
     // stores its target in a different slot; we only care that there IS one.
     simulation::Unit target{};
-    bool is_item = false;
     if (const auto* a = std::get_if<o::Attack>(&cmd.order)) {
         target = a->target;
     } else if (const auto* m = std::get_if<o::Move>(&cmd.order)) {
@@ -24,18 +23,17 @@ std::optional<DerivedPing> derive_target_ping(const simulation::GameCommand& cmd
         target = c->target_unit;                 // invalid for point/no-target casts
     } else if (const auto* p = std::get_if<o::PickupItem>(&cmd.order)) {
         target = simulation::Unit{p->item};
-        is_item = true;
     }
     if (!target.is_valid()) return std::nullopt;  // ground / non-target order
 
     const auto* t = world.transforms.get(target.id);
     if (!t) return std::nullopt;                  // target vanished this frame
 
-    // Color by what the target IS, relative to the commanding player.
-    Kind kind = Kind::Ally;
-    if (is_item) {
-        kind = Kind::Item;
-    } else if (const auto* owner = world.owners.get(target.id)) {
+    // Color by what the target IS, relative to the commanding player. An
+    // owner decides enemy vs ally; anything ownerless (items, crates, trees,
+    // neutral entities) is Neutral.
+    Kind kind = Kind::Neutral;
+    if (const auto* owner = world.owners.get(target.id)) {
         kind = sim.is_enemy(cmd.player, *owner) ? Kind::Enemy : Kind::Ally;
     }
     return DerivedPing{target, t->position, kind};

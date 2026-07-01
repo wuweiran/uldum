@@ -1106,7 +1106,8 @@ bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
         if (!def) return false;
         fw = def->pathing_footprint_w;
         fh = def->pathing_footprint_h;
-        my_radius = def->collision_radius;
+        // Destructables have no collision radius — placement clearance is
+        // entirely footprint-based (fw/fh below). my_radius stays 0.
     }
 
     const auto& td = m_map.terrain();
@@ -2206,8 +2207,6 @@ void Editor::draw_overlays() {
                 f32 cs = td.tile_size / static_cast<f32>(simulation::PATHING_SUBDIV);
                 add_footprint_grid(sx, sy, def->pathing_footprint_w, def->pathing_footprint_h,
                                    ok ? ok_color : bad_color, cs);
-            } else if (!ok && def->collision_radius > 0) {
-                add_world_circle({ sx, sy, 0 }, def->collision_radius, bad_color);
             }
             break;
         }

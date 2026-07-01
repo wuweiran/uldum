@@ -3152,16 +3152,18 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             auto* lm = get_or_load_model(r->model_path);
             if (!lm) continue;
             f32 sc = t->scale;
-            // Never size the click circle below the unit's gameplay footprint
-            // (collision_radius). A slim mesh — or the small generic placeholder
-            // box — would otherwise give a tiny, hard-to-click circle. Buildings
-            // /destructables have no Movement, so they fall back to the model.
-            f32 min_r = 0.0f;
-            if (const auto* mv = world.movements.get(id)) min_r = mv->collision_radius;
+            // Size the click volume from the MODEL (AABB × instance scale),
+            // WC3-style. A constant floor keeps it clickable/pingable when the
+            // model is tiny (the generic placeholder box) or flat — NOT
+            // collision_radius, which can be 0 (destructables have no Movement)
+            // and would collapse the circle to nothing. Real unit models exceed
+            // the floor, so model size wins for them.
+            constexpr f32 MIN_SELECT_R = 32.0f;
+            constexpr f32 MIN_SELECT_H = 48.0f;
             if (s.selection_radius <= 0.0f)
-                s.selection_radius = std::max({lm->mesh.footprint_radius * sc, min_r, 1.0f});
+                s.selection_radius = std::max(lm->mesh.footprint_radius * sc, MIN_SELECT_R);
             if (s.selection_height <= 0.0f)
-                s.selection_height = std::max(lm->mesh.pick_height * sc, 1.0f);
+                s.selection_height = std::max(lm->mesh.pick_height * sc, MIN_SELECT_H);
         }
     }
 

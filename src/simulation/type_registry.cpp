@@ -263,8 +263,6 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
             def.pathing_footprint_h = fp->at(1).get<u32>();
         }
 
-        def.collision_radius = val.value("collision_radius", 0.0f);
-
         m_destructable_types[key] = std::move(def);
 
         RawFields raw;

@@ -78,7 +78,11 @@ struct InputContext {
     // before calling. `unit` is invalid when the click was a ground
     // target (no entity was hit), in which case the renderer uses
     // `world_pos` directly.
-    enum class TargetPingKind : u8 { Enemy, Ally, Item };
+    // Colors a target ping by intent relative to the commanding player.
+    // Neutral covers everything that isn't an owned unit — items, ownerless
+    // destructables (crates, trees), neutral-passive entities — they all
+    // share the neutral palette entry rather than each carrying a kind.
+    enum class TargetPingKind : u8 { Enemy, Ally, Neutral };
     std::function<void(simulation::Unit unit, glm::vec3 world_pos, TargetPingKind kind)> target_ping_fn;
 };
 

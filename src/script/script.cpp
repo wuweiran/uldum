@@ -926,6 +926,27 @@ void ScriptEngine::bind_api() {
         auto d = simulation::create_destructable(world, type_id, x, y, facing_rad, variation.value_or(0));
         if (d.is_valid()) {
             if (auto* t = world.transforms.get(d.id)) t->position.z = ::uldum::map::sample_height(terrain_ref, x, y);
+            // Stamp the pathing footprint. The map-load and editor placement
+            // paths do this at their call site; a runtime CreateDestructable
+            // must too, or units path straight through the crate. block_cells
+            // applies it live (no sync_pathing_blockers pass follows here);
+            // the PathingBlocker component lets system_death release the cells
+            // when the destructable dies.
+            const auto* def = sim.types().get_destructable_type(type_id);
+            u32 fw = def ? def->pathing_footprint_w : 0u;
+            u32 fh = def ? def->pathing_footprint_h : 0u;
+            if (fw > 0 && fh > 0 && terrain_ref.is_valid()) {
+                f32 cs = terrain_ref.tile_size / static_cast<f32>(simulation::PATHING_SUBDIV);
+                f32 left_cx_f   = (x - terrain_ref.origin_x()) / cs - 0.5f * static_cast<f32>(fw);
+                f32 bottom_cy_f = (y - terrain_ref.origin_y()) / cs - 0.5f * static_cast<f32>(fh);
+                simulation::PathingBlocker blocker;
+                blocker.cx = static_cast<i32>(std::round(left_cx_f));
+                blocker.cy = static_cast<i32>(std::round(bottom_cy_f));
+                blocker.w  = fw;
+                blocker.h  = fh;
+                sim.pathfinder().block_cells(blocker.cx, blocker.cy, blocker.w, blocker.h);
+                world.pathing_blockers.add(d.id, std::move(blocker));
+            }
             return sol::make_object(*m_lua, d);
         }
         return sol::make_object(*m_lua, sol::nil);
