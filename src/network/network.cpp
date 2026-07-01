@@ -531,7 +531,11 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         if (!player.is_valid()) return;
 
         auto cmd = parse_order(data, player);
-        m_commands->submit(cmd);
+        if (!cmd) {
+            log::warn(TAG, "Peer {} sent a malformed C_ORDER — dropped", peer_id);
+            break;
+        }
+        m_commands->submit(*cmd);
         break;
     }
 

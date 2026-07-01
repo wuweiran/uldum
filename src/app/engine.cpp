@@ -854,7 +854,7 @@ bool Engine::start_session() {
         // via m_broadcast_fn (script.cpp).
         m_server.script().set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
             map::EnvironmentConfig env;
-            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+            env.sun_direction = glm::vec3{x, y, z};  // normalized + guarded in set_environment
             m_renderer.set_environment(env);
         });
         if (!m_server.init_game(m_map, &m_audio)) {
@@ -1040,7 +1040,7 @@ bool Engine::start_session() {
         };
         m_network.on_set_sun_direction = [this](f32 x, f32 y, f32 z) {
             map::EnvironmentConfig env;
-            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+            env.sun_direction = glm::vec3{x, y, z};  // normalized + guarded in set_environment
             m_renderer.set_environment(env);
         };
         // CreateEffect: persistent effect with stable server-assigned

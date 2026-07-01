@@ -1,3 +1,9 @@
+// _GNU_SOURCE exposes posix_spawn_file_actions_addchdir_np on glibc (2.29+).
+// Must precede any libc header. macOS/BSD expose it without this define.
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#  define _GNU_SOURCE
+#endif
+
 #include "asset/asset.h"
 #include "core/log.h"
 #include "core/types.h"
@@ -6,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <charconv>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -54,6 +61,23 @@ struct ServerArgs {
     std::set<std::string> allowed_maps; // auto-discovered from <cwd>/maps/
 };
 
+// Parse a TCP/UDP port from a CLI string: fully-consumed decimal in
+// [1, 65535]. Returns false (leaving *out untouched) on non-numeric input,
+// trailing garbage, or out-of-range — replacing std::stoi, which throws
+// (→ terminate under -fno-exceptions) on bad input and silently wraps on
+// values above 65535.
+inline bool parse_u16_port(const char* s, uldum::u16& out) {
+    if (!s || *s == '\0') return false;
+    const char* end = s;
+    while (*end) ++end;
+    uldum::u32 value = 0;
+    auto [ptr, ec] = std::from_chars(s, end, value);
+    if (ec != std::errc{} || ptr != end) return false;
+    if (value < 1 || value > 65535) return false;
+    out = static_cast<uldum::u16>(value);
+    return true;
+}
+
 struct Session {
     std::string id;
     uldum::u16  port = 0;
@@ -92,8 +116,11 @@ std::string random_hex(size_t bytes) {
 uldum::u16 pick_free_port(const ServerArgs& args) {
     // Linear scan over the configured range. Adequate for indie scale
     // (dozens to a few thousand sessions); revisit when we need O(1).
-    for (uldum::u16 p = args.worker_port_min; p <= args.worker_port_max; ++p) {
-        if (!g_used_ports.contains(p)) return p;
+    // Loop in u32 so worker_port_max == 65535 doesn't wrap a u16 counter
+    // back to 0 and spin forever.
+    for (uldum::u32 p = args.worker_port_min; p <= args.worker_port_max; ++p) {
+        if (!g_used_ports.contains(static_cast<uldum::u16>(p)))
+            return static_cast<uldum::u16>(p);
     }
     return 0;
 }
@@ -248,6 +275,26 @@ bool spawn_worker(const std::vector<std::string>& argv,
     posix_spawn_file_actions_addclose(&fa, stdout_pipe[0]);
     posix_spawn_file_actions_addclose(&fa, stdout_pipe[1]);
 
+    // Set the child's working directory as part of the spawn file actions
+    // rather than chdir()-ing the whole orchestrator process — the parent
+    // runs HTTP + reaper threads, so a process-global chdir would race with
+    // any concurrent path resolution. addchdir_np is glibc 2.29+ / macOS.
+#if defined(__GLIBC__) || defined(__APPLE__) || defined(__ANDROID__)
+    if (!cwd.empty()) {
+        posix_spawn_file_actions_addchdir_np(&fa, cwd.c_str());
+    }
+
+    std::vector<char*> raw;
+    raw.reserve(argv.size() + 1);
+    for (const auto& a : argv) raw.push_back(const_cast<char*>(a.c_str()));
+    raw.push_back(nullptr);
+
+    pid_t pid = 0;
+    int rc = posix_spawnp(&pid, raw[0], &fa, nullptr, raw.data(), environ);
+#else
+    // Fallback for libcs without addchdir_np: process-global chdir around
+    // the spawn. Racy under concurrent spawns, but no better option exists
+    // on these platforms.
     std::vector<char*> raw;
     raw.reserve(argv.size() + 1);
     for (const auto& a : argv) raw.push_back(const_cast<char*>(a.c_str()));
@@ -270,6 +317,8 @@ bool spawn_worker(const std::vector<std::string>& argv,
     int rc = posix_spawnp(&pid, raw[0], &fa, nullptr, raw.data(), environ);
 
     if (!saved_cwd.empty()) (void)::chdir(saved_cwd.c_str());
+#endif
+
     posix_spawn_file_actions_destroy(&fa);
     close(stdin_pipe[0]);   // parent doesn't need stdin read-end
     close(stdout_pipe[1]);  // parent doesn't need stdout write-end
@@ -656,16 +705,25 @@ bool parse_args(int argc, char* argv[], ServerArgs& out) {
         };
         if (std::strcmp(argv[i], "--port") == 0) {
             const char* v = need_value("--port"); if (!v) return false;
-            out.port = static_cast<uldum::u16>(std::stoi(v));
+            if (!parse_u16_port(v, out.port)) {
+                std::fprintf(stderr, "--port: invalid port '%s' (expected 1..65535)\n", v);
+                return false;
+            }
         } else if (std::strcmp(argv[i], "--worker-binary") == 0) {
             const char* v = need_value("--worker-binary"); if (!v) return false;
             out.worker_binary = v;
         } else if (std::strcmp(argv[i], "--worker-port-min") == 0) {
             const char* v = need_value("--worker-port-min"); if (!v) return false;
-            out.worker_port_min = static_cast<uldum::u16>(std::stoi(v));
+            if (!parse_u16_port(v, out.worker_port_min)) {
+                std::fprintf(stderr, "--worker-port-min: invalid port '%s' (expected 1..65535)\n", v);
+                return false;
+            }
         } else if (std::strcmp(argv[i], "--worker-port-max") == 0) {
             const char* v = need_value("--worker-port-max"); if (!v) return false;
-            out.worker_port_max = static_cast<uldum::u16>(std::stoi(v));
+            if (!parse_u16_port(v, out.worker_port_max)) {
+                std::fprintf(stderr, "--worker-port-max: invalid port '%s' (expected 1..65535)\n", v);
+                return false;
+            }
         } else if (std::strcmp(argv[i], "--public-addr") == 0) {
             const char* v = need_value("--public-addr"); if (!v) return false;
             out.public_addr = v;

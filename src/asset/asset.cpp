@@ -25,7 +25,10 @@ bool AssetManager::init(std::string_view engine_root, void* apk_assets) {
         mount_apk_assets(apk_assets);
     }
 
-    open_package("engine.uldpak", "engine");
+    if (!open_package("engine.uldpak", "engine")) {
+        log::error(TAG, "Failed to mount engine.uldpak — engine assets unavailable");
+        return false;
+    }
 
     log::info(TAG, "AssetManager initialized — root: '{}'", m_engine_root);
     return true;
@@ -42,6 +45,13 @@ void AssetManager::shutdown() {
     m_textures.clear();
     m_models.clear();
     m_configs.clear();
+
+    // Drop mounts (package readers + APK/dir handles) and reset the global
+    // pointer so a subsequent init() starts from a clean slate rather than
+    // inheriting stale mounts or dangling asset-manager pointers.
+    m_mounts.clear();
+    m_engine_root.clear();
+    if (s_instance == this) s_instance = nullptr;
 
     log::info(TAG, "AssetManager shut down — released {} textures, {} models, {} configs",
               textures, models, configs);
@@ -293,9 +303,22 @@ std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
                 AAsset* asset = AAssetManager_open(mgr, lookup_z.c_str(), AASSET_MODE_BUFFER);
                 if (!asset) return {};
                 off64_t len = AAsset_getLength64(asset);
+                if (len <= 0) {
+                    AAsset_close(asset);
+                    return {};
+                }
                 std::vector<u8> buf(static_cast<size_t>(len));
-                AAsset_read(asset, buf.data(), buf.size());
+                // AAsset_read can return short or negative; loop until the
+                // whole asset is read or bail on error rather than handing
+                // back a partially-initialized buffer.
+                size_t got = 0;
+                while (got < buf.size()) {
+                    int n = AAsset_read(asset, buf.data() + got, buf.size() - got);
+                    if (n <= 0) break;
+                    got += static_cast<size_t>(n);
+                }
                 AAsset_close(asset);
+                if (got != buf.size()) return {};
                 return buf;
 #else
                 (void)m;

@@ -8,7 +8,9 @@
 #include <glm/vec4.hpp>
 
 #include <array>
+#include <bit>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -127,6 +129,16 @@ enum class RejectReason : u8 {
 };
 
 // ── Binary read/write helpers ─────────────────────────────────────────────
+//
+// The wire format writes multi-byte scalars (u16/u32/f32) as raw
+// native-memory bytes and memcpy's them back on read. That round-trips
+// correctly only between little-endian, IEEE-754 hosts. Both current
+// targets (Windows x64, Android arm64/x64) satisfy this; the assert makes
+// the assumption a hard compile error if a big-endian target is ever added,
+// rather than a silent wire-format mismatch.
+static_assert(std::endian::native == std::endian::little,
+              "protocol.h assumes a little-endian host; add explicit byte-order "
+              "conversion to ByteWriter/ByteReader before targeting big-endian.");
 
 class ByteWriter {
 public:
@@ -525,7 +537,7 @@ inline u32 parse_projectile_dying(std::span<const u8> data) {
 
 // ── Client-side deserialization helpers ───────────────────────────────────
 
-inline simulation::GameCommand parse_order(std::span<const u8> data, simulation::Player player) {
+inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> data, simulation::Player player) {
     ByteReader r(data);
     r.read_u8();  // skip MsgType
 
@@ -612,7 +624,13 @@ inline simulation::GameCommand parse_order(std::span<const u8> data, simulation:
         cmd.order = simulation::orders::MoveDirection{{dx, dy}};
         break;
     }
+    default:
+        // Unknown order index — a corrupt or hostile C_ORDER. Reject
+        // rather than fall through to the variant's default alternative.
+        return std::nullopt;
     }
+    // Drop packets that ran off the end mid-decode (truncated / malformed).
+    if (!r.ok()) return std::nullopt;
     return cmd;
 }
 

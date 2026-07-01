@@ -15,6 +15,7 @@
 #endif
 
 #include <chrono>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -96,12 +97,27 @@ static void print_usage() {
         "  --port <n>      Listen port. Default: 7777.\n");
 }
 
+static bool parse_u16_port(const char* s, uldum::u16& out) {
+    if (!s || *s == '\0') return false;
+    const char* end = s;
+    while (*end) ++end;
+    uldum::u32 value = 0;
+    auto [ptr, ec] = std::from_chars(s, end, value);
+    if (ec != std::errc{} || ptr != end) return false;
+    if (value < 1 || value > 65535) return false;
+    out = static_cast<uldum::u16>(value);
+    return true;
+}
+
 static bool parse_args(int argc, char* argv[], WorkerArgs& out) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
             out.map_path = argv[++i];
         } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-            out.port = static_cast<uldum::u16>(std::stoi(argv[++i]));
+            if (!parse_u16_port(argv[++i], out.port)) {
+                std::fprintf(stderr, "Error: --port must be 1..65535.\n");
+                return false;
+            }
         } else {
             std::fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             return false;
@@ -139,7 +155,10 @@ int main(int argc, char* argv[]) {
 
     // Init subsystems (no renderer, no audio, no window)
     uldum::asset::AssetManager assets;
-    assets.init("engine");
+    if (!assets.init("engine")) {
+        uldum::log::error(TAG, "Failed to init AssetManager (engine.uldpak missing?)");
+        return 1;
+    }
 
     uldum::network::GameServer server;
     uldum::network::NetworkManager network;

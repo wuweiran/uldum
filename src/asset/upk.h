@@ -106,7 +106,7 @@ public:
 
     void close();
 
-    bool is_open() const { return !m_path.empty(); }
+    bool is_open() const { return m_open; }
 
     // Access entries (read-only). Used by AssetManager::list_files for
     // enumeration. Entries are sorted by name_hash, not by path.
@@ -133,6 +133,7 @@ private:
     std::vector<u8>       m_bytes;
     UPKHeader             m_header{};
     std::vector<UPKEntry> m_entries;  // sorted by name_hash
+    bool                  m_open = false;
     bool                  m_encrypted = false;
     u8                    m_key[UPK_KEY_LEN]{};
 };

@@ -36,6 +36,16 @@ bool AudioEngine::init() {
         ma_sound_group* parent = (i == 0) ? nullptr : &groups[0];
         if (ma_sound_group_init(m_engine, 0, parent, &groups[i]) != MA_SUCCESS) {
             log::error(TAG, "Failed to create sound group '{}'", group_names[i]);
+            // Unwind the groups that DID init (uninit-ing a never-inited
+            // group is UB), then tear down the engine so we don't report a
+            // half-constructed AudioEngine as initialized.
+            for (u32 j = 0; j < i; ++j) ma_sound_group_uninit(&groups[j]);
+            delete[] groups;
+            m_groups = nullptr;
+            ma_engine_uninit(m_engine);
+            delete m_engine;
+            m_engine = nullptr;
+            return false;
         }
     }
 
@@ -179,7 +189,7 @@ void AudioEngine::update(f32 dt) {
     std::vector<u32> finished;
     for (auto& [id, amb] : m_ambients) {
         if (amb.fade_out_duration > 0) {
-            amb.fade_out_timer -= 1.0f / 60.0f;
+            amb.fade_out_timer -= dt;
             if (amb.fade_out_timer <= 0) {
                 ma_sound_uninit(amb.sound);
                 delete amb.sound;

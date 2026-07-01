@@ -29,6 +29,17 @@ static bool parse_archive_header(const u8* data, size_t size,
 
     size_t pos = sizeof(UPKHeader);
     out_entries.clear();
+
+    // Bound file_count against what the buffer could physically hold before
+    // reserving — a malformed header claiming billions of entries would
+    // otherwise force a huge allocation. Each entry is at least a u16
+    // path_len plus three u32s (offset/raw_size/stored_size).
+    constexpr size_t min_entry_size = sizeof(u16) + 3 * sizeof(u32);
+    if (out_header.file_count > (size - sizeof(UPKHeader)) / min_entry_size) {
+        log::error(TAG, "'{}' file_count {} exceeds what the {}-byte archive can hold",
+                   label, out_header.file_count, size);
+        return false;
+    }
     out_entries.reserve(out_header.file_count);
     for (u32 i = 0; i < out_header.file_count; ++i) {
         if (pos + sizeof(u16) > size) {
@@ -81,6 +92,7 @@ bool UPKReader::open(std::string_view path, std::string_view encryption_key) {
 
     m_path = std::string(path);
     m_bytes = std::move(buf);
+    m_open = true;
     log::info(TAG, "Opened '{}' — {} files{}", path, m_header.file_count,
               m_encrypted ? " [encrypted]" : "");
     return true;
@@ -106,6 +118,7 @@ bool UPKReader::open_from_memory(std::vector<u8> bytes, std::string_view encrypt
     }
 
     m_bytes = std::move(bytes);
+    m_open = true;
     log::info(TAG, "Opened '{}' from memory — {} files{}", debug_label, m_header.file_count,
               m_encrypted ? " [encrypted]" : "");
     return true;
@@ -117,6 +130,7 @@ void UPKReader::close() {
     m_bytes.shrink_to_fit();
     m_entries.clear();
     m_header = {};
+    m_open = false;
     m_encrypted = false;
     std::memset(m_key, 0, UPK_KEY_LEN);
 }

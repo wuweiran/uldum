@@ -411,20 +411,43 @@ bool Rhi::init(const Config& config, platform::Platform& platform) {
                        "GL_MAX_UNIFORM_BUFFER_BINDINGS={} < 32 required by the engine "
                        "(push-constant UBO uses slot 30, draw-info UBO uses slot 31). "
                        "Bindings above the limit are silently dropped.", max_ubo);
+            return false;
         }
         if (max_ssbo_vs < 1) {
             log::error(TAG,
                        "GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS={} < 1 required for "
                        "instance / bone SSBOs.", max_ssbo_vs);
+            return false;
         }
     }
     return true;
 }
 
 void Rhi::shutdown() {
-    // TODO: destroy any remaining GL objects in the record tables once those
-    // factories actually allocate things.
     if (m_impl->egl_display == EGL_NO_DISPLAY) return;
+
+    // Destroy any GL objects still live in the record tables (resources a
+    // caller forgot to destroy). Done while the EGL context is still current
+    // — the eglDestroyContext below would otherwise orphan them. Descriptor
+    // set / layout records hold no GL names, so they need no GL teardown.
+    for (auto& rec : m_impl->buffers) {
+        if (rec.name != 0) { glDeleteBuffers(1, &rec.name); rec.name = 0; }
+    }
+    for (auto& rec : m_impl->textures) {
+        if (rec.name != 0) { glDeleteTextures(1, &rec.name); rec.name = 0; }
+    }
+    for (auto& rec : m_impl->samplers) {
+        if (rec.name != 0) { glDeleteSamplers(1, &rec.name); rec.name = 0; }
+    }
+    for (auto& rec : m_impl->shader_modules) {
+        if (rec.shader != 0) { glDeleteShader(rec.shader); rec.shader = 0; }
+    }
+    for (auto& rec : m_impl->pl_records) {
+        if (rec.push_constant_ubo != 0) { glDeleteBuffers(1, &rec.push_constant_ubo); rec.push_constant_ubo = 0; }
+    }
+    for (auto& rec : m_impl->pipeline_records) {
+        if (rec.program != 0) { glDeleteProgram(rec.program); rec.program = 0; }
+    }
 
     if (m_default_vao != 0) {
         glBindVertexArray(0);

@@ -671,7 +671,15 @@ void Renderer::set_environment(const map::EnvironmentConfig& env) {
     void* env_mapped = m_rhi->mapped_ptr(m_env_ubo_buffer);
     if (!env_mapped) return;
 
-    m_sun_direction = glm::normalize(env.sun_direction);
+    // Sanitize the sun direction at the single write site. Every source
+    // (Lua SetSunDirection, the network sun packet, map environment JSON)
+    // converges here, and m_sun_direction is read every frame by the shadow
+    // pass — normalizing a zero/NaN vector would poison lookAt and smear the
+    // whole shadow map. Fall back to a straight-down sun for a degenerate
+    // input rather than paying a per-frame guard in compute_light_vp.
+    glm::vec3 sun = env.sun_direction;
+    if (!(glm::dot(sun, sun) > 1e-8f)) sun = {0.0f, 0.0f, -1.0f};  // catches 0 and NaN
+    m_sun_direction = glm::normalize(sun);
     m_env_data = {};
     m_env_data.sun_direction = glm::vec4(m_sun_direction, env.sun_intensity);
     m_env_data.sun_color     = glm::vec4(env.sun_color, 0.0f);
