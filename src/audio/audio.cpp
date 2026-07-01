@@ -151,12 +151,11 @@ void AudioEngine::reset_session_state() {
     // with miniaudio's resource manager keyed by their virtual path;
     // once the underlying ma_sound objects are gone the resource
     // manager doesn't need the bytes either. Next session
-    // re-registers fresh from the new map.
-    if (m_engine) {
-        auto* rm = ma_engine_get_resource_manager(m_engine);
-        for (auto& [key, bytes] : m_sound_cache) {
-            ma_resource_manager_unregister_data(rm, key.c_str());
-        }
+    // re-registers fresh from the new map. (m_engine is non-null here —
+    // guaranteed by the m_initialized early-out above.)
+    auto* rm = ma_engine_get_resource_manager(m_engine);
+    for (auto& [key, bytes] : m_sound_cache) {
+        ma_resource_manager_unregister_data(rm, key.c_str());
     }
     m_sound_cache.clear();
 }
@@ -410,7 +409,7 @@ std::string AudioEngine::resolve_path(std::string_view path) const {
     // miniaudio's resource manager so ma_sound_init_from_file(candidate)
     // reads from memory. The bytes are owned by m_sound_cache.
     auto* mgr = asset::AssetManager::instance();
-    if (!mgr || !m_engine) {
+    if (!mgr) {
         log::warn(TAG, "Sound not found: '{}' (no asset manager)", path);
         return {};
     }

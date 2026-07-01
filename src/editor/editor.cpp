@@ -1337,8 +1337,8 @@ void Editor::place_mode_on_left_click(f32 screen_x, f32 screen_y) {
         clear_selection();
         u32 picked = pick_entity_at(m_simulation.world(), hit.x, hit.y);
         if (picked == UINT32_MAX) return;
+        // picked came from handle_infos.ids() inside pick_entity_at — always resolves.
         const auto* info = m_simulation.world().handle_infos.get(picked);
-        if (!info) return;
         switch (info->category) {
         case simulation::Category::Unit:         m_selected_unit.id         = picked; m_selected_unit.generation         = info->generation; break;
         case simulation::Category::Item:         m_selected_item.id         = picked; m_selected_item.generation         = info->generation; break;

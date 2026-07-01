@@ -297,8 +297,8 @@ std::vector<u8> AssetManager::read_file_bytes(std::string_view path) const {
                 // ApkAssetMount — only reachable when a mount was installed, which
                 // only happens on Android.
 #ifdef ULDUM_PLATFORM_ANDROID
+                // mount_apk_assets rejects a null manager, so it's non-null here.
                 auto* mgr = static_cast<AAssetManager*>(m.asset_manager);
-                if (!mgr) return {};
                 std::string lookup_z(lookup);
                 AAsset* asset = AAssetManager_open(mgr, lookup_z.c_str(), AASSET_MODE_BUFFER);
                 if (!asset) return {};

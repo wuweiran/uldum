@@ -1873,8 +1873,7 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
 
         auto* transform = world.transforms.get(id);
         if (!transform) continue;
-        auto* mov = world.movements.get(id);
-        if (!mov) continue;
+        auto* mov = world.movements.get(id);  // id came from movements.ids() — always present
         f32 self_radius = mov->collision_radius;
 
         UnitFilter filter;

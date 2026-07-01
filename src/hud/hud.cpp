@@ -1026,7 +1026,7 @@ void Hud::set_inventory_swap_fn(InventorySwapFn fn) {
 bool Hud::handle_right_click(f32 x, f32 y) {
     if (!m_impl) return false;
     auto& s = *m_impl;
-    f32 inv_s = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
+    f32 inv_s = 1.0f / s.ui_scale;  // ui_scale clamped > 0 at its sole writer (set_ui_scale)
     f32 dpx = x * inv_s, dpy = y * inv_s;
 
     // Already holding → right-click anywhere cancels the hold (WC3 UX).
@@ -1187,7 +1187,7 @@ void Hud::joystick_update(const platform::InputState& input) {
 
     // Translate input from physical pixels (what Platform::input delivers)
     // to the logical dp space the HUD lives in.
-    f32 scale = s.ui_scale > 0.0f ? s.ui_scale : 1.0f;
+    f32 scale = s.ui_scale;  // clamped > 0 at its sole writer (set_ui_scale)
     auto map_x = [scale](f32 px) { return px / scale; };
     auto map_y = [scale](f32 px) { return px / scale; };
 
@@ -1435,7 +1435,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // joystick's slot and take the first remaining touch as the drag
     // finger; release is detected by that slot disappearing from the
     // live touch list.
-    f32 inv = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
+    f32 inv = 1.0f / s.ui_scale;  // ui_scale clamped > 0 at its sole writer (set_ui_scale)
     i32 stick_slot = s.joystick_rt.captured_slot;
     i32 drag_slot  = -1;
     for (u32 i = 0; i < input.touch_count; ++i) {
@@ -1967,7 +1967,7 @@ Hud::AbilityAimState Hud::aim_state() const {
     out.has_area    = (out.area_shape != AimAreaShape::None);
 
     // Pointer is stored in dp; Picker expects physical px.
-    f32 s = (m_impl->ui_scale > 0.0f) ? m_impl->ui_scale : 1.0f;
+    f32 s = m_impl->ui_scale;  // clamped > 0 at its sole writer (set_ui_scale)
     f32 mx = m_impl->pointer_x * s;
     f32 my = m_impl->pointer_y * s;
 
@@ -2364,7 +2364,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     auto& s = *m_impl;
     // Pointer arrives in physical framebuffer pixels. Convert to dp
     // so hit-tests run in the same space composite rects live in.
-    f32 inv = (s.ui_scale > 0.0f) ? (1.0f / s.ui_scale) : 1.0f;
+    f32 inv = 1.0f / s.ui_scale;  // ui_scale clamped > 0 at its sole writer (set_ui_scale)
     x *= inv;
     y *= inv;
 

@@ -2237,7 +2237,7 @@ f32 Renderer::clip_duration(std::string_view model_path, std::string_view clip_n
     auto* lm = get_or_load_model(std::string(model_path));
     if (!lm) return 0.0f;
     i32 idx = find_clip_by_name(lm->data, clip_name);
-    if (idx < 0 || idx >= (i32)lm->data.animations.size()) return 0.0f;
+    if (idx < 0) return 0.0f;  // find_clip_by_name returns an in-range index or -1
     return lm->data.animations[idx].duration;
 }
 
@@ -2836,7 +2836,7 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
     // Build instance batches (reused by main pass)
     build_static_draw_batches(world, alpha);
 
-    if (m_shadow_pipeline.is_valid() && !m_draw_groups.empty()) {
+    if (!m_draw_groups.empty()) {
         const u32 fi = m_rhi->frame_index();
         cmd.set_viewport(0, 0, size_f, size_f);
         cmd.set_scissor(0, 0, m_shadow_map.size, m_shadow_map.size);
@@ -3541,7 +3541,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
     // (pipeline_class × double_sided); each partition gets its own
     // pipeline bind + cull-mode set, then one multi-draw-indirect for
     // the contiguous run of groups in that partition.
-    if (m_mesh_pipeline.is_valid() && !m_draw_groups.empty()) {
+    if (!m_draw_groups.empty()) {
         const u32 fi = m_rhi->frame_index();
         cmd.set_viewport(0, 0, vw, vh);
         cmd.set_scissor(0, 0, extent.width, extent.height);
