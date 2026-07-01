@@ -2203,6 +2203,7 @@ void Engine::run() {
 
                             glm::vec3 anchor = m_target_ping.pos;
                             f32 base_r = 48.0f;
+                            f32 ping_fly = 0.0f;
                             if (world.validate(m_target_ping.unit)) {
                                 if (auto* tf = world.transforms.get(m_target_ping.unit.id)) {
                                     anchor = tf->interp_position(alpha);
@@ -2210,6 +2211,10 @@ void Engine::run() {
                                 if (auto* sl = world.selectables.get(m_target_ping.unit.id)) {
                                     if (sl->selection_radius > 0.0f) base_r = sl->selection_radius;
                                 }
+                                // Air target: lift the ping to hull height so
+                                // it sits under the flying model, not on the
+                                // ground below it (matches the selection ring).
+                                ping_fly = simulation::unit_fly_height(world, m_target_ping.unit.id);
                             }
                             // Inset the centerline by half the stroke
                             // (same trick the selection circle uses) so
@@ -2222,7 +2227,10 @@ void Engine::run() {
                                 f32 ang = (static_cast<f32>(i % 48) / 48.0f) * 6.28318530718f;
                                 f32 sx = anchor.x + ring_r * std::cos(ang);
                                 f32 sy = anchor.y + ring_r * std::sin(ang);
-                                f32 sz = map::sample_height(*terrain, sx, sy);
+                                // Air ping is a flat disc at hull height; ground
+                                // ping follows terrain (fly==0 → sample height).
+                                f32 sz = (ping_fly > 0.0f) ? anchor.z + ping_fly
+                                                           : map::sample_height(*terrain, sx, sy);
                                 p_samples.push_back({sx, sy, sz});
                             }
                             // Tint from the intent palette (Phase 4a).

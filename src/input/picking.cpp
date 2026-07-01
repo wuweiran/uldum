@@ -292,10 +292,15 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
         if (!transform) continue;
 
         // Project world position to screen.
+        // Lift by fly_height so an air unit projects from its visual hull
+        // position (up in the sky) — the marquee must hit where the model
+        // is drawn, not its ground-Z sim position. Matches pick_unit.
         // Vulkan's projection has a baked Y-flip, so clip.y matches the
         // screen's top-left origin directly. GLES doesn't flip in the
         // projection, so we invert here to land in screen-space.
-        glm::vec4 clip = vp * glm::vec4(transform->position, 1.0f);
+        glm::vec3 proj_pos = transform->position;
+        proj_pos.z += simulation::unit_fly_height(*m_world, id);
+        glm::vec4 clip = vp * glm::vec4(proj_pos, 1.0f);
         if (clip.w <= 0) continue;
         f32 sx = (clip.x / clip.w + 1.0f) * hw;
 #if defined(ULDUM_BACKEND_GLES)
