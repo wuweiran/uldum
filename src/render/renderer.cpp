@@ -3132,7 +3132,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 }
 
 void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::World& world, f32 alpha,
-                    const std::function<void()>& on_after_terrain) {
+                    const std::function<void()>& on_after_entities) {
     if (extent.width == 0 || extent.height == 0) return;
 
     // Auto-size selection cylinders from the model. A Selectable with
@@ -3289,12 +3289,10 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         cmd.draw_indexed(m_terrain.gpu_mesh.index_count);
     }
 
-    // ── Ground decals (selection rings, focus reticles, ...) ────────────
-    // Run AFTER terrain + water but BEFORE any unit mesh so meshes
-    // composite over them. Without this ordering, alpha-blended units
-    // (Wind Walk fade etc.) depth-occlude the ring underneath their
-    // silhouette even though you can see through the body itself.
-    if (on_after_terrain) on_after_terrain();
+    // World decals (selection rings, ability indicators) are no longer
+    // drawn here. They run in `on_after_entities` (below, after the unit-
+    // mesh passes) so they depth-test against unit meshes and occlude
+    // correctly — see the hook site for the full rationale.
 
     // ── Draw entities ────────────────────────────────────────────────────
     if (!m_mesh_pipeline.is_valid()) return;
@@ -3572,6 +3570,16 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                                       sizeof(rhi::DrawIndexedIndirectCommand));
         }
     }
+
+    // ── World decals (selection rings, ability indicators) ──────────────
+    // Drawn AFTER the opaque unit-mesh passes so they share the unit depth
+    // buffer: the overlay pipeline depth-tests (LessEqual, no depth write),
+    // so a unit mesh nearer the camera than a ring pixel correctly hides it
+    // and a farther one does not. This fixes air-unit rings (flat discs at
+    // hull height) that previously got painted over by any later-drawn
+    // ground unit. Before particles/glow so those additive effects still
+    // composite on top.
+    if (on_after_entities) on_after_entities();
 
     // ── Pass 3: Particles (alpha-blended, drawn last) ────────────────────
     if (m_particle_pipeline.is_valid()) {

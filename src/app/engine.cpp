@@ -2073,11 +2073,13 @@ void Engine::run() {
                 // World overlays — selection rings, ability indicators,
                 // future build-placement ghosts. We BUILD the overlay
                 // batch up front, then hand its draw call to
-                // renderer.draw via the on_after_terrain callback so it
-                // composites at the right depth-stencil point (after
-                // terrain + water, before unit meshes). That ordering
-                // makes alpha-blended units (Wind Walk fade) blend
-                // *over* the ring rather than depth-occluding it.
+                // renderer.draw via the on_after_entities callback so it
+                // composites AFTER the unit meshes and depth-tests against
+                // them. That gives correct 3D occlusion: a unit in front of
+                // an air unit's ring hides it, one behind does not. (Trade:
+                // a Wind-Walk-faded body no longer shows the ring through
+                // its silhouette — acceptable vs. the prior glitch where a
+                // nearer ground unit painted over a flyer's ring.)
                 {
                     m_world_overlays.begin_frame();
                     using TexId = render::WorldOverlays::TextureId;

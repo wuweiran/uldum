@@ -130,13 +130,16 @@ public:
     // Reads Transform + Renderable components from the world.
     // alpha: interpolation factor between previous and current tick (0..1).
     // `world` is non-const for the same reason as draw_shadows.
-    // `on_after_terrain` (optional): invoked after terrain + water,
-    // before any unit mesh — ground decals like selection rings record
-    // their draws here so meshes (including alpha-blended ones)
-    // composite *over* them rather than being depth-occluded by them.
+    // `on_after_entities` (optional): invoked after the opaque unit-mesh
+    // passes but before particles/glow. World decals (selection rings,
+    // ability indicators) record their draws here so they depth-test
+    // against unit meshes — a unit genuinely in front of an air unit's
+    // ring occludes it, one behind does not. Trade: a translucent body
+    // (Wind Walk) no longer shows the ring through its silhouette, which
+    // is far less jarring than the ring floating over nearer ground units.
     void draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::World& world,
               f32 alpha = 1.0f,
-              const std::function<void()>& on_after_terrain = {});
+              const std::function<void()>& on_after_entities = {});
 
     Camera& camera() { return m_camera; }
     const Camera& camera() const { return m_camera; }
