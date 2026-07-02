@@ -4,12 +4,17 @@ precision highp int;
 
 // Push constants — full block must match between vert and frag so the
 // std140 offsets line up with the C++ writes. visual sits at offset 128
-// (after mvp + model = 128 bytes); vertex shader reads mvp/model only,
-// fragment reads visual.
+// (after mvp + model = 128 bytes); factor at 144. The vertex shader reads
+// mvp/model only, but ES requires a uniform block shared across stages to
+// be declared IDENTICALLY in every stage — so `factor` must be listed here
+// too even though this stage never reads it, or the program fails to link
+// (the frag declares it for baseColorFactor). Vulkan is exempt: its push
+// constants are per-stage/offset-addressed, not a shared block.
 layout(binding = 30, std140) uniform PushConstants {
     mat4 mvp;
     mat4 model;
     vec4 visual;
+    vec4 factor;
 } pc;
 
 // Bone matrices SSBO. On GLES SSBOs live in their own dense binding
