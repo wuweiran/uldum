@@ -139,7 +139,7 @@ endif()
 if(ULDUM_BACKEND_VULKAN)
     message(STATUS "Fetching VMA...")
     FetchContent_Declare(vma
-        URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
+        URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
     )
     FetchContent_Populate(vma)
 
@@ -192,7 +192,7 @@ endif()
 if(NOT ANDROID)
     message(STATUS "Fetching cpp-httplib...")
     FetchContent_Declare(httplib
-        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.46.0.tar.gz
+        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.49.0.tar.gz
     )
     FetchContent_Populate(httplib)
     add_library(httplib INTERFACE)
