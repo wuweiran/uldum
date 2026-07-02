@@ -111,12 +111,6 @@ android {
         }
     }
 
-    packaging {
-        jniLibs {
-            keepDebugSymbols += "**/*.so"
-        }
-    }
-
     // Release signing for the `game` flavor only. Dev releases are rare; if
     // you need a signed dev APK you can point dev at a signing config too.
     val keystorePropsFile = file("$gameProjectDir/keystore.properties")
@@ -152,6 +146,16 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// Keep native symbols in the packaged .so for debug builds only; release
+// strips by default (arm64 ~157 MB → ~24 MB, still -O2 — stripping drops DWARF,
+// not code). Variant API because keepDebugSymbols in android {} is global with
+// no per-buildType form. Covers devDebug + gameDebug.
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        variant.packaging.jniLibs.keepDebugSymbols.add("**/*.so")
     }
 }
 
