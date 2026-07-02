@@ -235,14 +235,33 @@ TerrainMesh build_terrain_mesh(rhi::Rhi& rhi, const map::TerrainData& td) {
             // ── Cliff wall tile: duplicate vertices below ────────────────
             auto ti = compute_tile_info(tx, ty);
 
+            // Per-tile corner cache. corner_v is called repeatedly for the
+            // same (corner, height-band) across a tile's surface fans — e.g.
+            // a ramp-collapse endpoint and the low-surface fan both ask for
+            // the same low corner, and the both-ramps apex asks for the same
+            // adjacent low corners the pentagon fan uses. Minting a fresh
+            // vertex each time left co-located duplicates (and orphans) in the
+            // buffer. Sharing them is safe: corner verts are only ever surface
+            // verts or dup_v SOURCES — never handed straight to a wall — so the
+            // wall/surface index split that keeps cliff normals from blending
+            // (the hard-edge shadow fix) is preserved by dup_v downstream.
+            // Key = corner<<1 | band (0=low at cmin, 1=high at cmax); a cliff
+            // tile has cmin != cmax so the two bands never collide.
+            u32 corner_cache[8];
+            for (u32 i = 0; i < 8; ++i) corner_cache[i] = UINT32_MAX;
+
             // Helper: add a corner vertex at grid position
             auto corner_v = [&](u32 ci, f32 base_z) -> u32 {
+                u32 band = (base_z >= high_z) ? 1u : 0u;
+                u32& slot = corner_cache[(ci << 1) | band];
+                if (slot != UINT32_MAX) return slot;
                 u32 ix = (ci & 1) ? tx+1 : tx;
                 u32 iy = (ci & 2) ? ty+1 : ty;
-                return add_vert(td.vertex_world_x(ix),
+                slot = add_vert(td.vertex_world_x(ix),
                                 td.vertex_world_y(iy),
                                 base_z + td.height_at(ix, iy),
                                 texcoord_at(ix, iy), ti);
+                return slot;
             };
 
             // Helper: add a midpoint vertex on a tile edge
