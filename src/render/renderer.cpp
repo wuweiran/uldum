@@ -2911,7 +2911,6 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     auto& transforms = world.transforms;
 
 
-    bool has_skinned = m_skinned_mesh_pipeline.is_valid();
     auto frustum = m_camera.frustum();
 
     // Key: per-submesh geometry identity + pipeline class. Pipeline
@@ -2955,11 +2954,10 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         const auto& renderable = renderables.data()[i];
         if (!renderable.visible) continue;
 
-        // Skip skinned entities (drawn separately via skinned pipeline)
-        if (has_skinned) {
-            auto* lm = get_or_load_model(renderable.model_path);
-            if (lm && lm->is_skinned) continue;
-        }
+        // Skip skinned entities (drawn separately via skinned pipeline).
+        // Not gated on the pipeline being valid: a skinned model has no static
+        // submeshes, so falling through would draw it as the placeholder box.
+        if (auto* lm = get_or_load_model(renderable.model_path); lm && lm->is_skinned) continue;
 
         const auto* transform = transforms.get(id);
         if (!transform) continue;
