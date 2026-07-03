@@ -102,6 +102,9 @@ struct DestructableTypeDef {
     std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
     u32                      pathing_footprint_w = 0;       // tiles; 0 = no pathing block
     u32                      pathing_footprint_h = 0;
+    std::vector<std::string> classifications;               // map-defined tags ("structure", "tree", "debris", …)
+    u8                       target_bit = TARGET_BIT_DEBRIS;  // derived from classifications (attack handshake)
+    bool                     selectable = true;             // left-clickable? auto-false for "tree", JSON-overridable
 };
 
 // Pure-decoration object: no health, no collision, no pathing block.

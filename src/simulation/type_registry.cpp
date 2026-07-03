@@ -133,14 +133,14 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             }
             def.acquire_range    = c.value("acquire_range", 10.0f);
             // Attack target layers. JSON "targets": ["ground","air",...]. Omitted
-            // → surface (ground/water/amphibious), NOT air — units opt into anti-air.
+            // → surface (ground/water/amphibious) + structure, NOT air — units
+            // opt into anti-air. parse_target_mask({}) supplies the implicit
+            // STRUCTURE bit so an ordinary unit can still smash crates/barrels.
+            std::vector<std::string> tl;
             if (c.contains("targets") && c["targets"].is_array()) {
-                std::vector<std::string> tl;
                 for (auto& t : c["targets"]) if (t.is_string()) tl.push_back(t.get<std::string>());
-                def.target_mask = parse_target_mask(tl);
-            } else {
-                def.target_mask = TARGET_MASK_SURFACE;
             }
+            def.target_mask = parse_target_mask(tl);
         }
 
         if (val.contains("animation")) {
@@ -261,6 +261,26 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
         if (auto fp = val.find("pathing_footprint"); fp != val.end() && fp->is_array() && fp->size() == 2) {
             def.pathing_footprint_w = fp->at(0).get<u32>();
             def.pathing_footprint_h = fp->at(1).get<u32>();
+        }
+
+        // Widget classifications for the attack handshake — same map-defined
+        // string tags units use. "tree" makes the destructable un-choppable by
+        // ordinary units (only tree-targeting attacks hit it); "structure" reads
+        // as building-like; omitted / anything else → debris (crate/barrel:
+        // ordinary units can smash). structure + debris are both default-hittable.
+        if (auto c = val.find("classifications"); c != val.end() && c->is_array()) {
+            for (auto& cid : *c) {
+                if (cid.is_string()) def.classifications.push_back(cid.get<std::string>());
+            }
+        }
+        def.target_bit = widget_target_from_classifications(def.classifications);
+
+        // Selectable by left-click? WC3: trees aren't selectable; crates/other
+        // destructables are. Default follows the "tree" classification; an
+        // explicit "selectable" field overrides either way.
+        def.selectable = !has_classification(def.classifications, "tree");
+        if (auto s = val.find("selectable"); s != val.end() && s->is_boolean()) {
+            def.selectable = s->get<bool>();
         }
 
         m_destructable_types[key] = std::move(def);

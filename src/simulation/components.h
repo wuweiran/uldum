@@ -360,6 +360,8 @@ struct Construction {
 struct DestructableComp {
     std::string type_id;
     u8          variation = 0;
+    u8          target_bit = 0;  // widget-target bit (STRUCTURE / TREE / DEBRIS) for attack validation
+    bool        selectable = true;  // left-clickable? false for trees (WC3: trees aren't selectable)
 };
 
 // ── Doodad Components ──────────────────────────────────────────────────────

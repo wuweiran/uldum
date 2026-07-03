@@ -756,10 +756,16 @@ static Unit spawn_attack_projectile(World& world, Unit source, Unit target,
 
 // ── Combat system ─────────────────────────────────────────────────────────
 
-// Can an attack with `target_mask` hit `target`'s movement layer? Units with no
-// Movement (buildings, destructables) count as Ground/surface. Ground attacks
-// can't hit flyers unless the type opts in with combat.targets including "air".
-static bool can_attack_layer(const World& world, u8 target_mask, Unit target) {
+// Can an attack with `target_mask` hit `target`? Two axes of the WC3-style
+// handshake: a destructable presents a widget bit (STRUCTURE / TREE) — the
+// attack must carry it (this is what stops ordinary units chopping trees).
+// Everything else is matched by its movement layer; units with no Movement
+// (buildings) count as Ground/surface. Ground attacks can't hit flyers unless
+// the type opts in with combat.targets including "air".
+static bool can_attack_target(const World& world, u8 target_mask, Unit target) {
+    if (const auto* d = world.destructables.get(target.id)) {
+        return (target_mask & d->target_bit) != 0;
+    }
     const auto* mov = world.movements.get(target.id);
     MoveType t = mov ? mov->type : MoveType::Ground;
     return (target_mask & move_type_bit(t)) != 0;
@@ -853,7 +859,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
         // Drop a target this attack can't hit (wrong layer — e.g. a ground
         // unit force-attacking a flyer, or a target that morphed to air).
-        if (target_valid && !can_attack_layer(world, combat.target_mask, target)) {
+        if (target_valid && !can_attack_target(world, combat.target_mask, target)) {
             target_valid = false;
         }
 
@@ -909,7 +915,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                         // Skip enemies on a layer this attack can't hit (e.g.
                         // ground melee won't auto-acquire a flyer). The unit
                         // then stays idle rather than chasing what it can't hit.
-                        if (!can_attack_layer(world, combat.target_mask, e)) continue;
+                        if (!can_attack_target(world, combat.target_mask, e)) continue;
                         auto* et = world.transforms.get(e.id);
                         if (!et) continue;
                         f32 d = glm::length(et->position - transform->position);

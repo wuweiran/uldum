@@ -139,8 +139,9 @@ static f32 ray_cylinder_dist(glm::vec3 ray_origin, glm::vec3 ray_dir,
     return std::sqrt(dx * dx + dy * dy);
 }
 
-simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
-                                    simulation::Player player) const {
+simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
+                                     simulation::Player player,
+                                     bool selectable_only) const {
     if (!m_camera || !m_world) return {};
 
     glm::vec3 origin = ray_origin(screen_x, screen_y);
@@ -164,6 +165,11 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
         auto* info = handle_infos.get(id);
         if (!info || (info->category != simulation::Category::Unit &&
                       info->category != simulation::Category::Destructable)) continue;
+        // Selection excludes non-selectable destructables (trees). Attack/cast
+        // targeting passes selectable_only=false so it can still hit them.
+        if (selectable_only) {
+            if (auto* d = m_world->destructables.get(id); d && !d->selectable) continue;
+        }
         if (m_world->dead_states.has(id)) continue;
         if (auto* sf = m_world->status_flags.get(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
@@ -210,7 +216,7 @@ simulation::Unit Picker::pick_unit(f32 screen_x, f32 screen_y,
 }
 
 simulation::Unit Picker::pick_target(f32 screen_x, f32 screen_y) const {
-    return pick_unit(screen_x, screen_y, {}); // no player filter — pick any unit
+    return pick_widget(screen_x, screen_y, {}); // no player filter — pick any widget
 }
 
 simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
@@ -294,7 +300,7 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
         // Project world position to screen.
         // Lift by fly_height so an air unit projects from its visual hull
         // position (up in the sky) — the marquee must hit where the model
-        // is drawn, not its ground-Z sim position. Matches pick_unit.
+        // is drawn, not its ground-Z sim position. Matches pick_widget.
         // Vulkan's projection has a baked Y-flip, so clip.y matches the
         // screen's top-left origin directly. GLES doesn't flip in the
         // projection, so we invert here to land in screen-space.

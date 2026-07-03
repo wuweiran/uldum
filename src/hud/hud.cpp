@@ -1533,7 +1533,18 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             for (u32 i = 0; i < world.transforms.count(); ++i) {
                 u32 id = world.transforms.ids()[i];
                 const auto* hinfo = world.handle_infos.get(id);
-                if (!hinfo || hinfo->category != simulation::Category::Unit) continue;
+                if (!hinfo) continue;
+                // Honor the drag's widget_kinds mask (WC3-style): a candidate's
+                // category must be an accepted widget kind — not hard-coded to
+                // Unit, or crates could never snap.
+                u32 cand_kind = 0;
+                switch (hinfo->category) {
+                    case simulation::Category::Unit:         cand_kind = simulation::widget_kind::Unit; break;
+                    case simulation::Category::Destructable: cand_kind = simulation::widget_kind::Destructable; break;
+                    case simulation::Category::Item:         cand_kind = simulation::widget_kind::Item; break;
+                    default: break;
+                }
+                if ((s.drag_cast.widget_kinds & cand_kind) == 0) continue;
                 simulation::Unit cand{};
                 cand.id = id;
                 cand.generation = hinfo->generation;
@@ -1546,6 +1557,21 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                 // follow, Attack-on-corpse can't attack. Abilities run the
                 // full filter (alive/dead flags handled inside).
                 if (is_command && world.dead_states.has(id)) continue;
+                // Command attackability for destructables: match desktop —
+                // only snap a destructable some selected unit can actually hit
+                // (crate=debris yes, tree no), so mobile Attack can't target a
+                // tree any more than a right-click can.
+                if (is_command && hinfo->category == simulation::Category::Destructable) {
+                    const auto* dc = world.destructables.get(id);
+                    bool any_can_hit = false;
+                    if (dc && s.world_ctx->selection) {
+                        for (auto u : s.world_ctx->selection->selected()) {
+                            const auto* cb = world.combats.get(u.id);
+                            if (cb && (cb->target_mask & dc->target_bit)) { any_can_hit = true; break; }
+                        }
+                    }
+                    if (!any_can_hit) continue;
+                }
                 if (!is_command &&
                     !s.world_ctx->simulation->target_filter_passes(
                         def->target_filter, caster_unit, cand)) {
@@ -2607,15 +2633,17 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.ability_id.clear();
                         s.drag_cast.command_id  = slot.command;
                         s.drag_cast.range       = 0;
-                        // Both Move and Attack snap to units on mobile.
-                        // Move-on-unit → Follow; Attack-on-unit → Attack
-                        // (friendly fire allowed); release on ground
-                        // falls back to the point-target order. Use the
-                        // hybrid form (widget-accepting + point fall-
-                        // through) so the snap loop runs and release on
-                        // ground commits the point order.
+                        // Both Move and Attack snap to widgets on mobile:
+                        // units AND destructables (crates). Move-on-unit →
+                        // Follow; Attack-on-unit/crate → Attack (friendly fire
+                        // / debris allowed); release on ground falls back to
+                        // the point-target order. Hybrid form (widget-accepting
+                        // + point fall-through) so the snap loop runs and
+                        // release on ground commits the point order. The snap
+                        // loop applies attackability (won't snap trees).
                         s.drag_cast.form        = simulation::AbilityForm::Target;
-                        s.drag_cast.widget_kinds = simulation::widget_kind::Unit;
+                        s.drag_cast.widget_kinds = simulation::widget_kind::Unit
+                                                 | simulation::widget_kind::Destructable;
                         s.drag_cast.accept_point = true;
                         s.drag_cast.shape       = simulation::IndicatorShape::Point;
                         s.drag_cast.area_radius = 0;

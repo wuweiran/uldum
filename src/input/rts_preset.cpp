@@ -152,9 +152,12 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 // Shift-click only stacks own units (WC3 behavior); a
                 // shift-click on a foreign unit while you have own
                 // units selected does nothing.
-                auto unit = ctx.picker.pick_unit(input.mouse_x, input.mouse_y, sel.player());
+                auto unit = ctx.picker.pick_widget(input.mouse_x, input.mouse_y, sel.player());
                 if (!unit.is_valid()) {
-                    unit = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+                    // Fall through to any entity (foreign units, selectable
+                    // destructables like crates) — but not trees, which are
+                    // flagged non-selectable.
+                    unit = ctx.picker.pick_widget(input.mouse_x, input.mouse_y, {}, /*selectable_only=*/true);
                 }
                 if (unit.is_valid()) {
                     auto* own = ctx.simulation.world().owners.get(unit.id);
@@ -366,9 +369,38 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (target_owner) {
                 is_enemy = ctx.simulation.is_enemy(sel.player(), *target_owner);
             }
-            // Ownerless destructables (crates, trees) are smart-attackable.
+            // Ownerless destructables (crates, trees) are smart-attackable —
+            // but only if some selected unit's attack can actually hit this
+            // widget class. A footman can't chop a tree (its target_mask lacks
+            // the TREE bit), so right-clicking one must fall through to a plain
+            // ground move at the click point, not a dead Attack or a Follow.
+            // Matches WC3.
             auto* tinfo = ctx.simulation.world().handle_infos.get(target.id);
-            bool is_destructable = tinfo && tinfo->category == simulation::Category::Destructable;
+            bool is_dest = tinfo && tinfo->category == simulation::Category::Destructable;
+            bool is_destructable = false;
+            if (is_dest) {
+                const auto& w = ctx.simulation.world();
+                if (const auto* dc = w.destructables.get(target.id)) {
+                    for (auto u : sel.selected()) {
+                        const auto* cb = w.combats.get(u.id);
+                        if (cb && (cb->target_mask & dc->target_bit)) { is_destructable = true; break; }
+                    }
+                }
+            }
+
+            // Un-attackable destructable (e.g. tree): ground move to the point.
+            if (is_dest && !is_destructable) {
+                glm::vec3 world_pos;
+                if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+                    GameCommand mv;
+                    mv.player = sel.player();
+                    mv.units  = sel.selected();
+                    mv.order  = simulation::orders::Move{world_pos};
+                    mv.queued = input.key_shift;
+                    ctx.commands.submit(mv);
+                }
+                return;
+            }
 
             GameCommand cmd;
             cmd.player = sel.player();

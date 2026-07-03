@@ -193,7 +193,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     // Selection auto-sizes from the model AABB (renderer back-fill), same as
     // units. 0/0 = auto; the crate/tree mesh drives the click cylinder.
     world.selectables.add(id, Selectable{0.0f, 0.0f, 1});
-    world.destructables.add(id, DestructableComp{std::string(type_id), variation});
+    world.destructables.add(id, DestructableComp{std::string(type_id), variation, def->target_bit, def->selectable});
 
     if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
         AttributeBlock ab;

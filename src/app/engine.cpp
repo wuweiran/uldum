@@ -1118,7 +1118,7 @@ bool Engine::start_session() {
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
                   &active_world(),
                   m_platform->width(), m_platform->height());
-    // Fog filter — entities in unscouted tiles drop out of pick_unit /
+    // Fog filter — entities in unscouted tiles drop out of pick_widget /
     // pick_target / pick_item, so smart-orders treat a click in the
     // fog as a ground click. Client mirrors fog from the server; host
     // / offline reads its own simulation fog directly.
@@ -1177,7 +1177,7 @@ bool Engine::start_session() {
         m_hud_world_ctx.pick_item       = [this](f32 sx, f32 sy) { return m_picker.pick_item(sx, sy); };
         m_hud_world_ctx.pick_target     = [this](f32 sx, f32 sy) { return m_picker.pick_target(sx, sy); };
         m_hud_world_ctx.pick_unit_local = [this](f32 sx, f32 sy) {
-            return m_picker.pick_unit(sx, sy, m_selection.player());
+            return m_picker.pick_widget(sx, sy, m_selection.player());
         };
         m_hud_world_ctx.screen_to_world = [this](f32 sx, f32 sy, glm::vec3& wp) {
             return m_picker.screen_to_world(sx, sy, wp);
