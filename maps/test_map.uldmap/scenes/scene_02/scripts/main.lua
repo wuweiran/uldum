@@ -42,42 +42,48 @@ function main()
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
     ---------------------------------------------------------------------------
-    -- Splash AoE for the ship + airship. Their attacks land as single-target
-    -- damage (engine projectile); this trigger turns each landed hit into an
-    -- area blast around the impact point. Friendly fire ON — no enemy filter,
-    -- so allies caught in the blast take damage too (WC3 siege/artillery feel).
-    -- A burst VFX marks the impact. Found by type id (units are preplaced).
+    -- Splash AoE for the ship + airship. Bound to the PROJECTILE hit, not the
+    -- damage event — that's what projectiles are for. The projectile carries
+    -- its launch-time intent (source + damage + is_attack), so the splash fires
+    -- on impact even if the target died in flight (a corpse still triggers HIT,
+    -- whereas the damage event is suppressed once HP hits 0). Blast centers on
+    -- the projectile's impact point (GetProjectileX/Y). Friendly fire ON — no
+    -- enemy filter, so allies caught in the blast take damage too (WC3 siege
+    -- feel). A burst VFX marks the impact. Found by type id (units preplaced).
     ---------------------------------------------------------------------------
     local function register_splash(attacker, radius, pct)
         if not attacker then return end
         local trig = CreateTrigger()
-        TriggerRegisterEvent(trig, EVENT_GLOBAL_DAMAGE)
+        TriggerRegisterEvent(trig, EVENT_GLOBAL_PROJECTILE_HIT)
         TriggerAddCondition(trig, function()
-            -- Only the attacker's own auto-attack hits splash. Guard against
-            -- recursion: the splash deals "splash"-typed damage, not "attack",
-            -- so it can't re-trigger itself.
-            return GetDamageType() == "attack" and GetDamageSource() == attacker
+            -- Only this attacker's own auto-attack projectiles splash. The
+            -- splash deals "splash"-typed DamageUnit (not a projectile), so it
+            -- can't re-enter this event.
+            return IsProjectileNormalAttack(GetTriggerProjectile())
+               and GetProjectileSource() == attacker
         end)
         TriggerAddAction(trig, function()
-            local target = GetDamageTarget()
-            if not target then return end
-            local dmg = GetDamageAmount() * pct
+            local proj = GetTriggerProjectile()
+            local dmg = GetProjectileDamage(proj) * pct
             if dmg <= 0 then return end
 
-            local cx, cy = GetUnitX(target), GetUnitY(target)
+            -- Ground-only splash (WC3 artillery): the blast is a shockwave on
+            -- the ground, so it only forms when the shell lands on a ground
+            -- unit, and it only harms ground units. A hit on an air/water unit
+            -- deals its direct damage but no AoE.
+            local target = GetTriggerUnit()   -- the unit the projectile hit
+            if not target or GetUnitMoveType(target) ~= "ground" then return end
+
+            local cx, cy = GetProjectileX(proj), GetProjectileY(proj)
             PlayEffect("splash_burst", cx, cy, 0)
 
-            -- No filter → friendly fire. alive_only so we don't poke corpses.
+            -- No owner filter → friendly fire. alive_only so we don't poke
+            -- corpses; ground-only so flyers overhead are spared.
             local nearby = GetUnitsInRange(cx, cy, radius, { alive_only = true })
-            local hit = 0
             for _, u in ipairs(nearby) do
-                if u ~= target then           -- target already took the direct hit
+                if u ~= target and GetUnitMoveType(u) == "ground" then
                     DamageUnit(attacker, u, dmg, "splash")
-                    hit = hit + 1
                 end
-            end
-            if hit > 0 then
-                Log(string.format("[Splash] %.0f to %d units (r=%d)", dmg, hit, radius))
             end
         end)
     end

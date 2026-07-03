@@ -986,6 +986,15 @@ void ScriptEngine::bind_api() {
         return info ? info->type_id : "";
     };
 
+    // Movement layer: "ground" / "air" / "water" / "amphibious". Engine truth
+    // (reads Movement.type), so it can't be mistagged like a classification
+    // string. Units without a Movement (buildings, destructables) read as
+    // "ground" — same default the combat target handshake uses.
+    lua["GetUnitMoveType"] = [&](simulation::Unit u) -> std::string {
+        auto* mov = sim.world().movements.get(u.id);
+        return simulation::move_type_name(mov ? mov->type : simulation::MoveType::Ground);
+    };
+
     // Position
     lua["GetUnitX"] = [&](simulation::Unit u) -> f32 {
         auto* t = sim.world().transforms.get(u.id); return t ? t->position.x : 0;
@@ -1309,6 +1318,17 @@ void ScriptEngine::bind_api() {
     lua["IsProjectileNormalAttack"] = [&](simulation::Unit proj) -> bool {
         auto* p = sim.world().projectiles.get(proj.id);
         return p && p->is_attack;
+    };
+    // Projectile world position — the impact point when read inside a
+    // PROJECTILE_HIT trigger (splash/AoE centers here). A projectile shares
+    // the Unit handle + Transform, so this reads the same transform GetUnitX
+    // would; the dedicated name keeps map code reading intentionally. X/Y only
+    // (world plane) — Z stays out of the position API, WC3 convention.
+    lua["GetProjectileX"] = [&](simulation::Unit proj) -> f32 {
+        auto* t = sim.world().transforms.get(proj.id); return t ? t->position.x : 0;
+    };
+    lua["GetProjectileY"] = [&](simulation::Unit proj) -> f32 {
+        auto* t = sim.world().transforms.get(proj.id); return t ? t->position.y : 0;
     };
 
     // Trigger-context accessors. Valid inside PROJECTILE_HIT (where

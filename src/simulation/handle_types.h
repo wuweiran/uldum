@@ -44,6 +44,18 @@ inline MoveType parse_move_type(const std::string& s) {
     return MoveType::Ground;
 }
 
+// Inverse of parse_move_type — the canonical lowercase name for a MoveType.
+// Kept beside parse_move_type so the string↔enum mapping stays in one place.
+inline const char* move_type_name(MoveType t) {
+    switch (t) {
+        case MoveType::Air:        return "air";
+        case MoveType::Amphibious: return "amphibious";
+        case MoveType::Water:      return "water";
+        case MoveType::Ground:     break;
+    }
+    return "ground";
+}
+
 // Attack target mask — which movement layers an attack can hit. One bit per
 // MoveType. Used by combat target acquisition + manual attack validation so a
 // ground melee unit can't hit a flyer, etc.
