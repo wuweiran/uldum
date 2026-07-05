@@ -265,6 +265,10 @@ else()
     )
     target_include_directories(uldum_dev PRIVATE ${ULDUM_SRC})
     target_link_libraries(uldum_dev PRIVATE ${ULDUM_ENGINE_LIBS})
+    # Tier-1 Lua syntax checker — dev-only tooling, NOT added to
+    # ULDUM_ENGINE_LIBS so it can never reach uldum_game (which shares that
+    # var). Keeps the shipping game runtime-free of validation code.
+    target_link_libraries(uldum_dev PRIVATE uldum_scriptcheck)
     # cpp-httplib for the orchestrator-via-HTTP flow (`--server`).
     # uldum_dev acts briefly as a game-backend stand-in: POSTs `/sessions`
     # to `uldum_server`, takes one token, then becomes the first player.

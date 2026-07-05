@@ -2,6 +2,7 @@
 #include "map/map.h"
 #include "map/terrain_data.h"
 #include "simulation/pathfinding.h"  // PATHING_SUBDIV
+#include "script/script_check.h"     // Tier-1 Lua syntax validation (dev/editor only)
 #include "core/log.h"
 
 #include <imgui.h>
@@ -13,6 +14,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <shobjidl.h>
 #include <cmath>
 
@@ -1856,6 +1860,108 @@ void Editor::open_map(const std::string& path) {
     }
 }
 
+void Editor::validate_scripts() {
+    namespace fs = std::filesystem;
+    m_script_check_results.clear();
+
+    const std::string root = m_map.map_root();
+    if (root.empty() || !fs::is_directory(root)) {
+        m_script_check_results.push_back("No source map folder to validate.");
+        m_script_check_open = true;
+        return;
+    }
+
+    auto slurp = [](const fs::path& p) -> std::string {
+        std::ifstream f(p, std::ios::binary);
+        if (!f) return {};
+        return std::string((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    };
+
+    // Gather every .lua under the map root (scenes/, scripts/, etc.). Chunk
+    // name = path relative to the map root so results read cleanly.
+    std::vector<script::NamedSource> scripts;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(root, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file()) continue;
+        if (it->path().extension() != ".lua") continue;
+        std::string src = slurp(it->path());
+        std::string rel = fs::relative(it->path(), root, ec).string();
+        scripts.push_back({rel.empty() ? it->path().string() : rel, std::move(src)});
+    }
+
+    // ── Tier 1: syntax ──
+    auto errors = script::check_all(scripts);
+    if (!errors.empty()) {
+        for (const auto& e : errors) {
+            std::string line = e.chunk + ":" + std::to_string(e.line) + ": " + e.message;
+            m_script_check_results.push_back("[syntax] " + line);
+            log::error(TAG, "Script syntax error: {}", line);
+        }
+        // Undefined-global analysis needs clean parses — stop at syntax errors.
+        m_script_check_open = true;
+        return;
+    }
+
+    // ── Tier 2: undefined globals (project-scoped) ──
+    // Known globals come straight from engine SOURCE (script.cpp bindings +
+    // constants.lua), so the set can't drift from the real API. ULDUM_SOURCE_DIR
+    // is the repo root baked in at compile time (target_compile_definitions).
+    std::vector<script::UndefinedGlobal> undefined;
+    std::string tier2_note;
+#ifdef ULDUM_SOURCE_DIR
+    {
+        fs::path srcroot = ULDUM_SOURCE_DIR;
+        std::string binds  = slurp(srcroot / "src" / "script" / "script.cpp");
+        std::string consts = slurp(srcroot / "engine" / "scripts" / "constants.lua");
+        if (binds.empty()) {
+            tier2_note = "(undefined-global check skipped: engine source not found)";
+        } else {
+            script::GlobalSet known = script::extract_known_globals(binds, consts);
+            // The engine loads shared engine/scripts/*.lua into the same global
+            // env as the map's scripts, so a global defined there (or in another
+            // map script) is legitimately callable. Add the engine libs to the
+            // project set, excluding api.lua (documentation stubs, not runtime).
+            std::vector<script::NamedSource> project = scripts;
+            fs::path libdir = srcroot / "engine" / "scripts";
+            for (auto it = fs::recursive_directory_iterator(libdir, ec);
+                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (!it->is_regular_file() || it->path().extension() != ".lua") continue;
+                if (it->path().filename() == "api.lua") continue;
+                project.push_back({it->path().filename().string(), slurp(it->path())});
+            }
+            undefined = script::check_globals_project(project, known);
+            // Only surface flags whose chunk is a MAP script (relative path) —
+            // engine libs are trusted; we don't lint them here.
+            std::erase_if(undefined, [](const script::UndefinedGlobal& u) {
+                return u.chunk.find('/') == std::string::npos &&
+                       u.chunk.find('\\') == std::string::npos &&
+                       u.chunk.find(".uldmap") == std::string::npos;
+            });
+        }
+    }
+#else
+    tier2_note = "(undefined-global check unavailable in this build)";
+#endif
+
+    if (undefined.empty()) {
+        std::string ok = "All " + std::to_string(scripts.size()) +
+                         " script(s) OK — no syntax errors, no undefined globals.";
+        if (!tier2_note.empty()) ok += " " + tier2_note;
+        m_script_check_results.push_back(ok);
+        log::info(TAG, "Script validation: {} script(s) clean {}", scripts.size(), tier2_note);
+    } else {
+        for (const auto& u : undefined) {
+            std::string line = u.chunk + ":" + std::to_string(u.line) + ":" +
+                               std::to_string(u.column) + ": undefined global '" + u.name + "'";
+            m_script_check_results.push_back("[global] " + line);
+            log::error(TAG, "Script undefined global: {}", line);
+        }
+    }
+    m_script_check_open = true;
+}
+
 // Win32 folder picker
 static std::string pick_folder(HWND hwnd) {
     std::string result;
@@ -2421,6 +2527,10 @@ void Editor::draw_ui() {
                 }
             }
             ImGui::Separator();
+            if (ImGui::MenuItem("Validate Scripts", nullptr, false, m_map_loaded)) {
+                validate_scripts();
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 PostQuitMessage(0);
             }
@@ -2447,6 +2557,21 @@ void Editor::draw_ui() {
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
+    }
+
+    // Script-validation results popup (opened by File → Validate Scripts).
+    if (m_script_check_open) {
+        ImGui::OpenPopup("Script Validation");
+        m_script_check_open = false;
+    }
+    if (ImGui::BeginPopupModal("Script Validation", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        for (const auto& line : m_script_check_results) {
+            ImGui::TextUnformatted(line.c_str());
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 
     // Scene window

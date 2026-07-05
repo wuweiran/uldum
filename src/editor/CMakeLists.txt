@@ -14,6 +14,7 @@ target_link_libraries(uldum_editor PRIVATE
     uldum_render
     uldum_simulation
     uldum_map
+    uldum_scriptcheck
     imgui
     ole32
 )

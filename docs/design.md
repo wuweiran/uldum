@@ -769,7 +769,6 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 
 **Tooling & authoring**
 
-- **Map script validation** — Tier 1: in-process `luaL_loadbuffer` syntax check at map load. Tier 2: lua-language-server CLI wired into `uldum_pack`, honoring the LuaCATS annotations already in `api.lua` to catch undefined globals + type mismatches (the kind of regression `PanCamera`→`CameraSetTargetPosition` left behind).
 - **Binary `objects.json`** — switch packed in-uldmap representation to FlatBuffers (matches `terrain.bin`) when map size / load time warrants. Source-folder editor mode keeps JSON.
 - **UI designer tool** — authors edit RML / RCSS directly until then.
 - Controller / gamepad input.

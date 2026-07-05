@@ -123,6 +123,12 @@ private:
     void switch_scene(const std::string& scene_name);
     void open_map(const std::string& path);
 
+    // Tier-1 Lua script validation (dev/editor only). Walks the map's *.lua
+    // and syntax-checks each via uldum_scriptcheck. Results surface in a popup.
+    void validate_scripts();
+    bool                     m_script_check_open = false;
+    std::vector<std::string> m_script_check_results;  // display lines (errors, or an all-clean note)
+
     // Tool state
     Tool  m_tool           = Tool::Raise;
     i32   m_brush_size     = 2;     // WC3 convention: 1 = single vertex, 2 = 1-radius, etc.
