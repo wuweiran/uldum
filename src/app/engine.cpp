@@ -1415,6 +1415,11 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     // particles into the new scene's world.
     m_renderer.effect_manager().clear();
 
+    // Drop the previous scene's animation instances (per-entity bone buffers).
+    // The entity wipe frees all ids, which the new scene recycles; since these
+    // are keyed by entity id, a lingering one could be handed to a new unit.
+    m_renderer.clear_animations();
+
     // Stop any music / ambient loops / lingering SFX from the previous
     // scene. The map's audio resource cache is preserved so common
     // sounds don't have to re-register; only the active playback

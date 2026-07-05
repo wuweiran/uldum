@@ -343,7 +343,7 @@ bool Renderer::init(rhi::Rhi& rhi) {
     return true;
 }
 
-void Renderer::end_session() {
+void Renderer::clear_animations() {
     if (!m_rhi) return;
     // GPU must be idle before freeing any bone buffer still in flight.
     m_rhi->wait_idle();
@@ -356,6 +356,11 @@ void Renderer::end_session() {
         // # of units we run; revisit when sessions are very long-lived.
     }
     m_anim_instances.clear();
+}
+
+void Renderer::end_session() {
+    if (!m_rhi) return;
+    clear_animations();
     // Drop every persistent effect + in-flight particle so the next
     // session doesn't start with the previous map's emitters still
     // running.
@@ -3317,7 +3322,9 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
 
     bool has_skinned_pipeline = m_skinned_mesh_pipeline.is_valid();
 
-    // Clean up animation instances for entities that no longer exist in the world
+    // Clean up animation instances for entities that no longer exist in the
+    // world. Scene swaps clear the whole set up front (clear_animations); this
+    // handles the ordinary case of a unit despawning mid-scene.
     {
         std::vector<u32> stale;
         for (auto& [eid, anim] : m_anim_instances) {

@@ -84,6 +84,12 @@ public:
     // session (visible as detached body parts / broken skeleton).
     void end_session();
 
+    // Drop all per-entity animation instances (bone buffers) without touching
+    // effects/particles. Called on a scene swap: the new scene recycles the old
+    // entity ids, and these instances are keyed by id, so they must be dropped
+    // or a new unit could inherit a dead one's bone buffer.
+    void clear_animations();
+
     void update_camera(const platform::InputState& input, f32 dt);
     void handle_resize(f32 aspect);
 
