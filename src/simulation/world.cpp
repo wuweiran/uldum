@@ -568,13 +568,23 @@ void issue_order(World& world, Unit unit, Order order) {
     // Move/Attack on one of the selected units (or a Lua-issued Cast
     // on an enemy-only ability targeting self) must not slip in.
     if (auto* cast = std::get_if<orders::Cast>(&order.payload)) {
-        // Cooldown — keep the existing activity untouched.
+        // Cooldown + affordability — keep the existing activity untouched.
+        // WC3: an order the unit can't act on (on cooldown, or not enough
+        // mana) is rejected at issue time and does NOT interrupt what the unit
+        // is already doing. Both gates live here so a spammed cast order (e.g.
+        // an auto-cast trigger) can't cancel the caster's current attack/move
+        // when it could never proceed. (Mana is still only *spent* at the
+        // effect point — this is a start gate, not the deduction.)
         auto* aset = world.ability_sets.get(unit.id);
         if (aset) {
             for (auto& a : aset->abilities) {
-                if (a.ability_id == cast->ability_id && a.cooldown_remaining > 0) {
+                if (a.ability_id != cast->ability_id) continue;
+                if (a.cooldown_remaining > 0) return;
+                const auto* def = world.abilities ? world.abilities->get(cast->ability_id) : nullptr;
+                if (def && !ability_can_afford(world, unit.id, def->level_data(a.level).cost)) {
                     return;
                 }
+                break;
             }
         }
         // Self-target rejection for casts whose filter forbids it.
