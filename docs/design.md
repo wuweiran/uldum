@@ -769,18 +769,16 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 
 **Tooling & authoring**
 
-- **Binary `objects.json`** — switch packed in-uldmap representation to FlatBuffers (matches `terrain.bin`) when map size / load time warrants. Source-folder editor mode keeps JSON.
 - **UI designer tool** — authors edit RML / RCSS directly until then.
 - Controller / gamepad input.
 
 **Rendering quality**
 
 - **PBR material model** — replace per-shader Lambert + ad-hoc specular with a shared metallic/roughness BRDF. Required for glTF `pbrMetallicRoughness` to render as authored. Triggered by the first imported metallic-roughness asset.
-- **Color-space correctness** — audit sRGB vs linear bindings + the framebuffer chain. Albedo sRGB-sampled, normal/mask linear, render linear, sRGB-convert once on present.
 - **HDR + tonemap** — float color target, ACES / Khronos PBR Neutral on present. Without it, emissives clip and bright-sun + dark-shadow can't both be exposed.
-- **Tangent space (MikkTSpace)** — add `tangent: vec4` to vertex format; read glTF `TANGENT` when present, generate via MikkTSpace otherwise. Triggered by the first model with a hand-authored normal map.
-- **Shadow cascades** — replace the fixed world-space shadow box with view-frustum cascades for uniform shadow resolution regardless of map size.
-- **Rendering audit pass** — sweep for other "works because nothing's stressed it" shortcuts: ambient uniform, post-process pipeline, SSAO, anisotropic filtering, HUD/world gamma mismatch. Promote individual findings out as they bite.
+- **Tangent space (MikkTSpace)** — add `tangent: vec4` to vertex format; read glTF `TANGENT` when present, generate via MikkTSpace otherwise. `mesh.frag` samples no normal map yet (terrain does, meshes don't), so add mesh normal-map sampling first. Triggered by the first model with a hand-authored normal map.
+- **Shadow cascades** — replace the fixed world-space shadow box with view-frustum cascades for uniform shadow resolution regardless of map size. Fitting the single map to the camera view was tried and reverted: lost the free soft edges, and the box boundary flickered on zoom.
+- **Rendering audit pass** — sweep for other "works because nothing's stressed it" shortcuts: ambient uniform, post-process pipeline, SSAO, anisotropic filtering. Promote individual findings out as they bite.
 - Rich custom shader decorators (game-project art concern).
 
 **Startup & UX**
