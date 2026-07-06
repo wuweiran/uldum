@@ -210,7 +210,7 @@ RenderInterface::Texture RenderInterface::create_texture_from_rgba(const u8* rgb
         rhi::TextureDesc td{};
         td.width  = w;
         td.height = h;
-        td.format = rhi::TextureFormat::R8G8B8A8_UNORM;
+        td.format = rhi::TextureFormat::R8G8B8A8_SRGB;
         td.usage  = rhi::TextureUsage::Sampled | rhi::TextureUsage::TransferDst;
         tex.handle = m_rhi.create_texture(td);
         if (!tex.handle.is_valid()) {
