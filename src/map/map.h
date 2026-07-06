@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,6 +16,21 @@ namespace uldum::asset { class AssetManager; }
 namespace uldum::simulation { class Simulation; struct World; }
 
 namespace uldum::map {
+
+// Map file-format version. Bumped only on a breaking change to the on-disk
+// layout (manifest keys, terrain.bin / placements.bin binary layout). Additive
+// changes that current readers tolerate do not bump it. The manifest's `format`
+// key must equal a version this build can read (see check_map_format).
+inline constexpr u32 CURRENT_MAP_FORMAT = 1;
+
+// Per-target policy: may this build read a map authored at `file_format`?
+// Declared here, defined in map_format.cpp with a body that differs by build:
+//   - game  (ULDUM_GAME_BUILD): only CURRENT_MAP_FORMAT — fail loud.
+//   - tools (dev / editor / worker): the retained reader set (currently the
+//     same, widens as older readers are gated back in).
+// Returns an error string suitable for logging / surfacing on refusal.
+std::expected<void, std::string> check_map_format(u32 file_format);
+
 
 // Player-slot declaration. The map declares the slot's team topology, color,
 // and — optionally — whether the slot is a locked computer player. Array
@@ -96,7 +112,6 @@ struct MapManifest {
     std::string author;
     std::string description;
     std::string version;
-    std::string engine_version;
     std::string game_mode;
     std::string suggested_players;
     std::string tileset_path;

@@ -1,10 +1,10 @@
 {
+    "format": 1,
     "id": "test_map",
     "name": "Test Map",
     "author": "Uldum Engine",
     "description": "A test map for engine development and verification.",
     "version": "1.0.0",
-    "engine_version": "0.1.0",
     "game_mode": "test",
     "suggested_players": "1",
     "fog_of_war": "explored",

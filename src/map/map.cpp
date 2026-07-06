@@ -160,12 +160,26 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
     }
 
     auto& j = doc->data;
+
+    // Format gate — read and validate before any other field, since every
+    // other key's meaning is version-dependent. Absent `format` means the
+    // manifest isn't a well-formed Uldum manifest (or didn't load fully), so
+    // refuse rather than guess a version.
+    if (!j.contains("format") || !j["format"].is_number_unsigned()) {
+        log::error(TAG, "Manifest '{}' has no unsigned 'format' field — refusing", manifest_path);
+        return false;
+    }
+    u32 file_format = j["format"].get<u32>();
+    if (auto ok = check_map_format(file_format); !ok) {
+        log::error(TAG, "Manifest '{}': {}", manifest_path, ok.error());
+        return false;
+    }
+
     m_manifest.id               = j.value("id", "");
     m_manifest.name             = j.value("name", "Unnamed");
     m_manifest.author           = j.value("author", "");
     m_manifest.description      = j.value("description", "");
     m_manifest.version          = j.value("version", "1.0.0");
-    m_manifest.engine_version   = j.value("engine_version", "0.1.0");
     m_manifest.game_mode        = j.value("game_mode", "custom");
     m_manifest.suggested_players = j.value("suggested_players", "1");
     m_manifest.tileset_path     = j.value("tileset", "");

@@ -1,10 +1,10 @@
 {
+    "format": 1,
     "id": "action_test",
     "name": "Action Test",
     "author": "Uldum Engine",
     "description": "Test bed for the Action input preset: single controlled hero, WASD movement, click-to-attack, positional ability slots.",
     "version": "1.0.0",
-    "engine_version": "0.1.0",
     "game_mode": "test",
     "suggested_players": "1",
     "fog_of_war": "explored",

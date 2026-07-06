@@ -105,45 +105,77 @@ A simple melee map has one scene. Complex maps (RPGs, campaigns) use multiple sc
 
 ```json
 {
+    "format": 1,
+    "id": "battlegrounds",
     "name": "Battlegrounds",
     "author": "MapMaker",
     "description": "A 4-player melee map with varied terrain.",
     "version": "1.0.0",
-    "engine_version": "0.1.0",
     "game_mode": "melee",
     "suggested_players": "2-4",
-    "loading_screen": {
-        "text": "Prepare for battle!",
-        "image": "assets/textures/loading.ktx2"
-    },
+    "tileset": "tileset.json",
+    "start_scene": "scene_01",
+    "fog_of_war": "unexplored",
+
     "players": [
-        { "slot": 0, "team": 0, "color": "red" },
-        { "slot": 1, "team": 1, "color": "blue" },
-        { "slot": 2, "team": 0, "color": "teal" },
-        { "slot": 3, "team": 1, "color": "purple" }
+        { "team": 0, "color": "red" },
+        { "team": 1, "color": "blue" },
+        { "team": 0, "color": "teal" },
+        { "team": 1, "color": "purple" }
     ],
     "teams": [
         { "id": 0, "name": "Sentinels", "allied": true, "shared_vision": true },
-        { "id": 1, "name": "Scourge", "allied": true, "shared_vision": true }
+        { "id": 1, "name": "Scourge",   "allied": true, "shared_vision": true }
     ],
-    "tileset": "tileset.json",
-    "start_scene": "scene_01",
-    "vital_state": "health",
 
     "classifications": ["ground", "air", "hero", "structure", "mechanical", "undead", "worker", "summoned"],
     "attack_types": ["normal", "pierce", "siege", "magic", "chaos", "hero"],
     "armor_types": ["unarmored", "light", "medium", "heavy", "fortified", "hero"],
-    "states": [
-        { "id": "health", "has_max": true, "has_regen": true },
-        { "id": "mana", "has_max": true, "has_regen": true }
-    ],
     "attributes": ["strength", "agility", "intelligence"],
 
-    "ui_layout": "ui/layout.json"
+    "reconnect": { "timeout": 60.0, "pause": false },
+    "input": { "preset": "rts" },
+
+    "environment": {
+        "sun_direction": [0.3, -0.5, 0.8],
+        "sun_color": [1.0, 1.0, 0.9],
+        "sun_intensity": 1.0,
+        "ambient_color": [0.15, 0.15, 0.2],
+        "ambient_intensity": 0.25,
+        "fog_color": [0.5, 0.5, 0.6],
+        "skybox": {
+            "right":  "textures/skybox/right.ktx2",
+            "left":   "textures/skybox/left.ktx2",
+            "top":    "textures/skybox/top.ktx2",
+            "bottom": "textures/skybox/bottom.ktx2",
+            "front":  "textures/skybox/front.ktx2",
+            "back":   "textures/skybox/back.ktx2"
+        }
+    }
 }
 ```
 
-The manifest declares all map-specific enumerations: classifications, attack/armor types, states, and attributes. The engine reads these at map load and uses them for validation and targeting filters.
+Every key the loader reads:
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `format` | int | **Required, read first.** Map file-format version. The loader refuses the map if absent or unsupported by the build. |
+| `id` | string | Stable map identifier. |
+| `name`, `author`, `description` | string | Display metadata. |
+| `version` | string | Author's content version (informational). |
+| `game_mode` | string | Free-form mode tag (default `custom`). |
+| `suggested_players` | string | Lobby hint, e.g. `"2-4"` (default `"1"`). |
+| `tileset` | string | Path to the tileset file, relative to map root. |
+| `start_scene` | string | Scene loaded first (default `scene_01`). |
+| `fog_of_war` | string | `none`, `explored`, or `unexplored` (default `none`). |
+| `players[]` | `{ team, color, type, name }` | Player slots, positional (slot = array index). |
+| `teams[]` | `{ id, name, allied, shared_vision }` | Team definitions. |
+| `classifications`, `attack_types`, `armor_types`, `attributes` | string[] | Map-defined enumerations for units, combat, and targeting. |
+| `reconnect` | `{ timeout, pause }` | Disconnect grace period (s) and whether to pause. |
+| `input` | `{ preset, bindings }` | Input preset (`rts`, `action`, …) and optional key rebinds. |
+| `environment` | object | Sun/ambient lighting, fog color, and optional `skybox` cubemap faces. |
+
+The enumerations (`classifications`, `attack_types`, `armor_types`, `attributes`) are read at map load and drive validation and targeting filters. Keys not listed here are ignored by the loader.
 
 ## Tileset (`tileset.json`)
 
