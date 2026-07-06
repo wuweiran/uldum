@@ -1835,9 +1835,11 @@ CommandList Rhi::begin_frame() {
     barriers[0].image         = m_msaa_color_image;
     barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    // Swapchain image (resolve target)
+    // Swapchain image (resolve target). srcStageMask is COLOR_ATTACHMENT_OUTPUT
+    // (not NONE) to depend on the m_image_available semaphore's wait stage, so
+    // the layout write can't race the presentation engine's read of the image.
     barriers[1].sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barriers[1].srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
+    barriers[1].srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     barriers[1].srcAccessMask = VK_ACCESS_2_NONE;
     barriers[1].dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     barriers[1].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
