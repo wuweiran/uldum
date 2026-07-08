@@ -93,7 +93,23 @@ glm::vec3 Picker::screen_to_ray(f32 sx, f32 sy) const {
 }
 
 bool Picker::screen_to_world(f32 screen_x, f32 screen_y, glm::vec3& world_pos) const {
-    if (!m_camera || !m_terrain || !m_terrain->is_valid()) return false;
+    if (!m_terrain || !m_terrain->is_valid()) return false;
+
+    // Over the minimap: the click is a world ground point mapped through the
+    // minimap transform, not a camera raycast. Same flip convention as
+    // hud/minimap.h's minimap_screen_to_world (north = max world Y at top);
+    // duplicated here because input/ can't depend on hud/. Z is sampled from
+    // terrain height at that point so orders land at ground level.
+    if (over_minimap(screen_x, screen_y)) {
+        const f32 fx = (screen_x - m_minimap_x) / m_minimap_w;   // 0..1 across
+        const f32 fy = (screen_y - m_minimap_y) / m_minimap_h;
+        world_pos.x = m_terrain->origin_x() + fx * m_terrain->world_width();
+        world_pos.y = m_terrain->origin_y() + (1.0f - fy) * m_terrain->world_height();
+        world_pos.z = map::sample_height(*m_terrain, world_pos.x, world_pos.y);
+        return true;
+    }
+
+    if (!m_camera) return false;
     glm::vec3 origin = ray_origin(screen_x, screen_y);
     glm::vec3 dir    = screen_to_ray(screen_x, screen_y);
     // Delegate to the shared DDA + per-tile bilinear raycast. Same
@@ -143,6 +159,9 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
                                      simulation::Player player,
                                      bool selectable_only) const {
     if (!m_camera || !m_world) return {};
+    // A minimap click is a ground point, never a unit — let orders fall
+    // through to the ground-point branch of handle_orders.
+    if (over_minimap(screen_x, screen_y)) return {};
 
     glm::vec3 origin = ray_origin(screen_x, screen_y);
     glm::vec3 dir = screen_to_ray(screen_x, screen_y);
@@ -221,6 +240,7 @@ simulation::Unit Picker::pick_target(f32 screen_x, f32 screen_y) const {
 
 simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
     if (!m_camera || !m_world) return {};
+    if (over_minimap(screen_x, screen_y)) return {};  // minimap click = ground point, no item
 
     glm::vec3 origin = ray_origin(screen_x, screen_y);
     glm::vec3 dir = screen_to_ray(screen_x, screen_y);

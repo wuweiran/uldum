@@ -507,6 +507,12 @@ public:
     // dragging on the minimap; the follow resumes on release.
     bool is_minimap_dragging() const;
 
+    // Minimap panel rect in dp (logical HUD pixels). `w`/`h` are 0 when the
+    // minimap is disabled or hidden. The App scales this by ui_scale to feed
+    // the picker's minimap-proxy rect (physical px) so ground orders /
+    // ground-target abilities can commit off the minimap.
+    Rect minimap_screen_rect() const;
+
     // Command-bar composite — grid of engine-built-in commands (Attack,
     // Move, Stop, Hold, Patrol). Maps opt in via `composites.command_bar`
     // in hud.json. Tapping a slot fires the callback with the command

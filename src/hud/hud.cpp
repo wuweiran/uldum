@@ -897,6 +897,12 @@ bool Hud::is_minimap_dragging() const {
     return m_impl && m_impl->minimap_dragging;
 }
 
+Rect Hud::minimap_screen_rect() const {
+    // Zero rect when disabled/hidden so the picker's minimap proxy stays off.
+    if (!m_impl || !m_impl->minimap_cfg.enabled || !m_impl->minimap_rt.visible) return {};
+    return m_impl->minimap_cfg.rect;
+}
+
 // True if (x, y) is inside the minimap panel AND the panel is enabled +
 // visible. Unlike the action bar, the minimap is a single rect so the
 // hit-test returns bool rather than an index.

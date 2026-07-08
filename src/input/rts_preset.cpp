@@ -182,7 +182,12 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     // HUD captures: skip pointer-driven orders (targeting click, attack-
     // move click, right-click order). Key-driven cancels (Escape out of
     // any targeting mode) still run so the user can always bail out.
-    if (ctx.hud_captured) {
+    // Exception: when the pointer is over the minimap, orders DO run — the
+    // minimap is a world proxy, so a click there commits a ground order /
+    // ground-target ability at the mapped point (the picker returns a ground
+    // point and no unit). Selection stays suppressed (handle_selection still
+    // bails on hud_captured), so no box-select starts on the minimap.
+    if (ctx.hud_captured && !ctx.hud_minimap_hovered) {
         if (input.key_escape) cancel_targeting();
         return;
     }

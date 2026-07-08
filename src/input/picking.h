@@ -24,6 +24,23 @@ public:
 
     void set_screen_size(u32 w, u32 h) { m_screen_w = w; m_screen_h = h; }
 
+    // Minimap proxy. When the pointer is over the minimap panel, a click is
+    // a *world ground point* (via the minimap transform), never a unit — so
+    // screen_to_world routes through the minimap and pick_widget/target/item
+    // return invalid. This makes ground orders and ground-target abilities
+    // work off the minimap through the exact same handle_orders path a world
+    // click uses (WC3 behavior). Rect is in PHYSICAL pixels — the same space
+    // as the pointer coords handed to the pick functions. A zero-width rect
+    // (default) disables the proxy: nothing is ever "over the minimap".
+    void set_minimap_rect(f32 x, f32 y, f32 w, f32 h) {
+        m_minimap_x = x; m_minimap_y = y; m_minimap_w = w; m_minimap_h = h;
+    }
+    bool over_minimap(f32 screen_x, f32 screen_y) const {
+        return m_minimap_w > 0.0f && m_minimap_h > 0.0f &&
+               screen_x >= m_minimap_x && screen_x <= m_minimap_x + m_minimap_w &&
+               screen_y >= m_minimap_y && screen_y <= m_minimap_y + m_minimap_h;
+    }
+
     // Hook up the local player's vision subsystem so pick_widget /
     // pick_target / pick_item / pick_units_in_box skip entities the
     // player cannot see (fogged tiles + invisible-without-detector).
@@ -71,6 +88,8 @@ private:
     simulation::Player            m_local_player{};
     u32 m_screen_w = 1;
     u32 m_screen_h = 1;
+    // Minimap panel in physical pixels; zero-size = no minimap (proxy off).
+    f32 m_minimap_x = 0.0f, m_minimap_y = 0.0f, m_minimap_w = 0.0f, m_minimap_h = 0.0f;
 };
 
 } // namespace uldum::input

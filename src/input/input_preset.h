@@ -37,6 +37,14 @@ struct InputContext {
     // box drag, right-click orders — that would otherwise fight the UI.
     // Keyboard-only actions (hotkeys, camera pan) are unaffected.
     bool hud_captured = false;
+    // True when the pointer is over the minimap panel this frame. The minimap
+    // is a world proxy: ground orders / ground-target abilities commit at the
+    // clicked point (the picker maps it through the minimap transform). So a
+    // preset lets pointer-driven ORDERS through even though hud_captured is
+    // set — but keeps SELECTION suppressed (no box-select starting on the
+    // minimap). Desktop-only in practice; touch uses the minimap for camera
+    // drag, which runs on a separate path.
+    bool hud_minimap_hovered = false;
     // True for the duration of a minimap drag (press to release). Presets
     // that auto-follow a unit (ActionPreset) suspend the follow while
     // this is set, so the player can pan the camera by dragging on the

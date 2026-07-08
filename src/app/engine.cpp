@@ -797,6 +797,10 @@ bool Engine::start_session() {
     m_hud.set_minimap_jump_fn([this](f32 wx, f32 wy) {
         // Target-based camera: minimap-click snaps the look-at point
         // to the clicked ground location. Distance / pitch / yaw stay.
+        // Suppressed while the preset is in a targeting mode (attack-move,
+        // move, ability): there the minimap click is an ORDER at that point,
+        // not a camera pan — issuing it should not also yank the view.
+        if (m_input_preset && m_input_preset->is_targeting()) return;
         m_renderer.camera().set_target_xy(wx, wy);
     });
 
@@ -1959,11 +1963,24 @@ void Engine::run() {
                 f32 jx = 0.0f, jy = 0.0f;
                 m_hud.joystick_vector(jx, jy);
 
+                // Minimap-as-world-proxy: push the minimap panel rect (dp →
+                // physical px) to the picker so a click there maps to a ground
+                // point, and flag whether the pointer is over it this frame so
+                // the preset lets ground orders / ground-target abilities
+                // through minimap capture. Desktop mouse only.
+                hud::Rect mm_dp = m_hud.minimap_screen_rect();
+                f32 ui = m_hud.ui_scale();
+                m_picker.set_minimap_rect(mm_dp.x * ui, mm_dp.y * ui,
+                                          mm_dp.w * ui, mm_dp.h * ui);
+                bool minimap_hovered =
+                    m_picker.over_minimap(in.mouse_x, in.mouse_y);
+
                 input::InputContext ictx{
                     m_platform->input(), m_selection, m_commands, m_picker,
                     m_renderer.camera(), m_bindings, m_server.simulation(),
                     m_platform->width(), m_platform->height(),
                     m_hud.input_captured(),
+                    minimap_hovered,
                     m_hud.is_minimap_dragging(),
                     m_hud.joystick_active(),
                     preset_alpha,
