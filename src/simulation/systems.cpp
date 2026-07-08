@@ -1104,10 +1104,16 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 
     for (u32 i = 0; i < world.ability_sets.count(); ++i) {
         u32 id = world.ability_sets.ids()[i];
-        auto& aset = world.ability_sets.data()[i];
+        // Held as a pointer, not a reference: ability event callbacks run Lua
+        // that can CreateUnit / KillUnit, which add/remove entries in
+        // world.ability_sets and reallocate (add) or swap-pop (remove) the pool
+        // this points into. After any callback we re-`get(id)` and null-check
+        // before touching it again.
+        auto* aset = world.ability_sets.get(id);
+        if (!aset) continue;
 
         // Tick cooldowns
-        for (auto& ability : aset.abilities) {
+        for (auto& ability : aset->abilities) {
             if (ability.cooldown_remaining > 0) {
                 ability.cooldown_remaining = std::max(0.0f, ability.cooldown_remaining - dt);
             }
@@ -1123,7 +1129,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
         // drop the buff at the same tick.
         std::vector<std::vector<std::string>> expired_flag_lists;
         std::vector<std::string> expired_ids;
-        std::erase_if(aset.abilities,
+        std::erase_if(aset->abilities,
             [dt, &modifiers_changed, &expired_flag_lists, &expired_ids](AbilityInstance& a) {
                 if (a.remaining_duration < 0) return false;
                 a.remaining_duration -= dt;
@@ -1148,6 +1154,9 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             for (auto& aid : expired_ids) {
                 world.on_ability_removed(u, aid);
             }
+            // Callback ran Lua — pool may have moved. Re-fetch before reuse.
+            aset = world.ability_sets.get(id);
+            if (!aset) continue;
         }
 
         // Status-flag gates. Cooldown / duration ticking above runs
@@ -1160,14 +1169,14 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
         // we never reached it on purpose).
         if (auto* sf = world.status_flags.get(id)) {
             if (sf->flags & (status::Stunned | status::Paused | status::Silenced)) {
-                if (aset.cast_state != CastState::None &&
+                if (aset->cast_state != CastState::None &&
                     (sf->flags & (status::Stunned | status::Silenced))) {
-                    aset.cast_state = CastState::None;
-                    aset.cast_timer = 0;
-                    aset.casting_id.clear();
-                    aset.cast_target_unit = Unit{};
-                    aset.cast_target_pos  = glm::vec3{0};
-                    aset.cast_source_item = Item{};
+                    aset->cast_state = CastState::None;
+                    aset->cast_timer = 0;
+                    aset->casting_id.clear();
+                    aset->cast_target_unit = Unit{};
+                    aset->cast_target_pos  = glm::vec3{0};
+                    aset->cast_source_item = Item{};
                     if (auto* oq2 = world.order_queues.get(id)) {
                         oq2->current.reset();
                     }
@@ -1181,13 +1190,13 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
         auto* transform = world.transforms.get(id);
         if (oq && transform && oq->current) {
             auto* cast_order = std::get_if<orders::Cast>(&oq->current->payload);
-            if (cast_order && aset.cast_state == CastState::None) {
+            if (cast_order && aset->cast_state == CastState::None) {
                 // Start a new cast
                 const auto* def = abilities.get(cast_order->ability_id);
                 if (def) {
                     // Find the ability instance to check cooldown and level
                     AbilityInstance* inst = nullptr;
-                    for (auto& a : aset.abilities) {
+                    for (auto& a : aset->abilities) {
                         if (a.ability_id == cast_order->ability_id) { inst = &a; break; }
                     }
                     if (inst && inst->cooldown_remaining <= 0) {
@@ -1204,14 +1213,14 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         if (!simulation::ability_can_afford(world, id, lvl.cost)) {
                             oq->current.reset();  // can't afford — drop the order
                         } else {
-                            aset.casting_id       = cast_order->ability_id;
-                            aset.cast_target_unit = cast_order->target_unit;
-                            aset.cast_target_pos  = cast_order->target_pos;
-                            aset.cast_source_item = cast_order->source_item;
+                            aset->casting_id       = cast_order->ability_id;
+                            aset->cast_target_unit = cast_order->target_unit;
+                            aset->cast_target_pos  = cast_order->target_pos;
+                            aset->cast_source_item = cast_order->source_item;
 
                             bool needs_range = (def->form == AbilityForm::Target);
                             if (needs_range && lvl.range > 0) {
-                                aset.cast_state = CastState::MovingToTarget;
+                                aset->cast_state = CastState::MovingToTarget;
                                 // Delegate approach to movement system. A widget
                                 // pick (cast_target_unit valid) approaches the
                                 // widget; otherwise the cast is point-only and
@@ -1226,7 +1235,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                     }
                                 }
                             } else {
-                                aset.cast_state = CastState::TurningToFace;
+                                aset->cast_state = CastState::TurningToFace;
                             }
                         }
                     } else {
@@ -1237,14 +1246,14 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 }
             }
 
-            if (aset.cast_state != CastState::None) {
-                const auto* def = abilities.get(aset.casting_id);
+            if (aset->cast_state != CastState::None) {
+                const auto* def = abilities.get(aset->casting_id);
                 AbilityInstance* inst = nullptr;
-                for (auto& a : aset.abilities) {
-                    if (a.ability_id == aset.casting_id) { inst = &a; break; }
+                for (auto& a : aset->abilities) {
+                    if (a.ability_id == aset->casting_id) { inst = &a; break; }
                 }
                 if (!def || !inst) {
-                    aset.cast_state = CastState::None;
+                    aset->cast_state = CastState::None;
                     oq->current.reset();
                 } else {
                     auto& lvl = def->level_data(inst->level);
@@ -1252,9 +1261,9 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     // Resolve target position. When the cast snapped to
                     // a widget, follow that widget; otherwise use the
                     // authored ground point.
-                    glm::vec3 target_pos = aset.cast_target_pos;
-                    if (world.validate(aset.cast_target_unit)) {
-                        auto* tt = world.transforms.get(aset.cast_target_unit.id);
+                    glm::vec3 target_pos = aset->cast_target_pos;
+                    if (world.validate(aset->cast_target_unit)) {
+                        auto* tt = world.transforms.get(aset->cast_target_unit.id);
                         if (tt) target_pos = tt->position;
                     }
 
@@ -1262,13 +1271,13 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     to_target.z = 0;
                     f32 dist = glm::length(to_target);
 
-                    switch (aset.cast_state) {
+                    switch (aset->cast_state) {
                     case CastState::MovingToTarget: {
                         if (dist <= lvl.range) {
                             // In range — stop approaching, begin cast
                             auto* mov = world.movements.get(id);
                             if (mov) { mov->approach_range = 0; mov->approach_target = Unit{}; }
-                            aset.cast_state = CastState::TurningToFace;
+                            aset->cast_state = CastState::TurningToFace;
                         }
                         // Movement system handles the actual approach
                         break;
@@ -1279,8 +1288,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         // The dist guard catches a point cast at the
                         // caster's own feet (avoids atan2(0,0)).
                         bool is_immediate = (def->form == AbilityForm::Instant);
-                        bool is_self = (world.validate(aset.cast_target_unit) &&
-                                        aset.cast_target_unit.id == id);
+                        bool is_self = (world.validate(aset->cast_target_unit) &&
+                                        aset->cast_target_unit.id == id);
                         if (!is_immediate && !is_self && dist > 0.001f) {
                             f32 desired = std::atan2(to_target.y, to_target.x);
                             f32 diff = angle_diff(transform->facing, desired);
@@ -1294,49 +1303,52 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                             }
                             transform->facing = desired;
                         }
-                        aset.cast_state = CastState::Foreswing;
-                        aset.cast_timer = lvl.cast_time;
-                        aset.foreswing_secs      = lvl.cast_time;
-                        aset.channel_secs        = lvl.channel_time;
-                        aset.cast_backswing_secs = lvl.backsw_time;
+                        aset->cast_state = CastState::Foreswing;
+                        aset->cast_timer = lvl.cast_time;
+                        aset->foreswing_secs      = lvl.cast_time;
+                        aset->channel_secs        = lvl.channel_time;
+                        aset->cast_backswing_secs = lvl.backsw_time;
                         break;
                     }
                     case CastState::Foreswing:
-                        aset.cast_timer -= dt;
-                        if (aset.cast_timer <= 0) {
+                        aset->cast_timer -= dt;
+                        if (aset->cast_timer <= 0) {
                             Unit caster = world.unit(id);
 
                             if (lvl.channel_time > 0) {
                                 // Channelled cast: hand off to Channeling.
-                                // Fire CHANNEL (start) here; EFFECT will fire
-                                // at natural channel completion. Cooldown is
-                                // held back to natural channel completion so a
-                                // cancel doesn't put the ability on cooldown.
+                                // CHANNEL (start) fires now; EFFECT fires at
+                                // natural channel completion. Cooldown is held
+                                // back to completion so a cancel doesn't put
+                                // the ability on cooldown.
+                                aset->cast_state = CastState::Channeling;
+                                aset->cast_timer = lvl.channel_time;
+                                // Callback fires last — it runs Lua that may
+                                // realloc the pool, so `aset`/`inst` must not be
+                                // touched after it (re-fetched below the switch).
                                 if (world.on_ability_channel) {
-                                    world.on_ability_channel(caster, aset.casting_id,
-                                                             aset.cast_target_unit, target_pos,
-                                                             aset.cast_source_item);
+                                    world.on_ability_channel(caster, aset->casting_id,
+                                                             aset->cast_target_unit, target_pos,
+                                                             aset->cast_source_item);
                                 }
-                                aset.cast_state = CastState::Channeling;
-                                aset.cast_timer = lvl.channel_time;
                             } else {
                                 // Non-channeled: effect fires now, cooldown
                                 // begins, transition to Backswing. Pay the
                                 // cost here (effect point), not at cast start.
                                 simulation::ability_pay_cost(world, id, lvl.cost);
-                                if (world.on_ability_effect) {
-                                    world.on_ability_effect(caster, aset.casting_id,
-                                                            aset.cast_target_unit, target_pos,
-                                                            aset.cast_source_item);
-                                }
                                 inst->cooldown_remaining = lvl.cooldown;
-                                aset.cast_state = CastState::Backswing;
-                                aset.cast_timer = lvl.backsw_time;
+                                aset->cast_state = CastState::Backswing;
+                                aset->cast_timer = lvl.backsw_time;
+                                if (world.on_ability_effect) {
+                                    world.on_ability_effect(caster, aset->casting_id,
+                                                            aset->cast_target_unit, target_pos,
+                                                            aset->cast_source_item);
+                                }
                             }
                         }
                         break;
                     case CastState::Channeling: {
-                        aset.cast_timer -= dt;
+                        aset->cast_timer -= dt;
                         // Interrupt edges. Any newly-issued non-cast order
                         // (move / attack / stop / etc.) replaces oq->current
                         // when it gets executed — but during a channel we
@@ -1347,52 +1359,53 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         Unit caster = world.unit(id);
 
                         if (interrupted) {
-                            // ENDCAST fires for both natural completion and
-                            // interruption (matches WC3 SPELL_ENDCAST).
-                            // EFFECT does NOT fire on interrupt — the spell
-                            // never resolved.
-                            if (world.on_ability_endcast) {
-                                world.on_ability_endcast(caster, aset.casting_id,
-                                                         aset.cast_target_unit, target_pos,
-                                                         aset.cast_source_item);
-                            }
                             // Cancel: no cooldown, no backswing — drop the
                             // cast cleanly so the next order takes over.
-                            aset.cast_state = CastState::None;
-                            aset.casting_id.clear();
+                            aset->cast_state = CastState::None;
+                            aset->casting_id.clear();
                             oq->current.reset();
+                            // ENDCAST fires for both natural completion and
+                            // interruption (matches WC3 SPELL_ENDCAST). EFFECT
+                            // does NOT fire on interrupt — the spell never
+                            // resolved. Fired last: runs Lua (pool re-fetched
+                            // below the switch).
+                            if (world.on_ability_endcast) {
+                                world.on_ability_endcast(caster, aset->casting_id,
+                                                         aset->cast_target_unit, target_pos,
+                                                         aset->cast_source_item);
+                            }
                             break;
                         }
-                        if (aset.cast_timer <= 0) {
-                            // Natural completion. ENDCAST fires first, then
-                            // EFFECT (matches WC3: SPELL_ENDCAST followed by
-                            // SPELL_EFFECT). Cooldown begins now, backswing
-                            // follows.
-                            if (world.on_ability_endcast) {
-                                world.on_ability_endcast(caster, aset.casting_id,
-                                                         aset.cast_target_unit, target_pos,
-                                                         aset.cast_source_item);
-                            }
-                            // Channel resolved → effect fires. Pay the cost
-                            // here (effect point); an interrupted channel
-                            // above returns without paying.
+                        if (aset->cast_timer <= 0) {
+                            // Natural completion. Cooldown begins now, backswing
+                            // follows. Channel resolved → pay the cost here
+                            // (effect point); an interrupted channel above
+                            // returns without paying.
                             simulation::ability_pay_cost(world, id, lvl.cost);
-                            if (world.on_ability_effect) {
-                                world.on_ability_effect(caster, aset.casting_id,
-                                                        aset.cast_target_unit, target_pos,
-                                                        aset.cast_source_item);
-                            }
                             inst->cooldown_remaining = lvl.cooldown;
-                            aset.cast_state = CastState::Backswing;
-                            aset.cast_timer = lvl.backsw_time;
+                            aset->cast_state = CastState::Backswing;
+                            aset->cast_timer = lvl.backsw_time;
+                            // ENDCAST then EFFECT (matches WC3: SPELL_ENDCAST
+                            // followed by SPELL_EFFECT). Both fire last: they run
+                            // Lua (pool re-fetched below the switch).
+                            if (world.on_ability_endcast) {
+                                world.on_ability_endcast(caster, aset->casting_id,
+                                                         aset->cast_target_unit, target_pos,
+                                                         aset->cast_source_item);
+                            }
+                            if (world.on_ability_effect) {
+                                world.on_ability_effect(caster, aset->casting_id,
+                                                        aset->cast_target_unit, target_pos,
+                                                        aset->cast_source_item);
+                            }
                         }
                         break;
                     }
                     case CastState::Backswing:
-                        aset.cast_timer -= dt;
-                        if (aset.cast_timer <= 0) {
-                            aset.cast_state = CastState::None;
-                            aset.casting_id.clear();
+                        aset->cast_timer -= dt;
+                        if (aset->cast_timer <= 0) {
+                            aset->cast_state = CastState::None;
+                            aset->casting_id.clear();
                             oq->current.reset();
                         }
                         break;
@@ -1401,6 +1414,11 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 }
             }
         }
+
+        // The cast FSM above may have run ability callbacks (Lua), which can
+        // realloc the pool. Re-fetch before the aura block reads aset again.
+        aset = world.ability_sets.get(id);
+        if (!aset) continue;
 
         // Aura scanning (only on scan ticks)
         // Defer applications to avoid iterator invalidation (push_back on self's abilities
@@ -1413,7 +1431,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             auto* owner = world.owners.get(id);
             if (!aura_transform || !owner) continue;
 
-            for (auto& ability : aset.abilities) {
+            for (auto& ability : aset->abilities) {
                 const auto* def = abilities.get(ability.ability_id);
                 if (!def || def->form != AbilityForm::Aura) continue;
 
