@@ -270,6 +270,13 @@ private:
     };
     TargetPing m_target_ping;
 
+    // Mobile drag-cast edge-pan. While aiming a drag-cast whose target is
+    // pushed past the safe screen margin, the camera pans to keep it visible;
+    // on release it tweens back to where it was looking. `active` is the
+    // gesture-edge latch; `saved_target` is the pre-drag look-at to restore.
+    bool      m_drag_pan_active = false;
+    glm::vec3 m_drag_pan_saved_target{0.0f};
+
     // Client-side mapping from server-assigned CreateEffect handles to
     // local EffectManager instance ids. Server's id is the canonical
     // wire identifier (handles arrive via S_EFFECT_CREATE and need to

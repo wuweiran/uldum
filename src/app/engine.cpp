@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <thread>
@@ -2002,6 +2003,54 @@ void Engine::run() {
                 // right-click block).
                 if (m_input_preset && m_input_preset->is_targeting() && !was_targeting) {
                     m_hud.cancel_held_item();
+                }
+            }
+
+            // Mobile drag-cast edge-pan. The drag target (aim.drag_*) is
+            // anchored to caster + finger-displacement, not a screen raycast,
+            // so it can sit far off-screen while the thumb stays by the
+            // ability button. Pan the camera to keep it visible, and restore
+            // the pre-drag look-at on release ("temporary peek"). A script
+            // camera lock always wins, so skip while locked. Runs before the
+            // camera controller so its return tween / any script tween has the
+            // final say this frame.
+            {
+                auto aim = m_hud.aim_state();
+                bool drag_pan_wanted = aim.active && aim.is_drag_cast
+                                    && !m_camera_controller.is_locked();
+                if (drag_pan_wanted) {
+                    auto& cam = m_renderer.camera();
+                    if (!m_drag_pan_active) {
+                        // Gesture start — remember where we were looking.
+                        m_drag_pan_active = true;
+                        m_drag_pan_saved_target = cam.target();
+                    }
+                    // Project the drag point to NDC; pan only once it leaves
+                    // the inner safe box (|ndc| > SAFE). Exponential ease
+                    // toward the point self-limits: as the target re-enters
+                    // the safe box the pan stops, settling it near the edge
+                    // rather than yanking it to center.
+                    glm::vec3 drag{aim.drag_x, aim.drag_y, aim.drag_z};
+                    glm::vec4 clip = cam.view_projection() * glm::vec4(drag, 1.0f);
+                    if (clip.w > 0.0f) {
+                        f32 ndc_x = clip.x / clip.w;
+                        f32 ndc_y = clip.y / clip.w;
+                        constexpr f32 SAFE = 0.70f;   // inner 70% is "on screen"
+                        if (std::abs(ndc_x) > SAFE || std::abs(ndc_y) > SAFE) {
+                            f32 gain = 1.0f - std::exp(-8.0f * frame_dt);  // ~0.12s constant
+                            glm::vec3 t = cam.target();
+                            cam.set_target_xy(t.x + (drag.x - t.x) * gain,
+                                              t.y + (drag.y - t.y) * gain);
+                        }
+                    }
+                } else if (m_drag_pan_active) {
+                    // Gesture ended — tween the look-at back to origin. Goes
+                    // through the controller so a concurrent script tween
+                    // composes correctly instead of fighting a direct set.
+                    m_drag_pan_active = false;
+                    m_camera_controller.set_target_position(
+                        m_drag_pan_saved_target.x, m_drag_pan_saved_target.y,
+                        m_drag_pan_saved_target.z, 0.25f);
                 }
             }
 
