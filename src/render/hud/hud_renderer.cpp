@@ -1343,6 +1343,49 @@ static Color minimap_dot_color(const WorldContext& ctx, u32 unit_id,
     return style.enemy_dot_color;
 }
 
+// Rectangle outline (4 edges) between minimap screen points (x0,y0)-(x1,y1),
+// given in any corner order. Axis-aligned in minimap space — both the current
+// camera view and the pan-bounds frame are world-AABBs, which stay rectangular
+// through the minimap's axis-aligned (Y-flipped) transform.
+static void minimap_rect_outline(HudRenderer::Impl& r, f32 x0, f32 y0, f32 x1, f32 y1,
+                                 f32 thickness, Color color) {
+    if (x0 > x1) std::swap(x0, x1);
+    if (y0 > y1) std::swap(y0, y1);
+    f32 w = x1 - x0, h = y1 - y0;
+    if (w < 1e-3f || h < 1e-3f) return;
+    f32 t = thickness;
+    emit_rect(r, { x0, y0, w, t }, color);          // top
+    emit_rect(r, { x0, y1 - t, w, t }, color);      // bottom
+    emit_rect(r, { x0, y0, t, h }, color);          // left
+    emit_rect(r, { x1 - t, y0, t, h }, color);      // right
+}
+
+// Emit `rc` intersected with `clip` (skip if the overlap is empty). Used to
+// clip the current-camera-view outline to the map area so edges that run off
+// the map simply don't draw (no phantom edge snapped to the map border).
+static void emit_rect_clipped(HudRenderer::Impl& r, Rect rc, const Rect& clip, Color color) {
+    f32 x0 = std::max(rc.x, clip.x);
+    f32 y0 = std::max(rc.y, clip.y);
+    f32 x1 = std::min(rc.x + rc.w, clip.x + clip.w);
+    f32 y1 = std::min(rc.y + rc.h, clip.y + clip.h);
+    if (x1 <= x0 || y1 <= y0) return;
+    emit_rect(r, { x0, y0, x1 - x0, y1 - y0 }, color);
+}
+
+// Rectangle outline (x0,y0)-(x1,y1) with each of its 4 edges clipped to `clip`.
+static void minimap_rect_outline_clipped(HudRenderer::Impl& r, f32 x0, f32 y0,
+                                         f32 x1, f32 y1, f32 thickness,
+                                         const Rect& clip, Color color) {
+    if (x0 > x1) std::swap(x0, x1);
+    if (y0 > y1) std::swap(y0, y1);
+    f32 w = x1 - x0, h = y1 - y0, t = thickness;
+    if (w < 1e-3f || h < 1e-3f) return;
+    emit_rect_clipped(r, { x0, y0, w, t }, clip, color);          // top
+    emit_rect_clipped(r, { x0, y1 - t, w, t }, clip, color);      // bottom
+    emit_rect_clipped(r, { x0, y0, t, h }, clip, color);          // left
+    emit_rect_clipped(r, { x1 - t, y0, t, h }, clip, color);      // right
+}
+
 static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
     const auto& cfg = s.minimap_cfg;
     if (!cfg.enabled || !s.minimap_rt.visible) return;
@@ -1388,6 +1431,68 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
         f32 half = cfg.style.dot_size * 0.5f;
         Rect dot{ sx - half, sy - half, cfg.style.dot_size, cfg.style.dot_size };
         emit_rect(r, dot, minimap_dot_color(*s.world_ctx, id, cfg.style));
+    }
+
+    // Map-bound outline — the map's extent inside the panel. Only visible when
+    // the map is letterboxed (aspect differs from the panel); for a map that
+    // fills the panel the content rect equals the panel and the border already
+    // shows it, so we skip to avoid a double edge.
+    const Rect content = hud::minimap_content_rect(cfg.rect, td);
+    bool letterboxed = (content.x > cfg.rect.x + 0.5f) || (content.y > cfg.rect.y + 0.5f);
+    if (letterboxed && cfg.style.map_bound_width > 0.0f &&
+        (cfg.style.map_bound_color.rgba >> 24) != 0) {
+        minimap_rect_outline(r, content.x, content.y,
+                             content.x + content.w, content.y + content.h,
+                             cfg.style.map_bound_width, cfg.style.map_bound_color);
+    }
+
+    // Current camera view — WC3-style axis-aligned rectangle. Unproject the 4
+    // screen corners onto the ground plane (z = camera target's z), take their
+    // world-space AABB (WC3 draws a rect, not the SC-style perspective
+    // trapezoid), map to the minimap, outline it clipped to the map area — an
+    // edge that runs off the map simply doesn't draw (not clamped to the border).
+    if (s.world_ctx->camera && cfg.style.camera_frame_width > 0.0f &&
+        (cfg.style.camera_frame_color.rgba >> 24) != 0) {
+        const auto& cam = *s.world_ctx->camera;
+        glm::mat4 inv_vp = glm::inverse(cam.view_projection());
+        f32 ground_z = cam.target().z;
+
+        auto corner_to_ground = [&](f32 ndc_x, f32 ndc_y, f32& wx, f32& wy) {
+            // Unproject a near + far clip point, intersect the ray with the
+            // ground plane. NDC z near/far differs by backend (see camera.cpp).
+#if defined(ULDUM_BACKEND_GLES)
+            glm::vec4 nc{ndc_x, ndc_y, -1.0f, 1.0f};
+#else
+            glm::vec4 nc{ndc_x, ndc_y,  0.0f, 1.0f};
+#endif
+            glm::vec4 fc{ndc_x, ndc_y, 1.0f, 1.0f};
+            glm::vec4 nw = inv_vp * nc; nw /= nw.w;
+            glm::vec4 fw = inv_vp * fc; fw /= fw.w;
+            glm::vec3 o{nw}, d = glm::vec3(fw) - glm::vec3(nw);
+            if (std::abs(d.z) > 1e-5f) {
+                f32 t = (ground_z - o.z) / d.z;
+                if (t > 0.0f) { wx = o.x + d.x * t; wy = o.y + d.y * t; return; }
+            }
+            wx = o.x; wy = o.y;   // horizon ray — fall back to origin
+        };
+
+        // World-space AABB of the 4 ground corners → WC3 rectangle. NOT clamped
+        // to terrain; the minimap outline is clipped instead so off-map edges
+        // vanish rather than pinning to the border.
+        const f32 ndc[4][2] = {{-1, 1}, {1, 1}, {1, -1}, {-1, -1}};
+        f32 min_x = 1e30f, min_y = 1e30f, max_x = -1e30f, max_y = -1e30f;
+        for (int c = 0; c < 4; ++c) {
+            f32 wx, wy;
+            corner_to_ground(ndc[c][0], ndc[c][1], wx, wy);
+            min_x = std::min(min_x, wx); max_x = std::max(max_x, wx);
+            min_y = std::min(min_y, wy); max_y = std::max(max_y, wy);
+        }
+        f32 x0, y0, x1, y1;
+        hud::minimap_world_to_screen(cfg.rect, td, min_x, min_y, x0, y0);
+        hud::minimap_world_to_screen(cfg.rect, td, max_x, max_y, x1, y1);
+        minimap_rect_outline_clipped(r, x0, y0, x1, y1,
+                                     cfg.style.camera_frame_width, content,
+                                     cfg.style.camera_frame_color);
     }
 }
 

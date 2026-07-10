@@ -107,7 +107,7 @@ private:
 
     // Game coordinates: X=right, Y=forward, Z=up. Defaults reproduce
     // WC3's built-in game camera: target on the ground at world origin,
-    // 1650 unit eye-to-target distance, 56° angle-of-attack, FOV 70°.
+    // 1650 unit eye-to-target distance, 56° angle-of-attack, FOV 40°.
     // Eye sits south at (0, -1650 cos56°, 1650 sin56°) ≈ (0, -923, 1370).
     glm::vec3 m_target{0.0f, 0.0f, 0.0f};
     f32 m_distance  = 1650.0f;
@@ -127,7 +127,7 @@ private:
 
     f32 m_move_speed   = 1280.0f;   // target-pan speed (units / sec)
     f32 m_zoom_speed   = 640.0f;    // Q/E distance step (units / sec)
-    f32 m_fov    = 1.22f;   // ~70° (WC3 game camera FOV)
+    f32 m_fov    = 0.698f;   // ~40° (WC3 game camera FOV)
     f32 m_aspect = 16.0f / 9.0f;
     f32 m_near   = 1.0f;
     f32 m_far    = 64000.0f;

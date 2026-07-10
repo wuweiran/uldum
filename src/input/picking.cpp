@@ -96,15 +96,28 @@ bool Picker::screen_to_world(f32 screen_x, f32 screen_y, glm::vec3& world_pos) c
     if (!m_terrain || !m_terrain->is_valid()) return false;
 
     // Over the minimap: the click is a world ground point mapped through the
-    // minimap transform, not a camera raycast. Same flip convention as
-    // hud/minimap.h's minimap_screen_to_world (north = max world Y at top);
-    // duplicated here because input/ can't depend on hud/. Z is sampled from
-    // terrain height at that point so orders land at ground level.
+    // minimap transform, not a camera raycast. Mirrors hud/minimap.h's
+    // minimap_screen_to_world (aspect-preserving letterbox fit + north-at-top
+    // flip); duplicated because input/ can't depend on hud/. A click in the
+    // letterbox margin clamps to the nearest map edge. Z is terrain-sampled.
     if (over_minimap(screen_x, screen_y)) {
-        const f32 fx = (screen_x - m_minimap_x) / m_minimap_w;   // 0..1 across
-        const f32 fy = (screen_y - m_minimap_y) / m_minimap_h;
-        world_pos.x = m_terrain->origin_x() + fx * m_terrain->world_width();
-        world_pos.y = m_terrain->origin_y() + (1.0f - fy) * m_terrain->world_height();
+        const f32 mw = m_terrain->world_width(), mh = m_terrain->world_height();
+        // Aspect-fit content sub-rect of the panel (see minimap_content_rect).
+        f32 cx = m_minimap_x, cy = m_minimap_y, cw = m_minimap_w, ch = m_minimap_h;
+        if (mw > 0.0f && mh > 0.0f) {
+            const f32 map_aspect = mw / mh, panel_aspect = m_minimap_w / m_minimap_h;
+            if (map_aspect > panel_aspect) {
+                ch = m_minimap_w / map_aspect; cy = m_minimap_y + (m_minimap_h - ch) * 0.5f;
+            } else {
+                cw = m_minimap_h * map_aspect; cx = m_minimap_x + (m_minimap_w - cw) * 0.5f;
+            }
+        }
+        f32 fx = (cw > 0.0f) ? (screen_x - cx) / cw : 0.0f;
+        f32 fy = (ch > 0.0f) ? (screen_y - cy) / ch : 0.0f;
+        fx = std::clamp(fx, 0.0f, 1.0f);
+        fy = std::clamp(fy, 0.0f, 1.0f);
+        world_pos.x = m_terrain->origin_x() + fx * mw;
+        world_pos.y = m_terrain->origin_y() + (1.0f - fy) * mh;
         world_pos.z = map::sample_height(*m_terrain, world_pos.x, world_pos.y);
         return true;
     }
