@@ -2440,12 +2440,19 @@ void Engine::run() {
                         //    there's no "drag from caster" semantics
                         //    and the arrow is just visual noise.
                         if (aim.is_drag_cast) {
+                            // Start the arrow at the caster's feet: ground for
+                            // land units, hull height for air (caster_z is
+                            // ground Z; lift by fly_height). Only the curve
+                            // lifts — the range ring + AoE decals above stay
+                            // on the ground where the spell resolves.
+                            glm::vec3 curve_start = caster;
+                            curve_start.z += aim.caster_fly_height;
                             constexpr u32 kCurveSamples = 24;
                             std::vector<glm::vec3> curve;
                             curve.reserve(kCurveSamples + 1);
                             for (u32 i = 0; i <= kCurveSamples; ++i) {
                                 f32 t = static_cast<f32>(i) / static_cast<f32>(kCurveSamples);
-                                glm::vec3 p = caster * (1.0f - t) + drag * t;
+                                glm::vec3 p = curve_start * (1.0f - t) + drag * t;
                                 p.z += 4.0f * t * (1.0f - t) * s.arc_height;
                                 curve.push_back(p);
                             }

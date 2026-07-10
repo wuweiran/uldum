@@ -1849,6 +1849,12 @@ Hud::AbilityAimState Hud::aim_state() const {
         out.caster_x   = dc.caster_x;
         out.caster_y   = dc.caster_y;
         out.caster_z   = dc.caster_z;
+        // Lift the arrow origin to the caster's feet for air units; 0 for
+        // ground. caster_z stays ground Z (ground decals read that).
+        if (m_impl->world_ctx && m_impl->world_ctx->world) {
+            out.caster_fly_height =
+                simulation::unit_fly_height(*m_impl->world_ctx->world, dc.caster.id);
+        }
         out.drag_x     = dc.drag_world_x;
         out.drag_y     = dc.drag_world_y;
         out.drag_z     = dc.drag_world_z;

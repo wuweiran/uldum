@@ -432,6 +432,11 @@ public:
         AimPhase phase = AimPhase::Normal;
         // Caster + drag point in world space (z is terrain-sampled).
         f32  caster_x = 0, caster_y = 0, caster_z = 0;
+        // Caster's visual lift off the ground (fly_height for air units, 0
+        // otherwise). caster_z is ground Z; the drag-cast arrow starts at the
+        // caster's feet (caster_z + this) so an air unit's arrow springs from
+        // the hull, not the shadow. Ground decals (range ring, AoE) ignore it.
+        f32  caster_fly_height = 0;
         f32  drag_x   = 0, drag_y   = 0, drag_z   = 0;
         // Cast range (drives the range ring radius). For Line / Cone
         // it's also the indicator's extent along the cast direction.
