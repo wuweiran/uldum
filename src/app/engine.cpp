@@ -2008,28 +2008,22 @@ void Engine::run() {
 
             // Mobile drag-cast edge-pan. The drag target (aim.drag_*) is
             // anchored to caster + finger-displacement, not a screen raycast,
-            // so it can sit far off-screen while the thumb stays by the
-            // ability button. Pan the camera to keep it visible, and restore
-            // the pre-drag look-at on release ("temporary peek"). A script
-            // camera lock always wins, so skip while locked. Runs before the
-            // camera controller so its return tween / any script tween has the
-            // final say this frame.
+            // so it can sit far off-screen while the thumb stays by the ability
+            // button. Pan the camera to keep it visible while aiming. Stateless:
+            // on release this simply stops — RTS leaves the camera where it
+            // ended (WC3 free camera); the Action preset's hero-follow reclaims
+            // it the next frame (its handle_camera_follow suspends while a
+            // drag-cast is aiming, so it doesn't fight this pan). A script
+            // camera lock always wins, so skip while locked.
             {
                 auto aim = m_hud.aim_state();
-                bool drag_pan_wanted = aim.active && aim.is_drag_cast
-                                    && !m_camera_controller.is_locked();
-                if (drag_pan_wanted) {
+                if (aim.active && aim.is_drag_cast && !m_camera_controller.is_locked()) {
                     auto& cam = m_renderer.camera();
-                    if (!m_drag_pan_active) {
-                        // Gesture start — remember where we were looking.
-                        m_drag_pan_active = true;
-                        m_drag_pan_saved_target = cam.target();
-                    }
-                    // Project the drag point to NDC; pan only once it leaves
-                    // the inner safe box (|ndc| > SAFE). Exponential ease
-                    // toward the point self-limits: as the target re-enters
-                    // the safe box the pan stops, settling it near the edge
-                    // rather than yanking it to center.
+                    // Project the drag point to NDC; pan only once it leaves the
+                    // inner safe box (|ndc| > SAFE). Exponential ease toward the
+                    // point self-limits: as the target re-enters the safe box the
+                    // pan stops, settling it near the edge rather than yanking it
+                    // to center.
                     glm::vec3 drag{aim.drag_x, aim.drag_y, aim.drag_z};
                     glm::vec4 clip = cam.view_projection() * glm::vec4(drag, 1.0f);
                     if (clip.w > 0.0f) {
@@ -2043,14 +2037,6 @@ void Engine::run() {
                                               t.y + (drag.y - t.y) * gain);
                         }
                     }
-                } else if (m_drag_pan_active) {
-                    // Gesture ended — tween the look-at back to origin. Goes
-                    // through the controller so a concurrent script tween
-                    // composes correctly instead of fighting a direct set.
-                    m_drag_pan_active = false;
-                    m_camera_controller.set_target_position(
-                        m_drag_pan_saved_target.x, m_drag_pan_saved_target.y,
-                        m_drag_pan_saved_target.z, 0.25f);
                 }
             }
 

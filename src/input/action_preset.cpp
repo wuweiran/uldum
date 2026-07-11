@@ -334,6 +334,12 @@ void ActionPreset::handle_camera_follow(const InputContext& ctx) {
     // frame after they release.
     if (m_camera_user_panning) return;
 
+    // Also suspend while a mobile drag-cast is aiming — the App's edge-pan
+    // may push the camera off the hero to keep an off-screen target visible;
+    // the follow's per-frame snap would fight it. Follow reclaims the hero
+    // the frame after release.
+    if (ctx.hud && ctx.hud->aim_state().is_drag_cast) return;
+
     auto& sel = ctx.selection;
     if (sel.empty()) return;
 
