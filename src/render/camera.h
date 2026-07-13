@@ -129,7 +129,8 @@ private:
     f32 m_zoom_speed   = 640.0f;    // Q/E distance step (units / sec)
     f32 m_fov    = 0.698f;   // ~40° (WC3 game camera FOV)
     f32 m_aspect = 16.0f / 9.0f;
-    f32 m_near   = 1.0f;
+    f32 m_near   = 16.0f;    // Far enough out to keep depth precision for the
+                             // 2u water-over-terrain gap at max zoom.
     f32 m_far    = 64000.0f;
 
     bool m_dirty = true;
