@@ -73,6 +73,7 @@ namespace {
 using detail::acquire_slot;
 using detail::bump_generation;
 using detail::lookup;
+using detail::retire_generation;
 } // namespace
 
 // ── Format / usage translation ──────────────────────────────────────
@@ -619,6 +620,9 @@ BufferHandle Rhi::create_buffer(const BufferDesc& desc) {
     rec.name   = name;
     rec.target = target;
     rec.size   = desc.size;
+    rec.shadow.clear();
+    rec.shadow_dirty = false;
+    rec.synced_this_frame = false;
     if (desc.memory == MemoryUsage::HostSequential || desc.memory == MemoryUsage::HostRandom) {
         rec.shadow.assign(desc.size, 0);
         rec.shadow_dirty = true;  // initial contents are zero; nothing in GL yet
@@ -638,7 +642,8 @@ void Rhi::destroy_buffer(BufferHandle h) {
     rec.shadow.clear();
     rec.shadow.shrink_to_fit();
     rec.shadow_dirty = false;
-    rec.generation = 0;
+    rec.synced_this_frame = false;
+    retire_generation(rec);
     m_impl->buffers_free.push_back(h.index);
 }
 
@@ -747,7 +752,7 @@ void Rhi::destroy_texture(TextureHandle h) {
         glDeleteTextures(1, &rec.name);
         rec.name = 0;
     }
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->textures_free.push_back(h.index);
 }
 
@@ -791,7 +796,7 @@ void Rhi::destroy_sampler(SamplerHandle h) {
         glDeleteSamplers(1, &rec.name);
         rec.name = 0;
     }
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->samplers_free.push_back(h.index);
 }
 
@@ -864,7 +869,7 @@ void Rhi::destroy_shader_module(ShaderModuleHandle h) {
         glDeleteShader(rec.shader);
         rec.shader = 0;
     }
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->shader_modules_free.push_back(h.index);
 }
 
@@ -881,7 +886,7 @@ void Rhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
     auto& rec = m_impl->dsl_records[h.index];
     if (rec.generation != h.generation) return;
     rec.bindings.clear();
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->dsl_free.push_back(h.index);
 }
 
@@ -930,7 +935,7 @@ void Rhi::free_descriptor_set(DescriptorSetHandle h) {
     if (rec.generation != h.generation) return;
     rec.bindings.clear();
     rec.layout = {};
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->dset_free.push_back(h.index);
 }
 
@@ -971,7 +976,7 @@ void Rhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
     rec.set_layouts.clear();
     rec.push_constants.clear();
     rec.push_constant_size = 0;
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->pl_free.push_back(h.index);
 }
 
@@ -1040,7 +1045,7 @@ void Rhi::destroy_pipeline(PipelineHandle h) {
     }
     rec.vertex_bindings.clear();
     rec.vertex_attrs.clear();
-    rec.generation = 0;
+    retire_generation(rec);
     m_impl->pipeline_free.push_back(h.index);
 }
 

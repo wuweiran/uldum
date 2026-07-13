@@ -351,13 +351,19 @@ inline std::vector<u8> build_reject(RejectReason reason) {
 // type registry; non-empty for entities whose model isn't in a type
 // def (projectiles spawned with a custom glTF, future map decorations
 // with per-instance models, etc.).
-inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
+inline std::vector<u8> build_spawn(u32 entity_id, u32 generation,
+                                    std::string_view type_id,
                                     u8 owner, f32 x, f32 y, f32 facing,
                                     bool newly_created = false,
                                     std::string_view model_path = {}) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SPAWN));
     w.write_u32(entity_id);
+    // Authoritative generation for this (id, generation) handle. The client
+    // force-sets its local allocator to this value so a recycled id can't
+    // leave the client validating orders against a stale generation the host
+    // has already advanced past.
+    w.write_u32(generation);
     w.write_string(type_id);
     w.write_u8(owner);
     w.write_f32(x);
@@ -652,6 +658,7 @@ inline WelcomeData parse_welcome(std::span<const u8> data) {
 
 struct SpawnData {
     u32 entity_id;
+    u32 generation = 0;
     std::string type_id;
     u8 owner;
     f32 x, y, facing;
@@ -664,6 +671,7 @@ inline SpawnData parse_spawn(std::span<const u8> data) {
     r.read_u8();  // skip MsgType
     SpawnData s;
     s.entity_id     = r.read_u32();
+    s.generation    = r.read_u32();
     s.type_id       = r.read_string();
     s.owner         = r.read_u8();
     s.x             = r.read_f32();

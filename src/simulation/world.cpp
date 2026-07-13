@@ -10,6 +10,12 @@ namespace uldum::simulation {
 
 static constexpr const char* TAG = "World";
 
+// Upper bound on shift-queued orders behind the in-progress one. Legitimate
+// WC3-style waypoint/patrol chains are a handful deep; this ceiling only
+// exists so a scripted or hostile client can't grow a unit's deque without
+// bound (memory-exhaustion DoS). Orders past the cap are dropped.
+static constexpr usize MAX_QUEUED_ORDERS = 64;
+
 // ── Canonical per-entity teardown ──────────────────────────────────────────
 // Declared in world.h. Every destroy path routes through this so the
 // "list of all component pools" lives in exactly one place. See the
@@ -598,14 +604,19 @@ void issue_order(World& world, Unit unit, Order order) {
         if (atk->target.is_valid() && atk->target.id == unit.id) return;
     }
 
+    if (order.queued && oq->current && oq->queued.size() >= MAX_QUEUED_ORDERS) return;
+
     // EVENT_UNIT_ISSUED_ORDER fires here — after admission, before the
     // order takes effect on the queue. Lua may inspect / count / chain.
     if (world.on_order) {
         world.on_order(unit, order);
     }
 
+    if (!world.validate(unit)) return;
+    oq = world.order_queues.get(unit.id);
+    if (!oq) return;
+
     if (order.queued && oq->current) {
-        // Shift-queue behind the in-progress order.
         oq->queued.push_back(std::move(order));
     } else {
         // Fresh (non-shift) order, OR a shift-order onto an IDLE unit (no

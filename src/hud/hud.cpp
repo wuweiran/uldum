@@ -427,11 +427,17 @@ bool Hud::remove_node_by_id(std::string_view id) {
     // the sync to the right peers; otherwise post-remove we'd have no
     // way to tell.
     u32 mask = UINT32_MAX;
-    if (auto* n = find_node_by_id(id)) mask = n->players_mask;
+    Node* removed = find_node_by_id(id);
+    if (removed) mask = removed->players_mask;
     // Clear transient hover / pressed references before we drop the node,
-    // else we'd chase a freed pointer next input frame.
-    if (m_impl->hover && m_impl->hover->id == id)   m_impl->hover = nullptr;
-    if (m_impl->pressed && m_impl->pressed->id == id) m_impl->pressed = nullptr;
+    // else we'd chase a freed pointer next input frame. Removing a node
+    // frees its ENTIRE subtree, so a hovered/pressed *descendant* dangles
+    // too — test subtree membership, not id-equality against the removed
+    // node alone.
+    if (removed) {
+        if (m_impl->hover   && removed->contains(m_impl->hover))   m_impl->hover   = nullptr;
+        if (m_impl->pressed && removed->contains(m_impl->pressed)) m_impl->pressed = nullptr;
+    }
     bool ok = remove_node_recursive(m_impl->root.get(), id);
     if (ok) {
         // Drop the matching registry entry so the resize path stops

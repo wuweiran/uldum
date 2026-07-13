@@ -13,7 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace uldum::simulation { class Simulation; class TypeRegistry; class AbilityRegistry; class CommandSystem; }
@@ -360,7 +360,7 @@ private:
         simulation::Player player;
         std::string player_name;     // from C_JOIN, shown in lobby + surfaced to Lua
         bool loaded = false;         // Loading-phase: peer sent C_LOAD_DONE
-        std::unordered_set<u32> known_entities;
+        std::unordered_map<u32, u32> known_entities;
         // Auth token presented at first C_JOIN. Stored so that a later
         // C_JOIN carrying the same token can be matched back to this
         // slot — that's what makes reconnect-after-blip work without
@@ -368,12 +368,12 @@ private:
         std::vector<u8> auth_token;
     };
     std::vector<PeerInfo> m_peers;
-    std::unordered_set<u32> m_prev_tick_entities;
+    std::unordered_map<u32, u32> m_prev_tick_entities;
 
     // Disconnected players awaiting reconnect
     struct DisconnectedPlayer {
         simulation::Player player;
-        std::unordered_set<u32> known_entities;  // preserved from PeerInfo
+        std::unordered_map<u32, u32> known_entities;  // id → generation
         f32 timer = 0;                           // seconds remaining
         std::vector<u8> auth_token;              // preserved from PeerInfo for reconnect matching
         std::string player_name;                 // preserved so the new peer keeps the lobby display
@@ -412,6 +412,11 @@ private:
     void host_on_connect(u32 peer_id);
     void host_on_disconnect(u32 peer_id);
     void host_on_receive(u32 peer_id, std::span<const u8> data);
+    PeerInfo* find_peer(u32 peer_id);
+    const PeerInfo* find_peer(u32 peer_id) const;
+    void host_send_spawn(PeerInfo& peer, u32 entity_id,
+                         const simulation::HandleInfo& info,
+                         bool newly_created);
     void host_send_spawn_burst(PeerInfo& peer);
     void host_update_disconnected(f32 dt);
     void host_broadcast_pause_state();
@@ -459,7 +464,7 @@ private:
     void client_handle_update(std::span<const u8> data);
     void client_apply_interpolation();
 
-    void spawn_client_entity(u32 entity_id, std::string_view type_id,
+    void spawn_client_entity(u32 entity_id, u32 generation, std::string_view type_id,
                              u8 owner, f32 x, f32 y, f32 facing,
                              bool newly_created,
                              std::string_view model_path_override = {});

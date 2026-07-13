@@ -440,13 +440,39 @@ bool Rhi::create_device() {
         queue_cis.push_back(present_queue_ci);
     }
 
-    // Enable Vulkan 1.3 features (dynamic rendering, synchronization2)
+    VkPhysicalDeviceVulkan13Features supported_13{};
+    supported_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+
+    VkPhysicalDeviceVulkan12Features supported_12{};
+    supported_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    supported_12.pNext = &supported_13;
+
+    VkPhysicalDeviceFeatures2 supported{};
+    supported.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    supported.pNext = &supported_12;
+    vkGetPhysicalDeviceFeatures2(m_physical_device, &supported);
+
+    const bool required_supported =
+        supported_13.dynamicRendering &&
+        supported_13.synchronization2 &&
+        supported_12.descriptorIndexing &&
+        supported_12.shaderSampledImageArrayNonUniformIndexing &&
+        supported_12.runtimeDescriptorArray &&
+        supported_12.descriptorBindingPartiallyBound &&
+        supported_12.descriptorBindingVariableDescriptorCount &&
+        supported_12.descriptorBindingSampledImageUpdateAfterBind &&
+        supported.features.multiDrawIndirect &&
+        supported.features.drawIndirectFirstInstance;
+    if (!required_supported) {
+        log::error(TAG, "Selected GPU lacks required Vulkan rendering features");
+        return false;
+    }
+
     VkPhysicalDeviceVulkan13Features features_13{};
     features_13.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features_13.dynamicRendering = VK_TRUE;
     features_13.synchronization2 = VK_TRUE;
 
-    // Enable Vulkan 1.2 features (descriptor indexing for bindless textures)
     VkPhysicalDeviceVulkan12Features features_12{};
     features_12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     features_12.pNext = &features_13;
@@ -460,11 +486,8 @@ bool Rhi::create_device() {
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2.pNext = &features_12;
-    // Renderer batches per-model draws into a single indirect call
-    // with drawCount = unique-model count. Without this feature, any
-    // scene with two distinct visible models (e.g. archer + grunt)
-    // trips a Vulkan validation error and undefined behavior.
     features2.features.multiDrawIndirect = VK_TRUE;
+    features2.features.drawIndirectFirstInstance = VK_TRUE;
 
     std::array device_extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -967,7 +990,7 @@ void Rhi::destroy_shader_module(ShaderModuleHandle h) {
         vkDestroyShaderModule(m_device, rec->module, nullptr);
         rec->module = VK_NULL_HANDLE;
     }
-    rec->generation = 0;  // mark slot free
+    detail::retire_generation(*rec);  // advance generation; free list marks reuse
     m_shader_modules_free.push_back(h.index);
 }
 
@@ -983,6 +1006,7 @@ namespace {
 using detail::acquire_slot;
 using detail::bump_generation;
 using detail::lookup;
+using detail::retire_generation;
 
 VkBufferUsageFlags to_vk_buffer_usage(BufferUsage u) {
     VkBufferUsageFlags f = 0;
@@ -1152,7 +1176,7 @@ void Rhi::destroy_buffer(BufferHandle h) {
         rec->alloc  = VK_NULL_HANDLE;
         rec->mapped = nullptr;
     }
-    rec->generation = 0;
+    retire_generation(*rec);
     m_buffers_free.push_back(h.index);
 }
 
@@ -1245,7 +1269,7 @@ void Rhi::destroy_texture(TextureHandle h) {
     if (rec->view  != VK_NULL_HANDLE) vkDestroyImageView(m_device, rec->view, nullptr);
     if (rec->image != VK_NULL_HANDLE) vmaDestroyImage(m_allocator, rec->image, rec->alloc);
     rec->view = VK_NULL_HANDLE; rec->image = VK_NULL_HANDLE; rec->alloc = VK_NULL_HANDLE;
-    rec->generation = 0;
+    retire_generation(*rec);
     m_textures_free.push_back(h.index);
 }
 
@@ -1294,7 +1318,7 @@ void Rhi::destroy_sampler(SamplerHandle h) {
         vkDestroySampler(m_device, rec->sampler, nullptr);
         rec->sampler = VK_NULL_HANDLE;
     }
-    rec->generation = 0;
+    retire_generation(*rec);
     m_samplers_free.push_back(h.index);
 }
 
@@ -1436,7 +1460,7 @@ void Rhi::destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) {
         vkDestroyDescriptorSetLayout(m_device, rec->layout, nullptr);
         rec->layout = VK_NULL_HANDLE;
     }
-    rec->generation = 0;
+    retire_generation(*rec);
     m_dsl_free.push_back(h.index);
 }
 
@@ -1572,7 +1596,7 @@ void Rhi::free_descriptor_set(DescriptorSetHandle h) {
     }
     rec.set = VK_NULL_HANDLE;
     rec.source = VK_NULL_HANDLE;
-    rec.generation = 0;
+    retire_generation(rec);
     m_dset_free.push_back(h.index);
 }
 
@@ -1619,7 +1643,7 @@ void Rhi::destroy_pipeline_layout(PipelineLayoutHandle h) {
         vkDestroyPipelineLayout(m_device, rec->layout, nullptr);
         rec->layout = VK_NULL_HANDLE;
     }
-    rec->generation = 0;
+    retire_generation(*rec);
     m_pl_free.push_back(h.index);
 }
 
@@ -1773,7 +1797,7 @@ void Rhi::destroy_pipeline(PipelineHandle h) {
         vkDestroyPipeline(m_device, rec->pipeline, nullptr);
         rec->pipeline = VK_NULL_HANDLE;
     }
-    rec->generation = 0;
+    retire_generation(*rec);
     m_pipeline_free.push_back(h.index);
 }
 

@@ -256,8 +256,11 @@ private:
 
     // ── Resource record tables ───────────────────────────────────────────
     // Flat vector indexed by handle.index. `generation` in the record
-    // matches handle.generation when the slot is live. A freed slot has
-    // `generation == 0`; its index goes into the free list for reuse.
+    // matches handle.generation when the slot is live. On destroy the
+    // generation is ADVANCED (retire_generation), never reset to 0, so a
+    // freed/recycled slot always carries a generation that was never handed
+    // out — stale handles can't re-validate. The free list (the `*_free`
+    // vectors), not `generation == 0`, tracks which indices are reusable.
     struct ShaderModuleRecord {
         VkShaderModule module = VK_NULL_HANDLE;
         u32            generation = 0;

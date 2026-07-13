@@ -75,6 +75,18 @@ public:
         return false;
     }
 
+    // True if `other` is this node or any node within its subtree. Used
+    // before a subtree is freed to invalidate cached raw pointers (hover /
+    // pressed) that point anywhere inside it — an id-equality test would
+    // miss a hovered/pressed *descendant* of the removed node.
+    bool contains(const Node* other) const {
+        if (other == this) return true;
+        for (const auto& child : m_children) {
+            if (child->contains(other)) return true;
+        }
+        return false;
+    }
+
     // Default: rectangular hit test. Override for non-rect shapes (circles,
     // mask-based icons). Respects `hit_testable`. The owner filter is
     // applied externally during tree walk (hit_test_tree in hud.cpp) so

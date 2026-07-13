@@ -31,6 +31,20 @@ public:
         return {id, m_generations[id]};
     }
 
+    // Reserve a specific (id, generation) dictated by an authority (the
+    // network client mirroring the host). Force-sets the local generation
+    // to the host's value so a recycled id can never leave the client
+    // validating handles against a generation the host has advanced past.
+    // The client only ever reserves ids the host assigns, so overwriting
+    // the local generation here keeps the two allocators in lockstep
+    // regardless of the client's own free/reuse bookkeeping.
+    Handle reserve_at(u32 id, u32 generation) {
+        reserve(id);
+        m_generations[id] = generation;
+        std::erase(m_free_list, id);
+        return {id, generation};
+    }
+
     void free(Handle h) {
         if (!is_valid(h)) return;
         m_generations[h.id]++;

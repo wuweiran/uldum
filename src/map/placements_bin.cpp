@@ -2,6 +2,7 @@
 #include "core/log.h"
 
 #include <cstring>
+#include <algorithm>
 #include <unordered_map>
 
 #include <glm/gtc/constants.hpp>
@@ -49,6 +50,17 @@ struct Reader {
         p += len; rem -= len;
         return s;
     }
+
+    // Cap a declared element count against what the remaining bytes could
+    // possibly hold (each element consumes at least `min_elem_bytes`). A
+    // tiny file can declare a count of billions; reserving that many would
+    // be a multi-GB allocation (OOM / DoS) from a 20-byte input. The read
+    // loops already stop early on `!ok`, so clamping the reserve hint costs
+    // nothing on well-formed files and defuses the malicious case.
+    u32 safe_count(u32 declared, usize min_elem_bytes) const {
+        usize cap = min_elem_bytes ? (rem / min_elem_bytes) : rem;
+        return static_cast<u32>(std::min<usize>(declared, cap));
+    }
 };
 
 // ── Writer ───────────────────────────────────────────────────────────────
@@ -91,7 +103,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
     // Type-id string table.
     u32 type_id_count = r.read_u32();
     std::vector<std::string> type_ids;
-    type_ids.reserve(type_id_count);
+    type_ids.reserve(r.safe_count(type_id_count, 1));  // ≥1 byte (u8 len prefix)
     for (u32 i = 0; i < type_id_count && r.ok; ++i) {
         u8 len = r.read_u8();
         type_ids.push_back(r.read_bytes(len));
@@ -102,7 +114,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
 
     // Units.
     u32 unit_count = r.read_u32();
-    out.units.reserve(unit_count);
+    out.units.reserve(r.safe_count(unit_count, 15));  // u16+u8+3×f32
     for (u32 i = 0; i < unit_count && r.ok; ++i) {
         PlacedUnit u;
         u.type   = resolve(r.read_u16());
@@ -115,7 +127,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
 
     // Destructables.
     u32 dest_count = r.read_u32();
-    out.destructables.reserve(dest_count);
+    out.destructables.reserve(r.safe_count(dest_count, 13));  // u16+3×f32+u8
     for (u32 i = 0; i < dest_count && r.ok; ++i) {
         PlacedDestructable d;
         d.type      = resolve(r.read_u16());
@@ -128,7 +140,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
 
     // Items.
     u32 item_count = r.read_u32();
-    out.items.reserve(item_count);
+    out.items.reserve(r.safe_count(item_count, 10));  // u16+2×f32
     for (u32 i = 0; i < item_count && r.ok; ++i) {
         PlacedItem it;
         it.type = resolve(r.read_u16());
@@ -139,7 +151,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
 
     // Doodads.
     u32 dood_count = r.read_u32();
-    out.doodads.reserve(dood_count);
+    out.doodads.reserve(r.safe_count(dood_count, 13));  // u16+3×f32+u8
     for (u32 i = 0; i < dood_count && r.ok; ++i) {
         PlacedDoodad d;
         d.type      = resolve(r.read_u16());
@@ -152,13 +164,13 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
 
     // Regions.
     u32 region_count = r.read_u32();
-    out.regions.reserve(region_count);
+    out.regions.reserve(r.safe_count(region_count, 5));  // u8 len + 2×u16 counts
     for (u32 i = 0; i < region_count && r.ok; ++i) {
         Region reg;
         u8 id_len = r.read_u8();
         reg.id = r.read_bytes(id_len);
         u16 rect_count = r.read_u16();
-        reg.rects.reserve(rect_count);
+        reg.rects.reserve(r.safe_count(rect_count, 16));  // 4×f32
         for (u16 j = 0; j < rect_count && r.ok; ++j) {
             RegionRect rect;
             rect.x0 = r.read_f32(); rect.y0 = r.read_f32();
@@ -166,7 +178,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
             reg.rects.push_back(rect);
         }
         u16 circle_count = r.read_u16();
-        reg.circles.reserve(circle_count);
+        reg.circles.reserve(r.safe_count(circle_count, 12));  // 3×f32
         for (u16 j = 0; j < circle_count && r.ok; ++j) {
             RegionCircle c;
             c.cx = r.read_f32();
@@ -179,7 +191,7 @@ bool read_placements(std::span<const u8> data, SceneData& out) {
 
     // Cameras.
     u32 cam_count = r.read_u32();
-    out.cameras.reserve(cam_count);
+    out.cameras.reserve(r.safe_count(cam_count, 25));  // u8 len + 6×f32
     for (u32 i = 0; i < cam_count && r.ok; ++i) {
         CameraSetup cam;
         u8 id_len = r.read_u8();

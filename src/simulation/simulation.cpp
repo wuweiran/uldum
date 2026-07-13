@@ -50,6 +50,12 @@ void Simulation::shutdown() {
     m_alliances.clear();
     m_player_count = 0;
     m_player_names.clear();
+    // Drop the client-mode world/vision overrides. The Simulation instance is
+    // reused across sessions; if a Client game left these pointing at the
+    // network client world, a following Offline/Host session would read the
+    // stale world through world()/vision() while ticking m_world.
+    m_world_override = nullptr;
+    m_vision_override = nullptr;
     log::info(TAG, "Simulation shut down");
 }
 

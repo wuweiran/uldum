@@ -46,6 +46,21 @@ u32 bump_generation(Rec& rec) {
     return rec.generation;
 }
 
+// Retire a slot on destroy: advance the generation instead of resetting
+// it to 0. Generation MUST stay monotonic across a slot's whole lifetime —
+// resetting to 0 and letting the next allocation bump 0→1 makes every
+// allocation of a given index carry generation 1, so an old handle
+// re-validates against an unrelated recycled resource (stale-handle
+// detection defeated). Advancing here means the freed slot holds a
+// generation that was never handed out, and the next allocation advances
+// again to yet another fresh value — so no live handle can ever match a
+// slot it doesn't own. The free list (not generation==0) is the source of
+// truth for "is this index reusable".
+template <typename Rec>
+void retire_generation(Rec& rec) {
+    bump_generation(rec);
+}
+
 // Generational lookup: validate the handle against the table and return
 // a pointer to the live record, or nullptr if the handle is invalid,
 // out of range, or stale (generation mismatch). The const overload

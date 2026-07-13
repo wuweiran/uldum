@@ -66,6 +66,18 @@ void NetworkManager::host_on_connect(u32 peer_id) {
     log::info(TAG, "Peer {} connected, awaiting C_JOIN", peer_id);
 }
 
+NetworkManager::PeerInfo* NetworkManager::find_peer(u32 peer_id) {
+    auto it = std::find_if(m_peers.begin(), m_peers.end(),
+                           [&](const PeerInfo& peer) { return peer.peer_id == peer_id; });
+    return it != m_peers.end() ? &*it : nullptr;
+}
+
+const NetworkManager::PeerInfo* NetworkManager::find_peer(u32 peer_id) const {
+    auto it = std::find_if(m_peers.begin(), m_peers.end(),
+                           [&](const PeerInfo& peer) { return peer.peer_id == peer_id; });
+    return it != m_peers.end() ? &*it : nullptr;
+}
+
 void NetworkManager::host_on_disconnect(u32 peer_id) {
     for (auto it = m_peers.begin(); it != m_peers.end(); ++it) {
         if (it->peer_id != peer_id) continue;
@@ -360,17 +372,28 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         // Lobby phase: register the peer with no slot and send them the
         // current lobby snapshot. Slot claims happen via C_CLAIM_SLOT.
         if (m_phase == Phase::Lobby) {
-            // Register peer (no player slot yet; assigned at host_commit_start)
-            PeerInfo info{peer_id, simulation::Player{UINT32_MAX}, std::move(peer_name),
-                          false, {}, client_token};
-            m_peers.push_back(std::move(info));
+            // Idempotent register: a duplicate C_JOIN (retransmit, or a
+            // misbehaving/hostile client) must not append a second record
+            // for the same peer_id — that would leak PeerInfo entries and
+            // let one connection masquerade as several. Refresh in place if
+            // we already know this peer.
+            PeerInfo* existing = find_peer(peer_id);
+            if (existing) {
+                existing->player_name = std::move(peer_name);
+                existing->auth_token  = client_token;
+                log::info(TAG, "Peer {} re-joined lobby (dedup)", peer_id);
+            } else {
+                PeerInfo info{peer_id, simulation::Player{UINT32_MAX}, std::move(peer_name),
+                              false, {}, client_token};
+                m_peers.push_back(std::move(info));
+                log::info(TAG, "Peer {} joined lobby", peer_id);
+            }
 
             auto assign = build_lobby_assign(peer_id);
             m_transport->send(peer_id, assign, true);
 
             auto state_msg = build_lobby_state(m_lobby);
             m_transport->send(peer_id, state_msg, true);
-            log::info(TAG, "Peer {} joined lobby", peer_id);
             return;
         }
 
@@ -404,7 +427,7 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             std::string restored_name = it->player_name.empty() ? std::move(peer_name)
                                                                  : it->player_name;
             PeerInfo info{peer_id, it->player, std::move(restored_name),
-                          false, {}, std::move(it->auth_token)};
+                          false, std::move(it->known_entities), std::move(it->auth_token)};
             m_disconnected.erase(it);
 
             auto welcome = build_welcome(slot,
@@ -467,15 +490,17 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         // Accept only if the slot isn't Human-claimed by someone else.
         if (a.occupant == SlotOccupant::Human && a.peer_id != peer_id) break;
 
-        // Look up the claiming peer's name.
         std::string claimer_name;
         if (peer_id == LOCAL_PEER) {
             claimer_name = m_player_name.empty() ? "Host" : m_player_name;
         } else {
-            for (const auto& p : m_peers) {
-                if (p.peer_id == peer_id) { claimer_name = p.player_name; break; }
+            const PeerInfo* claimer = find_peer(peer_id);
+            if (!claimer) {
+                log::warn(TAG, "Peer {} tried to claim slot {} without registering — ignored",
+                          peer_id, slot);
+                break;
             }
-            if (claimer_name.empty()) claimer_name = "Player";
+            claimer_name = claimer->player_name.empty() ? "Player" : claimer->player_name;
         }
 
         // Release any other slot currently claimed by this peer. Restore
@@ -512,25 +537,18 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
 
     case MsgType::C_LOAD_DONE: {
         if (m_phase != Phase::Loading) break;
-        for (auto& p : m_peers) {
-            if (p.peer_id == peer_id) {
-                p.loaded = true;
-                log::info(TAG, "Peer {} finished loading", peer_id);
-                break;
-            }
+        if (auto* peer = find_peer(peer_id)) {
+            peer->loaded = true;
+            log::info(TAG, "Peer {} finished loading", peer_id);
         }
         break;
     }
 
     case MsgType::C_ORDER: {
-        // Find which player this peer is
-        simulation::Player player{UINT32_MAX};
-        for (auto& p : m_peers) {
-            if (p.peer_id == peer_id) { player = p.player; break; }
-        }
-        if (!player.is_valid()) return;
+        const PeerInfo* peer = find_peer(peer_id);
+        if (!peer || !peer->player.is_valid()) return;
 
-        auto cmd = parse_order(data, player);
+        auto cmd = parse_order(data, peer->player);
         if (!cmd) {
             log::warn(TAG, "Peer {} sent a malformed C_ORDER — dropped", peer_id);
             break;
@@ -545,14 +563,8 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
     }
 
     case MsgType::C_NODE_EVENT: {
-        // Client reported a HUD atom event (button press). Look up which
-        // player the peer plays, then fire the matching server-side trigger
-        // with node id in context.
-        simulation::Player player{UINT32_MAX};
-        for (auto& p : m_peers) {
-            if (p.peer_id == peer_id) { player = p.player; break; }
-        }
-        if (!player.is_valid()) return;
+        const PeerInfo* peer = find_peer(peer_id);
+        if (!peer || !peer->player.is_valid()) return;
 
         ByteReader r(data);
         r.read_u8();
@@ -560,7 +572,7 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
         NodeEventKind kind  = static_cast<NodeEventKind>(r.read_u8());
 
         if (m_script && kind == NodeEventKind::ButtonPressed) {
-            m_script->fire_node_event("button_pressed", player.id, node_id);
+            m_script->fire_node_event("button_pressed", peer->player.id, node_id);
         }
         break;
     }
@@ -571,38 +583,41 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
     }
 }
 
+void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
+                                     const simulation::HandleInfo& info,
+                                     bool newly_created) {
+    auto& world = m_simulation->world();
+    const auto* transform = world.transforms.get(entity_id);
+    if (!transform) return;
+
+    auto known = peer.known_entities.find(entity_id);
+    if (known != peer.known_entities.end() && known->second != info.generation) {
+        auto destroy = build_destroy(entity_id);
+        m_transport->send(peer.peer_id, destroy, true);
+    }
+
+    const auto* owner = world.owners.get(entity_id);
+    u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
+    std::string_view model_path;
+    if (info.category == simulation::Category::Projectile) {
+        if (auto* renderable = world.renderables.get(entity_id)) model_path = renderable->model_path;
+    }
+
+    auto msg = build_spawn(entity_id, info.generation, info.type_id, owner_id,
+                           transform->position.x, transform->position.y,
+                           transform->facing, newly_created, model_path);
+    m_transport->send(peer.peer_id, msg, true);
+    peer.known_entities[entity_id] = info.generation;
+}
+
 void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
     auto& world = m_simulation->world();
     auto& infos = world.handle_infos;
 
     for (u32 i = 0; i < infos.count(); ++i) {
         u32 id = infos.ids()[i];
-        const auto& info = infos.data()[i];
-
-        // Check fog visibility
         if (!is_visible_to(id, peer.player)) continue;
-
-        const auto* transform = world.transforms.get(id);
-        if (!transform) continue;
-
-        const auto* owner = world.owners.get(id);
-        u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
-
-        // Projectiles don't appear in the type registry — their model
-        // is set per-spawn (auto-attack arrow vs custom glTF). Carry
-        // the renderable's model path inline so the client can render
-        // the correct mesh without a type lookup.
-        std::string_view model_path;
-        if (info.category == simulation::Category::Projectile) {
-            if (auto* r = world.renderables.get(id)) model_path = r->model_path;
-        }
-
-        auto msg = build_spawn(id, info.type_id, owner_id,
-                               transform->position.x, transform->position.y,
-                               transform->facing, /*newly_created=*/false,
-                               model_path);
-        m_transport->send(peer.peer_id, msg, true);
-        peer.known_entities.insert(id);
+        host_send_spawn(peer, id, infos.data()[i], false);
     }
 
     log::info(TAG, "Sent {} entities to player {}", peer.known_entities.size(), peer.player.id);
@@ -632,51 +647,35 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
     auto& world = m_simulation->world();
     auto& infos = world.handle_infos;
 
-    // Swap out last tick's entity set for new-creation detection
     auto last_tick = std::move(m_prev_tick_entities);
     m_prev_tick_entities.clear();
+    m_prev_tick_entities.reserve(infos.count());
     for (u32 i = 0; i < infos.count(); ++i) {
-        m_prev_tick_entities.insert(infos.ids()[i]);
+        m_prev_tick_entities[infos.ids()[i]] = infos.data()[i].generation;
     }
 
     for (auto& peer : m_peers) {
-        // Track which entities are "alive in the player's view" this tick.
-        // For static-remembered entities (trees / doodads / structures)
-        // an Explored tile is enough — they stay on the client even when
-        // the live-vision drops, frozen at last-seen state.
-        std::unordered_set<u32> visible_now;
+        std::unordered_map<u32, u32> visible_now;
+        visible_now.reserve(infos.count());
         std::vector<EntityState> states;
+        states.reserve(infos.count());
 
         for (u32 i = 0; i < infos.count(); ++i) {
             u32 id = infos.ids()[i];
+            const auto& info = infos.data()[i];
 
             const bool remembered  = simulation::is_static_remembered_entity(world, id);
             const bool live_vis    = is_visible_to(id, peer.player);
             const bool keep_in_view = live_vis ||
                 (remembered && is_visible_or_remembered_to(id, peer.player));
             if (!keep_in_view) continue;
-            visible_now.insert(id);
+            visible_now[id] = info.generation;
 
-            // Send S_SPAWN for newly visible entities
-            if (!peer.known_entities.contains(id)) {
-                const auto& info = infos.data()[i];
-                const auto* transform = world.transforms.get(id);
-                if (!transform) continue;
-                const auto* owner = world.owners.get(id);
-                u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
-
-                bool newly_created = !last_tick.contains(id);
-
-                std::string_view model_path;
-                if (info.category == simulation::Category::Projectile) {
-                    if (auto* r = world.renderables.get(id)) model_path = r->model_path;
-                }
-
-                auto msg = build_spawn(id, info.type_id, owner_id,
-                                       transform->position.x, transform->position.y,
-                                       transform->facing, newly_created, model_path);
-                m_transport->send(peer.peer_id, msg, true);
-                peer.known_entities.insert(id);
+            auto known = peer.known_entities.find(id);
+            if (known == peer.known_entities.end() || known->second != info.generation) {
+                auto previous = last_tick.find(id);
+                bool newly_created = previous == last_tick.end() || previous->second != info.generation;
+                host_send_spawn(peer, id, info, newly_created);
             }
 
             // Static-remembered entities frozen in fog don't ship S_STATE
@@ -720,7 +719,8 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
 
         // Send S_DESTROY for entities that left visibility or were destroyed
         std::vector<u32> to_remove;
-        for (u32 known_id : peer.known_entities) {
+        for (const auto& known : peer.known_entities) {
+            u32 known_id = known.first;
             if (!visible_now.contains(known_id)) {
                 auto msg = build_destroy(known_id);
                 m_transport->send(peer.peer_id, msg, true);
@@ -793,9 +793,12 @@ void NetworkManager::host_broadcast_pause_state() {
 }
 
 void NetworkManager::host_broadcast_update(u32 entity_id, std::span<const u8> update_packet) {
-    if (m_mode != Mode::Host || m_peers.empty()) return;
+    if (m_mode != Mode::Host || m_peers.empty() || !m_simulation) return;
+    const auto* info = m_simulation->world().handle_infos.get(entity_id);
+    if (!info) return;
     for (auto& peer : m_peers) {
-        if (peer.known_entities.contains(entity_id)) {
+        auto known = peer.known_entities.find(entity_id);
+        if (known != peer.known_entities.end() && known->second == info->generation) {
             m_transport->send(peer.peer_id, update_packet, true);
         }
     }
@@ -1103,7 +1106,7 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
     auto s = parse_spawn(data);
-    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
+    spawn_client_entity(s.entity_id, s.generation, s.type_id, s.owner, s.x, s.y, s.facing,
                         s.newly_created, s.model_path);
 }
 
@@ -1424,7 +1427,8 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
     }
 }
 
-void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id,
+void NetworkManager::spawn_client_entity(u32 entity_id, u32 generation,
+                                          std::string_view type_id,
                                           u8 owner, f32 x, f32 y, f32 facing,
                                           bool newly_created,
                                           std::string_view model_path_override) {
@@ -1433,7 +1437,11 @@ void NetworkManager::spawn_client_entity(u32 entity_id, std::string_view type_id
     // Skip if already exists
     if (world.handle_infos.has(entity_id)) return;
 
-    simulation::Handle h = world.handles.reserve(entity_id);
+    // Force the local generation to the host's authoritative value so a
+    // recycled id can't leave us validating orders against a stale
+    // generation. reserve() (which kept whatever local generation we had)
+    // was the source of the client/host desync.
+    simulation::Handle h = world.handles.reserve_at(entity_id, generation);
 
     // Projectiles take a minimal-components path — no Health, no Combat,
     // no Movement, no Owner, no Selectable. They render but don't

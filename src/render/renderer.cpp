@@ -379,6 +379,8 @@ void Renderer::end_session() {
     m_model_cache.clear();
     m_model_failed.clear();
     m_mesh_cache.clear();
+    m_logged_static_group_cap = false;
+    m_logged_static_instance_cap = false;
     m_mega_vb_used   = m_init_mega_vb_used;
     m_mega_ib_used   = m_init_mega_ib_used;
     m_bindless_count = m_init_bindless_count;
@@ -3098,6 +3100,19 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         buckets       = std::move(sorted_buckets);
     }
 
+    // Cap the group count against the indirect command buffer, which holds
+    // exactly MAX_STATIC_INSTANCES commands. Partitions index it by group
+    // index, so an overrun here would write commands past the mapped range.
+    if (m_draw_groups.size() > MAX_STATIC_INSTANCES) {
+        if (!m_logged_static_group_cap) {
+            log::warn(TAG, "static draw groups {} exceed cap {} — truncating",
+                      m_draw_groups.size(), MAX_STATIC_INSTANCES);
+            m_logged_static_group_cap = true;
+        }
+        m_draw_groups.resize(MAX_STATIC_INSTANCES);
+        buckets.resize(MAX_STATIC_INSTANCES);
+    }
+
     // Compute partition slices into m_draw_groups.
     for (auto& p : m_static_partitions) { p.first = 0; p.count = 0; }
     for (u32 gi = 0; gi < m_draw_groups.size(); ++gi) {
@@ -3109,13 +3124,27 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
     // Concatenate buckets into the final instance buffer; record each
     // group's first_instance + instance_count from the contiguous slice.
+    // The slice is clamped to MAX_STATIC_INSTANCES: the instance SSBO holds
+    // that many InstanceData, and the indirect commands index into it via
+    // firstInstance/instanceCount, so a group must never reference past the
+    // uploaded count or the GPU reads out of bounds. Overflow groups get a
+    // zero-instance (skipped) draw rather than an out-of-range one.
     std::vector<InstanceData> instances;
     instances.reserve(256);
+    bool instances_truncated = false;
     for (u32 gi = 0; gi < m_draw_groups.size(); ++gi) {
         auto& dg = m_draw_groups[gi];
+        u32 taken = static_cast<u32>(buckets[gi].size());
+        u32 room  = MAX_STATIC_INSTANCES - static_cast<u32>(instances.size());
+        if (taken > room) { taken = room; instances_truncated = true; }
         dg.first_instance = static_cast<u32>(instances.size());
-        dg.instance_count = static_cast<u32>(buckets[gi].size());
-        instances.insert(instances.end(), buckets[gi].begin(), buckets[gi].end());
+        dg.instance_count = taken;
+        instances.insert(instances.end(), buckets[gi].begin(), buckets[gi].begin() + taken);
+    }
+    if (instances_truncated && !m_logged_static_instance_cap) {
+        log::warn(TAG, "static instances exceed cap {} — some draws truncated",
+                  MAX_STATIC_INSTANCES);
+        m_logged_static_instance_cap = true;
     }
 
     m_static_instance_count = static_cast<u32>(instances.size());
@@ -3124,8 +3153,8 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
 
     if (m_static_instance_count > 0) {
         if (void* dst = m_rhi->mapped_ptr(m_instance_buffer[fi])) {
-            u32 upload_count = std::min(m_static_instance_count, MAX_STATIC_INSTANCES);
-            std::memcpy(dst, instances.data(), upload_count * sizeof(InstanceData));
+            // m_static_instance_count is already ≤ MAX_STATIC_INSTANCES.
+            std::memcpy(dst, instances.data(), m_static_instance_count * sizeof(InstanceData));
         }
     }
 

@@ -120,6 +120,7 @@ private:
     std::vector<std::string> m_scenes;
     std::string m_current_scene;
 
+    void reset_editing_state();
     void switch_scene(const std::string& scene_name);
     void open_map(const std::string& path);
 

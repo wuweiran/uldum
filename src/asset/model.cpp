@@ -347,7 +347,16 @@ std::expected<ModelData, std::string> load_model_from_memory(const u8* data_byte
         return std::unexpected(std::format("Failed to load glTF buffers '{}': error {}", source_path, static_cast<int>(result)));
     }
 
-    return build_model_from_cgltf(data, source_path);
+    // cgltf_validate covers structure and accessor bounds, but not joint values.
+    result = cgltf_validate(data);
+    if (result != cgltf_result_success) {
+        cgltf_free(data);
+        return std::unexpected(std::format("Invalid glTF '{}': validation error {}", source_path, static_cast<int>(result)));
+    }
+
+    auto model = build_model_from_cgltf(data, source_path);
+    cgltf_free(data);
+    return model;
 }
 
 static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* data, std::string_view path) {
@@ -367,6 +376,9 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
     NodeToBoneMap node_to_bone;
     bool has_skin = data->skins_count > 0;
     if (has_skin) {
+        if (data->skins[0].joints_count == 0) {
+            return std::unexpected(std::format("glTF '{}': skin has no joints", path_str));
+        }
         if (data->skins_count > 1) {
             log::warn("Asset", "Model '{}' has {} skins; using skins[0] and ignoring the rest.",
                       path_str, static_cast<u32>(data->skins_count));
@@ -474,7 +486,17 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
             if (prim.indices) {
                 indices.resize(prim.indices->count);
                 for (cgltf_size ii = 0; ii < prim.indices->count; ++ii) {
-                    indices[ii] = static_cast<u32>(cgltf_accessor_read_index(prim.indices, ii));
+                    u32 idx = static_cast<u32>(cgltf_accessor_read_index(prim.indices, ii));
+                    // Reject an index that points past this primitive's vertex
+                    // array — it would fetch out of bounds on the GPU. Models
+                    // can come from untrusted map assets, so fail loud rather
+                    // than upload a corrupt index buffer.
+                    if (idx >= vertex_count) {
+                        return std::unexpected(std::format(
+                            "glTF '{}': index {} out of range (vertex_count {})",
+                            path_str, idx, vertex_count));
+                    }
+                    indices[ii] = idx;
                 }
             }
 
@@ -504,6 +526,15 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
 
                     cgltf_uint joint_vals[4]{};
                     cgltf_accessor_read_uint(joints_acc, vi, joint_vals, 4);
+                    // Clamp joint indices to the actual bone count. A joint id
+                    // past the skeleton would index the shader's bone-matrix
+                    // array out of bounds. Clamp (not reject) so one stray
+                    // joint on an otherwise-valid untrusted model degrades to
+                    // the root bone rather than failing the whole load.
+                    u32 bone_count = static_cast<u32>(model.skeleton.bones.size());
+                    for (auto& jv : joint_vals) {
+                        if (bone_count == 0 || jv >= bone_count) jv = 0;
+                    }
                     v.bone_indices = {joint_vals[0], joint_vals[1], joint_vals[2], joint_vals[3]};
                     v.bone_weights = read_vec4(weights_acc, vi);
                 }
@@ -566,7 +597,6 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
         }
     }
 
-    cgltf_free(data);
     return model;
 }
 

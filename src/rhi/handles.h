@@ -7,8 +7,8 @@
 // slot's current generation is detectably stale.
 //
 // A default-constructed handle has generation == 0 and is invalid;
-// freshly-created handles always have generation >= 1, so a generation
-// of 0 in a slot means "free / never allocated".
+// freshly-created handles always have generation >= 1. Resource tables
+// track free slots separately and retain their retired generation.
 //
 // Tag types make each handle kind distinct (BufferHandle can't be
 // implicitly converted to TextureHandle, etc.) at zero runtime cost.

@@ -1756,30 +1756,7 @@ void Editor::rebuild_terrain_mesh() {
     }
 }
 
-void Editor::switch_scene(const std::string& scene_name) {
-    if (!m_map_loaded || scene_name == m_current_scene) return;
-
-    m_rhi.wait_idle();
-
-    if (m_map.switch_scene(scene_name, m_asset, m_simulation)) {
-        m_current_scene = scene_name;
-        if (m_map.terrain().is_valid()) {
-            m_renderer.set_terrain(&m_map.terrain());
-            m_simulation.set_terrain(&m_map.terrain());
-            // New scene's pre-placed footprints → runtime pathing bitmap.
-            m_simulation.sync_pathing_blockers();
-        }
-        // Region focus tied to the previous scene's index space — drop
-        // it so the panel doesn't try to read a deleted region.
-        region_set_focus(-1);
-        m_region_drag_active = false;
-        log::info(TAG, "Switched to scene: {}", scene_name);
-    }
-}
-
-void Editor::open_map(const std::string& path) {
-    // Drop entity handles while the outgoing world is still populated so
-    // destroy_preview's validate() can still find the preview entity.
+void Editor::reset_editing_state() {
     destroy_preview();
     m_preview_type_id.clear();
     m_preview_variation = 0;
@@ -1787,10 +1764,6 @@ void Editor::open_map(const std::string& path) {
     m_selected_item = {};
     m_selected_destructable = {};
     m_selected_doodad = {};
-
-    // Mid-stroke brush / drag / placement / region interaction state would
-    // otherwise carry into the new map (e.g. a paint stroke continuing on
-    // a fresh tile layer, an in-progress region rect snapping to new geometry).
     m_brush_applied      = false;
     m_last_brush_vx      = -1;
     m_last_brush_vy      = -1;
@@ -1802,11 +1775,38 @@ void Editor::open_map(const std::string& path) {
     m_has_last_placement = false;
     m_region_focus       = -1;
     m_region_drag_active = false;
-
-    // TerrainEdit records hold vertex indices into the outgoing terrain;
-    // replaying them against a different-size new terrain writes OOB.
     m_undo_stack.clear();
     m_redo_stack.clear();
+}
+
+void Editor::switch_scene(const std::string& scene_name) {
+    if (!m_map_loaded || scene_name == m_current_scene) return;
+
+    m_rhi.wait_idle();
+    reset_editing_state();
+    m_renderer.clear_animations();
+
+    if (m_map.switch_scene(scene_name, m_asset, m_simulation)) {
+        m_current_scene = scene_name;
+        if (m_map.terrain().is_valid()) {
+            m_renderer.set_terrain(&m_map.terrain());
+            m_simulation.set_terrain(&m_map.terrain());
+            // New scene's pre-placed footprints → runtime pathing bitmap.
+            m_simulation.sync_pathing_blockers();
+        }
+        region_set_focus(-1);
+        log::info(TAG, "Switched to scene: {}", scene_name);
+    } else {
+        m_current_scene.clear();
+        region_set_focus(-1);
+        m_renderer.set_terrain(nullptr);
+        m_simulation.set_terrain(nullptr);
+        log::error(TAG, "Failed to switch to scene: {}", scene_name);
+    }
+}
+
+void Editor::open_map(const std::string& path) {
+    reset_editing_state();
 
     // Null out renderer + simulation terrain pointers before unload_map
     // destroys the TerrainData they currently reference.

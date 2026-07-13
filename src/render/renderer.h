@@ -377,6 +377,8 @@ private:
     };
     std::vector<DrawGroup>  m_draw_groups;
     u32                     m_static_instance_count = 0;
+    bool                    m_logged_static_group_cap = false;
+    bool                    m_logged_static_instance_cap = false;
 
     // After build_static_draw_batches, m_draw_groups is sorted by
     // (pipeline_class, double_sided) so each combo is a contiguous slice

@@ -111,6 +111,11 @@ bool Store::load(const std::string& path) {
 
     for (auto& [key, entry] : root.items()) {
         if (!entry.is_object() || !entry.contains("type") || !entry.contains("v")) continue;
+        // Guard the type read: entry["type"] existing doesn't mean it's a
+        // string. A numeric/array "type" would make .get<std::string>()
+        // throw, and the try above only wraps parse() — the throw would
+        // escape and terminate. is_string() keeps a malformed entry a skip.
+        if (!entry["type"].is_string()) continue;
         const std::string type = entry["type"].get<std::string>();
         const auto& v = entry["v"];
         // Route through set() so subscribers react to the loaded value.

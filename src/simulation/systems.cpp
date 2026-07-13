@@ -1066,8 +1066,13 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                         world.on_sound(def->sound_attack, attack_pos);
                     }
                 }
-                combat.attack_state = AttackState::Backswing;
-                combat.attack_timer = combat.backsw_time;
+                // deal_attack_damage fires world.on_damage (Lua), which can
+                // reallocate the combats pool or replace this entity.
+                if (!world.validate(self)) continue;
+                auto* cb = world.combats.get(id);
+                if (!cb) continue;
+                cb->attack_state = AttackState::Backswing;
+                cb->attack_timer = cb->backsw_time;
             }
             break;
 
@@ -1689,6 +1694,9 @@ static void begin_destroy_projectile(World& world, u32 id) {
     }
     Unit pu = world.unit(id);
     if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
+    if (!world.validate(pu)) return;
+    p = world.projectiles.get(id);
+    if (!p || p->dying) return;
     p->dying       = true;
     p->death_timer = timer;
     // Queue the "death" clip. If the model has a "death" clip the
@@ -1757,12 +1765,14 @@ void system_projectile(World& world, float dt) {
                 glm::vec2 to_h{aim.x - transform->position.x, aim.y - transform->position.y};
                 f32 dist_h = glm::length(to_h);
                 if (dist_h < proj.hit_radius) {
-                    Unit pu = world.unit(id);
-                    if (world.validate(proj.target) && world.on_projectile_hit)
-                        world.on_projectile_hit(pu, proj.target);
-                    if (proj.is_attack && world.validate(proj.target))
-                        deal_attack_damage(world, proj.source, proj.target, proj.damage);
-                    begin_destroy_projectile(world, id);
+                    Unit pu     = world.unit(id);
+                    Unit target = proj.target;
+                    Unit source = proj.source;
+                    f32 damage  = proj.damage;
+                    bool attack = proj.is_attack;
+                    if (world.validate(target) && world.on_projectile_hit) world.on_projectile_hit(pu, target);
+                    if (attack && world.validate(target)) deal_attack_damage(world, source, target, damage);
+                    if (world.validate(pu)) begin_destroy_projectile(world, id);
                     continue;
                 }
                 f32 step = proj.speed * dt;
@@ -1786,14 +1796,14 @@ void system_projectile(World& world, float dt) {
             glm::vec3 to = aim - transform->position;
             f32 dist = glm::length(to);
             if (dist < proj.hit_radius) {
-                Unit pu = world.unit(id);
-                if (world.validate(proj.target) && world.on_projectile_hit) {
-                    world.on_projectile_hit(pu, proj.target);
-                }
-                if (proj.is_attack && world.validate(proj.target)) {
-                    deal_attack_damage(world, proj.source, proj.target, proj.damage);
-                }
-                begin_destroy_projectile(world, id);
+                Unit pu     = world.unit(id);
+                Unit target = proj.target;
+                Unit source = proj.source;
+                f32 damage  = proj.damage;
+                bool attack = proj.is_attack;
+                if (world.validate(target) && world.on_projectile_hit) world.on_projectile_hit(pu, target);
+                if (attack && world.validate(target)) deal_attack_damage(world, source, target, damage);
+                if (world.validate(pu)) begin_destroy_projectile(world, id);
                 continue;
             }
             f32 step = proj.speed * dt;
@@ -1822,7 +1832,20 @@ void system_projectile(World& world, float dt) {
             // match could alias a recycled handle (unit removed mid-
             // flight, id reused for a new unit) and wrongly skip the new
             // occupant.
+            //
+            // Two passes: gather victims first (pure reads, no Lua), then
+            // fire callbacks. on_projectile_hit / deal_attack_damage run
+            // Lua that can spawn/kill units — reallocating the transforms
+            // pool we'd be iterating and the projectiles pool `proj` points
+            // into. Iterating live across those callbacks would dangle both.
             Unit pu = world.unit(id);
+            Unit      psource     = proj.source;
+            bool      pis_attack  = proj.is_attack;
+            f32       pdamage     = proj.damage;
+            f32       phit_radius = proj.hit_radius;
+            glm::vec3 ppos        = transform->position;
+
+            std::vector<Unit> victims;
             for (u32 j = 0; j < world.transforms.count(); ++j) {
                 u32 oid = world.transforms.ids()[j];
                 if (oid == id) continue;
@@ -1838,7 +1861,7 @@ void system_projectile(World& world, float dt) {
                 // Skip the source — but only if THIS unit is genuinely
                 // the source (same generation). A recycled source id
                 // belonging to a different unit must still be hittable.
-                if (cand.id == proj.source.id && cand.generation == proj.source.generation) continue;
+                if (cand.id == psource.id && cand.generation == psource.generation) continue;
 
                 auto* hp = world.healths.get(oid);
                 if (!hp || hp->current <= 0) continue;
@@ -1848,21 +1871,36 @@ void system_projectile(World& world, float dt) {
                 }
                 if (already) continue;
                 const auto& tf = world.transforms.data()[j];
-                glm::vec3 delta = tf.position - transform->position;
+                glm::vec3 delta = tf.position - ppos;
                 delta.z = 0;
-                if (glm::length(delta) <= proj.hit_radius) {
-                    Unit hit = world.unit(oid);
-                    if (world.on_projectile_hit) world.on_projectile_hit(pu, hit);
-                    if (proj.is_attack) {
-                        deal_attack_damage(world, proj.source, hit, proj.damage);
-                    }
-                    proj.already_hit.push_back(hit);
+                if (glm::length(delta) <= phit_radius) {
+                    victims.push_back(cand);
                 }
             }
 
+            for (const Unit& hit : victims) {
+                // An earlier victim's callback may have killed / removed
+                // this one — don't feed a freed handle to Lua or damage.
+                if (!world.validate(hit)) continue;
+                if (world.on_projectile_hit) world.on_projectile_hit(pu, hit);
+                if (pis_attack) {
+                    deal_attack_damage(world, psource, hit, pdamage);
+                }
+                // Re-fetch before recording: the callbacks may have destroyed
+                // the projectile (stop) or reallocated its pool.
+                if (!world.validate(pu)) break;
+                auto* p = world.projectiles.get(id);
+                if (!p) break;
+                p->already_hit.push_back(hit);
+            }
+
             // Expire on max_distance or on reaching target_pos with no
-            // remaining travel.
-            if ((proj.max_distance > 0 && proj.traveled >= proj.max_distance) ||
+            // remaining travel. Re-fetch — a hit callback may already have
+            // torn the projectile down.
+            if (!world.validate(pu)) continue;
+            auto* p = world.projectiles.get(id);
+            if (!p) continue;
+            if ((p->max_distance > 0 && p->traveled >= p->max_distance) ||
                 dist <= 1e-3f) {
                 begin_destroy_projectile(world, id);
                 continue;

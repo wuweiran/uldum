@@ -175,97 +175,107 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
         return false;
     }
 
-    m_manifest.id               = j.value("id", "");
-    m_manifest.name             = j.value("name", "Unnamed");
-    m_manifest.author           = j.value("author", "");
-    m_manifest.description      = j.value("description", "");
-    m_manifest.version          = j.value("version", "1.0.0");
-    m_manifest.game_mode        = j.value("game_mode", "custom");
-    m_manifest.suggested_players = j.value("suggested_players", "1");
-    m_manifest.tileset_path     = j.value("tileset", "");
-    m_manifest.start_scene      = j.value("start_scene", "scene_01");
+    // Everything past the format gate is type-checked at the ingestion
+    // boundary via a single try/catch: nlohmann's .value()/.get<>() throw
+    // type_error when a present field has the wrong JSON type (e.g. a string
+    // where a number is expected). Manifests can come from untrusted map
+    // assets, and this is a no-uncaught-exceptions codebase, so an unguarded
+    // throw here would terminate the process. Convert it to a clean load
+    // failure instead. (Individual is_object()/is_array() guards below still
+    // stand — this just backstops the value extractions.)
+    try {
+        MapManifest manifest;
+        manifest.id               = j.value("id", "");
+        manifest.name             = j.value("name", "Unnamed");
+        manifest.author           = j.value("author", "");
+        manifest.description      = j.value("description", "");
+        manifest.version          = j.value("version", "1.0.0");
+        manifest.game_mode        = j.value("game_mode", "custom");
+        manifest.suggested_players = j.value("suggested_players", "1");
+        manifest.tileset_path     = j.value("tileset", "");
+        manifest.start_scene      = j.value("start_scene", "scene_01");
 
-    if (j.contains("players")) {
-        for (auto& p : j["players"]) {
-            PlayerSlot slot;
-            slot.team  = p.value("team", 0u);
-            slot.color = p.value("color", "");
-            slot.type  = p.value("type", "");
-            slot.name  = p.value("name", "");
-            m_manifest.players.push_back(std::move(slot));
+        if (j.contains("players")) {
+            for (auto& p : j["players"]) {
+                PlayerSlot slot;
+                slot.team  = p.value("team", 0u);
+                slot.color = p.value("color", "");
+                slot.type  = p.value("type", "");
+                slot.name  = p.value("name", "");
+                manifest.players.push_back(std::move(slot));
+            }
         }
-    }
 
-    if (j.contains("teams")) {
-        for (auto& t : j["teams"]) {
-            TeamDef team;
-            team.id            = t.value("id", 0u);
-            team.name          = t.value("name", "");
-            team.allied        = t.value("allied", false);
-            team.shared_vision = t.value("shared_vision", false);
-            m_manifest.teams.push_back(std::move(team));
+        if (j.contains("teams")) {
+            for (auto& t : j["teams"]) {
+                TeamDef team;
+                team.id            = t.value("id", 0u);
+                team.name          = t.value("name", "");
+                team.allied        = t.value("allied", false);
+                team.shared_vision = t.value("shared_vision", false);
+                manifest.teams.push_back(std::move(team));
+            }
         }
-    }
 
-    // Map-defined enumerations
-    if (j.contains("classifications")) {
-        for (auto& c : j["classifications"]) m_manifest.classifications.push_back(c.get<std::string>());
-    }
-    if (j.contains("attack_types")) {
-        for (auto& a : j["attack_types"]) m_manifest.attack_types.push_back(a.get<std::string>());
-    }
-    if (j.contains("armor_types")) {
-        for (auto& a : j["armor_types"]) m_manifest.armor_types.push_back(a.get<std::string>());
-    }
-    if (j.contains("attributes")) {
-        for (auto& a : j["attributes"]) m_manifest.attributes.push_back(a.get<std::string>());
-    }
-
-    // Fog of war
-    m_manifest.fog_of_war = j.value("fog_of_war", "none");
-
-    // Reconnect settings
-    if (j.contains("reconnect") && j["reconnect"].is_object()) {
-        auto& rc = j["reconnect"];
-        m_manifest.disconnect_timeout = rc.value("timeout", 60.0f);
-        m_manifest.pause_on_disconnect = rc.value("pause", false);
-    }
-
-    // Input configuration
-    if (j.contains("input") && j["input"].is_object()) {
-        auto& input = j["input"];
-        m_manifest.input_preset = input.value("preset", "rts");
-        if (input.contains("bindings") && input["bindings"].is_object()) {
-            m_manifest.input_bindings_json = input["bindings"];
+        if (j.contains("classifications")) {
+            for (auto& c : j["classifications"]) manifest.classifications.push_back(c.get<std::string>());
         }
-    }
-
-    // Environment (skybox, lighting, fog)
-    if (j.contains("environment") && j["environment"].is_object()) {
-        auto& env = j["environment"];
-        auto& ec = m_manifest.environment;
-
-        auto read_vec3 = [](const nlohmann::json& arr, glm::vec3& out) {
-            if (arr.is_array() && arr.size() >= 3)
-                out = {arr[0].get<f32>(), arr[1].get<f32>(), arr[2].get<f32>()};
-        };
-
-        if (env.contains("sun_direction")) read_vec3(env["sun_direction"], ec.sun_direction);
-        if (env.contains("sun_color"))     read_vec3(env["sun_color"], ec.sun_color);
-        ec.sun_intensity     = env.value("sun_intensity", ec.sun_intensity);
-        if (env.contains("ambient_color")) read_vec3(env["ambient_color"], ec.ambient_color);
-        ec.ambient_intensity = env.value("ambient_intensity", ec.ambient_intensity);
-        if (env.contains("fog_color"))     read_vec3(env["fog_color"], ec.fog_color);
-
-        if (env.contains("skybox") && env["skybox"].is_object()) {
-            auto& sky = env["skybox"];
-            ec.skybox_right  = sky.value("right", "");
-            ec.skybox_left   = sky.value("left", "");
-            ec.skybox_top    = sky.value("top", "");
-            ec.skybox_bottom = sky.value("bottom", "");
-            ec.skybox_front  = sky.value("front", "");
-            ec.skybox_back   = sky.value("back", "");
+        if (j.contains("attack_types")) {
+            for (auto& a : j["attack_types"]) manifest.attack_types.push_back(a.get<std::string>());
         }
+        if (j.contains("armor_types")) {
+            for (auto& a : j["armor_types"]) manifest.armor_types.push_back(a.get<std::string>());
+        }
+        if (j.contains("attributes")) {
+            for (auto& a : j["attributes"]) manifest.attributes.push_back(a.get<std::string>());
+        }
+
+        manifest.fog_of_war = j.value("fog_of_war", "none");
+
+        if (j.contains("reconnect") && j["reconnect"].is_object()) {
+            auto& rc = j["reconnect"];
+            manifest.disconnect_timeout = rc.value("timeout", 60.0f);
+            manifest.pause_on_disconnect = rc.value("pause", false);
+        }
+
+        if (j.contains("input") && j["input"].is_object()) {
+            auto& input = j["input"];
+            manifest.input_preset = input.value("preset", "rts");
+            if (input.contains("bindings") && input["bindings"].is_object()) {
+                manifest.input_bindings_json = input["bindings"];
+            }
+        }
+
+        if (j.contains("environment") && j["environment"].is_object()) {
+            auto& env = j["environment"];
+            auto& ec = manifest.environment;
+
+            auto read_vec3 = [](const nlohmann::json& arr, glm::vec3& out) {
+                if (arr.is_array() && arr.size() >= 3)
+                    out = {arr[0].get<f32>(), arr[1].get<f32>(), arr[2].get<f32>()};
+            };
+
+            if (env.contains("sun_direction")) read_vec3(env["sun_direction"], ec.sun_direction);
+            if (env.contains("sun_color"))     read_vec3(env["sun_color"], ec.sun_color);
+            ec.sun_intensity     = env.value("sun_intensity", ec.sun_intensity);
+            if (env.contains("ambient_color")) read_vec3(env["ambient_color"], ec.ambient_color);
+            ec.ambient_intensity = env.value("ambient_intensity", ec.ambient_intensity);
+            if (env.contains("fog_color"))     read_vec3(env["fog_color"], ec.fog_color);
+
+            if (env.contains("skybox") && env["skybox"].is_object()) {
+                auto& sky = env["skybox"];
+                ec.skybox_right  = sky.value("right", "");
+                ec.skybox_left   = sky.value("left", "");
+                ec.skybox_top    = sky.value("top", "");
+                ec.skybox_bottom = sky.value("bottom", "");
+                ec.skybox_front  = sky.value("front", "");
+                ec.skybox_back   = sky.value("back", "");
+            }
+        }
+        m_manifest = std::move(manifest);
+    } catch (const nlohmann::json::exception& e) {
+        log::error(TAG, "Manifest '{}' has a malformed field: {}", manifest_path, e.what());
+        return false;
     }
 
     log::info(TAG, "Manifest: '{}' by {} — {} players, {} teams, scene '{}'",
@@ -288,34 +298,38 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
     auto* doc = assets.get(handle);
     if (!doc) {
         log::warn(TAG, "Failed to load tileset from '{}' — using defaults", tileset_path);
-        return true;  // non-fatal
+        return true;
     }
 
-    auto& j = doc->data;
-    m_tileset.name = j.value("name", "Default");
+    try {
+        auto& j = doc->data;
+        m_tileset.name = j.value("name", "Default");
 
-    if (j.contains("layers")) {
-        for (auto& lj : j["layers"]) {
-            TilesetLayer layer;
-            layer.id           = lj.value("id", 0u);
-            layer.name         = lj.value("name", "");
-            layer.diffuse_path = lj.value("diffuse", "");
-            layer.normal_path  = lj.value("normal", "");
-            std::string type_str = lj.value("type", "");
-            if (type_str == "water_shallow")   layer.type = LayerType::WaterShallow;
-            else if (type_str == "water_deep") layer.type = LayerType::WaterDeep;
-            else if (type_str == "grass")      layer.type = LayerType::Grass;
-            else                               layer.type = LayerType::Ground;
+        if (j.contains("layers")) {
+            for (auto& lj : j["layers"]) {
+                TilesetLayer layer;
+                layer.id           = lj.value("id", 0u);
+                layer.name         = lj.value("name", "");
+                layer.diffuse_path = lj.value("diffuse", "");
+                layer.normal_path  = lj.value("normal", "");
+                std::string type_str = lj.value("type", "");
+                if (type_str == "water_shallow")   layer.type = LayerType::WaterShallow;
+                else if (type_str == "water_deep") layer.type = LayerType::WaterDeep;
+                else if (type_str == "grass")      layer.type = LayerType::Grass;
+                else                                layer.type = LayerType::Ground;
 
-            if (lj.contains("color") && lj["color"].is_array() && lj["color"].size() >= 3) {
-                layer.water_color = {lj["color"][0].get<f32>(),
-                                     lj["color"][1].get<f32>(),
-                                     lj["color"][2].get<f32>()};
+                if (lj.contains("color") && lj["color"].is_array() && lj["color"].size() >= 3) {
+                    layer.water_color = {lj["color"][0].get<f32>(),
+                                         lj["color"][1].get<f32>(),
+                                         lj["color"][2].get<f32>()};
+                }
+
+                m_tileset.layers.push_back(std::move(layer));
             }
-            // wave_speed removed — unified across all water types
-
-            m_tileset.layers.push_back(std::move(layer));
         }
+    } catch (const nlohmann::json::exception& e) {
+        log::error(TAG, "Tileset '{}' has a malformed field: {}", tileset_path, e.what());
+        return false;
     }
 
     log::info(TAG, "Tileset '{}' loaded — {} layers", m_tileset.name, m_tileset.layers.size());
@@ -328,19 +342,23 @@ bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation&
     auto& types = sim.types();
     std::string types_dir = m_map_root + "/types/";
 
-    std::string unit_path = types_dir + "units.json";
-    std::string dest_path = types_dir + "destructables.json";
-    std::string item_path = types_dir + "items.json";
-    std::string dood_path = types_dir + "doodads.json";
+    try {
+        std::string unit_path = types_dir + "units.json";
+        std::string dest_path = types_dir + "destructables.json";
+        std::string item_path = types_dir + "items.json";
+        std::string dood_path = types_dir + "doodads.json";
 
-    types.load_unit_types_absolute(assets, unit_path);
-    types.load_destructable_types_absolute(assets, dest_path);
-    types.load_item_types_absolute(assets, item_path);
-    types.load_doodad_types_absolute(assets, dood_path);  // ok if file doesn't exist
+        types.load_unit_types_absolute(assets, unit_path);
+        types.load_destructable_types_absolute(assets, dest_path);
+        types.load_item_types_absolute(assets, item_path);
+        types.load_doodad_types_absolute(assets, dood_path);
 
-    // Load ability definitions
-    std::string ability_path = types_dir + "abilities.json";
-    sim.abilities().load(assets, ability_path);  // ok if file doesn't exist
+        std::string ability_path = types_dir + "abilities.json";
+        sim.abilities().load(assets, ability_path);
+    } catch (const nlohmann::json::exception& e) {
+        log::error(TAG, "Map type data under '{}' has a malformed field: {}", types_dir, e.what());
+        return false;
+    }
 
     log::info(TAG, "Types loaded — {} units, {} destructables, {} doodads, {} items",
               types.unit_type_count(), types.destructable_type_count(),
@@ -401,19 +419,23 @@ void MapManager::load_scene_config(std::string_view scene_name, asset::AssetMana
         log::info(TAG, "Scene '{}': no scene.json (camera bounds unset)", scene_name);
         return;
     }
-    auto& j = doc->data;
-    if (j.contains("camera_bounds")) {
-        const auto& cb = j["camera_bounds"];
-        CameraBounds b;
-        b.min_x = cb.value("min_x", 0.0f);
-        b.min_y = cb.value("min_y", 0.0f);
-        b.max_x = cb.value("max_x", 0.0f);
-        b.max_y = cb.value("max_y", 0.0f);
-        if (b.max_x < b.min_x) std::swap(b.min_x, b.max_x);
-        if (b.max_y < b.min_y) std::swap(b.min_y, b.max_y);
-        m_scene.camera_bounds = b;
-        log::info(TAG, "Scene '{}': camera bounds [{}, {}] .. [{}, {}]",
-                  scene_name, b.min_x, b.min_y, b.max_x, b.max_y);
+    try {
+        auto& j = doc->data;
+        if (j.contains("camera_bounds")) {
+            const auto& cb = j["camera_bounds"];
+            CameraBounds b;
+            b.min_x = cb.value("min_x", 0.0f);
+            b.min_y = cb.value("min_y", 0.0f);
+            b.max_x = cb.value("max_x", 0.0f);
+            b.max_y = cb.value("max_y", 0.0f);
+            if (b.max_x < b.min_x) std::swap(b.min_x, b.max_x);
+            if (b.max_y < b.min_y) std::swap(b.min_y, b.max_y);
+            m_scene.camera_bounds = b;
+            log::info(TAG, "Scene '{}': camera bounds [{}, {}] .. [{}, {}]",
+                      scene_name, b.min_x, b.min_y, b.max_x, b.max_y);
+        }
+    } catch (const nlohmann::json::exception& e) {
+        log::error(TAG, "Scene config '{}' has a malformed field: {}", path, e.what());
     }
 }
 
@@ -456,51 +478,52 @@ bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetMa
     auto* doc = assets.get(handle);
     if (!doc) return false;
 
-    auto& j = doc->data;
-    const f32 deg_to_rad = glm::pi<f32>() / 180.0f;
+    try {
+        auto& j = doc->data;
+        const f32 deg_to_rad = glm::pi<f32>() / 180.0f;
 
-    if (j.contains("units")) {
-        for (auto& u : j["units"]) {
-            PlacedUnit pu;
-            pu.type   = u.value("type", "");
-            pu.x      = u.value("x", 0.0f);
-            pu.y      = u.value("y", 0.0f);
-            pu.facing = u.value("facing", 0.0f) * deg_to_rad;
-            pu.owner  = u.value("owner", 0u);
-            m_scene.units.push_back(std::move(pu));
+        if (j.contains("units")) {
+            for (auto& u : j["units"]) {
+                PlacedUnit pu;
+                pu.type   = u.value("type", "");
+                pu.x      = u.value("x", 0.0f);
+                pu.y      = u.value("y", 0.0f);
+                pu.facing = u.value("facing", 0.0f) * deg_to_rad;
+                pu.owner  = u.value("owner", 0u);
+                m_scene.units.push_back(std::move(pu));
+            }
         }
-    }
-    if (j.contains("destructables")) {
-        for (auto& d : j["destructables"]) {
-            PlacedDestructable pd;
-            pd.type      = d.value("type", "");
-            pd.x         = d.value("x", 0.0f);
-            pd.y         = d.value("y", 0.0f);
-            pd.facing    = d.value("facing", 0.0f) * deg_to_rad;
-            pd.variation = static_cast<u8>(d.value("variation", 0));
-            m_scene.destructables.push_back(std::move(pd));
+        if (j.contains("destructables")) {
+            for (auto& d : j["destructables"]) {
+                PlacedDestructable pd;
+                pd.type      = d.value("type", "");
+                pd.x         = d.value("x", 0.0f);
+                pd.y         = d.value("y", 0.0f);
+                pd.facing    = d.value("facing", 0.0f) * deg_to_rad;
+                pd.variation = static_cast<u8>(d.value("variation", 0));
+                m_scene.destructables.push_back(std::move(pd));
+            }
         }
-    }
-    if (j.contains("items")) {
-        for (auto& it : j["items"]) {
-            PlacedItem pi;
-            pi.type = it.value("type", "");
-            pi.x    = it.value("x", 0.0f);
-            pi.y    = it.value("y", 0.0f);
-            m_scene.items.push_back(std::move(pi));
+        if (j.contains("items")) {
+            for (auto& it : j["items"]) {
+                PlacedItem pi;
+                pi.type = it.value("type", "");
+                pi.x    = it.value("x", 0.0f);
+                pi.y    = it.value("y", 0.0f);
+                m_scene.items.push_back(std::move(pi));
+            }
         }
-    }
-    if (j.contains("doodads")) {
-        for (auto& d : j["doodads"]) {
-            PlacedDoodad pd;
-            pd.type      = d.value("type", "");
-            pd.x         = d.value("x", 0.0f);
-            pd.y         = d.value("y", 0.0f);
-            pd.facing    = d.value("facing", 0.0f) * deg_to_rad;
-            pd.variation = static_cast<u8>(d.value("variation", 0));
-            m_scene.doodads.push_back(std::move(pd));
+        if (j.contains("doodads")) {
+            for (auto& d : j["doodads"]) {
+                PlacedDoodad pd;
+                pd.type      = d.value("type", "");
+                pd.x         = d.value("x", 0.0f);
+                pd.y         = d.value("y", 0.0f);
+                pd.facing    = d.value("facing", 0.0f) * deg_to_rad;
+                pd.variation = static_cast<u8>(d.value("variation", 0));
+                m_scene.doodads.push_back(std::move(pd));
+            }
         }
-    }
     if (j.contains("regions")) {
         std::unordered_set<std::string> seen_ids;
         for (auto& r : j["regions"]) {
@@ -558,6 +581,10 @@ bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetMa
             cam.yaw_deg   = c.value("yaw",         0.0f);
             m_scene.cameras.push_back(std::move(cam));
         }
+    }
+    } catch (const nlohmann::json::exception& e) {
+        log::error(TAG, "Scene metadata '{}' has a malformed field: {}", json_path, e.what());
+        return false;
     }
 
     // One-shot migration: only when the map is a source directory (we

@@ -856,22 +856,45 @@ void ScriptEngine::fire_event(std::string_view event_name, u32 unit_id,
         return false;
     };
 
-    // Iterate from highest priority to lowest — no sorting needed
+    // Snapshot the matching trigger ids in priority order BEFORE running any
+    // Lua. A trigger action can call CreateTrigger (inserts into m_triggers →
+    // rehash, invalidating a live iterator) or TriggerAddAction/Condition
+    // (push_back into the very vector being walked → realloc). So we walk
+    // copies: collect ids first, then per id re-fetch, copy its condition /
+    // action lists, and invoke the copies. A trigger created mid-dispatch is
+    // intentionally not fired for the event currently being processed (matches
+    // WC3 semantics).
+    std::vector<u32> fire_ids;
     for (i32 p = static_cast<i32>(TriggerPriority::Count) - 1; p >= 0; --p) {
         auto prio = static_cast<TriggerPriority>(p);
         for (auto& [trig_id, trig] : m_triggers) {
             if (!trig.alive || trig.priority != prio) continue;
             if (!matches(trig)) continue;
+            fire_ids.push_back(trig_id);
+        }
+    }
 
-            bool pass = true;
-            for (auto& cond : trig.conditions) {
-                if (!cond()) { pass = false; break; }
-            }
-            if (!pass) continue;
+    for (u32 tid : fire_ids) {
+        // Re-fetch: an earlier action may have destroyed this trigger
+        // (alive=false) or CreateTrigger may have rehashed the map.
+        auto it = m_triggers.find(tid);
+        if (it == m_triggers.end() || !it->second.alive) continue;
 
-            for (auto& action : trig.actions) {
-                action();
-            }
+        // Copy the callback lists so Lua that push_backs into the trigger's
+        // own vectors (TriggerAddAction/Condition) can't realloc under us.
+        auto conditions = it->second.conditions;
+        bool pass = true;
+        for (auto& cond : conditions) {
+            if (!cond()) { pass = false; break; }
+        }
+        if (!pass) continue;
+
+        // A condition could have destroyed the trigger — re-check before acting.
+        it = m_triggers.find(tid);
+        if (it == m_triggers.end() || !it->second.alive) continue;
+        auto actions = it->second.actions;
+        for (auto& action : actions) {
+            action();
         }
     }
 }
