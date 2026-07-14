@@ -240,7 +240,6 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
         // is a GROUP concept (box-select lead ordering), not a click rule.
         if (ray_t < best_ray_t) {
             best.id = id;
-            best.generation = info->generation;
             best_ray_t = ray_t;
         }
     }
@@ -290,7 +289,6 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
 
         if (ray_t < best_ray_t) {
             best.id = id;
-            best.generation = info->generation;
             best_ray_t = ray_t;
         }
     }
@@ -349,10 +347,7 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
 #endif
 
         if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) {
-            simulation::Unit u;
-            u.id = id;
-            u.generation = info->generation;
-            result.push_back(u);
+            result.push_back(simulation::Unit{id});
         }
     }
 

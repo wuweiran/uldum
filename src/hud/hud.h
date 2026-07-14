@@ -285,7 +285,7 @@ public:
 
     void set_text_tag_text    (TextTagId id, i18n::LocalizedString text);
     void set_text_tag_pos     (TextTagId id, f32 x, f32 y, f32 z);
-    void set_text_tag_pos_unit(TextTagId id, u32 unit_id, f32 z_offset);
+    void set_text_tag_pos_unit(TextTagId id, simulation::Unit unit, f32 z_offset);
     void set_text_tag_color   (TextTagId id, Color color);
     void set_text_tag_velocity(TextTagId id, f32 vx, f32 vy);
     void set_text_tag_visible (TextTagId id, bool visible);

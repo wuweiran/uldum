@@ -13,6 +13,8 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <variant>
 
 // Forward declare sol types to avoid including sol2 in the header
 namespace sol { class state; }
@@ -109,7 +111,7 @@ public:
     // host assigned at registration time.
     using EffectDeliverFn = std::function<void(u32 player_id, u32 server_id,
                                                 std::string_view name,
-                                                u32 entity_id,
+                                                simulation::Unit entity,
                                                 glm::vec3 pos,
                                                 std::string_view attach_point)>;
     using EffectDestroyFn = std::function<void(u32 player_id, u32 server_id)>;
@@ -185,44 +187,13 @@ public:
     f32  game_speed() const { return m_game_speed; }
     void set_game_speed(f32 v) { m_game_speed = v; }
 
-    // Fire a game event — evaluates all triggers registered for this event.
-    void fire_event(std::string_view event_name, u32 unit_id = UINT32_MAX,
-                    std::string_view ability_id = "", u32 player_id = UINT32_MAX,
-                    u32 region_id = UINT32_MAX, std::string_view node_id = "");
-
     // Fire a HUD node event (button press, etc.) tagged with the issuing
     // player. Sets the node-id context so Lua can read `GetTriggerNode()`
     // inside the action, then dispatches through fire_event with the
     // player-id filter.
     void fire_node_event(std::string_view event_name, u32 player_id,
                          std::string_view node_id);
-
-    // Set event context before firing (combat events set these)
-    void set_context_unit(u32 id)     { m_ctx_unit = id; }
-    void set_context_player(u32 id)   { m_ctx_player = id; }
-    void set_context_ability(const std::string& id) { m_ctx_ability = id; }
-    void set_context_damage_source(u32 id) { m_ctx_damage_source = id; }
-    void set_context_damage_target(u32 id) { m_ctx_damage_target = id; }
-    void set_context_damage_amount(f32 v)  { m_ctx_damage_amount = v; }
-    f32  get_context_damage_amount() const { return m_ctx_damage_amount; }
-    void set_context_damage_type(std::string_view t) { m_ctx_damage_type = t; }
-    const std::string& get_context_damage_type() const { return m_ctx_damage_type; }
-    void set_context_killer(u32 id)        { m_ctx_killer = id; }
-    void set_context_heal_source(u32 id)   { m_ctx_heal_source = id; }
-    void set_context_heal_target(u32 id)   { m_ctx_heal_target = id; }
-    void set_context_heal_amount(f32 v)    { m_ctx_heal_amount = v; }
-    f32  get_context_heal_amount() const   { return m_ctx_heal_amount; }
-    void set_context_spell_target_unit(u32 id) { m_ctx_spell_target_unit = id; }
-    void set_context_spell_target_x(f32 x) { m_ctx_spell_target_x = x; }
-    void set_context_spell_target_y(f32 y) { m_ctx_spell_target_y = y; }
-    void set_context_item(simulation::Item it)   { m_ctx_item = it; }
-    void set_context_node_id(std::string id) { m_ctx_node_id = std::move(id); }
-    void set_context_projectile(u32 id) { m_ctx_projectile = id; }
-    void set_context_region_id(u32 id) { m_ctx_region_id = id; }
-    void set_context_order_type(std::string s) { m_ctx_order_type = std::move(s); }
-    void set_context_order_target_unit(u32 id) { m_ctx_order_target_unit = id; }
-    void set_context_order_target_x(f32 x)     { m_ctx_order_target_x = x; }
-    void set_context_order_target_y(f32 y)     { m_ctx_order_target_y = y; }
+    void fire_player_event(std::string_view event_name, u32 player_id);
 
     // Configure Lua package.path so require() resolves from these directories.
     // Searched in order: scene scripts, shared scripts, engine scripts.
@@ -284,9 +255,9 @@ private:
     struct ActiveEffect {
         u32         server_id;
         std::string name;
-        glm::vec3   position;
-        u32         entity_id;     // UINT32_MAX = free-position
-        std::string attach_point;
+        glm::vec3       position;
+        simulation::Unit entity;
+        std::string     attach_point;
         // Per-player target mask (bit N = player N). UINT32_MAX = broadcast.
         // ANDed with fog visibility at dispatch time, so a player outside
         // the mask never receives the effect even if they could see it.
@@ -320,14 +291,6 @@ private:
     bool m_save_dirty = false;
     void flush_save_data();
 
-    // Order event context
-    std::string m_ctx_order_type;
-    f32  m_ctx_order_target_x    = 0;
-    f32  m_ctx_order_target_y    = 0;
-    u32  m_ctx_order_target_unit = UINT32_MAX;
-    u32  m_ctx_order_player      = UINT32_MAX;
-    bool m_ctx_order_queued      = false;
-
     // Triggers
     std::unordered_map<u32, Trigger> m_triggers;
     u32 m_next_trigger = 0;
@@ -336,26 +299,76 @@ private:
     std::unordered_map<u32, Timer> m_timers;
     u32 m_next_timer = 0;
 
-    // Event context (set before firing events, read by Lua context functions)
-    std::string m_ctx_event;
-    u32  m_ctx_unit              = UINT32_MAX;
-    u32  m_ctx_player            = UINT32_MAX;
-    std::string m_ctx_ability;
-    u32  m_ctx_damage_source     = UINT32_MAX;
-    u32  m_ctx_damage_target     = UINT32_MAX;
-    f32  m_ctx_damage_amount     = 0;
-    std::string m_ctx_damage_type;
-    u32  m_ctx_killer            = UINT32_MAX;
-    u32  m_ctx_heal_source       = UINT32_MAX;
-    u32  m_ctx_heal_target       = UINT32_MAX;
-    f32  m_ctx_heal_amount       = 0;
-    u32  m_ctx_spell_target_unit = UINT32_MAX;
-    f32  m_ctx_spell_target_x    = 0;
-    f32  m_ctx_spell_target_y    = 0;
-    simulation::Item m_ctx_item{};  // for item events / item-sourced casts (GetTriggerItem)
-    std::string m_ctx_node_id;   // which HUD node fired the event (button_pressed etc.)
-    u32 m_ctx_region_id = UINT32_MAX;  // which region fired region_enter / region_leave
-    u32 m_ctx_projectile = UINT32_MAX;  // projectile entity for PROJECTILE_HIT / PROJECTILE_DESTROYED
+    struct DamageEvent {
+        simulation::Unit source;
+        simulation::Unit target;
+        f32 amount = 0;
+        std::string type;
+    };
+
+    struct HealEvent {
+        simulation::Unit source;
+        simulation::Unit target;
+        f32 amount = 0;
+    };
+
+    struct DeathEvent {
+        simulation::Unit killer;
+    };
+
+    struct AbilityEvent {
+        std::string ability_id;
+        simulation::Unit target_unit;
+        glm::vec3 target_pos{0};
+        simulation::Item source_item;
+    };
+
+    struct OrderEvent {
+        std::string type;
+        simulation::Unit target_unit;
+        f32 target_x = 0;
+        f32 target_y = 0;
+        std::string ability_id;
+        u32 player = UINT32_MAX;
+        bool queued = false;
+    };
+
+    struct ItemEvent { simulation::Item item; };
+    struct ProjectileEvent {
+        simulation::Unit projectile;
+        simulation::Unit hit_unit;
+    };
+    struct GenericEvent {};
+
+    struct EventFrame {
+        std::string event;
+        simulation::Handle entity;
+        simulation::Handle registered_entity;
+        u32 player = UINT32_MAX;
+        u32 region_id = UINT32_MAX;
+        std::string node_id;
+        std::variant<GenericEvent, DamageEvent, HealEvent, DeathEvent,
+                     AbilityEvent, OrderEvent, ItemEvent, ProjectileEvent> payload;
+    };
+
+    class EventScope {
+    public:
+        EventScope(ScriptEngine& engine, EventFrame& frame)
+            : m_engine(engine), m_previous(engine.m_event_frame) {
+            m_engine.m_event_frame = &frame;
+        }
+        ~EventScope() { m_engine.m_event_frame = m_previous; }
+
+        EventScope(const EventScope&) = delete;
+        EventScope& operator=(const EventScope&) = delete;
+
+    private:
+        ScriptEngine& m_engine;
+        EventFrame* m_previous;
+    };
+
+    void dispatch(EventFrame& frame, std::string_view event_name);
+    EventFrame* m_event_frame = nullptr;
 
     bool m_paused        = false;  // PauseGame()/UnpauseGame() — App reads via is_paused()
     bool m_singleplayer  = false;  // IsSinglePlayer() — App sets once at init

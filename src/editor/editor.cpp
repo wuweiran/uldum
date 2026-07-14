@@ -986,10 +986,7 @@ void Editor::update_object_preview() {
                 m_cursor_pos.x, m_cursor_pos.y, /*facing=*/0,
                 m_place_destructable_var);
             if (!h.is_valid()) return;
-            // Layout-compatible cast — m_preview_handle is typed Unit
-            // but only stores id+generation, which Destructable also has.
-            m_preview_handle.id         = h.id;
-            m_preview_handle.generation = h.generation;
+            m_preview_handle.id = h.id;
             m_preview_type_id           = m_place_destructable_type;
             m_preview_category          = ObjectCategory::Destructable;
             m_preview_variation         = m_place_destructable_var;
@@ -1024,8 +1021,7 @@ void Editor::update_object_preview() {
                 m_cursor_pos.x, m_cursor_pos.y, /*facing=*/0,
                 m_place_doodad_var);
             if (!h.is_valid()) return;
-            m_preview_handle.id         = h.id;
-            m_preview_handle.generation = h.generation;
+            m_preview_handle.id = h.id;
             m_preview_type_id           = m_place_doodad_type;
             m_preview_category          = ObjectCategory::Doodad;
             m_preview_variation         = m_place_doodad_var;
@@ -1344,10 +1340,10 @@ void Editor::place_mode_on_left_click(f32 screen_x, f32 screen_y) {
         // picked came from handle_infos.ids() inside pick_entity_at — always resolves.
         const auto* info = m_simulation.world().handle_infos.get(picked);
         switch (info->category) {
-        case simulation::Category::Unit:         m_selected_unit.id         = picked; m_selected_unit.generation         = info->generation; break;
-        case simulation::Category::Item:         m_selected_item.id         = picked; m_selected_item.generation         = info->generation; break;
-        case simulation::Category::Destructable: m_selected_destructable.id = picked; m_selected_destructable.generation = info->generation; break;
-        case simulation::Category::Doodad:       m_selected_doodad.id       = picked; m_selected_doodad.generation       = info->generation; break;
+        case simulation::Category::Unit:         m_selected_unit.id         = picked; break;
+        case simulation::Category::Item:         m_selected_item.id         = picked; break;
+        case simulation::Category::Destructable: m_selected_destructable.id = picked; break;
+        case simulation::Category::Doodad:       m_selected_doodad.id       = picked; break;
         default: break;
         }
     }
@@ -1742,10 +1738,7 @@ void Editor::rebuild_terrain_mesh() {
 
         glm::ivec2 tile = td.world_to_tile(t.position.x, t.position.y);
         if (!td.is_tile_passable(tile.x, tile.y)) {
-            simulation::Unit u;
-            u.id = id;
-            u.generation = info->generation;
-            to_remove.push_back(u);
+            to_remove.push_back(simulation::Unit{id});
         } else {
             t.position.z = map::sample_height(td, t.position.x, t.position.y);
         }

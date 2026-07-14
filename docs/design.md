@@ -318,7 +318,7 @@ All modules created with interfaces defined, CMake targets wired up, stub implem
 
 Prerequisite layer that all gameplay and rendering modules depend on.
 
-- **Core enhancements**: custom allocators (linear, pool), generational handle system, ResourcePool
+- **Core enhancements**: custom allocators (linear, pool), ResourcePool
 - **Asset manager**: handle-based resource loading with path caching
   - glTF 2.0 model loading (cgltf)
   - PNG texture loading (stb_image)
@@ -329,7 +329,7 @@ Prerequisite layer that all gameplay and rendering modules depend on.
 
 ECS foundation and data-driven unit creation.
 
-- **ECS core**: sparse set component storage, handle allocator, generational typed handles
+- **ECS core**: paged sparse-set component storage and monotonic typed entity ids
 - **Core components**: Transform, Health, Movement, Combat, Ability, Vision, Owner, etc.
 - **Typed handles**: Unit, Destructable, Item — distinct types wrapping Handle base
 - **Unit facade**: create_unit, get_health, is_hero, is_building, issue_order, etc.

@@ -64,9 +64,9 @@ struct World {
         std::string               id_str;
         std::vector<RegionRect>   rects;
         std::vector<RegionCircle> circles;
-        // Last-tick set of unit ids inside this region. Diffed against
-        // the current scan to derive enter / leave events.
-        std::unordered_set<u32>   contained;
+        // Last-tick unit ids inside this region. Diffed against the current
+        // scan to derive enter / leave events.
+        std::unordered_set<u32> contained;
     };
     std::unordered_map<u32, Region> regions;
     u32 next_region_id = 0;
@@ -153,15 +153,15 @@ struct World {
     using SoundCallback = std::function<void(std::string_view path, glm::vec3 position)>;
     SoundCallback on_sound;
 
-    // Ability lifecycle callbacks — fire from EVERY add / remove path
-    // (add_ability, apply_passive_ability, remove_ability, natural
-    // duration expiry in system_ability). Host wires these to broadcast
-    // AbilityAdd / AbilityRemove updates so clients stay in lockstep
-    // regardless of which engine path drove the change. Refresh
-    // (non-stackable re-add) does NOT fire — the client's instance
-    // already exists and only its duration would change.
-    using AbilityAddedCallback   = std::function<void(Unit unit, std::string_view ability_id, u32 level)>;
-    using AbilityRemovedCallback = std::function<void(Unit unit, std::string_view ability_id)>;
+    // Ability lifecycle callbacks — fire when a source is added or removed.
+    // Refreshing an existing source does not fire. Host mirrors source kind so
+    // clients preserve item-only UI behavior and non-stackable provenance.
+    using AbilityAddedCallback =
+        std::function<void(Unit unit, std::string_view ability_id, u32 level,
+                           const AbilitySource& source)>;
+    using AbilityRemovedCallback =
+        std::function<void(Unit unit, std::string_view ability_id,
+                           const AbilitySource& source, bool all_instances)>;
     AbilityAddedCallback   on_ability_added;
     AbilityRemovedCallback on_ability_removed;
 
@@ -183,11 +183,11 @@ struct World {
     using ClipDurationCallback = std::function<f32(std::string_view model_path, std::string_view clip_name)>;
     ClipDurationCallback get_clip_duration;
 
-    // Called when a pathing blocker is removed (unblock runtime tiles).
-    // Receives the tile rectangle (tx, ty) + (w, h) the blocker had
-    // occupied; the simulation forwards it to Pathfinder::unblock_tiles.
-    using PathingUnblockCallback = std::function<void(i32 tx, i32 ty, u32 w, u32 h)>;
-    PathingUnblockCallback on_pathing_unblock;
+    // Internal pathfinder bridge used when an individual blocker leaves the
+    // live world. Bulk world clears reset pathfinding separately and do not
+    // invoke it.
+    using PathingUnblockCallback = std::function<void(i32 cx, i32 cy, u32 w, u32 h)>;
+    PathingUnblockCallback unblock_pathing;
 
     // Item events — fired by system_items after a pickup / drop completes.
     // Map Lua hooks these via the trigger system to drive consumption,
@@ -205,28 +205,17 @@ struct World {
     RegionEventCallback on_region_enter;
     RegionEventCallback on_region_leave;
 
-    // Validate a typed handle
-    bool validate(Handle h) const { return handles.is_valid(h); }
-
-    // Build a Unit handle (id + current generation) from a raw entity
-    // id. Returns an invalid Unit (generation 0) when the id has no
-    // handle_infos entry — so callers can't accidentally deref a null
-    // record to read the generation (the idiom `{id, handle_infos.get(
-    // id)->generation}` was hand-written ~12× and crashed on a missing
-    // entry at least once).
-    Unit unit(u32 id) const {
-        Unit u;
-        u.id = id;
-        const auto* info = handle_infos.get(id);
-        u.generation = info ? info->generation : 0;
-        return u;
+    // Validate a typed handle.
+    bool validate(Handle h) const {
+        return h.is_valid() && handle_infos.has(h.id);
     }
 
-    // Clear all entities (keeps type registry and callbacks).
-    // This is the BULK-WIPE counterpart to remove_all_components: it
-    // .clear()s every per-entity pool at once (plus regions + handle
-    // allocator) instead of removing one id. If you add a component
-    // pool, add it BOTH here and in remove_all_components (world.cpp).
+    // Build a Unit handle from an id owned by current world state.
+    Unit unit(u32 id) const { return Unit{id}; }
+
+    // Clear all entities (keeps type registry, callbacks, and the monotonic
+    // entity-id counter). If you add a component pool, add it both here and
+    // in remove_all_components (world.cpp).
     void clear_entities() {
         transforms.clear(); handle_infos.clear(); healths.clear();
         state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
@@ -238,7 +227,6 @@ struct World {
         dead_states.clear(); renderables.clear();
         status_flags.clear(); true_sight_vis.clear(); forced_vis.clear(); anim_queues.clear();
         regions.clear(); next_region_id = 0;
-        handles = HandleAllocator{};
     }
 };
 
@@ -256,15 +244,12 @@ void          destroy(World& world, Destructable d);
 void          destroy(World& world, Item item);
 void          destroy(World& world, Doodad d);
 
-// Canonical per-entity teardown: removes every component pool for the
-// given id (and fires on_pathing_unblock for a building footprint).
-// Does NOT free the handle — callers that recycle the slot call
-// world.handles.free() themselves; callers on the client mirror just
-// drop the components. This is THE single source of truth for "what
-// pools exist": every destroy path (server destroy, corpse cleanup,
-// client entity-destroy) routes through it so adding a component means
-// updating one function, not four. (clear_entities does a bulk wipe of
-// the same set — keep the two in sync.)
+// Remove one entity's pathing footprint from both World and Pathfinder.
+// Call this only for an individual live-world removal; bulk clears reset
+// pathfinding separately.
+void          release_pathing_blocker(World& world, u32 id);
+
+// Canonical per-entity component teardown. Does not run gameplay callbacks.
 void          remove_all_components(World& world, u32 id);
 
 // Transform a unit into a different unit type in place — same handle,
@@ -293,10 +278,16 @@ void     deal_damage(World& world, Unit source, Unit target, f32 amount, std::st
 
 class AbilityRegistry;
 
-// Add an innate ability. Returns false if non-stackable and already present.
-bool     add_ability(World& world, const AbilityRegistry& reg, Unit unit, std::string_view ability_id, u32 level = 1);
-// Remove ability (reverts modifiers). Returns false if not found.
+// Add an innate or item-provided ability. Item sources carry the exact item
+// so dropping one item only removes its own ownership source.
+bool     add_ability(World& world, const AbilityRegistry& reg, Unit unit,
+                     std::string_view ability_id, u32 level = 1,
+                     Item granting_item = {});
+// Remove every instance with this id. Item lifecycle uses the source-scoped
+// helper below instead.
 bool     remove_ability(World& world, Unit unit, std::string_view ability_id);
+bool     remove_item_ability(World& world, Unit unit,
+                             std::string_view ability_id, Item granting_item);
 // Apply a passive ability from a source unit with a duration. Respects stackable flag.
 bool     apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target, std::string_view ability_id, Unit source, f32 duration);
 bool     has_ability(const World& world, Unit unit, std::string_view ability_id);

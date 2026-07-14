@@ -53,10 +53,7 @@ void SpatialGrid::update(const World& world) {
         cx = std::clamp(cx, 0, static_cast<i32>(m_cells_x) - 1);
         cy = std::clamp(cy, 0, static_cast<i32>(m_cells_y) - 1);
 
-        Unit u;
-        u.id = id;
-        u.generation = info.generation;
-        m_cells[cy * m_cells_x + cx].units.push_back(u);
+        m_cells[cy * m_cells_x + cx].units.push_back(Unit{id});
     }
 }
 

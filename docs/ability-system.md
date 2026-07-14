@@ -295,15 +295,22 @@ Ability {
     cooldown_remaining: f32     // ticks down each frame
     auto_cast: bool             // auto-cast enabled
 
-    remaining_duration: f32     // -1 = permanent, >= 0 = timed
+    sources: AbilitySource[]    // innate, item, or applied ownership
     tick_timer: f32             // countdown to next periodic tick
 
     // Active modifiers (computed from def at current level)
     active_modifiers: map<string, f32>
 }
+
+AbilitySource {
+    value: Innate | Item{item} | Applied{applier}
+    remaining_duration: f32     // -1 = permanent, >= 0 = timed
+}
 ```
 
-No `source` field. Stacking and refresh decisions use only `(ability_id, target)` — see [aura](#aura) for the per-tick refresh semantics.
+Source provenance stays engine-internal. It lets item removal revoke only that
+item's source and lets temporary applied sources expire without deleting an
+innate or item source of the same ability id.
 
 ## Cast Flow (Active Forms)
 
@@ -489,7 +496,9 @@ end
 
 ### Stacking API
 
-Only `HasAbility(unit, ability_id) -> bool` is exposed. Stack count and per-instance source are deliberately not part of the Lua surface; the engine handles stacking via the buff's `stackable` field and refresh-on-add semantics, so map scripts don't need to inspect instances. If a future ability genuinely needs a stack count, add the query then.
+Source provenance is deliberately not exposed to Lua. The engine uses it to
+keep innate, item, and applied ownership independent; map scripts still query
+abilities by id and stack count.
 
 ## Script Binding Design
 

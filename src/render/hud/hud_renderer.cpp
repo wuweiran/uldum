@@ -647,7 +647,7 @@ resolve_slot_ability(u32 slot_index,
     u32 nth = 0;
     for (const auto& inst : aset->abilities) {
         const auto* def = ctx.abilities->get(inst.ability_id);
-        if (!def || def->hidden || inst.from_item) continue;
+        if (!def || def->hidden || inst.item_only()) continue;
         if (nth == slot_index) {
             out_def = def;
             return &inst;
@@ -1905,8 +1905,9 @@ static void draw_text_tags(HudRenderer::Impl& r, Hud::Impl& s,
         if (rendered.empty()) continue;
 
         glm::vec3 world_anchor{0.0f};
-        if (t.unit_id != UINT32_MAX) {
-            const auto* tf = world.transforms.get(t.unit_id);
+        if (t.unit.is_valid()) {
+            if (!world.validate(t.unit)) continue;
+            const auto* tf = world.transforms.get(t.unit.id);
             if (!tf) continue;
             world_anchor = tf->interp_position(alpha) + glm::vec3(0.0f, 0.0f, t.z_offset);
         } else {

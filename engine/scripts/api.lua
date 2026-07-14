@@ -615,12 +615,6 @@ function SetUnitAbilityLevel(unit, ability_id, level) end
 ---@return number
 function GetAbilityStackCount(unit, ability_id) end
 
---- Get the source unit that applied a passive ability.
----@param unit unit
----@param ability_id string
----@return unit   or nil if innate
-function GetAbilitySource(unit, ability_id) end
-
 ---@param unit unit
 ---@param ability_id string
 ---@return number   remaining cooldown in seconds
@@ -665,7 +659,8 @@ function GetHealAmount() end
 ---@param amount number
 function SetHealAmount(amount) end
 
---- Instantly kill a unit. Fires on_death event.
+--- Set a unit's health to zero. Death processing runs through the normal
+--- on_dying/on_death pipeline on the next simulation tick.
 ---@param unit unit
 ---@param killer unit?
 function KillUnit(unit, killer) end

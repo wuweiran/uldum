@@ -251,7 +251,7 @@ struct Hud::Impl {
         Color              color       = rgba(255, 255, 255);
         bool               visible     = true;
         glm::vec3          world_pos   {0.0f};
-        u32                unit_id     = UINT32_MAX;   // attached unit id (UINT32_MAX = unattached)
+        simulation::Unit   unit;
         f32                z_offset    = 0.0f;
         f32                velocity_x  = 0.0f;         // screen px/sec
         f32                velocity_y  = 0.0f;

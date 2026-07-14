@@ -40,10 +40,6 @@ void remove_all_components(World& world, u32 id) {
     world.constructions.remove(id);
     world.destructables.remove(id);
     world.doodads.remove(id);
-    if (world.on_pathing_unblock) {
-        auto* pb = world.pathing_blockers.get(id);
-        if (pb) world.on_pathing_unblock(pb->cx, pb->cy, pb->w, pb->h);
-    }
     world.pathing_blockers.remove(id);
     world.item_infos.remove(id);
     world.carriables.remove(id);
@@ -71,7 +67,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
 
     // All game objects
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit, h.generation});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit});
 
     // Widget — HP is engine built-in
     world.healths.add(id, Health{def->max_health, def->max_health, def->health_regen});
@@ -131,7 +127,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     // still add more via `AddAbility` for runtime / script-driven
     // abilities (e.g. ones whose mechanics live entirely in script).
     if (world.abilities && !def->abilities.empty()) {
-        Unit u{ id, h.generation };
+        Unit u{id};
         for (const auto& ability_id : def->abilities) {
             if (!world.abilities->get(ability_id)) {
                 log::warn(TAG, "Unit '{}' references unknown ability '{}'",
@@ -139,6 +135,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
                 continue;
             }
             add_ability(world, *world.abilities, u, ability_id, /*level=*/1);
+            if (!world.validate(u)) return {};
         }
     }
 
@@ -174,9 +171,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         if (t) world.on_sound(def->sound_birth, t->position);
     }
 
-    Unit unit;
-    unit.id = h.id;
-    unit.generation = h.generation;
+    Unit unit{h.id};
 
     log::trace(TAG, "Created unit '{}' (id={}, owner={})", type_id, id, owner.id);
     return unit;
@@ -194,7 +189,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     u32 id = h.id;
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable, h.generation});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable});
     world.healths.add(id, Health{def->max_health, def->max_health, 0});
     // Selection auto-sizes from the model AABB (renderer back-fill), same as
     // units. 0/0 = auto; the crate/tree mesh drives the click cylinder.
@@ -221,9 +216,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     // push participant. Combat range/targeting against a destructable reads
     // a missing Movement gracefully (target_radius 0, layer defaults Ground).
 
-    Destructable d;
-    d.id = h.id;
-    d.generation = h.generation;
+    Destructable d{h.id};
 
     log::trace(TAG, "Created destructable '{}' (id={})", type_id, id);
     return d;
@@ -241,7 +234,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     u32 id = h.id;
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, 0, def->model_scale, {x, y, 0.0f}, 0});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item, h.generation});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item});
     world.selectables.add(id, Selectable{32.0f, 24.0f, 1});
     world.item_infos.add(id, ItemInfo{std::string(type_id), def->initial_charges, def->initial_level});
     world.carriables.add(id, Carriable{});
@@ -249,9 +242,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
         world.renderables.add(id, Renderable{def->model_path, true, true});
     }
 
-    Item item;
-    item.id = h.id;
-    item.generation = h.generation;
+    Item item{h.id};
 
     log::trace(TAG, "Created item '{}' (id={})", type_id, id);
     return item;
@@ -269,16 +260,14 @@ Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 f
     u32 id = h.id;
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Doodad, h.generation});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Doodad});
     world.doodads.add(id, DoodadComp{variation});
     if (!def->models.empty()) {
         u32 idx = variation % static_cast<u32>(def->models.size());
         world.renderables.add(id, Renderable{def->models[idx], true});
     }
 
-    Doodad d;
-    d.id = h.id;
-    d.generation = h.generation;
+    Doodad d{h.id};
 
     log::trace(TAG, "Created doodad '{}' (id={})", type_id, id);
     return d;
@@ -286,10 +275,22 @@ Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 f
 
 // ── Destruction ────────────────────────────────────────────────────────────
 
+void release_pathing_blocker(World& world, u32 id) {
+    auto* blocker = world.pathing_blockers.get(id);
+    if (!blocker) return;
+
+    i32 cx = blocker->cx;
+    i32 cy = blocker->cy;
+    u32 width = blocker->w;
+    u32 height = blocker->h;
+    world.pathing_blockers.remove(id);
+    if (world.unblock_pathing) world.unblock_pathing(cx, cy, width, height);
+}
+
 static void destroy_handle(World& world, Handle h) {
     if (!world.validate(h)) return;
+    release_pathing_blocker(world, h.id);
     remove_all_components(world, h.id);
-    world.handles.free(h);
 }
 
 void destroy(World& world, Unit unit)         { destroy_handle(world, unit); }
@@ -307,11 +308,6 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
         log::error(TAG, "morph_unit: unknown type '{}'", std::string(new_type_id));
         return false;
     }
-    const auto* old_def = world.types->get_unit_type(hi->type_id);
-    // old_def may be null if the unit was created from a type that's
-    // since been unregistered — still allow morph in that case, just
-    // skip the "in-old-list" suspension step.
-
     const u32 id = unit.id;
 
     // Snapshot HP / state percentages for carry-over.
@@ -465,6 +461,7 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
 // ── Unit API ───────────────────────────────────────────────────────────────
 
 void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string_view damage_type) {
+    if (!world.validate(target)) return;
     auto* hp = world.healths.get(target.id);
     if (!hp || hp->current <= 0) return;
 
@@ -485,11 +482,15 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
     // we'd write through a dangling pointer (heap corruption) or apply
     // damage to whichever unit's Health got swapped into the slot. The
     // handler may also have killed the target outright, so re-check.
+    if (!world.validate(target)) return;
     hp = world.healths.get(target.id);
     if (!hp || hp->current <= 0) return;
 
     hp->current -= amount;
     if (hp->current < 0) hp->current = 0;
+    if (hp->current == 0) {
+        hp->killer = world.validate(source) ? source : Unit{};
+    }
     if (damage_type == "attack") ++hp->hit_count;   // normal-attack flinch only (WC3 Stand Hit)
 
     // Fight-back: if target is idle (no order, no current target), attack the source.
@@ -687,7 +688,9 @@ f32 get_health(const World& world, Unit unit) {
 void set_health(World& world, Unit unit, f32 health) {
     if (!world.validate(unit)) return;
     auto* h = world.healths.get(unit.id);
-    if (h) h->current = std::min(health, h->max);
+    if (!h) return;
+    h->current = std::clamp(health, 0.0f, h->max);
+    if (h->current > 0.0f) h->killer = {};
 }
 
 glm::vec3 get_position(const World& world, Unit unit) {
@@ -770,131 +773,163 @@ Unit get_item_owner(const World& world, Item item) {
 
 i32 give_item_to_unit(World& world, Unit unit, Item item) {
     if (!world.validate(unit) || !world.validate(item)) return -1;
-    auto* inv = world.inventories.get(unit.id);
-    if (!inv) return -1;
-    auto* car = world.carriables.get(item.id);
-    if (!car) return -1;
-    if (car->carried_by.is_valid()) return -1;  // already carried
+    auto* inventory = world.inventories.get(unit.id);
+    auto* carriable = world.carriables.get(item.id);
+    if (!inventory || !carriable || carriable->carried_by.is_valid()) return -1;
 
-    // First free slot.
     i32 slot = -1;
-    for (i32 i = 0; i < static_cast<i32>(inv->slots.size()); ++i) {
-        if (!inv->slots[i].is_valid()) { slot = i; break; }
+    for (i32 i = 0; i < static_cast<i32>(inventory->slots.size()); ++i) {
+        if (!inventory->slots[i].is_valid()) { slot = i; break; }
     }
     if (slot < 0) return -1;
 
-    inv->slots[slot] = item;
-    car->carried_by  = unit;
+    inventory->slots[slot] = item;
+    carriable->carried_by = unit;
 
-    // Grant the item's abilities to the carrier. Each ability is added
-    // at level 1 (level scaling lives on AbilityInstance, not item).
-    // Mark them `from_item` so the action_bar hides their icons —
-    // item abilities surface only through the inventory composite.
+    std::vector<std::string> abilities;
     if (world.abilities && world.types) {
-        if (auto* def = world.types->get_item_type(world.item_infos.get(item.id)->type_id)) {
-            for (const auto& aid : def->abilities) {
-                add_ability(world, *world.abilities, unit, aid, 1);
-                if (auto* aset = world.ability_sets.get(unit.id)) {
-                    for (auto& inst : aset->abilities) {
-                        if (inst.ability_id == aid) { inst.from_item = true; break; }
-                    }
-                }
-            }
-        }
+        const auto* info = world.item_infos.get(item.id);
+        const auto* def = info ? world.types->get_item_type(info->type_id) : nullptr;
+        if (def) abilities = def->abilities;
+    }
+    for (const auto& ability_id : abilities) {
+        add_ability(world, *world.abilities, unit, ability_id, 1, item);
+        if (!world.validate(unit) || !world.validate(item)) break;
     }
 
-    // Hide the ground rendering — item still exists as an entity, but
-    // its model no longer draws while in inventory.
-    if (auto* r = world.renderables.get(item.id)) r->visible = false;
+    if (!world.validate(unit)) {
+        if (world.validate(item)) {
+            if (auto* current = world.carriables.get(item.id)) current->carried_by = {};
+            if (auto* renderable = world.renderables.get(item.id)) {
+                renderable->visible = true;
+            }
+        }
+        return -1;
+    }
+    if (!world.validate(item)) {
+        if (auto* current = world.inventories.get(unit.id);
+            current && slot < static_cast<i32>(current->slots.size()) &&
+            current->slots[slot] == item) {
+            current->slots[slot] = {};
+        }
+        for (const auto& ability_id : abilities) {
+            remove_item_ability(world, unit, ability_id, item);
+            if (!world.validate(unit)) break;
+        }
+        return -1;
+    }
 
+    if (auto* renderable = world.renderables.get(item.id)) {
+        renderable->visible = false;
+    }
     return slot;
 }
 
 bool drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos) {
     if (!world.validate(unit)) return false;
-    auto* inv = world.inventories.get(unit.id);
-    if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) return false;
-    Item item = inv->slots[slot];
+    auto* inventory = world.inventories.get(unit.id);
+    if (!inventory || slot < 0 || slot >= static_cast<i32>(inventory->slots.size())) {
+        return false;
+    }
+    Item item = inventory->slots[slot];
     if (!world.validate(item)) return false;
 
-    auto* car = world.carriables.get(item.id);
-    if (!car || car->carried_by.id != unit.id) return false;
+    auto* carriable = world.carriables.get(item.id);
+    if (!carriable || carriable->carried_by != unit) return false;
 
-    // Revoke the item's abilities from the carrier.
+    std::vector<std::string> abilities;
     if (world.types) {
         auto* info = world.item_infos.get(item.id);
         if (info) {
             if (auto* def = world.types->get_item_type(info->type_id)) {
-                for (const auto& aid : def->abilities) {
-                    remove_ability(world, unit, aid);
-                }
+                abilities = def->abilities;
             }
         }
     }
 
-    inv->slots[slot] = Item{};
-    car->carried_by  = Unit{};
-
-    // Place on ground at requested position.
-    if (auto* tf = world.transforms.get(item.id)) {
-        tf->position = pos;
-        tf->prev_position = pos;
+    inventory->slots[slot] = {};
+    carriable->carried_by = {};
+    if (auto* transform = world.transforms.get(item.id)) {
+        transform->position = pos;
+        transform->prev_position = pos;
     }
-    if (auto* r = world.renderables.get(item.id)) r->visible = true;
+    if (auto* renderable = world.renderables.get(item.id)) renderable->visible = true;
 
+    for (const auto& ability_id : abilities) {
+        if (!world.validate(unit)) break;
+        remove_item_ability(world, unit, ability_id, item);
+    }
     return true;
 }
 
 // ── Ability API ───────────────────────────────────────────────────────────
 
-// Copy the level's payload (modifiers, flags, declared duration) onto a
-// fresh AbilityInstance. Centralised so add_ability and apply_passive
-// agree on what an instance carries.
-static void populate_instance_from_def(AbilityInstance& inst,
+static void populate_instance_from_def(AbilityInstance& instance,
                                        const AbilityDef* def, u32 level) {
     if (!def) return;
-    auto& lvl = def->level_data(level);
-    inst.active_modifiers = lvl.modifiers;
-    inst.active_flags     = lvl.flags;
-    // Default duration from def applies when caller didn't override.
-    if (inst.remaining_duration < 0.0f && lvl.duration >= 0.0f) {
-        inst.remaining_duration = lvl.duration;
-    }
+    auto& level_def = def->level_data(level);
+    instance.active_modifiers = level_def.modifiers;
+    instance.active_flags = level_def.flags;
 }
 
-bool add_ability(World& world, const AbilityRegistry& reg, Unit unit, std::string_view ability_id, u32 level) {
+static f32 default_ability_duration(const AbilityDef* def, u32 level) {
+    return def ? def->level_data(level).duration : -1.0f;
+}
+
+static bool same_ability_source(const AbilitySource& source,
+                                const AbilitySource& candidate) {
+    if (source.value.index() != candidate.value.index()) return false;
+    if (auto* item = std::get_if<ItemAbilitySource>(&source.value)) {
+        return item->item == std::get<ItemAbilitySource>(candidate.value).item;
+    }
+    return true;
+}
+
+bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
+                 std::string_view ability_id, u32 level, Item granting_item) {
     if (!world.validate(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
 
     const auto* def = reg.get(ability_id);
+    AbilitySource source;
+    source.value = granting_item.is_valid()
+        ? decltype(source.value){ItemAbilitySource{granting_item}}
+        : decltype(source.value){InnateAbilitySource{}};
+    source.remaining_duration = default_ability_duration(def, level);
 
-    // Non-stackable: refresh duration on the existing instance rather
-    // than rejecting the call. Flags / modifiers are unchanged because
-    // the level didn't change — only the timer resets.
     if (def && !def->stackable) {
-        for (auto& a : aset->abilities) {
-            if (a.ability_id == ability_id) {
-                auto& lvl = def->level_data(a.level);
-                a.remaining_duration = lvl.duration;  // -1 if permanent
+        for (auto& instance : aset->abilities) {
+            if (instance.ability_id != ability_id) continue;
+
+            for (auto& existing : instance.sources) {
+                if (!same_ability_source(source, existing)) continue;
+                existing.remaining_duration = source.remaining_duration;
                 return true;
             }
+
+            instance.sources.push_back(source);
+            if (world.on_ability_added) {
+                world.on_ability_added(unit, ability_id, level, source);
+            }
+            return true;
         }
     }
 
-    AbilityInstance inst;
-    inst.ability_id = std::string(ability_id);
-    inst.level = level;
-    inst.remaining_duration = -1.0f;  // pre-set to "no override"; populate may overwrite from def.duration
-    populate_instance_from_def(inst, def, level);
+    AbilityInstance instance;
+    instance.ability_id = std::string(ability_id);
+    instance.level = level;
+    instance.sources.push_back(source);
+    populate_instance_from_def(instance, def, level);
 
-    // Capture flag list before move for refcount bookkeeping.
-    auto flags_snapshot = inst.active_flags;
-    aset->abilities.push_back(std::move(inst));
+    auto flags_snapshot = instance.active_flags;
+    aset->abilities.push_back(std::move(instance));
 
     flag_refcount_delta(world, unit.id, flags_snapshot, +1);
     recalculate_modifiers(world, unit.id);
-    if (world.on_ability_added) world.on_ability_added(unit, ability_id, level);
+    if (world.on_ability_added) {
+        world.on_ability_added(unit, ability_id, level, source);
+    }
 
     log::trace(TAG, "AddAbility: unit {} + '{}' (level {})", unit.id, ability_id, level);
     return true;
@@ -905,8 +940,6 @@ bool remove_ability(World& world, Unit unit, std::string_view ability_id) {
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
 
-    // Remove all instances of this id (RemoveAbility is the hammer; for
-    // a single-instance drop, use the natural duration expiry path).
     bool removed_any = false;
     for (auto it = aset->abilities.begin(); it != aset->abilities.end(); ) {
         if (it->ability_id == ability_id) {
@@ -921,11 +954,47 @@ bool remove_ability(World& world, Unit unit, std::string_view ability_id) {
 
     recalculate_modifiers(world, unit.id);
     if (world.on_ability_removed) {
-        world.on_ability_removed(unit, ability_id);
+        AbilitySource source;
+        source.value = InnateAbilitySource{};
+        world.on_ability_removed(unit, ability_id, source, true);
     }
 
     log::trace(TAG, "RemoveAbility: unit {} - '{}' (all instances)", unit.id, ability_id);
     return true;
+}
+
+bool remove_item_ability(World& world, Unit unit,
+                         std::string_view ability_id, Item granting_item) {
+    if (!world.validate(unit)) return false;
+    auto* aset = world.ability_sets.get(unit.id);
+    if (!aset) return false;
+
+    for (auto instance = aset->abilities.begin();
+         instance != aset->abilities.end(); ++instance) {
+        if (instance->ability_id != ability_id) continue;
+
+        auto source = std::find_if(
+            instance->sources.begin(), instance->sources.end(),
+            [&](const AbilitySource& candidate) {
+                auto* item = std::get_if<ItemAbilitySource>(&candidate.value);
+                return item && item->item == granting_item;
+            });
+        if (source == instance->sources.end()) continue;
+
+        instance->sources.erase(source);
+        if (instance->sources.empty()) {
+            flag_refcount_delta(world, unit.id, instance->active_flags, -1);
+            aset->abilities.erase(instance);
+            recalculate_modifiers(world, unit.id);
+        }
+        if (world.on_ability_removed) {
+            AbilitySource source;
+            source.value = ItemAbilitySource{granting_item};
+            world.on_ability_removed(unit, ability_id, source, false);
+        }
+        return true;
+    }
+    return false;
 }
 
 bool set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
@@ -959,40 +1028,53 @@ bool set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
 }
 
 bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target,
-                           std::string_view ability_id, Unit source, f32 duration) {
+                           std::string_view ability_id, Unit applier, f32 duration) {
     if (!world.validate(target)) return false;
     auto* aset = world.ability_sets.get(target.id);
     if (!aset) return false;
 
     const auto* def = reg.get(ability_id);
+    AbilitySource source;
+    source.value = AppliedAbilitySource{applier};
+    source.remaining_duration = duration;
 
-    // Non-stackable: refresh duration if already present. Refcounts are
-    // already counted on the existing instance, nothing to bump.
     if (def && !def->stackable) {
-        for (auto& a : aset->abilities) {
-            if (a.ability_id == ability_id) {
-                a.remaining_duration = duration;
-                a.source = source;
+        for (auto& instance : aset->abilities) {
+            if (instance.ability_id != ability_id) continue;
+
+            auto existing = std::find_if(
+                instance.sources.begin(), instance.sources.end(),
+                [](const AbilitySource& candidate) {
+                    return std::holds_alternative<AppliedAbilitySource>(
+                        candidate.value);
+                });
+            if (existing != instance.sources.end()) {
+                *existing = source;
                 return true;
             }
+
+            instance.sources.push_back(source);
+            if (world.on_ability_added) {
+                world.on_ability_added(target, ability_id, 1, source);
+            }
+            return true;
         }
     }
 
-    AbilityInstance inst;
-    inst.ability_id = std::string(ability_id);
-    inst.level = 1;
-    inst.source = source;
-    inst.remaining_duration = duration;
-    populate_instance_from_def(inst, def, 1);
-    // Caller-provided duration wins over the def's declared duration.
-    inst.remaining_duration = duration;
+    AbilityInstance instance;
+    instance.ability_id = std::string(ability_id);
+    instance.level = 1;
+    instance.sources.push_back(source);
+    populate_instance_from_def(instance, def, 1);
 
-    auto flags_snapshot = inst.active_flags;
-    aset->abilities.push_back(std::move(inst));
+    auto flags_snapshot = instance.active_flags;
+    aset->abilities.push_back(std::move(instance));
 
     flag_refcount_delta(world, target.id, flags_snapshot, +1);
     recalculate_modifiers(world, target.id);
-    if (world.on_ability_added) world.on_ability_added(target, ability_id, 1);
+    if (world.on_ability_added) {
+        world.on_ability_added(target, ability_id, 1, source);
+    }
 
     log::trace(TAG, "ApplyPassiveAbility: '{}' on unit {} (duration={:.1f}s)", ability_id, target.id, duration);
     return true;

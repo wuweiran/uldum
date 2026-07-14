@@ -29,7 +29,7 @@ bool Simulation::init(asset::AssetManager& /*assets*/) {
     // PathingBlocker stores its rect in cell units, so we forward directly
     // to unblock_cells. The parameter names below were tile-flavored
     // historically; they now carry cell coords.
-    m_world.on_pathing_unblock = [this](i32 cx, i32 cy, u32 w, u32 h) {
+    m_world.unblock_pathing = [this](i32 cx, i32 cy, u32 w, u32 h) {
         m_pathfinder.unblock_cells(cx, cy, w, h);
     };
 
@@ -141,7 +141,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // the filter to accept ANY unit; an empty filter (all three false)
     // rejects everything by design — authors must opt in to who can
     // be targeted.
-    bool is_self = (caster.id == target.id) && (caster.generation == target.generation);
+    bool is_self = caster == target;
     if (is_self) {
         if (!filter.self_) return false;
     } else {

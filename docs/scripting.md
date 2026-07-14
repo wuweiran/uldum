@@ -147,7 +147,7 @@ end)
 
 ### Context Functions
 
-Inside a trigger action, use context functions to read event-specific data:
+Inside a trigger action, use context functions to read event-specific data. Internally each dispatch installs a stack-local typed event frame, so nested events restore the outer payload without copying unrelated fields:
 
 ```lua
 -- General
@@ -349,7 +349,6 @@ HasAbility(unit, ability_id) → bool
 GetAbilityLevel(unit, ability_id) → int
 SetUnitAbilityLevel(unit, ability_id, level)
 GetAbilityStackCount(unit, ability_id) → int
-GetAbilitySource(unit, ability_id) → unit
 GetAbilityCooldown(unit, ability_id) → float
 ResetAbilityCooldown(unit, ability_id)
 ```

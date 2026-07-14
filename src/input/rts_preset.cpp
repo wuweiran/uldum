@@ -508,12 +508,8 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
             if (!own || own->id != sel.player().id) continue;
 
             if (found == hero_index) {
-                auto* info = world.handle_infos.get(id);
-                if (info) {
-                    simulation::Unit u;
-                    u.id = id;
-                    u.generation = info->generation;
-                    sel.select(u);
+                if (world.handle_infos.has(id)) {
+                    sel.select(simulation::Unit{id});
                 }
                 return;
             }

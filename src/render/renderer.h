@@ -77,17 +77,12 @@ public:
     bool init(rhi::Rhi& rhi);
     void shutdown();
 
-    // Tear down anything scoped to a single game session — currently the
-    // per-entity animation instances. Must be called from App::end_session
-    // before the simulation handles get reused by the next map; otherwise
-    // reused entity ids pick up stale bone state from the previous
-    // session (visible as detached body parts / broken skeleton).
+    // Tear down anything scoped to a single game session.
     void end_session();
 
-    // Drop all per-entity animation instances (bone buffers) without touching
-    // effects/particles. Called on a scene swap: the new scene recycles the old
-    // entity ids, and these instances are keyed by id, so they must be dropped
-    // or a new unit could inherit a dead one's bone buffer.
+    // Drop all per-entity animation instances without touching effects or
+    // particles. Called on scene switches because those instances belong to
+    // entities that no longer exist.
     void clear_animations();
 
     void update_camera(const platform::InputState& input, f32 dt);

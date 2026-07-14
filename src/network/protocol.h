@@ -255,10 +255,7 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
     w.write_u8(static_cast<u8>(MsgType::C_ORDER));
     w.write_bool(cmd.queued);
     w.write_u8(static_cast<u8>(cmd.units.size()));
-    for (auto& u : cmd.units) {
-        w.write_u32(u.id);
-        w.write_u32(u.generation);
-    }
+    for (auto& u : cmd.units) w.write_u32(u.id);
     // Serialize the variant index + payload
     u8 order_idx = static_cast<u8>(cmd.order.index());
     w.write_u8(order_idx);
@@ -268,13 +265,11 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
         if constexpr (std::is_same_v<T, simulation::orders::Move>) {
             w.write_vec3(payload.target);
             w.write_u32(payload.target_unit.id);
-            w.write_u32(payload.target_unit.generation);
             w.write_f32(payload.range);
         } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
             w.write_vec3(payload.target);
         } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
             w.write_u32(payload.target.id);
-            w.write_u32(payload.target.generation);
         } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
             // no payload
         } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
@@ -285,7 +280,6 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
         } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
             w.write_string(payload.ability_id);
             w.write_u32(payload.target_unit.id);
-            w.write_u32(payload.target_unit.generation);
             w.write_vec3(payload.target_pos);
         } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
             w.write_string(payload.unit_type_id);
@@ -296,10 +290,8 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
             w.write_vec3(payload.pos);
         } else if constexpr (std::is_same_v<T, simulation::orders::PickupItem>) {
             w.write_u32(payload.item.id);
-            w.write_u32(payload.item.generation);
         } else if constexpr (std::is_same_v<T, simulation::orders::DropItem>) {
             w.write_u32(payload.item.id);
-            w.write_u32(payload.item.generation);
             w.write_vec3(payload.pos);
         } else if constexpr (std::is_same_v<T, simulation::orders::SwapInventorySlot>) {
             w.write_u32(static_cast<u32>(payload.slot_a));
@@ -351,19 +343,13 @@ inline std::vector<u8> build_reject(RejectReason reason) {
 // type registry; non-empty for entities whose model isn't in a type
 // def (projectiles spawned with a custom glTF, future map decorations
 // with per-instance models, etc.).
-inline std::vector<u8> build_spawn(u32 entity_id, u32 generation,
-                                    std::string_view type_id,
+inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
                                     u8 owner, f32 x, f32 y, f32 facing,
                                     bool newly_created = false,
                                     std::string_view model_path = {}) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SPAWN));
     w.write_u32(entity_id);
-    // Authoritative generation for this (id, generation) handle. The client
-    // force-sets its local allocator to this value so a recycled id can't
-    // leave the client validating orders against a stale generation the host
-    // has already advanced past.
-    w.write_u32(generation);
     w.write_string(type_id);
     w.write_u8(owner);
     w.write_f32(x);
@@ -478,21 +464,21 @@ inline std::vector<u8> build_set_sun_direction(f32 x, f32 y, f32 z) {
 // maps the server handle to its local instance so a later
 // S_EFFECT_DESTROY can find it.
 struct EffectCreateData {
-    u32         server_id = 0;
-    std::string name;
-    u32         entity_id = UINT32_MAX;
-    glm::vec3   pos{0};
-    std::string attach_point;
+    u32              server_id = 0;
+    std::string      name;
+    simulation::Unit entity;
+    glm::vec3        pos{0};
+    std::string      attach_point;
 };
 
 inline std::vector<u8> build_effect_create(u32 server_id, std::string_view name,
-                                            u32 entity_id, glm::vec3 pos,
+                                            simulation::Unit entity, glm::vec3 pos,
                                             std::string_view attach_point) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_EFFECT_CREATE));
     w.write_u32(server_id);
     w.write_string(name);
-    w.write_u32(entity_id);
+    w.write_u32(entity.id);
     w.write_vec3(pos);
     w.write_string(attach_point);
     return std::move(w.data());
@@ -502,11 +488,11 @@ inline EffectCreateData parse_effect_create(std::span<const u8> data) {
     ByteReader r(data);
     r.read_u8();
     EffectCreateData e;
-    e.server_id    = r.read_u32();
-    e.name         = r.read_string();
-    e.entity_id    = r.read_u32();
+    e.server_id         = r.read_u32();
+    e.name              = r.read_string();
+    e.entity.id    = r.read_u32();
     e.pos          = r.read_vec3();
-    e.attach_point = r.read_string();
+    e.attach_point      = r.read_string();
     return e;
 }
 
@@ -552,29 +538,22 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
     cmd.queued = r.read_bool();
     u8 unit_count = r.read_u8();
     for (u8 i = 0; i < unit_count; ++i) {
-        simulation::Unit u;
-        u.id = r.read_u32();
-        u.generation = r.read_u32();
-        cmd.units.push_back(u);
+        cmd.units.push_back(simulation::Unit{r.read_u32()});
     }
 
     u8 order_idx = r.read_u8();
     switch (order_idx) {
     case 0: {
         glm::vec3 t = r.read_vec3();
-        simulation::Unit tu;
-        tu.id         = r.read_u32();
-        tu.generation = r.read_u32();
+        simulation::Unit tu{r.read_u32()};
         f32 range = r.read_f32();
         cmd.order = simulation::orders::Move{t, tu, range};
         break;
     }
     case 1: cmd.order = simulation::orders::AttackMove{r.read_vec3()}; break;
     case 2: {
-        simulation::Unit t;
-        t.id = r.read_u32();
-        t.generation = r.read_u32();
-        cmd.order = simulation::orders::Attack{t};
+        cmd.order = simulation::orders::Attack{
+            simulation::Unit{r.read_u32()}};
         break;
     }
     case 3: cmd.order = simulation::orders::Stop{}; break;
@@ -588,9 +567,7 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
     }
     case 6: {
         std::string ability = r.read_string();
-        simulation::Unit tu;
-        tu.id = r.read_u32();
-        tu.generation = r.read_u32();
+        simulation::Unit tu{r.read_u32()};
         glm::vec3 tp = r.read_vec3();
         cmd.order = simulation::orders::Cast{std::move(ability), tu, tp};
         break;
@@ -604,18 +581,14 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
         break;
     }
     case 10: {
-        simulation::Item it;
-        it.id = r.read_u32();
-        it.generation = r.read_u32();
-        cmd.order = simulation::orders::PickupItem{it};
+        cmd.order = simulation::orders::PickupItem{
+            simulation::Item{r.read_u32()}};
         break;
     }
     case 11: {
-        simulation::Item it;
-        it.id = r.read_u32();
-        it.generation = r.read_u32();
+        simulation::Item item{r.read_u32()};
         glm::vec3 p = r.read_vec3();
-        cmd.order = simulation::orders::DropItem{it, p};
+        cmd.order = simulation::orders::DropItem{item, p};
         break;
     }
     case 12: {
@@ -658,7 +631,6 @@ inline WelcomeData parse_welcome(std::span<const u8> data) {
 
 struct SpawnData {
     u32 entity_id;
-    u32 generation = 0;
     std::string type_id;
     u8 owner;
     f32 x, y, facing;
@@ -671,7 +643,6 @@ inline SpawnData parse_spawn(std::span<const u8> data) {
     r.read_u8();  // skip MsgType
     SpawnData s;
     s.entity_id     = r.read_u32();
-    s.generation    = r.read_u32();
     s.type_id       = r.read_string();
     s.owner         = r.read_u8();
     s.x             = r.read_f32();
@@ -997,22 +968,29 @@ inline std::vector<u8> build_update_state(u32 entity_id, std::string_view state_
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_update_ability_add(u32 entity_id, std::string_view ability_id, u32 level) {
+inline std::vector<u8> build_update_ability_add(
+        u32 entity_id, std::string_view ability_id, u32 level,
+        u8 source_kind) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
     w.write_u32(entity_id);
     w.write_u8(static_cast<u8>(UpdateType::AbilityAdd));
     w.write_string(ability_id);
     w.write_u32(level);
+    w.write_u8(source_kind);
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_update_ability_remove(u32 entity_id, std::string_view ability_id) {
+inline std::vector<u8> build_update_ability_remove(
+        u32 entity_id, std::string_view ability_id,
+        u8 source_kind, bool all_instances) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
     w.write_u32(entity_id);
     w.write_u8(static_cast<u8>(UpdateType::AbilityRemove));
     w.write_string(ability_id);
+    w.write_u8(source_kind);
+    w.write_bool(all_instances);
     return std::move(w.data());
 }
 
@@ -1096,7 +1074,8 @@ struct UpdateData {
     f32 value2 = 0;    // max for State
     std::string str_value;
     u32 uint_value = 0; // level for AbilityAdd, owner for Owner, flag bit for Status
-    bool bool_value = false; // on/off for Status
+    u8 byte_value = 0;  // AbilitySourceKind
+    bool bool_value = false; // all-instances mode or on/off for Status
 };
 
 inline UpdateData parse_update(std::span<const u8> data) {
@@ -1122,9 +1101,12 @@ inline UpdateData parse_update(std::span<const u8> data) {
     case UpdateType::AbilityAdd:
         u.key = r.read_string();
         u.uint_value = r.read_u32();
+        u.byte_value = r.read_u8();
         break;
     case UpdateType::AbilityRemove:
         u.key = r.read_string();
+        u.byte_value = r.read_u8();
+        u.bool_value = r.read_bool();
         break;
     case UpdateType::Owner:
         u.uint_value = r.read_u8();
@@ -1242,7 +1224,7 @@ inline std::vector<u8> build_hud_create_text_tag(
         const std::vector<std::pair<std::string, std::string>>& loc_args,
         f32 px_size,
         f32 wx, f32 wy, f32 wz,
-        u32 unit_id, f32 z_offset,
+        simulation::Unit unit, f32 z_offset,
         u32 color_rgba,
         f32 velocity_x, f32 velocity_y,
         f32 lifespan, f32 fadepoint) {
@@ -1257,7 +1239,7 @@ inline std::vector<u8> build_hud_create_text_tag(
     }
     wr.write_f32(px_size);
     wr.write_f32(wx); wr.write_f32(wy); wr.write_f32(wz);
-    wr.write_u32(unit_id);
+    wr.write_u32(unit.id);
     wr.write_f32(z_offset);
     wr.write_u32(color_rgba);
     wr.write_f32(velocity_x); wr.write_f32(velocity_y);

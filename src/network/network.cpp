@@ -590,12 +590,6 @@ void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
     const auto* transform = world.transforms.get(entity_id);
     if (!transform) return;
 
-    auto known = peer.known_entities.find(entity_id);
-    if (known != peer.known_entities.end() && known->second != info.generation) {
-        auto destroy = build_destroy(entity_id);
-        m_transport->send(peer.peer_id, destroy, true);
-    }
-
     const auto* owner = world.owners.get(entity_id);
     u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
     std::string_view model_path;
@@ -603,11 +597,11 @@ void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
         if (auto* renderable = world.renderables.get(entity_id)) model_path = renderable->model_path;
     }
 
-    auto msg = build_spawn(entity_id, info.generation, info.type_id, owner_id,
+    auto msg = build_spawn(entity_id, info.type_id, owner_id,
                            transform->position.x, transform->position.y,
                            transform->facing, newly_created, model_path);
     m_transport->send(peer.peer_id, msg, true);
-    peer.known_entities[entity_id] = info.generation;
+    peer.known_entities.insert(entity_id);
 }
 
 void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
@@ -650,12 +644,10 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
     auto last_tick = std::move(m_prev_tick_entities);
     m_prev_tick_entities.clear();
     m_prev_tick_entities.reserve(infos.count());
-    for (u32 i = 0; i < infos.count(); ++i) {
-        m_prev_tick_entities[infos.ids()[i]] = infos.data()[i].generation;
-    }
+    for (u32 id : infos.ids()) m_prev_tick_entities.insert(id);
 
     for (auto& peer : m_peers) {
-        std::unordered_map<u32, u32> visible_now;
+        std::unordered_set<u32> visible_now;
         visible_now.reserve(infos.count());
         std::vector<EntityState> states;
         states.reserve(infos.count());
@@ -669,12 +661,10 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             const bool keep_in_view = live_vis ||
                 (remembered && is_visible_or_remembered_to(id, peer.player));
             if (!keep_in_view) continue;
-            visible_now[id] = info.generation;
+            visible_now.insert(id);
 
-            auto known = peer.known_entities.find(id);
-            if (known == peer.known_entities.end() || known->second != info.generation) {
-                auto previous = last_tick.find(id);
-                bool newly_created = previous == last_tick.end() || previous->second != info.generation;
+            if (!peer.known_entities.contains(id)) {
+                bool newly_created = !last_tick.contains(id);
                 host_send_spawn(peer, id, info, newly_created);
             }
 
@@ -719,8 +709,7 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
 
         // Send S_DESTROY for entities that left visibility or were destroyed
         std::vector<u32> to_remove;
-        for (const auto& known : peer.known_entities) {
-            u32 known_id = known.first;
+        for (u32 known_id : peer.known_entities) {
             if (!visible_now.contains(known_id)) {
                 auto msg = build_destroy(known_id);
                 m_transport->send(peer.peer_id, msg, true);
@@ -797,8 +786,7 @@ void NetworkManager::host_broadcast_update(u32 entity_id, std::span<const u8> up
     const auto* info = m_simulation->world().handle_infos.get(entity_id);
     if (!info) return;
     for (auto& peer : m_peers) {
-        auto known = peer.known_entities.find(entity_id);
-        if (known != peer.known_entities.end() && known->second == info->generation) {
+        if (peer.known_entities.contains(entity_id)) {
             m_transport->send(peer.peer_id, update_packet, true);
         }
     }
@@ -1106,7 +1094,7 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
     auto s = parse_spawn(data);
-    spawn_client_entity(s.entity_id, s.generation, s.type_id, s.owner, s.x, s.y, s.facing,
+    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
                         s.newly_created, s.model_path);
 }
 
@@ -1141,7 +1129,8 @@ void NetworkManager::client_handle_sound(std::span<const u8> data) {
 
 void NetworkManager::client_handle_effect_create(std::span<const u8> data) {
     auto e = parse_effect_create(data);
-    if (on_effect_create) on_effect_create(e.server_id, e.name, e.entity_id, e.pos, e.attach_point);
+    if (on_effect_create) on_effect_create(e.server_id, e.name, e.entity, e.pos,
+                                           e.attach_point);
 }
 
 void NetworkManager::client_handle_effect_destroy(std::span<const u8> data) {
@@ -1239,7 +1228,7 @@ void NetworkManager::client_apply_interpolation() {
         auto* combat = m_client_world.combats.get(e.entity_id);
         if (combat) {
             if (e.flags & 0x02) {
-                combat->target = simulation::Unit{e.target_id, 0};
+                combat->target = simulation::Unit{e.target_id};
                 if (combat->attack_state == simulation::AttackState::Idle) {
                     // Start new attack cycle
                     combat->attack_state = simulation::AttackState::WindUp;
@@ -1315,33 +1304,57 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
         const simulation::AbilityDef* def =
             m_client_abilities ? m_client_abilities->get(u.key) : nullptr;
 
-        // Already-present: refresh duration (non-stackable) or fall
-        // through to add another instance (stackable). Matches the
-        // server's add_ability semantics.
-        bool refreshed = false;
+        simulation::AbilitySourceKind source_kind =
+            static_cast<simulation::AbilitySourceKind>(u.byte_value);
+        simulation::AbilitySource source;
+        if (source_kind == simulation::AbilitySourceKind::Item) {
+            source.value = simulation::ItemAbilitySource{};
+        } else if (source_kind == simulation::AbilitySourceKind::Applied) {
+            source.value = simulation::AppliedAbilitySource{};
+        } else {
+            source.value = simulation::InnateAbilitySource{};
+        }
+        source.remaining_duration = def
+            ? def->level_data(u.uint_value).duration
+            : -1.0f;
+
+        simulation::AbilityInstance* instance = nullptr;
         if (def && !def->stackable) {
-            for (auto& a : aset->abilities) {
-                if (a.ability_id == u.key) {
-                    auto& lvl = def->level_data(a.level);
-                    a.remaining_duration = lvl.duration;
-                    refreshed = true;
+            for (auto& candidate : aset->abilities) {
+                if (candidate.ability_id == u.key) {
+                    instance = &candidate;
                     break;
                 }
             }
         }
-        if (!refreshed) {
-            simulation::AbilityInstance inst;
-            inst.ability_id = u.key;
-            inst.level = u.uint_value;
-            inst.remaining_duration = -1.0f;
+
+        if (instance) {
+            if (source_kind == simulation::AbilitySourceKind::Item) {
+                instance->sources.push_back(source);
+            } else {
+                auto existing = std::find_if(
+                    instance->sources.begin(), instance->sources.end(),
+                    [&](const simulation::AbilitySource& candidate) {
+                        return simulation::ability_source_kind(candidate) == source_kind;
+                    });
+                if (existing != instance->sources.end()) {
+                    existing->remaining_duration = source.remaining_duration;
+                } else {
+                    instance->sources.push_back(source);
+                }
+            }
+        } else {
+            simulation::AbilityInstance created;
+            created.ability_id = u.key;
+            created.level = u.uint_value;
+            created.sources.push_back(source);
             if (def) {
                 auto& lvl = def->level_data(u.uint_value);
-                inst.active_modifiers = lvl.modifiers;
-                inst.active_flags     = lvl.flags;
-                if (lvl.duration >= 0.0f) inst.remaining_duration = lvl.duration;
+                created.active_modifiers = lvl.modifiers;
+                created.active_flags     = lvl.flags;
             }
-            auto flags_snapshot = inst.active_flags;
-            aset->abilities.push_back(std::move(inst));
+            auto flags_snapshot = created.active_flags;
+            aset->abilities.push_back(std::move(created));
             simulation::flag_refcount_delta(world, u.entity_id, flags_snapshot, +1);
         }
         simulation::recalculate_modifiers(world, u.entity_id);
@@ -1350,15 +1363,39 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
     case UpdateType::AbilityRemove: {
         auto* aset = world.ability_sets.get(u.entity_id);
         if (aset) {
-            auto& abs = aset->abilities;
-            for (auto it = abs.begin(); it != abs.end(); ) {
-                if (it->ability_id == u.key) {
-                    simulation::flag_refcount_delta(world, u.entity_id,
-                                                    it->active_flags, -1);
-                    it = abs.erase(it);
-                } else {
-                    ++it;
+            simulation::AbilitySourceKind source_kind =
+                static_cast<simulation::AbilitySourceKind>(u.byte_value);
+            auto& abilities = aset->abilities;
+            for (auto instance = abilities.begin();
+                 instance != abilities.end(); ) {
+                if (instance->ability_id != u.key) {
+                    ++instance;
+                    continue;
                 }
+
+                if (u.bool_value) {
+                    simulation::flag_refcount_delta(
+                        world, u.entity_id, instance->active_flags, -1);
+                    instance = abilities.erase(instance);
+                    continue;
+                }
+
+                auto source = std::find_if(
+                    instance->sources.begin(), instance->sources.end(),
+                    [&](const simulation::AbilitySource& candidate) {
+                        return simulation::ability_source_kind(candidate) == source_kind;
+                    });
+                if (source == instance->sources.end()) {
+                    ++instance;
+                    continue;
+                }
+                instance->sources.erase(source);
+                if (instance->sources.empty()) {
+                    simulation::flag_refcount_delta(
+                        world, u.entity_id, instance->active_flags, -1);
+                    abilities.erase(instance);
+                }
+                break;
             }
             simulation::recalculate_modifiers(world, u.entity_id);
         }
@@ -1408,26 +1445,18 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
         }
         break;
     }
-    case UpdateType::ItemCharges: {
-        simulation::Item item;
-        item.id = u.entity_id;
-        auto* info = world.handle_infos.get(u.entity_id);
-        item.generation = info ? info->generation : 0;
-        simulation::set_charges(world, item, static_cast<i32>(u.uint_value));
+    case UpdateType::ItemCharges:
+        simulation::set_charges(
+            world, simulation::Item{u.entity_id}, static_cast<i32>(u.uint_value));
         break;
-    }
-    case UpdateType::ItemLevel: {
-        simulation::Item item;
-        item.id = u.entity_id;
-        auto* info = world.handle_infos.get(u.entity_id);
-        item.generation = info ? info->generation : 0;
-        simulation::set_level(world, item, static_cast<i32>(u.uint_value));
+    case UpdateType::ItemLevel:
+        simulation::set_level(
+            world, simulation::Item{u.entity_id}, static_cast<i32>(u.uint_value));
         break;
-    }
     }
 }
 
-void NetworkManager::spawn_client_entity(u32 entity_id, u32 generation,
+void NetworkManager::spawn_client_entity(u32 entity_id,
                                           std::string_view type_id,
                                           u8 owner, f32 x, f32 y, f32 facing,
                                           bool newly_created,
@@ -1437,11 +1466,7 @@ void NetworkManager::spawn_client_entity(u32 entity_id, u32 generation,
     // Skip if already exists
     if (world.handle_infos.has(entity_id)) return;
 
-    // Force the local generation to the host's authoritative value so a
-    // recycled id can't leave us validating orders against a stale
-    // generation. reserve() (which kept whatever local generation we had)
-    // was the source of the client/host desync.
-    simulation::Handle h = world.handles.reserve_at(entity_id, generation);
+    world.handles.reserve(entity_id);
 
     // Projectiles take a minimal-components path — no Health, no Combat,
     // no Movement, no Owner, no Selectable. They render but don't
@@ -1451,8 +1476,7 @@ void NetworkManager::spawn_client_entity(u32 entity_id, u32 generation,
     // since projectiles aren't in the type registry.
     if (type_id == "projectile") {
         world.handle_infos.add(entity_id,
-            simulation::HandleInfo{std::string(type_id), simulation::Category::Projectile,
-                                    h.generation});
+            simulation::HandleInfo{std::string(type_id), simulation::Category::Projectile});
         simulation::Transform t;
         t.position = glm::vec3{x, y, 0};
         t.prev_position = t.position;
@@ -1497,7 +1521,8 @@ void NetworkManager::spawn_client_entity(u32 entity_id, u32 generation,
         }
     }
 
-    world.handle_infos.add(entity_id, simulation::HandleInfo{std::string(type_id), cat, h.generation});
+    world.handle_infos.add(entity_id,
+        simulation::HandleInfo{std::string(type_id), cat});
 
     simulation::Transform t;
     t.position = glm::vec3{x, y, 0};
@@ -1533,12 +1558,6 @@ void NetworkManager::spawn_client_entity(u32 entity_id, u32 generation,
 }
 
 void NetworkManager::destroy_client_entity(u32 entity_id) {
-    // Route through the canonical per-entity teardown so the client
-    // mirror can't drift from the master pool list. The client world
-    // never sets on_pathing_unblock, so the building-footprint callback
-    // inside remove_all_components is skipped (the guard is null) — the
-    // remaining pool removes are all harmless no-ops for absent
-    // components.
     simulation::remove_all_components(m_client_world, entity_id);
 }
 

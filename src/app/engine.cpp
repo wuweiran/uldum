@@ -154,6 +154,7 @@ bool Engine::init(const LaunchArgs& args) {
     m_renderer.effect_manager().set_unit_pos_resolver(
         [this](simulation::Unit u, std::string_view attach) -> glm::vec3 {
             auto& world = active_world();
+            if (!world.validate(u)) return {0, 0, 0};
             auto* t = world.transforms.get(u.id);
             if (!t) return {0, 0, 0};
             glm::vec3 pos = t->position;
@@ -633,9 +634,8 @@ bool Engine::start_session() {
             c.ability_id = ability_id;
             if (target_unit_id != UINT32_MAX) {
                 const auto& world = m_server.simulation().world();
-                if (auto* hi = world.handle_infos.get(target_unit_id)) {
-                    c.target_unit.id = target_unit_id;
-                    c.target_unit.generation = hi->generation;
+                if (world.handle_infos.has(target_unit_id)) {
+                    c.target_unit = simulation::Unit{target_unit_id};
                 }
             }
             c.target_pos = glm::vec3{target_x, target_y, target_z};
@@ -671,11 +671,8 @@ bool Engine::start_session() {
                     // comfortable trailing distance instead of clipping
                     // into the leader's collider).
                     const auto& world = m_server.simulation().world();
-                    if (auto* hi = world.handle_infos.get(target_unit_id)) {
-                        simulation::Unit u;
-                        u.id         = target_unit_id;
-                        u.generation = hi->generation;
-                        m.target_unit = u;
+                    if (world.handle_infos.has(target_unit_id)) {
+                        m.target_unit = simulation::Unit{target_unit_id};
                         m.range       = 96.0f;
                     } else {
                         m.target = wp;   // handle invalid mid-frame — fall back to ground
@@ -688,11 +685,9 @@ bool Engine::start_session() {
                 if (target_unit_id != UINT32_MAX) {
                     // Snapped to a unit → Attack on that unit.
                     const auto& world = m_server.simulation().world();
-                    simulation::Unit u;
-                    u.id = target_unit_id;
-                    if (auto* hi = world.handle_infos.get(target_unit_id))
-                        u.generation = hi->generation;
-                    cmd.order = simulation::orders::Attack{u};
+                    if (!world.handle_infos.has(target_unit_id)) return;
+                    cmd.order = simulation::orders::Attack{
+                        simulation::Unit{target_unit_id}};
                 } else {
                     // No snap → AttackMove on the ground point.
                     cmd.order = simulation::orders::AttackMove{wp};
@@ -712,11 +707,8 @@ bool Engine::start_session() {
     // gated castable check ran in the press-release handler.
     m_hud.set_inventory_use_fn([this](u32 item_id, const std::string& ability_id) {
         const auto& world = m_server.simulation().world();
-        const auto* hi = world.handle_infos.get(item_id);
-        if (!hi) return;
-        simulation::Item item;
-        item.id         = item_id;
-        item.generation = hi->generation;
+        if (!world.handle_infos.has(item_id)) return;
+        simulation::Item item{item_id};
 
         simulation::GameCommand cmd;
         cmd.player = m_selection.player();
@@ -737,11 +729,8 @@ bool Engine::start_session() {
         [this](u32 item_id, const std::string& ability_id,
                u32 target_unit_id, glm::vec3 world_pos) {
             const auto& world = m_server.simulation().world();
-            const auto* hi = world.handle_infos.get(item_id);
-            if (!hi) return;
-            simulation::Item item;
-            item.id         = item_id;
-            item.generation = hi->generation;
+            if (!world.handle_infos.has(item_id)) return;
+            simulation::Item item{item_id};
 
             simulation::GameCommand cmd;
             cmd.player = m_selection.player();
@@ -751,11 +740,8 @@ bool Engine::start_session() {
             c.source_item = item;
             c.target_pos  = world_pos;
             if (target_unit_id != UINT32_MAX) {
-                if (const auto* th = world.handle_infos.get(target_unit_id)) {
-                    simulation::Unit tu;
-                    tu.id         = target_unit_id;
-                    tu.generation = th->generation;
-                    c.target_unit = tu;
+                if (world.handle_infos.has(target_unit_id)) {
+                    c.target_unit = simulation::Unit{target_unit_id};
                 }
             }
             cmd.order = std::move(c);
@@ -766,11 +752,8 @@ bool Engine::start_session() {
     // sim places the item at the explicit world pos passed in.
     m_hud.set_inventory_drop_fn([this](u32 item_id, i32 /*slot*/, glm::vec3 world_pos) {
         const auto& world = m_server.simulation().world();
-        const auto* hi = world.handle_infos.get(item_id);
-        if (!hi) return;
-        simulation::Item item;
-        item.id         = item_id;
-        item.generation = hi->generation;
+        if (!world.handle_infos.has(item_id)) return;
+        simulation::Item item{item_id};
 
         simulation::GameCommand cmd;
         cmd.player = m_selection.player();
@@ -907,12 +890,12 @@ bool Engine::start_session() {
             return m_renderer.get_attachment_point(entity_id, bone);
         });
         m_network.on_player_disconnected = [this](u32 player_id) {
-            m_server.script().fire_event("global_disconnect", UINT32_MAX, "", player_id);
-            m_server.script().fire_event("player_disconnect", UINT32_MAX, "", player_id);
+            m_server.script().fire_player_event("global_disconnect", player_id);
+            m_server.script().fire_player_event("player_disconnect", player_id);
         };
         m_network.on_player_dropped = [this](u32 player_id) {
-            m_server.script().fire_event("global_leave", UINT32_MAX, "", player_id);
-            m_server.script().fire_event("player_leave", UINT32_MAX, "", player_id);
+            m_server.script().fire_player_event("global_leave", player_id);
+            m_server.script().fire_player_event("player_leave", player_id);
         };
         m_server.script().set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
             m_network.host_broadcast_update(entity_id, pkt);
@@ -932,23 +915,17 @@ bool Engine::start_session() {
         // is what the destroy actually removes.
         m_server.script().set_effect_deliver_fn(
             [this](u32 player_id, u32 server_id, std::string_view name,
-                   u32 entity_id, glm::vec3 pos, std::string_view attach_point) {
+                   simulation::Unit entity, glm::vec3 pos,
+                   std::string_view attach_point) {
                 if (player_id == m_args.local_slot) {
                     auto& mgr = m_renderer.effect_manager();
-                    u32 local_id;
-                    if (entity_id == UINT32_MAX) {
-                        local_id = mgr.create(std::string(name), pos);
-                    } else {
-                        simulation::Unit u;
-                        u.id = entity_id;
-                        auto* info = m_server.simulation().world().handle_infos.get(entity_id);
-                        u.generation = info ? info->generation : 0;
-                        local_id = mgr.create_on_unit(std::string(name), u, pos,
-                                                      std::string(attach_point));
-                    }
+                    u32 local_id = entity.is_valid()
+                        ? mgr.create_on_unit(std::string(name), entity, pos,
+                                             std::string(attach_point))
+                        : mgr.create(std::string(name), pos);
                     m_effect_id_map[server_id] = local_id;
                 } else {
-                    auto pkt = network::build_effect_create(server_id, name, entity_id,
+                    auto pkt = network::build_effect_create(server_id, name, entity,
                                                             pos, attach_point);
                     m_network.host_send_to_player(player_id, pkt);
                 }
@@ -971,13 +948,20 @@ bool Engine::start_session() {
         // ride the same per-entity visibility filter as other
         // S_UPDATE packets.
         m_server.simulation().world().on_ability_added =
-            [this](simulation::Unit unit, std::string_view ability_id, u32 level) {
-                auto pkt = network::build_update_ability_add(unit.id, ability_id, level);
+            [this](simulation::Unit unit, std::string_view ability_id, u32 level,
+                   const simulation::AbilitySource& source) {
+                auto pkt = network::build_update_ability_add(
+                    unit.id, ability_id, level,
+                    static_cast<u8>(simulation::ability_source_kind(source)));
                 m_network.host_broadcast_update(unit.id, pkt);
             };
         m_server.simulation().world().on_ability_removed =
-            [this](simulation::Unit unit, std::string_view ability_id) {
-                auto pkt = network::build_update_ability_remove(unit.id, ability_id);
+            [this](simulation::Unit unit, std::string_view ability_id,
+                   const simulation::AbilitySource& source, bool all_instances) {
+                auto pkt = network::build_update_ability_remove(
+                    unit.id, ability_id,
+                    static_cast<u8>(simulation::ability_source_kind(source)),
+                    all_instances);
                 m_network.host_broadcast_update(unit.id, pkt);
             };
         // Renderer-owned hook so the simulation can match projectile
@@ -1052,20 +1036,13 @@ bool Engine::start_session() {
         // id. Track server→local handle so a later destroy can find
         // its EffectManager instance.
         m_network.on_effect_create = [this](u32 server_id, std::string_view name,
-                                              u32 entity_id, glm::vec3 pos,
+                                              simulation::Unit entity, glm::vec3 pos,
                                               std::string_view attach_point) {
             auto& mgr = m_renderer.effect_manager();
-            u32 local_id;
-            if (entity_id == UINT32_MAX) {
-                local_id = mgr.create(std::string(name), pos);
-            } else {
-                simulation::Unit u;
-                u.id = entity_id;
-                auto* info = m_network.client_world().handle_infos.get(entity_id);
-                u.generation = info ? info->generation : 0;
-                local_id = mgr.create_on_unit(std::string(name), u, pos,
-                                              std::string(attach_point));
-            }
+            u32 local_id = entity.is_valid()
+                ? mgr.create_on_unit(std::string(name), entity, pos,
+                                     std::string(attach_point))
+                : mgr.create(std::string(name), pos);
             m_effect_id_map[server_id] = local_id;
         };
         m_network.on_effect_destroy = [this](u32 server_id) {
@@ -1108,13 +1085,7 @@ bool Engine::start_session() {
             if (entity_id == UINT32_MAX) {
                 m_camera_controller.unlock_unit();
             } else {
-                // Resolve to a stable Unit handle (with generation) so
-                // the controller's lookup-fn can detect deaths.
-                simulation::Unit u; u.id = entity_id;
-                if (auto* hi = m_server.simulation().world().handle_infos.get(entity_id)) {
-                    u.generation = hi->generation;
-                }
-                m_camera_controller.lock_unit(u);
+                m_camera_controller.lock_unit(simulation::Unit{entity_id});
             }
         });
     }
@@ -1420,9 +1391,7 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     // particles into the new scene's world.
     m_renderer.effect_manager().clear();
 
-    // Drop the previous scene's animation instances (per-entity bone buffers).
-    // The entity wipe frees all ids, which the new scene recycles; since these
-    // are keyed by entity id, a lingering one could be handed to a new unit.
+    // Drop the previous scene's per-entity animation instances.
     m_renderer.clear_animations();
 
     // Stop any music / ambient loops / lingering SFX from the previous
@@ -2049,8 +2018,7 @@ void Engine::run() {
                 auto& world = active_world();
                 m_camera_controller.update(frame_dt,
                     [&world](simulation::Unit unit) -> glm::vec2 {
-                        const auto* hi = world.handle_infos.get(unit.id);
-                        if (!hi || hi->generation != unit.generation) {
+                        if (!world.validate(unit)) {
                             f32 nan = std::numeric_limits<f32>::quiet_NaN();
                             return { nan, nan };
                         }

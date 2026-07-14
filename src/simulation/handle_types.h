@@ -8,11 +8,9 @@
 
 namespace uldum::simulation {
 
-// Base handle — shared layout for all game object types.
-// id indexes into component storage, generation detects stale references.
+// Base handle — stable entity id shared by all game object types.
 struct Handle {
-    u32 id         = UINT32_MAX;
-    u32 generation = 0;
+    u32 id = UINT32_MAX;
 
     bool is_valid() const { return id != UINT32_MAX; }
     bool operator==(const Handle&) const = default;

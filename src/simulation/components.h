@@ -7,11 +7,13 @@
 
 #include "simulation/order.h"
 
+#include <algorithm>
 #include <array>
 #include <deque>
 #include <map>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace uldum::simulation {
@@ -44,9 +46,8 @@ struct Transform {
 };
 
 struct HandleInfo {
-    std::string    type_id;     // references type definition (e.g. "footman")
-    Category       category = Category::Unit;
-    u32            generation = 0;
+    std::string type_id;     // references type definition (e.g. "footman")
+    Category category = Category::Unit;
 };
 
 // ── Widget Components ──────────────────────────────────────────────────────
@@ -57,6 +58,7 @@ struct Health {
     f32 max         = 0;
     f32 regen_per_sec = 0;
     u32 hit_count     = 0;   // bumped per normal-attack hit; renderer plays "hit" on change
+    Unit killer{};
 };
 
 // Map-defined states beyond HP (mana, energy, rage, etc.).
@@ -212,20 +214,39 @@ struct OrderQueue {
     }
 };
 
+enum class AbilitySourceKind : u8 {
+    Innate,
+    Item,
+    Applied,
+};
+
+struct InnateAbilitySource {};
+struct ItemAbilitySource { Item item; };
+struct AppliedAbilitySource { Unit applier; };
+
+struct AbilitySource {
+    std::variant<InnateAbilitySource, ItemAbilitySource, AppliedAbilitySource> value;
+    f32 remaining_duration = -1.0f;
+};
+
+inline AbilitySourceKind ability_source_kind(const AbilitySource& source) {
+    return static_cast<AbilitySourceKind>(source.value.index());
+}
+
 struct AbilityInstance {
     std::string ability_id;
     u32         level              = 1;
     f32         cooldown_remaining = 0;
     bool        auto_cast          = false;
-    // Set when this ability was granted to the carrier by an item pickup
-    // (give_item_to_unit). The action_bar filters these out so item
-    // ability icons don't compete with the unit's intrinsic abilities —
-    // items are surfaced through the inventory composite instead.
-    bool        from_item          = false;
-    // Applied ability fields (for WC3 "buffs")
-    Unit        source;                      // unit that applied this (null if self/innate)
-    f32         remaining_duration = -1.0f;  // -1 = permanent (innate), >= 0 = timed
+    std::vector<AbilitySource> sources;
     f32         tick_timer         = 0;
+
+    bool item_only() const {
+        return !sources.empty() &&
+            std::ranges::all_of(sources, [](const AbilitySource& source) {
+                return std::holds_alternative<ItemAbilitySource>(source.value);
+            });
+    }
     // Active modifiers from this ability's current level (passive_modifier)
     std::map<std::string, f32> active_modifiers;
     // Status flags this instance contributes (passive_flag) — each name is
@@ -433,11 +454,7 @@ struct ProjectileComp {
     enum class Path : u8 { Homing, Linear } path = Path::Homing;
     glm::vec3   spawn_pos{0.0f};
     // Linear with pierce: every unit within hit_radius along the path
-    // fires PROJECTILE_HIT. Tracked so we don't hit the same unit twice
-    // on a single flight. Stored as full Unit handles (id + generation)
-    // so a recycled id can't alias a different unit — a raw-id list
-    // would wrongly mark a freshly-spawned unit (same id, new gen) as
-    // already-hit and grant it false immunity.
+    // fires PROJECTILE_HIT. Tracked so we don't hit the same unit twice.
     std::vector<Unit> already_hit;
     // Dying state — gameplay has ended (PROJECTILE_DESTROYED fired,
     // triggers cleaned up, no further movement / collision) but the

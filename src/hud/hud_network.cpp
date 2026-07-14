@@ -100,8 +100,8 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
         info.pos.x        = r.read_f32();
         info.pos.y        = r.read_f32();
         info.pos.z        = r.read_f32();
-        info.unit.id      = r.read_u32();
-        info.z_offset     = r.read_f32();
+        info.unit.id  = r.read_u32();
+        info.z_offset = r.read_f32();
         info.color.rgba   = r.read_u32();
         info.velocity_x   = r.read_f32();
         info.velocity_y   = r.read_f32();

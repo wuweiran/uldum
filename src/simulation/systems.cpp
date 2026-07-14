@@ -668,6 +668,7 @@ static void deal_attack_damage(World& world, Unit source, Unit target, f32 amoun
 // side-table state, attaches PROJECTILE_HIT / PROJECTILE_DESTROYED
 // triggers, and (for the engine) marks is_attack + damage.
 Unit create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local) {
+    if (!world.validate(source)) return Unit{};
     auto* src_t = world.transforms.get(source.id);
     if (!src_t) return Unit{};
     Handle h = world.handles.allocate();
@@ -700,7 +701,7 @@ Unit create_projectile(World& world, Unit source, const std::string& model, glm:
     t.prev_position = spawn;   // prevent first-frame interpolation from world origin
     t.scale         = scale;
     world.transforms.add(h.id, std::move(t));
-    world.handle_infos.add(h.id, HandleInfo{"projectile", Category::Projectile, h.generation});
+    world.handle_infos.add(h.id, HandleInfo{"projectile", Category::Projectile});
     world.projectiles.add(h.id, std::move(proj));
     world.renderables.add(h.id, Renderable{model.empty() ? "projectile" : model, true});
     // Loop the model's "idle" clip while the projectile is alive. The
@@ -712,11 +713,11 @@ Unit create_projectile(World& world, Unit source, const std::string& model, glm:
     aq.clips.push_back("idle");
     aq.looping = true;
     world.anim_queues.add(h.id, std::move(aq));
-    Unit u; u.id = h.id; u.generation = h.generation;
-    return u;
+    return Unit{h.id};
 }
 
 void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed, f32 arc_height) {
+    if (!world.validate(proj_unit)) return;
     auto* p = world.projectiles.get(proj_unit.id);
     if (!p) return;
     p->path       = ProjectileComp::Path::Homing;
@@ -724,11 +725,14 @@ void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed
     p->speed      = speed;
     p->arc_height = arc_height;
     p->emitted    = true;
-    if (auto* tt = world.transforms.get(target.id)) p->target_pos = tt->position;
+    if (world.validate(target)) {
+        if (auto* tt = world.transforms.get(target.id)) p->target_pos = tt->position;
+    }
 }
 
 void emit_projectile_loc(World& world, Unit proj_unit, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance) {
+    if (!world.validate(proj_unit)) return;
     auto* p = world.projectiles.get(proj_unit.id);
     if (!p) return;
     p->path         = ProjectileComp::Path::Linear;
@@ -772,13 +776,20 @@ static bool can_attack_target(const World& world, u8 target_mask, Unit target) {
 }
 
 void system_combat(World& world, float dt, const SpatialGrid& grid) {
-    for (u32 i = 0; i < world.combats.count(); ++i) {
-        u32 id = world.combats.ids()[i];
-        auto& combat = world.combats.data()[i];
+    std::vector<Unit> units;
+    units.reserve(world.combats.count());
+    for (u32 id : world.combats.ids()) {
+        units.push_back(world.unit(id));
+    }
 
+    for (Unit unit : units) {
+        if (!world.validate(unit)) continue;
+        u32 id = unit.id;
+        auto* combat_comp = world.combats.get(id);
         auto* transform = world.transforms.get(id);
         auto* oq = world.order_queues.get(id);
-        if (!transform || !oq) continue;
+        if (!combat_comp || !transform || !oq) continue;
+        auto& combat = *combat_comp;
 
         // Status-flag gates. Stunned / Paused skip the unit entirely;
         // Disarmed prevents auto-attack target acquisition AND active
@@ -1052,27 +1063,30 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 // position for the attack sound below, so capture it now.
                 const glm::vec3 attack_pos = transform->position;
 
+                std::string attack_sound;
+                if (auto* info = world.handle_infos.get(id)) {
+                    if (auto* def = world.types->get_unit_type(info->type_id)) {
+                        attack_sound = def->sound_attack;
+                    }
+                }
+                f32 backswing_time = combat.backsw_time;
+
                 if (combat.projectile) {
                     spawn_attack_projectile(world, self, target, combat.damage, *combat.projectile);
                 } else {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
-
-                // Play attack sound
-                if (world.on_sound) {
-                    auto* info = world.handle_infos.get(id);
-                    auto* def = info ? world.types->get_unit_type(info->type_id) : nullptr;
-                    if (def && !def->sound_attack.empty()) {
-                        world.on_sound(def->sound_attack, attack_pos);
-                    }
-                }
-                // deal_attack_damage fires world.on_damage (Lua), which can
-                // reallocate the combats pool or replace this entity.
                 if (!world.validate(self)) continue;
-                auto* cb = world.combats.get(id);
-                if (!cb) continue;
-                cb->attack_state = AttackState::Backswing;
-                cb->attack_timer = cb->backsw_time;
+
+                if (world.on_sound && !attack_sound.empty()) {
+                    world.on_sound(attack_sound, attack_pos);
+                    if (!world.validate(self)) continue;
+                }
+
+                auto* current_combat = world.combats.get(id);
+                if (!current_combat) continue;
+                current_combat->attack_state = AttackState::Backswing;
+                current_combat->attack_timer = backswing_time;
             }
             break;
 
@@ -1107,13 +1121,15 @@ static constexpr u32 AURA_SCAN_INTERVAL = 8;  // every 8 ticks = 0.25s at 32Hz
 void system_ability(World& world, float dt, const AbilityRegistry& abilities, const SpatialGrid& grid) {
     bool aura_scan_tick = (++s_aura_tick_counter % AURA_SCAN_INTERVAL == 0);
 
-    for (u32 i = 0; i < world.ability_sets.count(); ++i) {
-        u32 id = world.ability_sets.ids()[i];
-        // Held as a pointer, not a reference: ability event callbacks run Lua
-        // that can CreateUnit / KillUnit, which add/remove entries in
-        // world.ability_sets and reallocate (add) or swap-pop (remove) the pool
-        // this points into. After any callback we re-`get(id)` and null-check
-        // before touching it again.
+    std::vector<Unit> units;
+    units.reserve(world.ability_sets.count());
+    for (u32 id : world.ability_sets.ids()) {
+        units.push_back(world.unit(id));
+    }
+
+    for (Unit unit : units) {
+        if (!world.validate(unit)) continue;
+        u32 id = unit.id;
         auto* aset = world.ability_sets.get(id);
         if (!aset) continue;
 
@@ -1124,42 +1140,45 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             }
         }
 
-        // Tick durations — remove expired applied abilities
+        struct ExpiredSource {
+            std::string ability_id;
+            AbilitySource source;
+        };
+        std::vector<ExpiredSource> expired;
         bool modifiers_changed = false;
-        // Expired instances release their flag refcounts before erase
-        // so the StatusFlags overlay drops back in lockstep. Permanent
-        // (-1) durations are skipped untouched. We also collect their
-        // ability_ids so the post-pass can fire on_ability_removed —
-        // the host wires that to AbilityRemove broadcasts so clients
-        // drop the buff at the same tick.
-        std::vector<std::vector<std::string>> expired_flag_lists;
-        std::vector<std::string> expired_ids;
-        std::erase_if(aset->abilities,
-            [dt, &modifiers_changed, &expired_flag_lists, &expired_ids](AbilityInstance& a) {
-                if (a.remaining_duration < 0) return false;
-                a.remaining_duration -= dt;
-                if (a.remaining_duration <= 0) {
-                    modifiers_changed = true;
-                    if (!a.active_flags.empty()) {
-                        expired_flag_lists.push_back(std::move(a.active_flags));
-                    }
-                    expired_ids.push_back(std::move(a.ability_id));
-                    return true;
+        for (auto instance = aset->abilities.begin();
+             instance != aset->abilities.end(); ) {
+            for (auto source = instance->sources.begin();
+                 source != instance->sources.end(); ) {
+                if (source->remaining_duration < 0.0f) {
+                    ++source;
+                    continue;
                 }
-                return false;
-            });
-        for (auto& flags : expired_flag_lists) {
-            flag_refcount_delta(world, id, flags, -1);
-        }
-        if (modifiers_changed) {
-            recalculate_modifiers(world, id);
-        }
-        if (world.on_ability_removed && !expired_ids.empty()) {
-            Unit u = world.unit(id);
-            for (auto& aid : expired_ids) {
-                world.on_ability_removed(u, aid);
+                source->remaining_duration -= dt;
+                if (source->remaining_duration > 0.0f) {
+                    ++source;
+                    continue;
+                }
+                expired.push_back({instance->ability_id, *source});
+                source = instance->sources.erase(source);
             }
-            // Callback ran Lua — pool may have moved. Re-fetch before reuse.
+
+            if (instance->sources.empty()) {
+                flag_refcount_delta(world, id, instance->active_flags, -1);
+                instance = aset->abilities.erase(instance);
+                modifiers_changed = true;
+            } else {
+                ++instance;
+            }
+        }
+        if (modifiers_changed) recalculate_modifiers(world, id);
+        if (world.on_ability_removed && !expired.empty()) {
+            for (auto& removed : expired) {
+                world.on_ability_removed(unit, removed.ability_id,
+                                         removed.source, false);
+                if (!world.validate(unit)) break;
+            }
+            if (!world.validate(unit)) continue;
             aset = world.ability_sets.get(id);
             if (!aset) continue;
         }
@@ -1332,9 +1351,11 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 // realloc the pool, so `aset`/`inst` must not be
                                 // touched after it (re-fetched below the switch).
                                 if (world.on_ability_channel) {
-                                    world.on_ability_channel(caster, aset->casting_id,
-                                                             aset->cast_target_unit, target_pos,
-                                                             aset->cast_source_item);
+                                    std::string ability_id = aset->casting_id;
+                                    Unit target = aset->cast_target_unit;
+                                    Item source_item = aset->cast_source_item;
+                                    world.on_ability_channel(caster, ability_id, target,
+                                                             target_pos, source_item);
                                 }
                             } else {
                                 // Non-channeled: effect fires now, cooldown
@@ -1345,9 +1366,11 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 aset->cast_state = CastState::Backswing;
                                 aset->cast_timer = lvl.backsw_time;
                                 if (world.on_ability_effect) {
-                                    world.on_ability_effect(caster, aset->casting_id,
-                                                            aset->cast_target_unit, target_pos,
-                                                            aset->cast_source_item);
+                                    std::string ability_id = aset->casting_id;
+                                    Unit target = aset->cast_target_unit;
+                                    Item source_item = aset->cast_source_item;
+                                    world.on_ability_effect(caster, ability_id, target,
+                                                            target_pos, source_item);
                                 }
                             }
                         }
@@ -1364,44 +1387,34 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         Unit caster = world.unit(id);
 
                         if (interrupted) {
-                            // Cancel: no cooldown, no backswing — drop the
-                            // cast cleanly so the next order takes over.
+                            std::string ability_id = aset->casting_id;
+                            Unit target = aset->cast_target_unit;
+                            Item source_item = aset->cast_source_item;
                             aset->cast_state = CastState::None;
                             aset->casting_id.clear();
                             oq->current.reset();
-                            // ENDCAST fires for both natural completion and
-                            // interruption (matches WC3 SPELL_ENDCAST). EFFECT
-                            // does NOT fire on interrupt — the spell never
-                            // resolved. Fired last: runs Lua (pool re-fetched
-                            // below the switch).
                             if (world.on_ability_endcast) {
-                                world.on_ability_endcast(caster, aset->casting_id,
-                                                         aset->cast_target_unit, target_pos,
-                                                         aset->cast_source_item);
+                                world.on_ability_endcast(caster, ability_id, target,
+                                                         target_pos, source_item);
                             }
                             break;
                         }
                         if (aset->cast_timer <= 0) {
-                            // Natural completion. Cooldown begins now, backswing
-                            // follows. Channel resolved → pay the cost here
-                            // (effect point); an interrupted channel above
-                            // returns without paying.
                             simulation::ability_pay_cost(world, id, lvl.cost);
                             inst->cooldown_remaining = lvl.cooldown;
                             aset->cast_state = CastState::Backswing;
                             aset->cast_timer = lvl.backsw_time;
-                            // ENDCAST then EFFECT (matches WC3: SPELL_ENDCAST
-                            // followed by SPELL_EFFECT). Both fire last: they run
-                            // Lua (pool re-fetched below the switch).
+
+                            std::string ability_id = aset->casting_id;
+                            Unit target = aset->cast_target_unit;
+                            Item source_item = aset->cast_source_item;
                             if (world.on_ability_endcast) {
-                                world.on_ability_endcast(caster, aset->casting_id,
-                                                         aset->cast_target_unit, target_pos,
-                                                         aset->cast_source_item);
+                                world.on_ability_endcast(caster, ability_id, target,
+                                                         target_pos, source_item);
                             }
                             if (world.on_ability_effect) {
-                                world.on_ability_effect(caster, aset->casting_id,
-                                                        aset->cast_target_unit, target_pos,
-                                                        aset->cast_source_item);
+                                world.on_ability_effect(caster, ability_id, target,
+                                                        target_pos, source_item);
                             }
                         }
                         break;
@@ -1422,6 +1435,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 
         // The cast FSM above may have run ability callbacks (Lua), which can
         // realloc the pool. Re-fetch before the aura block reads aset again.
+        if (!world.validate(unit)) continue;
         aset = world.ability_sets.get(id);
         if (!aset) continue;
 
@@ -1487,26 +1501,32 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 void system_items(World& world, float /*dt*/) {
     if (!world.types) return;
 
-    for (u32 i = 0; i < world.order_queues.count(); ++i) {
-        u32 id = world.order_queues.ids()[i];
-        auto& oq = world.order_queues.data()[i];
-        if (!oq.current) continue;
+    std::vector<Unit> units;
+    units.reserve(world.order_queues.count());
+    for (u32 id : world.order_queues.ids()) {
+        units.push_back(world.unit(id));
+    }
 
-        // ── PickupItem ───────────────────────────────────────────────
-        if (auto* po = std::get_if<orders::PickupItem>(&oq.current->payload)) {
-            // Validate target item still exists.
-            if (!world.validate(po->item)) {
-                oq.current.reset();
+    for (Unit unit_h : units) {
+        if (!world.validate(unit_h)) continue;
+
+        u32 id = unit_h.id;
+        auto* oq = world.order_queues.get(id);
+        if (!oq || !oq->current) continue;
+
+        if (auto* po = std::get_if<orders::PickupItem>(&oq->current->payload)) {
+            Item item = po->item;
+            if (!world.validate(item)) {
+                oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
                     mov->approach_target = Unit{};
                 }
                 continue;
             }
-            // Already carried (by anyone) → cancel the pickup quietly.
-            if (auto* car = world.carriables.get(po->item.id);
+            if (auto* car = world.carriables.get(item.id);
                 car && car->carried_by.is_valid()) {
-                oq.current.reset();
+                oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
                     mov->approach_target = Unit{};
@@ -1515,15 +1535,14 @@ void system_items(World& world, float /*dt*/) {
             }
 
             const auto* tf_unit = world.transforms.get(id);
-            const auto* tf_item = world.transforms.get(po->item.id);
+            const auto* tf_item = world.transforms.get(item.id);
             if (!tf_unit || !tf_item) {
-                oq.current.reset();
+                oq->current.reset();
                 continue;
             }
 
-            // Compute pickup radius from the item type def.
             f32 pickup_r = 48.0f;
-            if (auto* info = world.item_infos.get(po->item.id)) {
+            if (auto* info = world.item_infos.get(item.id)) {
                 if (auto* def = world.types->get_item_type(info->type_id)) {
                     pickup_r = def->pickup_radius;
                 }
@@ -1531,107 +1550,82 @@ void system_items(World& world, float /*dt*/) {
 
             f32 dx = tf_item->position.x - tf_unit->position.x;
             f32 dy = tf_item->position.y - tf_unit->position.y;
-            f32 dist2 = dx*dx + dy*dy;
-
-            // In range → claim into first free inventory slot.
+            f32 dist2 = dx * dx + dy * dy;
             if (dist2 <= pickup_r * pickup_r) {
-                Unit unit_h = world.unit(id);
-                i32 slot = give_item_to_unit(world, unit_h, po->item);
-                // slot < 0 = inventory full; the claim failed but we
-                // still pop the order so the unit doesn't stand on
-                // top of the item forever. Map Lua can re-issue if it
-                // wants different behavior.
+                oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
                     mov->approach_target = Unit{};
                 }
+
+                i32 slot = give_item_to_unit(world, unit_h, item);
                 if (slot >= 0 && world.on_item_picked_up) {
-                    world.on_item_picked_up(unit_h, po->item, slot);
+                    world.on_item_picked_up(unit_h, item, slot);
                 }
-                oq.current.reset();
                 continue;
             }
 
-            // Out of range → ensure movement is approaching the item.
             if (auto* mov = world.movements.get(id)) {
                 mov->approach_target = Unit{};
-                mov->approach_goal   = { tf_item->position.x, tf_item->position.y };
-                mov->approach_range  = pickup_r;
+                mov->approach_goal = {tf_item->position.x, tf_item->position.y};
+                mov->approach_range = pickup_r;
             }
-            // Stay in this order; next tick re-checks distance.
-        }
+        } else if (auto* drop = std::get_if<orders::DropItem>(&oq->current->payload)) {
+            constexpr f32 DROP_RANGE = 150.0f;
 
-        // ── DropItem ─────────────────────────────────────────────────
-        // WC3-style: the carrier must be within DROP_RANGE of the
-        // requested drop point. If the click was further, the order
-        // stays current and the unit walks toward the point — same
-        // pattern as PickupItem above. The order completes once the
-        // carrier is in range, the item lands, and an item_dropped
-        // event fires.
-        else if (auto* d = std::get_if<orders::DropItem>(&oq.current->payload)) {
-            constexpr f32 DROP_RANGE = 150.0f;     // engine-wide drop reach (game units)
-
-            Unit unit_h = world.unit(id);
-
-            // Find which slot holds this item.
+            Item item = drop->item;
             i32 slot = -1;
             if (auto* inv = world.inventories.get(id)) {
                 for (i32 s = 0; s < static_cast<i32>(inv->slots.size()); ++s) {
-                    if (inv->slots[s].id == d->item.id &&
-                        inv->slots[s].generation == d->item.generation) {
-                        slot = s; break;
+                    if (inv->slots[s] == item) {
+                        slot = s;
+                        break;
                     }
                 }
             }
-            if (slot < 0) { oq.current.reset(); continue; }
+            if (slot < 0) {
+                oq->current.reset();
+                continue;
+            }
 
             const auto* tf = world.transforms.get(id);
-            if (!tf) { oq.current.reset(); continue; }
+            if (!tf) {
+                oq->current.reset();
+                continue;
+            }
 
-            // Resolve drop point. (0,0,0) → "drop in place" (Lua /
-            // legacy callers): the carrier's current pos is always
-            // in range so the in-range branch below executes.
-            glm::vec3 pos = d->pos;
+            glm::vec3 pos = drop->pos;
             if (pos.x == 0.0f && pos.y == 0.0f) pos = tf->position;
 
             f32 dx = pos.x - tf->position.x;
             f32 dy = pos.y - tf->position.y;
-            f32 dist2 = dx*dx + dy*dy;
+            f32 dist2 = dx * dx + dy * dy;
             if (dist2 <= DROP_RANGE * DROP_RANGE) {
+                oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
-                    mov->approach_range  = 0;
+                    mov->approach_range = 0;
                     mov->approach_target = Unit{};
                 }
-                drop_item_from_unit(world, unit_h, slot, pos);
-                if (world.on_item_dropped) {
-                    world.on_item_dropped(unit_h, d->item);
-                }
-                oq.current.reset();
-            } else {
-                // Out of reach — walk toward the drop point. Stay in
-                // this order so the next tick re-checks distance.
-                if (auto* mov = world.movements.get(id)) {
-                    mov->approach_target = Unit{};
-                    mov->approach_goal   = { pos.x, pos.y };
-                    mov->approach_range  = DROP_RANGE;
-                }
-            }
-        }
 
-        // ── SwapInventorySlot ────────────────────────────────────────
-        // Pure rearrange — no abilities re-grant, no drop / pickup
-        // events. Both slots already belong to this unit so the
-        // ability set is unchanged.
-        else if (auto* sw = std::get_if<orders::SwapInventorySlot>(&oq.current->payload)) {
+                if (drop_item_from_unit(world, unit_h, slot, pos) &&
+                    world.on_item_dropped) {
+                    world.on_item_dropped(unit_h, item);
+                }
+            } else if (auto* mov = world.movements.get(id)) {
+                mov->approach_target = Unit{};
+                mov->approach_goal = {pos.x, pos.y};
+                mov->approach_range = DROP_RANGE;
+            }
+        } else if (auto* swap = std::get_if<orders::SwapInventorySlot>(&oq->current->payload)) {
             if (auto* inv = world.inventories.get(id)) {
-                i32 n = static_cast<i32>(inv->slots.size());
-                if (sw->slot_a >= 0 && sw->slot_a < n &&
-                    sw->slot_b >= 0 && sw->slot_b < n &&
-                    sw->slot_a != sw->slot_b) {
-                    std::swap(inv->slots[sw->slot_a], inv->slots[sw->slot_b]);
+                i32 count = static_cast<i32>(inv->slots.size());
+                if (swap->slot_a >= 0 && swap->slot_a < count &&
+                    swap->slot_b >= 0 && swap->slot_b < count &&
+                    swap->slot_a != swap->slot_b) {
+                    std::swap(inv->slots[swap->slot_a], inv->slots[swap->slot_b]);
                 }
             }
-            oq.current.reset();
+            oq->current.reset();
         }
     }
 }
@@ -1653,15 +1647,12 @@ void system_items(World& world, float /*dt*/) {
 // happens AFTER the hit callback so Lua interception lands first.
 
 static void destroy_projectile_entity(World& world, u32 id) {
-    auto* info = world.handle_infos.get(id);
-    if (!info) return;
-    Handle h; h.id = id; h.generation = info->generation;
+    if (!world.handle_infos.has(id)) return;
     world.transforms.remove(id);
     world.handle_infos.remove(id);
     world.projectiles.remove(id);
     world.renderables.remove(id);
     world.anim_queues.remove(id);
-    world.handles.free(h);
 }
 
 // Window the projectile lingers in the Dying state so its death clip
@@ -1720,20 +1711,28 @@ void destroy_projectile(World& world, Unit proj_unit) {
 }
 
 void system_projectile(World& world, float dt) {
-    std::vector<u32> to_teardown;
+    std::vector<Unit> projectiles;
+    projectiles.reserve(world.projectiles.count());
+    for (u32 id : world.projectiles.ids()) {
+        projectiles.push_back(world.unit(id));
+    }
 
-    for (u32 i = 0; i < world.projectiles.count(); ++i) {
-        u32 id = world.projectiles.ids()[i];
-        auto& proj = world.projectiles.data()[i];
+    std::vector<Unit> to_teardown;
+
+    for (Unit projectile : projectiles) {
+        if (!world.validate(projectile)) continue;
+        u32 id = projectile.id;
+        auto* projectile_comp = world.projectiles.get(id);
         auto* transform = world.transforms.get(id);
-        if (!transform) continue;
+        if (!projectile_comp || !transform) continue;
+        auto& proj = *projectile_comp;
 
         // Dying: gameplay has ended; entity persists for the death
         // animation. Tick the death timer; when it hits zero, queue
         // the entity for actual teardown.
         if (proj.dying) {
             proj.death_timer -= dt;
-            if (proj.death_timer <= 0) to_teardown.push_back(id);
+            if (proj.death_timer <= 0) to_teardown.push_back(projectile);
             continue;
         }
 
@@ -1770,8 +1769,13 @@ void system_projectile(World& world, float dt) {
                     Unit source = proj.source;
                     f32 damage  = proj.damage;
                     bool attack = proj.is_attack;
-                    if (world.validate(target) && world.on_projectile_hit) world.on_projectile_hit(pu, target);
-                    if (attack && world.validate(target)) deal_attack_damage(world, source, target, damage);
+                    if (world.validate(target) && world.on_projectile_hit) {
+                        world.on_projectile_hit(pu, target);
+                    }
+                    if (!world.validate(pu)) continue;
+                    if (attack && world.validate(target)) {
+                        deal_attack_damage(world, source, target, damage);
+                    }
                     if (world.validate(pu)) begin_destroy_projectile(world, id);
                     continue;
                 }
@@ -1801,8 +1805,13 @@ void system_projectile(World& world, float dt) {
                 Unit source = proj.source;
                 f32 damage  = proj.damage;
                 bool attack = proj.is_attack;
-                if (world.validate(target) && world.on_projectile_hit) world.on_projectile_hit(pu, target);
-                if (attack && world.validate(target)) deal_attack_damage(world, source, target, damage);
+                if (world.validate(target) && world.on_projectile_hit) {
+                    world.on_projectile_hit(pu, target);
+                }
+                if (!world.validate(pu)) continue;
+                if (attack && world.validate(target)) {
+                    deal_attack_damage(world, source, target, damage);
+                }
                 if (world.validate(pu)) begin_destroy_projectile(world, id);
                 continue;
             }
@@ -1828,11 +1837,6 @@ void system_projectile(World& world, float dt) {
 
             // Per-tick scan: any unit within hit_radius that isn't
             // already in the already_hit list and isn't the source.
-            // All identity comparisons are generation-checked: a raw-id
-            // match could alias a recycled handle (unit removed mid-
-            // flight, id reused for a new unit) and wrongly skip the new
-            // occupant.
-            //
             // Two passes: gather victims first (pure reads, no Lua), then
             // fire callbacks. on_projectile_hit / deal_attack_damage run
             // Lua that can spawn/kill units — reallocating the transforms
@@ -1852,22 +1856,14 @@ void system_projectile(World& world, float dt) {
                 auto* info = world.handle_infos.get(oid);
                 if (!info || info->category != Category::Unit) continue;
 
-                // Build the candidate's full handle once for identity
-                // checks below.
-                Unit cand;
-                cand.id = oid;
-                cand.generation = info->generation;
-
-                // Skip the source — but only if THIS unit is genuinely
-                // the source (same generation). A recycled source id
-                // belonging to a different unit must still be hittable.
-                if (cand.id == psource.id && cand.generation == psource.generation) continue;
+                Unit cand{oid};
+                if (cand == psource) continue;
 
                 auto* hp = world.healths.get(oid);
                 if (!hp || hp->current <= 0) continue;
                 bool already = false;
                 for (const Unit& done : proj.already_hit) {
-                    if (done.id == cand.id && done.generation == cand.generation) { already = true; break; }
+                    if (done == cand) { already = true; break; }
                 }
                 if (already) continue;
                 const auto& tf = world.transforms.data()[j];
@@ -1883,11 +1879,10 @@ void system_projectile(World& world, float dt) {
                 // this one — don't feed a freed handle to Lua or damage.
                 if (!world.validate(hit)) continue;
                 if (world.on_projectile_hit) world.on_projectile_hit(pu, hit);
-                if (pis_attack) {
+                if (!world.validate(pu)) break;
+                if (pis_attack && world.validate(hit)) {
                     deal_attack_damage(world, psource, hit, pdamage);
                 }
-                // Re-fetch before recording: the callbacks may have destroyed
-                // the projectile (stop) or reallocated its pool.
                 if (!world.validate(pu)) break;
                 auto* p = world.projectiles.get(id);
                 if (!p) break;
@@ -1908,21 +1903,15 @@ void system_projectile(World& world, float dt) {
         }
     }
 
-    for (u32 id : to_teardown) {
-        destroy_projectile_entity(world, id);
+    for (Unit projectile : to_teardown) {
+        if (world.validate(projectile)) destroy_projectile_entity(world, projectile.id);
     }
 }
 
 // ── Death + corpse system ─────────────────────────────────────────────────
 
 static void remove_all_components_and_free(World& world, Handle h) {
-    // Route through the canonical teardown so this corpse-cleanup path
-    // can't drift from the master pool list. (It used to be a hand-
-    // maintained copy that had silently lost status_flags / anim_queues
-    // / true_sight_vis / forced_vis — a dead unit's stun/silence/invis
-    // refcounts bled onto whatever new unit recycled its handle id.)
     remove_all_components(world, h.id);
-    world.handles.free(h);
 }
 
 // ── Collision system ──────────────────────────────────────────────────────
@@ -2037,104 +2026,66 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
 // ── Death system ─────────────────────────────────────────────────────────
 
 void system_death(World& world, float dt) {
-    // Phase 1: transition newly dead units to corpse state
-    for (u32 i = 0; i < world.healths.count(); ++i) {
-        u32 id = world.healths.ids()[i];
-        auto& hp = world.healths.data()[i];
+    std::vector<Handle> entities;
+    entities.reserve(world.healths.count());
+    for (u32 id : world.healths.ids()) {
+        entities.push_back(Handle{id});
+    }
 
-        // Units below this HP threshold are considered dead (avoids floating point edge cases)
-        static constexpr f32 DEATH_THRESHOLD = 0.05f;
-        if (hp.current < DEATH_THRESHOLD && hp.max > 0 && !world.dead_states.has(id)) {
-            auto* info = world.handle_infos.get(id);
-            if (!info) continue;
-            if (info->category == Category::Item) continue;
+    static constexpr f32 DEATH_THRESHOLD = 0.05f;
+    for (Handle entity : entities) {
+        if (!world.validate(entity) || world.dead_states.has(entity.id)) continue;
 
-            // EVENT_UNIT_DYING. Fires before HP is pinned to 0 / before
-            // any corpse conversion. Handlers may SetUnitHealth the unit
-            // back up (Reincarnation, Phoenix Fire, Cheat Death). After
-            // the callback we re-read HP — if it's positive, the unit
-            // survived and we skip reaping. Only fires for Units; for
-            // destructables / other widgets we still go straight to
-            // the corpse path. Re-fetch the Health pointer afterwards
-            // because the SparseSet may have shifted on add/remove.
-            if (world.on_dying && info->category == Category::Unit) {
-                Unit dying;
-                dying.id = id;
-                dying.generation = info->generation;
-                // TODO: track actual killer from last damage source
-                world.on_dying(dying, Unit{});
-                auto* hp_after = world.healths.get(id);
-                if (hp_after && hp_after->current >= DEATH_THRESHOLD) {
-                    // Unit was healed during the dying handler — cancel
-                    // the death. Loop continues; the sparse-set index
-                    // may now be stale (the handler could have spawned
-                    // entities), but the bounds check on the next
-                    // iteration handles that.
-                    continue;
-                }
-                // Handler ran but didn't save the unit — pointer might
-                // have shifted if other entities were added; refresh.
-                auto* hp_now = world.healths.get(id);
-                if (!hp_now) continue;
-                hp_now->current = 0;
-                // Same exposure for `info`: on_dying could have spawned
-                // a unit (Reincarnation / summon-on-death), reallocating
-                // the handle_infos dense vector and dangling the pointer
-                // cached above. Everything below reads info->type_id /
-                // category / generation, so refresh it here too.
-                info = world.handle_infos.get(id);
-                if (!info) continue;
-            } else {
-                hp.current = 0;
-            }
-
-            log::info("Combat", "{} has died (id={})", info->type_id, id);
-
-            // Play death sound
-            if (world.on_sound) {
-                auto* def = world.types->get_unit_type(info->type_id);
-                if (def && !def->sound_death.empty()) {
-                    auto* t = world.transforms.get(id);
-                    if (t) world.on_sound(def->sound_death, t->position);
-                }
-            }
-
-            // Fire death callback for the script engine. The script side
-            // routes by category: every widget fires global_death; units
-            // also fire unit_death, destructables also fire
-            // destructable_death. Items are excluded above.
-            if (world.on_death && (info->category == Category::Unit ||
-                                   info->category == Category::Destructable)) {
-                Unit dying;
-                dying.id = id;
-                dying.generation = info->generation;
-                // TODO: track actual killer from last damage source
-                world.on_death(dying, Unit{});
-            }
-
-            // Become a corpse: stop all gameplay activity
-            world.movements.remove(id);
-            world.combats.remove(id);
-            world.order_queues.remove(id);
-            world.ability_sets.remove(id);
-            world.sights.remove(id);
-
-            // Drop the runtime pathing block immediately. WC3-style:
-            // the moment a building dies, its rubble is walkable —
-            // even though the corpse renderable lingers for a few
-            // seconds before despawning. Without this, pathfinding
-            // still treats the dead building as an obstacle until the
-            // entity is fully destroyed.
-            if (auto* pb = world.pathing_blockers.get(id)) {
-                if (world.on_pathing_unblock) {
-                    world.on_pathing_unblock(pb->cx, pb->cy, pb->w, pb->h);
-                }
-                world.pathing_blockers.remove(id);
-            }
-
-            // Add dead state — corpse visible for duration, then cleaned up
-            world.dead_states.add(id, DeadState{});
+        u32 id = entity.id;
+        auto* hp = world.healths.get(id);
+        auto* info = world.handle_infos.get(id);
+        if (!hp || !info || hp->current >= DEATH_THRESHOLD || hp->max <= 0 ||
+            info->category == Category::Item) {
+            continue;
         }
+
+        Unit dying{id};
+        Unit killer = hp->killer;
+        if (!world.validate(killer)) killer = {};
+        if (world.on_dying && info->category == Category::Unit) {
+            world.on_dying(dying, killer);
+            if (!world.validate(entity)) continue;
+            hp = world.healths.get(id);
+            info = world.handle_infos.get(id);
+            if (!hp || !info || hp->current >= DEATH_THRESHOLD) continue;
+            killer = hp->killer;
+            if (!world.validate(killer)) killer = {};
+        }
+        hp->current = 0;
+
+        std::string type_id = info->type_id;
+        Category category = info->category;
+        log::info("Combat", "{} has died (id={})", type_id, id);
+
+        if (world.on_sound) {
+            auto* def = world.types->get_unit_type(type_id);
+            if (def && !def->sound_death.empty()) {
+                auto* transform = world.transforms.get(id);
+                if (transform) world.on_sound(def->sound_death, transform->position);
+            }
+            if (!world.validate(entity)) continue;
+        }
+
+        if (world.on_death &&
+            (category == Category::Unit || category == Category::Destructable)) {
+            world.on_death(dying, killer);
+            if (!world.validate(entity)) continue;
+        }
+
+        world.movements.remove(id);
+        world.combats.remove(id);
+        world.order_queues.remove(id);
+        world.ability_sets.remove(id);
+        world.sights.remove(id);
+
+        release_pathing_blocker(world, id);
+
+        world.dead_states.add(id, DeadState{});
     }
 
     // Phase 2: tick corpse timers, hide then destroy
@@ -2155,13 +2106,7 @@ void system_death(World& world, float dt) {
 
         // Fully destroy after cleanup_delay
         if (dead.corpse_timer >= dead.cleanup_delay) {
-            auto* info = world.handle_infos.get(id);
-            if (info) {
-                Handle h;
-                h.id = id;
-                h.generation = info->generation;
-                to_destroy.push_back(h);
-            }
+            if (world.handle_infos.has(id)) to_destroy.push_back(Handle{id});
         }
     }
 
@@ -2188,46 +2133,52 @@ static bool region_contains_point(const World::Region& r, glm::vec3 pos) {
 }
 
 void system_regions(World& world) {
-    if (world.regions.empty()) return;
-    // Note: `contained` is kept in sync below even when no script
-    // consumer (on_region_enter / on_region_leave) is wired, so
-    // IsUnitInRegion queries stay correct; only the diff dispatch is
-    // skipped per-region when there's no callback.
+    std::vector<u32> region_ids;
+    region_ids.reserve(world.regions.size());
+    for (const auto& [id, region] : world.regions) {
+        if (region.alive) region_ids.push_back(id);
+    }
 
-    // Reused across regions to avoid reallocation.
-    std::unordered_set<u32> current;
+    for (u32 region_id : region_ids) {
+        auto region_it = world.regions.find(region_id);
+        if (region_it == world.regions.end() || !region_it->second.alive) continue;
 
-    for (auto& [rid, region] : world.regions) {
-        if (!region.alive) continue;
-
-        current.clear();
-        // Cheap O(N) over alive units. Region authoring is sparse and
-        // unit counts are small; fine for v1. If maps start authoring
-        // many regions and many units, switch to a spatial-grid query
-        // sized to the region's bounding box.
+        const auto previous = region_it->second.contained;
+        std::unordered_set<u32> current;
         for (u32 i = 0; i < world.transforms.count(); ++i) {
-            u32 uid = world.transforms.ids()[i];
-            if (world.dead_states.has(uid)) continue;
-            if (region_contains_point(region, world.transforms.data()[i].position)) {
-                current.insert(uid);
+            u32 unit_id = world.transforms.ids()[i];
+            const auto* info = world.handle_infos.get(unit_id);
+            if (!info || info->category != Category::Unit || world.dead_states.has(unit_id)) {
+                continue;
+            }
+            if (region_contains_point(region_it->second,
+                                      world.transforms.data()[i].position)) {
+                current.insert(unit_id);
+            }
+        }
+        region_it->second.contained = current;
+
+        auto region_alive = [&] {
+            auto it = world.regions.find(region_id);
+            return it != world.regions.end() && it->second.alive;
+        };
+
+        if (world.on_region_leave) {
+            for (u32 unit_id : previous) {
+                if (current.contains(unit_id)) continue;
+                if (!region_alive()) break;
+                world.on_region_leave(region_id, Unit{unit_id});
+            }
+        }
+        if (world.on_region_enter && region_alive()) {
+            for (u32 unit_id : current) {
+                if (previous.contains(unit_id)) continue;
+                if (!region_alive()) break;
+                Unit unit{unit_id};
+                if (world.validate(unit)) world.on_region_enter(region_id, unit);
             }
         }
 
-        // Resolve each diff to a stable Unit handle (with generation)
-        // so the script side can validate before reading components.
-        for (u32 uid : current) {
-            if (region.contained.count(uid)) continue;
-            if (!world.on_region_enter) continue;
-            world.on_region_enter(rid, world.unit(uid));
-        }
-        for (u32 uid : region.contained) {
-            if (current.count(uid)) continue;
-            if (!world.on_region_leave) continue;
-            world.on_region_leave(rid, world.unit(uid));
-        }
-
-        region.contained = std::move(current);
-        current.clear();  // moved-from state may be unspecified; restore.
     }
 }
 

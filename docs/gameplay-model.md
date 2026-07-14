@@ -42,7 +42,7 @@ Same model, expressed as **component sets** rather than class inheritance.
 Each "type" in the hierarchy is defined by which components a handle receives at creation.
 
 ```
-Handle (u32 id + u32 generation)
+Handle (monotonic u32 id)
 │
 ├── Widget (Transform + Health + Selectable)
 │   │
@@ -80,7 +80,7 @@ Handle (u32 id + u32 generation)
 
 ### Three Levels
 
-1. **Handle** — base type for everything in the world (id + generation). Internally indexes into component storage.
+1. **Handle** — base type for everything in the world. Its monotonic session id never gets reused.
 2. **Widget** — handles that participate in gameplay (have health, can be selected/targeted). The three Widget subtypes are Unit, Destructable, and Item.
 3. **Unit subtypes** — Hero and Building are units with extra components bolted on, identified by `UnitClassification` flags. They are NOT separate categories.
 
@@ -97,27 +97,27 @@ hold a handle reference.
 ```
 JASS                          Uldum C++                    Uldum Lua
 ────                          ──────────                   ─────────
-handle (base)                 Handle { id, generation }    (not exposed)
+handle (base)                 Handle { id }                (not exposed)
 ├── unit                      Unit   : Handle              Unit
 ├── destructable              Destructable : Handle        Destructable
 ├── item                      Item   : Handle              Item
 └── player                    Player { u32 id }            Player
 ```
 
-Each typed handle holds an `id` (index into component storage) and a `generation`
-counter (incremented when the slot is reused). This is the same `Handle` concept
-from `core/handle.h` — there is no separate "entity ID."
+Each typed handle holds a monotonic `id`. IDs are never reused while a `World`
+exists, including across scene clears. Liveness is checked through the world's
+`HandleInfo` pool, so an old handle resolves to no entity rather than aliasing a
+new one.
 
 - **Type safety**: you cannot pass an Item where a Unit is expected — enforced at
   compile time in C++ and at runtime in Lua.
-- **Stale detection**: if a unit dies and its handle slot is reused, old Unit handles
-  detect the generation mismatch and safely fail.
-- The raw `id` is an internal index. Scripts and game code work with typed handles,
-  never raw integers (unless explicitly requesting it, like WC3's `GetHandleId()`).
+- **Stable identity**: a destroyed id is permanently retired for that game session.
+- Component pools use paged sparse indices, so large monotonic ids do not force
+  every pool to allocate one contiguous sparse array.
 
 ```cpp
 // Base handle — shared by all game object types
-struct Handle { u32 id; u32 generation; };
+struct Handle { u32 id; };
 
 // Typed handles — distinct types, same layout
 struct Unit          : Handle {};
@@ -143,7 +143,6 @@ HandleInfo {
     TypeId     type_id   // references a type definition (e.g. "footman")
     Category   category  // unit, destructable, item, doodad, projectile
                          // (hero/building are units — identified by classification flags)
-    u32        generation // incremented on reuse, used by typed handles for stale detection
 }
 ```
 
@@ -611,8 +610,7 @@ AbilityInstance {
     u32         level               // current level (1-indexed, 0 = not learned)
     f32         cooldown_remaining
     bool        auto_cast           // auto-cast enabled (for applicable forms)
-    bool        channeling          // currently channelling (channel_time > 0)
-    f32         channel_remaining   // channel form: time left
+    AbilitySource[] sources         // innate, per-item, or applied ownership
 }
 ```
 
@@ -678,7 +676,7 @@ not a separate system. An applied ability:
 
 ### Applied Ability Processing (each tick, part of AbilitySystem)
 
-1. Tick `remaining_duration` on all ability instances that have a duration — remove expired
+1. Tick `remaining_duration` on timed sources — remove the instance only when its last source expires
 2. Tick periodic effects (damage/heal) at `tick_interval`
 3. Recalculate effective values when abilities change:
    - Base attribute + sum of all active ability modifiers = effective attribute
@@ -965,12 +963,12 @@ struct World {
 };
 
 // ── Typed Game Objects ─────────────────────────────────────────
-// Public-facing types. Each holds an internal ID + generation.
+// Public-facing types. Each holds a stable session id.
 // These are what C++ game code and Lua scripts work with.
 
-struct Unit          { u32 id; u32 generation; };
-struct Destructable  { u32 id; u32 generation; };
-struct Item          { u32 id; u32 generation; };
+struct Unit          { u32 id; };
+struct Destructable  { u32 id; };
+struct Item          { u32 id; };
 struct Player        { u32 id; };
 
 // ── Creation (free functions) ──────────────────────────────────
@@ -1164,7 +1162,7 @@ Flagged units get a status-icon strip near the HP bar (same place WC3's buff ico
 
 ### Preserved
 
-- Handle (`id` + `generation`) and `HandleInfo.category` (still Unit).
+- Stable handle id and `HandleInfo.category` (still Unit).
 - `Transform.position`, `facing`, `prev_position`, `prev_facing`.
 - Owning player (the `Player` in the `owners` pool).
 - `Inventory` contents (slot count not resized; map handles item drops if it cares).

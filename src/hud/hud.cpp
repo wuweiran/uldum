@@ -664,12 +664,7 @@ void Hud::update_focus(f32 /*dt*/) {
         f32 dot = (dv.x * hero_dx + dv.y * hero_dy) / dlen;
         if (dot < cosf_half) continue;
         if (!focus_visible(*s.world_ctx, etf.position)) continue;
-        simulation::Unit cand{ id, o->id };  // owner.id != generation; fix below
-        // Resolve generation for a stable handle.
-        if (auto* hi = world.handle_infos.get(id)) {
-            cand.generation = hi->generation;
-        }
-        best = cand;
+        best = simulation::Unit{id};
         best_d2 = d2;
     }
 
@@ -737,7 +732,7 @@ TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
     t.color      = info.color;
     t.visible    = true;
     t.world_pos  = info.pos;
-    t.unit_id    = info.unit.id;  // UINT32_MAX means not attached (Unit default)
+    t.unit       = info.unit;
     t.z_offset   = info.z_offset;
     t.velocity_x = info.velocity_x;
     t.velocity_y = info.velocity_y;
@@ -756,7 +751,7 @@ TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
                   info.text.key, info.text.args,
                   info.px_size,
                   info.pos.x, info.pos.y, info.pos.z,
-                  info.unit.id, info.z_offset,
+                  info.unit, info.z_offset,
                   info.color.rgba,
                   info.velocity_x, info.velocity_y,
                   info.lifespan, info.fadepoint),
@@ -801,13 +796,13 @@ void Hud::set_text_tag_pos(TextTagId id, f32 x, f32 y, f32 z) {
     if (!m_impl) return;
     if (auto* t = lookup_tag(*m_impl, id)) {
         t->world_pos = { x, y, z };
-        t->unit_id   = UINT32_MAX;
+        t->unit      = {};
     }
 }
-void Hud::set_text_tag_pos_unit(TextTagId id, u32 unit_id, f32 z_offset) {
+void Hud::set_text_tag_pos_unit(TextTagId id, simulation::Unit unit, f32 z_offset) {
     if (!m_impl) return;
     if (auto* t = lookup_tag(*m_impl, id)) {
-        t->unit_id  = unit_id;
+        t->unit     = unit;
         t->z_offset = z_offset;
     }
 }
@@ -1411,9 +1406,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
 
     // Refresh caster world position each frame — if the unit moved
     // mid-drag we want the range ring + drag arrow origin to follow
-    // along, not stay anchored where the press happened. Bail (cancel
-    // the gesture) if the caster handle no longer validates (died,
-    // recycled, etc.).
+    // along, not stay anchored where the press happened. Cancel if the
+    // caster no longer exists.
     if (!s.world_ctx->world->validate(s.drag_cast.caster)) {
         if (s.drag_cast.inventory_slot >= 0) {
             if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
@@ -1557,9 +1551,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                     default: break;
                 }
                 if ((s.drag_cast.widget_kinds & cand_kind) == 0) continue;
-                simulation::Unit cand{};
-                cand.id = id;
-                cand.generation = hinfo->generation;
+                simulation::Unit cand{id};
                 if (cand.id == caster_unit.id) {
                     // Commands never self-snap. Abilities use the
                     // filter's `self_` flag.
@@ -2043,7 +2035,7 @@ Hud::AbilityAimState Hud::aim_state() const {
             u32 id = ctx.world->transforms.ids()[i];
             const auto* hi = ctx.world->handle_infos.get(id);
             if (!hi || hi->category != simulation::Category::Unit) continue;
-            simulation::Unit cand{ id, hi->generation };
+            simulation::Unit cand{id};
             if (!ctx.simulation->target_filter_passes(def->target_filter,
                                                       caster_unit, cand)) {
                 continue;
@@ -2188,7 +2180,7 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
                 u32 unit_id = sel.front().id;
                 for (const auto& inst : aset->abilities) {
                     if (slotted_abilities.count(inst.ability_id)) continue;
-                    if (inst.from_item) continue;  // item abilities fire via inventory slot, not hotkey
+                    if (inst.item_only()) continue;
 
                     const auto* def = s.world_ctx->abilities->get(inst.ability_id);
                     if (!def || def->hotkey.empty()) continue;
@@ -2285,7 +2277,7 @@ resolve_slot_ability(u32 slot_index,
     u32 nth = 0;
     for (const auto& inst : aset->abilities) {
         const auto* def = ctx.abilities->get(inst.ability_id);
-        if (!def || def->hidden || inst.from_item) continue;
+        if (!def || def->hidden || inst.item_only()) continue;
         if (nth == slot_index) {
             out_def = def;
             return &inst;
@@ -2586,7 +2578,6 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.current_x   = x;
                         s.drag_cast.current_y   = y;
                         s.drag_cast.caster.id         = caster_id;
-                        s.drag_cast.caster.generation = hi->generation;
                         s.drag_cast.caster_x    = tf->position.x;
                         s.drag_cast.caster_y    = tf->position.y;
                         s.drag_cast.caster_z    = tf->position.z;
@@ -2641,7 +2632,6 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.current_x   = x;
                         s.drag_cast.current_y   = y;
                         s.drag_cast.caster.id         = caster_id;
-                        s.drag_cast.caster.generation = hi->generation;
                         s.drag_cast.caster_x    = tf->position.x;
                         s.drag_cast.caster_y    = tf->position.y;
                         s.drag_cast.caster_z    = tf->position.z;
@@ -2756,7 +2746,6 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.current_x   = x;
                         s.drag_cast.current_y   = y;
                         s.drag_cast.caster.id         = carrier_id;
-                        s.drag_cast.caster.generation = hi->generation;
                         s.drag_cast.caster_x    = tf->position.x;
                         s.drag_cast.caster_y    = tf->position.y;
                         s.drag_cast.caster_z    = tf->position.z;

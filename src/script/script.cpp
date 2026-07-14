@@ -36,26 +36,12 @@ static constexpr const char* TAG = "Script";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-static simulation::Unit make_unit(simulation::World& world, u32 id) {
-    simulation::Unit u;
-    u.id = id;
-    auto* info = world.handle_infos.get(id);
-    u.generation = info ? info->generation : 0;
-    return u;
+static simulation::Unit as_unit(simulation::Handle handle) {
+    return simulation::Unit{handle.id};
 }
 
-static simulation::Destructable make_destructable(simulation::World& world, u32 id) {
-    simulation::Destructable d;
-    d.id = id;
-    auto* info = world.handle_infos.get(id);
-    d.generation = info ? info->generation : 0;
-    return d;
-}
-
-// Category of a trigger widget id, or nullopt if it has no handle record.
-static simulation::Category category_of(simulation::World& world, u32 id) {
-    auto* info = world.handle_infos.get(id);
-    return info ? info->category : simulation::Category::Unit;
+static simulation::Destructable as_destructable(simulation::Handle handle) {
+    return simulation::Destructable{handle.id};
 }
 
 // Extract a LocalizedString payload from a Lua arg. Player-facing APIs
@@ -244,81 +230,46 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     bind_save_api();
     bind_hud_api();
 
-    // Hook the world's damage callback so all damage (combat + script) fires on_damage events
-    sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target, f32& amount, std::string_view damage_type) {
-        // Save outer damage context — a trigger's action can call
-        // DamageUnit(), which recurses into on_damage and overwrites the
-        // global m_ctx_damage_* fields with the nested event's values.
-        // Without save/restore, when control returns to the outer
-        // fire_event loop and the NEXT trigger's condition runs (e.g.
-        // unveiling strike running after cleave), GetDamageType() reads
-        // the nested event's "cleave" instead of the original "attack",
-        // and the trigger silently misfires.
-        u32 saved_unit          = m_ctx_unit;
-        u32 saved_damage_source = m_ctx_damage_source;
-        u32 saved_damage_target = m_ctx_damage_target;
-        f32 saved_damage_amount = m_ctx_damage_amount;
-        std::string saved_damage_type = m_ctx_damage_type;
-
-        set_context_unit(target.id);
-        set_context_damage_source(source.id);
-        set_context_damage_target(target.id);
-        set_context_damage_amount(amount);
-        set_context_damage_type(damage_type);
-        fire_event("global_damage", target.id);
-        fire_event("unit_damage", target.id);
-        // Auto-attack landing — fires an additional, narrower event so
-        // triggers that only care about attacks (not generic damage)
-        // don't have to filter `damage_type == "attack"` themselves.
-        // GetAttacker() / GetTriggerUnit() return source / target.
+    sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target,
+                                  f32& amount, std::string_view damage_type) {
+        EventFrame frame;
+        frame.entity = target;
+        frame.registered_entity = target;
+        frame.payload = DamageEvent{source, target, amount, std::string(damage_type)};
+        dispatch(frame, "global_damage");
+        dispatch(frame, "unit_damage");
         if (damage_type == "attack") {
-            fire_event("global_attacked", target.id);
-            fire_event("unit_attacked",   target.id);
+            dispatch(frame, "global_attacked");
+            dispatch(frame, "unit_attacked");
         }
-        amount = get_context_damage_amount();
-
-        m_ctx_unit          = saved_unit;
-        m_ctx_damage_source = saved_damage_source;
-        m_ctx_damage_target = saved_damage_target;
-        m_ctx_damage_amount = saved_damage_amount;
-        m_ctx_damage_type   = std::move(saved_damage_type);
+        amount = std::get<DamageEvent>(frame.payload).amount;
     };
 
-    // Hook dying callback — runs while HP is at 0 but BEFORE reap.
-    // Handlers can SetUnitHealth back up to save the unit (Reincarnation
-    // / Phoenix Fire / Cheat Death). If any handler leaves HP > 0 the
-    // sim cancels the death entirely; on_death does NOT fire in that
-    // case. Mirror of the death pair below.
     sim.world().on_dying = [this](simulation::Unit dying, simulation::Unit killer) {
-        set_context_unit(dying.id);
-        set_context_killer(killer.is_valid() ? killer.id : UINT32_MAX);
-        fire_event("global_dying", dying.id);
-        fire_event("unit_dying", dying.id);
+        EventFrame frame;
+        frame.entity = dying;
+        frame.registered_entity = dying;
+        frame.payload = DeathEvent{killer};
+        dispatch(frame, "global_dying");
+        dispatch(frame, "unit_dying");
     };
 
-    // Projectile lifecycle. HIT fires per unit hit (the projectile is
-    // the "trigger entity" and the hit unit is set as the trigger unit,
-    // so trigger registration scopes naturally per-projectile via the
-    // existing unit_id field). DESTROYED fires once on every destroy
-    // path (auto-destroy on homing hit, max_distance, manual). The
-    // engine has already run any is_attack damage routing before HIT
-    // returns — except cleave / on_damage, which run inside
-    // deal_attack_damage. Lua-side intercepts are still effective via
-    // PROJECTILE_HIT firing FIRST in the system loop (see systems.cpp).
-    sim.world().on_projectile_hit = [this](simulation::Unit projectile, simulation::Unit hit_unit) {
-        set_context_projectile(projectile.id);
-        set_context_unit(hit_unit.id);
-        fire_event("global_projectile_hit", projectile.id);
-        fire_event("projectile_hit",        projectile.id);
-        set_context_projectile(UINT32_MAX);
+    sim.world().on_projectile_hit = [this](simulation::Unit projectile,
+                                          simulation::Unit hit_unit) {
+        EventFrame frame;
+        frame.entity = hit_unit;
+        frame.registered_entity = projectile;
+        frame.payload = ProjectileEvent{projectile, hit_unit};
+        dispatch(frame, "global_projectile_hit");
+        dispatch(frame, "projectile_hit");
     };
     sim.world().on_projectile_destroyed = [this](simulation::Unit projectile) {
-        set_context_projectile(projectile.id);
-        set_context_unit(UINT32_MAX);
-        fire_event("global_projectile_destroyed", projectile.id);
-        fire_event("projectile_destroyed",        projectile.id);
-        // Drop any triggers scoped to this projectile so they don't
-        // haunt a future projectile that reuses the handle id.
+        EventFrame frame;
+        frame.registered_entity = projectile;
+        frame.payload = ProjectileEvent{projectile, {}};
+        dispatch(frame, "global_projectile_destroyed");
+        dispatch(frame, "projectile_destroyed");
+        // Drop triggers scoped to a projectile once its lifecycle ends.
         for (auto& [tid, trig] : m_triggers) {
             if (!trig.alive) continue;
             for (auto& eb : trig.events) {
@@ -330,7 +281,6 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
                 }
             }
         }
-        set_context_projectile(UINT32_MAX);
         // Broadcast the dying state to clients that can see the
         // projectile so they queue the death clip on their local
         // entity. The follow-up S_DESTROY arrives ~0.6s later when the
@@ -342,19 +292,17 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         }
     };
 
-    // Hook death callback so system_death fires on_death events. WC3-style:
-    // Hook death callback so system_death fires on_death events. Every widget
-    // fires global_death (catch-all). Units also fire unit_death; destructables
-    // also fire destructable_death. Scope is in the name + register function.
     sim.world().on_death = [this](simulation::Unit dying, simulation::Unit killer) {
-        set_context_unit(dying.id);
-        set_context_killer(killer.is_valid() ? killer.id : UINT32_MAX);
-        fire_event("global_death", dying.id);
+        EventFrame frame;
+        frame.entity = dying;
+        frame.registered_entity = dying;
+        frame.payload = DeathEvent{killer};
+        dispatch(frame, "global_death");
         auto* info = m_sim->world().handle_infos.get(dying.id);
         if (info && info->category == simulation::Category::Unit) {
-            fire_event("unit_death", dying.id);
+            dispatch(frame, "unit_death");
         } else if (info && info->category == simulation::Category::Destructable) {
-            fire_event("destructable_death", dying.id);
+            dispatch(frame, "destructable_death");
         }
     };
 
@@ -369,21 +317,21 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     //   GetTriggerAbilityId()     — for "cast" orders (existing context)
     sim.world().on_order = [this](simulation::Unit unit, const simulation::Order& order) {
         std::string type_tag;
-        u32  target_uid = UINT32_MAX;
+        simulation::Unit target_unit;
         f32  target_x = 0, target_y = 0;
         std::string ability_id;
         std::visit([&](const auto& p) {
             using T = std::decay_t<decltype(p)>;
             if constexpr (std::is_same_v<T, simulation::orders::Move>) {
                 type_tag = "move";
-                if (p.target_unit.is_valid()) target_uid = p.target_unit.id;
+                if (p.target_unit.is_valid()) target_unit = p.target_unit;
                 target_x = p.target.x; target_y = p.target.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
                 type_tag = "attack_move";
                 target_x = p.target.x; target_y = p.target.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
                 type_tag = "attack";
-                if (p.target.is_valid()) target_uid = p.target.id;
+                if (p.target.is_valid()) target_unit = p.target;
             } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
                 type_tag = "stop";
             } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
@@ -397,7 +345,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
             } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
                 type_tag = "cast";
                 ability_id = p.ability_id;
-                if (p.target_unit.is_valid()) target_uid = p.target_unit.id;
+                if (p.target_unit.is_valid()) target_unit = p.target_unit;
                 target_x = p.target_pos.x; target_y = p.target_pos.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
                 type_tag = "train";
@@ -419,14 +367,16 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
             }
         }, order.payload);
 
-        set_context_unit(unit.id);
-        set_context_order_type(std::move(type_tag));
-        set_context_order_target_unit(target_uid);
-        set_context_order_target_x(target_x);
-        set_context_order_target_y(target_y);
-        set_context_ability(ability_id);
-        fire_event("global_issued_order", unit.id);
-        fire_event("unit_issued_order", unit.id);
+        auto* owner = m_sim->world().owners.get(unit.id);
+        EventFrame frame;
+        frame.entity = unit;
+        frame.registered_entity = unit;
+        frame.player = owner ? owner->id : UINT32_MAX;
+        frame.payload = OrderEvent{std::move(type_tag), target_unit,
+                                   target_x, target_y, std::move(ability_id),
+                                   frame.player, order.queued};
+        dispatch(frame, "global_issued_order");
+        dispatch(frame, "unit_issued_order");
     };
 
     // Ability cast-lifecycle event fan-out. All three callbacks share
@@ -439,14 +389,13 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
                                simulation::Unit caster, std::string_view ability_id,
                                simulation::Unit target_unit, glm::vec3 target_pos,
                                simulation::Item source_item) {
-        set_context_unit(caster.id);
-        set_context_ability(std::string(ability_id));
-        set_context_spell_target_unit(target_unit.is_valid() ? target_unit.id : UINT32_MAX);
-        set_context_spell_target_x(target_pos.x);
-        set_context_spell_target_y(target_pos.y);
-        set_context_item(source_item);
-        fire_event(global, caster.id, ability_id);
-        fire_event(scoped, caster.id, ability_id);
+        EventFrame frame;
+        frame.entity = caster;
+        frame.registered_entity = caster;
+        frame.payload = AbilityEvent{std::string(ability_id), target_unit,
+                                     target_pos, source_item};
+        dispatch(frame, global);
+        dispatch(frame, scoped);
     };
 
     sim.world().on_ability_channel = [fan_out_cast](simulation::Unit caster, std::string_view ability_id,
@@ -471,17 +420,23 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     };
 
     // Item events fired by system_items.
-    sim.world().on_item_picked_up = [this](simulation::Unit unit, simulation::Item item, i32 /*slot*/) {
-        set_context_unit(unit.id);
-        set_context_item(item);
-        fire_event("global_item_picked_up", unit.id);
-        fire_event("unit_item_picked_up", unit.id);
+    sim.world().on_item_picked_up = [this](simulation::Unit unit,
+                                          simulation::Item item, i32) {
+        EventFrame frame;
+        frame.entity = unit;
+        frame.registered_entity = unit;
+        frame.payload = ItemEvent{item};
+        dispatch(frame, "global_item_picked_up");
+        dispatch(frame, "unit_item_picked_up");
     };
-    sim.world().on_item_dropped = [this](simulation::Unit unit, simulation::Item item) {
-        set_context_unit(unit.id);
-        set_context_item(item);
-        fire_event("global_item_dropped", unit.id);
-        fire_event("unit_item_dropped", unit.id);
+    sim.world().on_item_dropped = [this](simulation::Unit unit,
+                                        simulation::Item item) {
+        EventFrame frame;
+        frame.entity = unit;
+        frame.registered_entity = unit;
+        frame.payload = ItemEvent{item};
+        dispatch(frame, "global_item_dropped");
+        dispatch(frame, "unit_item_dropped");
     };
 
     // Region events fired by system_regions per tick. Region id is
@@ -489,14 +444,18 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     // specific region fires only for it) and via the context, so the
     // action body can read GetTriggerRegion() if it needs to.
     sim.world().on_region_enter = [this](u32 region_id, simulation::Unit unit) {
-        set_context_unit(unit.id);
-        set_context_region_id(region_id);
-        fire_event("region_enter", unit.id, "", UINT32_MAX, region_id);
+        EventFrame frame;
+        frame.entity = unit;
+        frame.registered_entity = unit;
+        frame.region_id = region_id;
+        dispatch(frame, "region_enter");
     };
     sim.world().on_region_leave = [this](u32 region_id, simulation::Unit unit) {
-        set_context_unit(unit.id);
-        set_context_region_id(region_id);
-        fire_event("region_leave", unit.id, "", UINT32_MAX, region_id);
+        EventFrame frame;
+        frame.entity = unit;
+        frame.registered_entity = unit;
+        frame.region_id = region_id;
+        dispatch(frame, "region_leave");
     };
 
     log::info(TAG, "ScriptEngine initialized — Lua 5.4 + sol2");
@@ -734,16 +693,15 @@ void ScriptEngine::update(float dt) {
 
         auto it = m_timers.find(best_id);
         if (it == m_timers.end()) break;
-        auto& timer = it->second;
+        auto callback = it->second.callback;
+        if (callback) callback();
 
-        if (timer.callback) {
-            timer.callback();
-        }
-        // Re-check alive — callback may have destroyed this timer
-        if (timer.repeating && timer.alive) {
-            timer.remaining += timer.interval;
+        it = m_timers.find(best_id);
+        if (it == m_timers.end()) continue;
+        if (it->second.repeating && it->second.alive) {
+            it->second.remaining += it->second.interval;
         } else {
-            timer.alive = false;
+            it->second.alive = false;
         }
     }
 
@@ -787,15 +745,15 @@ void ScriptEngine::update(float dt) {
             // For unit-attached effects, track the unit's current
             // position so late-delivered players spawn the effect at
             // the unit's now-position.
-            if (e.entity_id != UINT32_MAX) {
-                if (auto* t = world.transforms.get(e.entity_id)) e.position = t->position;
+            if (world.validate(e.entity)) {
+                if (auto* t = world.transforms.get(e.entity.id)) e.position = t->position;
             }
             for (u32 p = 0; p < m_player_count; ++p) {
                 const bool visible = effect_visible_to(e, p);
                 const bool was = e.delivered.contains(p);
                 if (visible && !was) {
                     if (m_effect_deliver_fn) {
-                        m_effect_deliver_fn(p, e.server_id, e.name, e.entity_id,
+                        m_effect_deliver_fn(p, e.server_id, e.name, e.entity,
                                             e.position, e.attach_point);
                     }
                     e.delivered.insert(p);
@@ -816,8 +774,9 @@ bool ScriptEngine::effect_visible_to(const ActiveEffect& e, u32 player_id) const
     if (!m_sim) return true;
     const auto& world  = m_sim->world();
     const auto& vision = m_sim->vision();
-    if (e.entity_id != UINT32_MAX) {
-        return vision.is_unit_visible_to(world, *m_sim, e.entity_id,
+    if (e.entity.is_valid()) {
+        if (!world.validate(e.entity)) return false;
+        return vision.is_unit_visible_to(world, *m_sim, e.entity.id,
                                           simulation::Player{player_id});
     }
     const auto* terrain = m_sim->terrain();
@@ -833,67 +792,66 @@ bool ScriptEngine::effect_visible_to(const ActiveEffect& e, u32 player_id) const
 
 void ScriptEngine::fire_node_event(std::string_view event_name, u32 player_id,
                                     std::string_view node_id) {
-    set_context_node_id(std::string(node_id));
-    set_context_player(player_id);
-    fire_event(event_name, UINT32_MAX, "", player_id, UINT32_MAX, node_id);
-    m_ctx_node_id.clear();
+    EventFrame frame;
+    frame.player = player_id;
+    frame.node_id = node_id;
+    dispatch(frame, event_name);
 }
 
-void ScriptEngine::fire_event(std::string_view event_name, u32 unit_id,
-                               std::string_view /*ability_id*/, u32 player_id,
-                               u32 region_id, std::string_view node_id) {
-    m_ctx_event = std::string(event_name);
+void ScriptEngine::fire_player_event(std::string_view event_name, u32 player_id) {
+    EventFrame frame;
+    frame.player = player_id;
+    dispatch(frame, event_name);
+}
 
-    auto matches = [&](const Trigger& trig) -> bool {
-        for (auto& eb : trig.events) {
-            if (eb.event_name != event_name) continue;
-            if (eb.unit_id   != UINT32_MAX && eb.unit_id   != unit_id)   continue;
-            if (eb.player_id != UINT32_MAX && eb.player_id != player_id) continue;
-            if (eb.region_id != UINT32_MAX && eb.region_id != region_id) continue;
-            if (!eb.node_id.empty() && eb.node_id != node_id)            continue;
+void ScriptEngine::dispatch(EventFrame& frame, std::string_view event_name) {
+    frame.event = event_name;
+    EventScope scope(*this, frame);
+
+    auto matches = [&](const Trigger& trigger) {
+        for (const auto& binding : trigger.events) {
+            if (binding.event_name != event_name) continue;
+            if (binding.unit_id != UINT32_MAX &&
+                binding.unit_id != frame.registered_entity.id) continue;
+            if (binding.player_id != UINT32_MAX && binding.player_id != frame.player) continue;
+            if (binding.region_id != UINT32_MAX && binding.region_id != frame.region_id) continue;
+            if (!binding.node_id.empty() && binding.node_id != frame.node_id) continue;
             return true;
         }
         return false;
     };
 
-    // Snapshot the matching trigger ids in priority order BEFORE running any
-    // Lua. A trigger action can call CreateTrigger (inserts into m_triggers →
-    // rehash, invalidating a live iterator) or TriggerAddAction/Condition
-    // (push_back into the very vector being walked → realloc). So we walk
-    // copies: collect ids first, then per id re-fetch, copy its condition /
-    // action lists, and invoke the copies. A trigger created mid-dispatch is
-    // intentionally not fired for the event currently being processed (matches
-    // WC3 semantics).
-    std::vector<u32> fire_ids;
+    std::vector<u32> trigger_ids;
     for (i32 p = static_cast<i32>(TriggerPriority::Count) - 1; p >= 0; --p) {
-        auto prio = static_cast<TriggerPriority>(p);
-        for (auto& [trig_id, trig] : m_triggers) {
-            if (!trig.alive || trig.priority != prio) continue;
-            if (!matches(trig)) continue;
-            fire_ids.push_back(trig_id);
+        auto priority = static_cast<TriggerPriority>(p);
+        for (const auto& [trigger_id, trigger] : m_triggers) {
+            if (trigger.alive && trigger.priority == priority && matches(trigger)) {
+                trigger_ids.push_back(trigger_id);
+            }
         }
     }
 
-    for (u32 tid : fire_ids) {
-        // Re-fetch: an earlier action may have destroyed this trigger
-        // (alive=false) or CreateTrigger may have rehashed the map.
-        auto it = m_triggers.find(tid);
+    for (u32 trigger_id : trigger_ids) {
+        auto it = m_triggers.find(trigger_id);
         if (it == m_triggers.end() || !it->second.alive) continue;
 
-        // Copy the callback lists so Lua that push_backs into the trigger's
-        // own vectors (TriggerAddAction/Condition) can't realloc under us.
         auto conditions = it->second.conditions;
         bool pass = true;
-        for (auto& cond : conditions) {
-            if (!cond()) { pass = false; break; }
+        for (auto& condition : conditions) {
+            it = m_triggers.find(trigger_id);
+            if (it == m_triggers.end() || !it->second.alive || !condition()) {
+                pass = false;
+                break;
+            }
         }
         if (!pass) continue;
 
-        // A condition could have destroyed the trigger — re-check before acting.
-        it = m_triggers.find(tid);
+        it = m_triggers.find(trigger_id);
         if (it == m_triggers.end() || !it->second.alive) continue;
         auto actions = it->second.actions;
         for (auto& action : actions) {
+            it = m_triggers.find(trigger_id);
+            if (it == m_triggers.end() || !it->second.alive) break;
             action();
         }
     }
@@ -908,7 +866,8 @@ void ScriptEngine::bind_api() {
 
     // Helper: return nil for invalid units
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
-        return u.is_valid() ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
+        return sim.world().validate(u) ? sol::make_object(*m_lua, u)
+                                       : sol::make_object(*m_lua, sol::nil);
     };
 
     auto player_or_nil = [&](simulation::Player p) -> sol::object {
@@ -928,8 +887,10 @@ void ScriptEngine::bind_api() {
             if (t) t->position.z = ::uldum::map::sample_height(terrain_ref,x, y);
             auto* mov = world.movements.get(unit.id);
             if (mov) mov->cliff_level = sim.pathfinder().cliff_level_at(x, y);
-            set_context_unit(unit.id);
-            fire_event("global_unit_created", unit.id);
+            EventFrame frame;
+            frame.entity = unit;
+            frame.registered_entity = unit;
+            dispatch(frame, "global_unit_created");
             return sol::make_object(*m_lua, unit);
         }
         return sol::make_object(*m_lua, sol::nil);
@@ -937,8 +898,10 @@ void ScriptEngine::bind_api() {
 
     lua["RemoveUnit"] = [&](simulation::Unit unit) {
         if (!sim.world().validate(unit)) return;
-        set_context_unit(unit.id);
-        fire_event("global_unit_removed", unit.id);
+        EventFrame frame;
+        frame.entity = unit;
+        frame.registered_entity = unit;
+        dispatch(frame, "global_unit_removed");
         simulation::destroy(sim.world(), unit);
     };
 
@@ -1005,6 +968,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetUnitTypeId"] = [&](simulation::Unit unit) -> std::string {
+        if (!sim.world().validate(unit)) return "";
         auto* info = sim.world().handle_infos.get(unit.id);
         return info ? info->type_id : "";
     };
@@ -1014,34 +978,37 @@ void ScriptEngine::bind_api() {
     // string. Units without a Movement (buildings, destructables) read as
     // "ground" — same default the combat target handshake uses.
     lua["GetUnitMoveType"] = [&](simulation::Unit u) -> std::string {
+        if (!sim.world().validate(u)) return simulation::move_type_name(simulation::MoveType::Ground);
         auto* mov = sim.world().movements.get(u.id);
         return simulation::move_type_name(mov ? mov->type : simulation::MoveType::Ground);
     };
 
     // Position
     lua["GetUnitX"] = [&](simulation::Unit u) -> f32 {
-        auto* t = sim.world().transforms.get(u.id); return t ? t->position.x : 0;
+        return simulation::get_position(sim.world(), u).x;
     };
     lua["GetUnitY"] = [&](simulation::Unit u) -> f32 {
-        auto* t = sim.world().transforms.get(u.id); return t ? t->position.y : 0;
+        return simulation::get_position(sim.world(), u).y;
     };
     lua["GetUnitZ"] = [&](simulation::Unit u) -> f32 {
-        auto* t = sim.world().transforms.get(u.id); return t ? t->position.z : 0;
+        return simulation::get_position(sim.world(), u).z;
     };
     lua["GetUnitPosition"] = [&](simulation::Unit u) -> std::tuple<f32, f32, f32> {
-        auto* t = sim.world().transforms.get(u.id);
-        if (!t) return {0, 0, 0};
-        return {t->position.x, t->position.y, t->position.z};
+        glm::vec3 position = simulation::get_position(sim.world(), u);
+        return {position.x, position.y, position.z};
     };
     lua["SetUnitPosition"] = [&](simulation::Unit u, f32 x, f32 y) {
+        if (!sim.world().validate(u)) return;
         auto* t = sim.world().transforms.get(u.id);
         if (t) { t->position.x = x; t->position.y = y; t->position.z = ::uldum::map::sample_height(terrain_ref,x, y); }
     };
     lua["GetUnitFacing"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().validate(u)) return 0;
         auto* t = sim.world().transforms.get(u.id);
         return t ? t->facing * 57.2957795f : 0;  // rad → deg
     };
     lua["SetUnitFacing"] = [&](simulation::Unit u, f32 degrees) {
+        if (!sim.world().validate(u)) return;
         auto* t = sim.world().transforms.get(u.id);
         if (t) t->facing = degrees * 0.0174532925f;  // deg → rad
     };
@@ -1086,6 +1053,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["ResetUnitAnimation"] = [&](simulation::Unit u) {
+        if (!sim.world().validate(u)) return;
         sim.world().anim_queues.remove(u.id);
     };
 
@@ -1094,6 +1062,7 @@ void ScriptEngine::bind_api() {
         return simulation::get_health(sim.world(), u);
     };
     lua["GetUnitMaxHealth"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().validate(u)) return 0;
         auto* h = sim.world().healths.get(u.id); return h ? h->max : 0;
     };
     lua["SetUnitHealth"] = [&](simulation::Unit u, f32 hp) {
@@ -1102,6 +1071,7 @@ void ScriptEngine::bind_api() {
 
     // Attributes
     lua["GetUnitAttribute"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        if (!sim.world().validate(u)) return 0;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return 0;
         auto it = ab->numeric.find(name);
@@ -1109,6 +1079,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
+        if (!sim.world().validate(u)) return;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
         // Writes to base; the next recalc re-sums passive ability
@@ -1124,6 +1095,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name) -> std::string {
+        if (!sim.world().validate(u)) return "";
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return "";
         auto it = ab->string_attrs.find(name);
@@ -1132,6 +1104,7 @@ void ScriptEngine::bind_api() {
 
     lua["SetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name,
                                          const std::string& value) {
+        if (!sim.world().validate(u)) return;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
         ab->string_attrs[name] = value;
@@ -1146,6 +1119,7 @@ void ScriptEngine::bind_api() {
     // the schema (max + regen) used to seed each unit on spawn.
 
     lua["GetUnitState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        if (!sim.world().validate(u)) return 0;
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return 0;
         auto it = sb->states.find(name);
@@ -1153,6 +1127,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetUnitMaxState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        if (!sim.world().validate(u)) return 0;
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return 0;
         auto it = sb->states.find(name);
@@ -1160,6 +1135,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetUnitState"] = [&](simulation::Unit u, const std::string& name, f32 value) {
+        if (!sim.world().validate(u)) return;
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return;
         auto it = sb->states.find(name);
@@ -1214,12 +1190,14 @@ void ScriptEngine::bind_api() {
 
     // Classification
     lua["HasClassification"] = [&](simulation::Unit u, const std::string& flag) -> bool {
+        if (!sim.world().validate(u)) return false;
         auto* cls = sim.world().classifications.get(u.id);
         return cls && simulation::has_classification(cls->flags, flag);
     };
 
     // Owner
     lua["GetUnitOwner"] = [&, player_or_nil](simulation::Unit u) -> sol::object {
+        if (!sim.world().validate(u)) return sol::make_object(*m_lua, sol::nil);
         auto* o = sim.world().owners.get(u.id);
         return o ? player_or_nil(*o) : sol::make_object(*m_lua, sol::nil);
     };
@@ -1332,13 +1310,16 @@ void ScriptEngine::bind_api() {
     // projectiles and consumed by the built-in hit handler; ability
     // projectiles can use damage as a free-form field via Set/Get.
     lua["GetProjectileDamage"] = [&](simulation::Unit proj) -> f32 {
+        if (!sim.world().validate(proj)) return 0.0f;
         auto* p = sim.world().projectiles.get(proj.id);
         return p ? p->damage : 0.0f;
     };
     lua["SetProjectileDamage"] = [&](simulation::Unit proj, f32 damage) {
+        if (!sim.world().validate(proj)) return;
         if (auto* p = sim.world().projectiles.get(proj.id)) p->damage = damage;
     };
     lua["IsProjectileNormalAttack"] = [&](simulation::Unit proj) -> bool {
+        if (!sim.world().validate(proj)) return false;
         auto* p = sim.world().projectiles.get(proj.id);
         return p && p->is_attack;
     };
@@ -1348,21 +1329,27 @@ void ScriptEngine::bind_api() {
     // would; the dedicated name keeps map code reading intentionally. X/Y only
     // (world plane) — Z stays out of the position API, WC3 convention.
     lua["GetProjectileX"] = [&](simulation::Unit proj) -> f32 {
-        auto* t = sim.world().transforms.get(proj.id); return t ? t->position.x : 0;
+        return simulation::get_position(sim.world(), proj).x;
     };
     lua["GetProjectileY"] = [&](simulation::Unit proj) -> f32 {
-        auto* t = sim.world().transforms.get(proj.id); return t ? t->position.y : 0;
+        return simulation::get_position(sim.world(), proj).y;
     };
 
-    // Trigger-context accessors. Valid inside PROJECTILE_HIT (where
-    // the projectile, source, and hit unit are all set) and
-    // PROJECTILE_DESTROYED (projectile + source; hit unit is nil).
     lua["GetTriggerProjectile"] = [&, unit_or_nil]() -> sol::object {
-        return unit_or_nil(make_unit(sim.world(), m_ctx_projectile));
+        if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
+        auto* event = std::get_if<ProjectileEvent>(&m_event_frame->payload);
+        return event ? unit_or_nil(event->projectile)
+                     : sol::make_object(*m_lua, sol::nil);
     };
     lua["GetProjectileSource"] = [&, unit_or_nil]() -> sol::object {
-        auto* p = sim.world().projectiles.get(m_ctx_projectile);
-        return p ? unit_or_nil(p->source) : sol::make_object(*m_lua, sol::nil);
+        if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
+        auto* event = std::get_if<ProjectileEvent>(&m_event_frame->payload);
+        if (!event || !sim.world().validate(event->projectile)) {
+            return sol::make_object(*m_lua, sol::nil);
+        }
+        auto* projectile = sim.world().projectiles.get(event->projectile.id);
+        return projectile ? unit_or_nil(projectile->source)
+                          : sol::make_object(*m_lua, sol::nil);
     };
 
     // Projectile-scoped trigger registration. Same shape as the
@@ -1374,13 +1361,14 @@ void ScriptEngine::bind_api() {
             log::warn(TAG, "TriggerRegisterProjectileEvent: event name is nil or empty");
             return;
         }
+        if (!sim.world().validate(proj) || !sim.world().projectiles.has(proj.id)) return;
         std::string event_name = event_obj.as<std::string>();
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
         if (it != m_triggers.end()) {
             Trigger::EventBinding eb;
             eb.event_name = event_name;
-            eb.unit_id    = proj.id;   // reuse unit_id slot — fire_event passes projectile.id here too
+            eb.unit_id = proj.id;
             it->second.events.push_back(std::move(eb));
         }
     };
@@ -1495,31 +1483,29 @@ void ScriptEngine::bind_api() {
     };
 
     lua["HealUnit"] = [&](simulation::Unit source, simulation::Unit target, f32 amount) {
-        if (amount <= 0) return;
+        if (amount <= 0 || !sim.world().validate(target)) return;
         auto* hp = sim.world().healths.get(target.id);
         if (!hp) return;
-        set_context_unit(target.id);
-        set_context_heal_source(source.id);
-        set_context_heal_target(target.id);
-        set_context_heal_amount(amount);
-        fire_event("global_heal", target.id);
-        fire_event("unit_heal", target.id);
-        amount = get_context_heal_amount();  // trigger may have modified it
-        if (amount <= 0) return;
-        hp->current = std::min(hp->current + amount, hp->max);
+        EventFrame frame;
+        frame.entity = target;
+        frame.registered_entity = target;
+        frame.payload = HealEvent{source, target, amount};
+        dispatch(frame, "global_heal");
+        dispatch(frame, "unit_heal");
+        amount = std::get<HealEvent>(frame.payload).amount;
+        if (amount <= 0 || !sim.world().validate(target)) return;
+        hp = sim.world().healths.get(target.id);
+        if (hp) {
+            hp->current = std::min(hp->current + amount, hp->max);
+            if (hp->current > 0.0f) hp->killer = {};
+        }
     };
 
     lua["KillUnit"] = [&](simulation::Unit unit, sol::optional<simulation::Unit> killer) {
-        auto* hp = sim.world().healths.get(unit.id);
-        if (hp) hp->current = 0;
-        set_context_unit(unit.id);
-        set_context_killer(killer ? killer->id : UINT32_MAX);
-        fire_event("global_death", unit.id);
-        auto* info = sim.world().handle_infos.get(unit.id);
-        if (info && info->category == simulation::Category::Destructable) {
-            fire_event("destructable_death", unit.id);
-        } else {
-            fire_event("unit_death", unit.id);
+        if (!sim.world().validate(unit)) return;
+        if (auto* hp = sim.world().healths.get(unit.id)) {
+            hp->killer = killer && sim.world().validate(*killer) ? *killer : simulation::Unit{};
+            hp->current = 0;
         }
     };
 
@@ -1607,6 +1593,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetDistanceBetween"] = [&](simulation::Unit u1, simulation::Unit u2) -> f32 {
+        if (!sim.world().validate(u1) || !sim.world().validate(u2)) return 0;
         auto* t1 = sim.world().transforms.get(u1.id);
         auto* t2 = sim.world().transforms.get(u2.id);
         if (!t1 || !t2) return 0;
@@ -1616,6 +1603,7 @@ void ScriptEngine::bind_api() {
 
     // Radians from u1 toward u2, measured from +X axis (atan2 convention).
     lua["GetAngleBetween"] = [&](simulation::Unit u1, simulation::Unit u2) -> f32 {
+        if (!sim.world().validate(u1) || !sim.world().validate(u2)) return 0;
         auto* t1 = sim.world().transforms.get(u1.id);
         auto* t2 = sim.world().transforms.get(u2.id);
         if (!t1 || !t2) return 0;
@@ -1689,7 +1677,7 @@ void ScriptEngine::bind_api() {
         e.server_id = m_next_effect_id++;
         e.name      = name;
         e.position  = {x, y, z};
-        e.entity_id = UINT32_MAX;
+        e.entity    = {};
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         m_active_effects.push_back(std::move(e));
         return m_active_effects.back().server_id;
@@ -1699,13 +1687,14 @@ void ScriptEngine::bind_api() {
             const std::string& name, simulation::Unit unit,
             sol::optional<std::string> attach_point,
             sol::optional<sol::table> opts) -> u32 {
+        if (!sim.world().validate(unit)) return 0;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return 0;
         ActiveEffect e;
         e.server_id    = m_next_effect_id++;
         e.name         = name;
         e.position     = t->position;
-        e.entity_id    = unit.id;
+        e.entity       = unit;
         e.attach_point = attach_point ? *attach_point : std::string{};
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         m_active_effects.push_back(std::move(e));
@@ -1726,7 +1715,7 @@ void ScriptEngine::bind_api() {
                     if (it->delivered.contains(p)) continue;
                     if (effect_visible_to(*it, p)) {
                         m_effect_deliver_fn(p, it->server_id, it->name,
-                                            it->entity_id, it->position, it->attach_point);
+                                            it->entity, it->position, it->attach_point);
                         it->delivered.insert(p);
                     }
                 }
@@ -1749,7 +1738,7 @@ void ScriptEngine::bind_api() {
         e.server_id = m_next_effect_id++;
         e.name      = name;
         e.position  = {x, y, z};
-        e.entity_id = UINT32_MAX;
+        e.entity    = {};
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         u32 id = e.server_id;
         m_active_effects.push_back(std::move(e));
@@ -1759,13 +1748,14 @@ void ScriptEngine::bind_api() {
             const std::string& name, simulation::Unit unit,
             sol::optional<std::string> attach_point,
             sol::optional<sol::table> opts) {
+        if (!sim.world().validate(unit)) return;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
         ActiveEffect e;
         e.server_id    = m_next_effect_id++;
         e.name         = name;
         e.position     = t->position;
-        e.entity_id    = unit.id;
+        e.entity       = unit;
         e.attach_point = attach_point ? *attach_point : std::string{};
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         u32 id = e.server_id;
@@ -1779,6 +1769,7 @@ void ScriptEngine::bind_api() {
     // its own audio engine. Wire format docs: see protocol.h.
     lua["PlaySound"] = [this](std::string_view path, simulation::Unit unit) {
         auto& sim = *m_sim;
+        if (!sim.world().validate(unit)) return;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
         if (m_audio)        m_audio->play_sfx(path, t->position);
@@ -1911,6 +1902,7 @@ void ScriptEngine::bind_api() {
         if (!m_camera_set_target_controller_fn) return;
         u32 mask = parse_players_mask(players);
         simulation::Unit unit = u.value_or(simulation::Unit{});
+        if (unit.is_valid() && (!m_sim || !m_sim->world().validate(unit))) return;
         m_camera_set_target_controller_fn(mask, unit);
     };
 
@@ -2036,7 +2028,8 @@ void ScriptEngine::bind_api() {
     lua["EndGame"] = [this](u32 winner_id, sol::optional<std::string> stats_json) {
         std::string stats = stats_json.value_or("{}");
         log::info("Script", "EndGame called — winner: {}", winner_id);
-        fire_event("global_game_end");
+        EventFrame frame;
+        dispatch(frame, "global_game_end");
         if (m_end_game_fn) m_end_game_fn(winner_id, stats);
     };
 
@@ -2046,8 +2039,8 @@ void ScriptEngine::bind_api() {
     // Map Lua drives consumption / level-up / merge / drop-on-death.
 
     auto item_or_nil = [&](simulation::Item it) -> sol::object {
-        return it.is_valid() ? sol::make_object(*m_lua, it)
-                              : sol::make_object(*m_lua, sol::nil);
+        return sim.world().validate(it) ? sol::make_object(*m_lua, it)
+                                        : sol::make_object(*m_lua, sol::nil);
     };
 
     lua["CreateItem"] = [&, item_or_nil](const std::string& type_id, f32 x, f32 y) -> sol::object {
@@ -2061,37 +2054,49 @@ void ScriptEngine::bind_api() {
         return item_or_nil(item);
     };
     lua["RemoveItem"] = [&](simulation::Item item) {
-        // If carried, revoke abilities + clear the carrier's slot
-        // before destroying the entity.
-        if (auto* car = sim.world().carriables.get(item.id);
-            car && car->carried_by.is_valid()) {
-            auto* inv = sim.world().inventories.get(car->carried_by.id);
-            if (inv) {
-                for (auto& s : inv->slots) {
-                    if (s.id == item.id && s.generation == item.generation) {
-                        s = simulation::Item{};
+        if (!sim.world().validate(item)) return;
+
+        simulation::Unit carrier;
+        if (auto* car = sim.world().carriables.get(item.id)) {
+            carrier = car->carried_by;
+        }
+
+        std::vector<std::string> abilities;
+        if (sim.world().types) {
+            if (auto* info = sim.world().item_infos.get(item.id)) {
+                if (auto* def = sim.world().types->get_item_type(info->type_id)) {
+                    abilities = def->abilities;
+                }
+            }
+        }
+
+        if (sim.world().validate(carrier)) {
+            if (auto* inv = sim.world().inventories.get(carrier.id)) {
+                for (auto& slot : inv->slots) {
+                    if (slot == item) {
+                        slot = {};
                         break;
                     }
                 }
             }
-            // Revoke abilities granted by this item.
-            if (sim.world().types) {
-                if (auto* info = sim.world().item_infos.get(item.id)) {
-                    if (auto* def = sim.world().types->get_item_type(info->type_id)) {
-                        for (const auto& aid : def->abilities) {
-                            simulation::remove_ability(sim.world(), car->carried_by, aid);
-                        }
-                    }
-                }
+            if (auto* car = sim.world().carriables.get(item.id)) {
+                car->carried_by = {};
+            }
+            for (const auto& ability_id : abilities) {
+                if (!sim.world().validate(carrier)) break;
+                simulation::remove_item_ability(sim.world(), carrier,
+                                                ability_id, item);
             }
         }
-        simulation::destroy(sim.world(), item);
+
+        if (sim.world().validate(item)) simulation::destroy(sim.world(), item);
     };
 
     lua["GiveItem"] = [&](simulation::Unit unit, simulation::Item item) -> i32 {
         return simulation::give_item_to_unit(sim.world(), unit, item);
     };
     lua["UnitDropItemFromSlot"] = [&](simulation::Unit unit, i32 slot, sol::optional<f32> x, sol::optional<f32> y) {
+        if (!sim.world().validate(unit)) return false;
         glm::vec3 pos{0, 0, 0};
         if (auto* tf = sim.world().transforms.get(unit.id)) pos = tf->position;
         if (x) pos.x = *x;
@@ -2104,6 +2109,7 @@ void ScriptEngine::bind_api() {
         return simulation::drop_item_from_unit(sim.world(), unit, slot, pos);
     };
     lua["UnitGetItemFromSlot"] = [&, item_or_nil](simulation::Unit unit, i32 slot) -> sol::object {
+        if (!sim.world().validate(unit)) return sol::make_object(*m_lua, sol::nil);
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) {
             return sol::make_object(*m_lua, sol::nil);
@@ -2111,6 +2117,7 @@ void ScriptEngine::bind_api() {
         return item_or_nil(inv->slots[slot]);
     };
     lua["UnitItemCount"] = [&](simulation::Unit unit) -> i32 {
+        if (!sim.world().validate(unit)) return 0;
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv) return 0;
         i32 n = 0;
@@ -2118,14 +2125,16 @@ void ScriptEngine::bind_api() {
         return n;
     };
     lua["UnitInventorySize"] = [&](simulation::Unit unit) -> i32 {
+        if (!sim.world().validate(unit)) return 0;
         auto* inv = sim.world().inventories.get(unit.id);
         return inv ? static_cast<i32>(inv->slots.size()) : 0;
     };
     lua["UnitHasItemOfType"] = [&](simulation::Unit unit, const std::string& type_id) -> bool {
+        if (!sim.world().validate(unit)) return false;
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv) return false;
         for (auto& it : inv->slots) {
-            if (!it.is_valid()) continue;
+            if (!sim.world().validate(it)) continue;
             auto* info = sim.world().item_infos.get(it.id);
             if (info && info->type_id == type_id) return true;
         }
@@ -2133,11 +2142,13 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetItemTypeId"]  = [&](simulation::Item item) -> std::string {
+        if (!sim.world().validate(item)) return {};
         auto* info = sim.world().item_infos.get(item.id);
         return info ? info->type_id : std::string{};
     };
     lua["GetItemCharges"] = [&](simulation::Item item) -> i32 { return simulation::get_charges(sim.world(), item); };
     lua["SetItemCharges"] = [&](simulation::Item item, i32 n) {
+        if (!sim.world().validate(item)) return;
         simulation::set_charges(sim.world(), item, n);
         if (m_unit_update_fn) {
             auto pkt = network::build_update_item_charges(item.id, n);
@@ -2146,6 +2157,7 @@ void ScriptEngine::bind_api() {
     };
     lua["GetItemLevel"]   = [&](simulation::Item item) -> i32 { return simulation::get_level(sim.world(), item); };
     lua["SetItemLevel"]   = [&](simulation::Item item, i32 n) {
+        if (!sim.world().validate(item)) return;
         simulation::set_level(sim.world(), item, n);
         if (m_unit_update_fn) {
             auto pkt = network::build_update_item_level(item.id, n);
@@ -2156,6 +2168,7 @@ void ScriptEngine::bind_api() {
         return unit_or_nil(simulation::get_item_owner(sim.world(), item));
     };
     lua["GetItemPosition"] = [&](simulation::Item item) -> std::tuple<f32, f32, f32> {
+        if (!sim.world().validate(item)) return {0.0f, 0.0f, 0.0f};
         auto* tf = sim.world().transforms.get(item.id);
         if (!tf) return {0.0f, 0.0f, 0.0f};
         return {tf->position.x, tf->position.y, tf->position.z};
@@ -2220,6 +2233,7 @@ void ScriptEngine::bind_trigger_api() {
             log::warn(TAG, "TriggerRegisterUnitEvent: event name is nil or empty");
             return;
         }
+        if (!m_sim || !m_sim->world().validate(unit)) return;
         std::string event_name = event_obj.as<std::string>();
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
@@ -2236,13 +2250,14 @@ void ScriptEngine::bind_trigger_api() {
             log::warn(TAG, "TriggerRegisterDestructableEvent: event name is nil or empty");
             return;
         }
+        if (!m_sim || !m_sim->world().validate(dest)) return;
         std::string event_name = event_obj.as<std::string>();
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
         if (it != m_triggers.end()) {
             Trigger::EventBinding eb;
             eb.event_name = event_name;
-            eb.unit_id = dest.id;  // reuse unit_id slot — fire_event passes the dying widget id here
+            eb.unit_id = dest.id;
             it->second.events.push_back(std::move(eb));
         }
     };
@@ -2275,24 +2290,34 @@ void ScriptEngine::bind_trigger_api() {
         timer.remaining = interval;
         timer.repeating = repeating;
         timer.callback = [this, trig_id]() {
+            EventFrame frame;
+            frame.event = "timer";
+            EventScope scope(*this, frame);
+
             auto it = m_triggers.find(trig_id);
             if (it == m_triggers.end() || !it->second.alive) return;
-            m_ctx_event = "timer";
-            bool pass = true;
-            for (auto& cond : it->second.conditions) {
-                if (!cond()) { pass = false; break; }
+            auto conditions = it->second.conditions;
+            for (auto& condition : conditions) {
+                it = m_triggers.find(trig_id);
+                if (it == m_triggers.end() || !it->second.alive || !condition()) return;
             }
-            if (pass) {
-                for (auto& action : it->second.actions) {
-                    action();
-                }
+
+            it = m_triggers.find(trig_id);
+            if (it == m_triggers.end() || !it->second.alive) return;
+            auto actions = it->second.actions;
+            for (auto& action : actions) {
+                it = m_triggers.find(trig_id);
+                if (it == m_triggers.end() || !it->second.alive) break;
+                action();
             }
         };
         m_timers[timer_id] = std::move(timer);
         trig_it->second.owned_timers.push_back(timer_id);
 
         // Also register "timer" as an event for matching
-        trig_it->second.events.push_back({"timer"});
+        Trigger::EventBinding binding;
+        binding.event_name = "timer";
+        trig_it->second.events.push_back(std::move(binding));
     };
 
     lua["TriggerAddCondition"] = [&](sol::table t, sol::function fn) {
@@ -2326,7 +2351,8 @@ void ScriptEngine::bind_trigger_api() {
     auto& sim = *m_sim;
 
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
-        return u.is_valid() ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
+        return sim.world().validate(u) ? sol::make_object(*m_lua, u)
+                                       : sol::make_object(*m_lua, sol::nil);
     };
 
     auto player_or_nil = [&](simulation::Player p) -> sol::object {
@@ -2335,148 +2361,191 @@ void ScriptEngine::bind_trigger_api() {
 
     // Context validation helper
     auto warn_wrong_event = [&](const char* fn, std::initializer_list<const char*> expected) {
-        for (auto* e : expected) {
-            if (m_ctx_event == e) return false;
+        std::string_view current = m_event_frame ? m_event_frame->event : std::string_view{};
+        for (auto* event : expected) {
+            if (current == event) return false;
         }
-        log::warn(TAG, "{}() called during '{}' event — expected one of: {}", fn, m_ctx_event,
-                  [&]{ std::string s; for (auto* e : expected) { if (!s.empty()) s += ", "; s += e; } return s; }());
+        log::warn(TAG, "{}() called during '{}' event — expected one of: {}", fn, current,
+                  [&]{ std::string s; for (auto* event : expected) { if (!s.empty()) s += ", "; s += event; } return s; }());
         return true;
     };
 
-    lua["GetTriggerEvent"] = [&]() -> std::string { return m_ctx_event; };
-    // GetTriggerUnit — the unit the event is about. nil when the trigger
-    // widget is a destructable (use GetTriggerDestructable) or absent.
+    lua["GetTriggerEvent"] = [this]() -> std::string {
+        return m_event_frame ? m_event_frame->event : std::string{};
+    };
     lua["GetTriggerUnit"] = [&, unit_or_nil]() -> sol::object {
-        if (m_ctx_unit == UINT32_MAX) return sol::make_object(*m_lua, sol::nil);
-        if (category_of(sim.world(), m_ctx_unit) != simulation::Category::Unit)
+        if (!m_event_frame || !sim.world().validate(m_event_frame->entity)) {
             return sol::make_object(*m_lua, sol::nil);
-        return unit_or_nil(make_unit(sim.world(), m_ctx_unit));
-    };
-    // GetTriggerDestructable — the destructable the event is about. nil
-    // when the trigger widget is a unit (use GetTriggerUnit) or absent.
-    lua["GetTriggerDestructable"] = [&]() -> sol::object {
-        if (m_ctx_unit == UINT32_MAX) return sol::make_object(*m_lua, sol::nil);
-        if (category_of(sim.world(), m_ctx_unit) != simulation::Category::Destructable)
-            return sol::make_object(*m_lua, sol::nil);
-        auto d = make_destructable(sim.world(), m_ctx_unit);
-        return d.is_valid() ? sol::make_object(*m_lua, d) : sol::make_object(*m_lua, sol::nil);
-    };
-    // GetTriggerWidget — the widget (unit OR destructable) the event is
-    // about, regardless of category. Returns whichever usertype matches
-    // so GetUnitX/health work; nil when there's no trigger widget.
-    lua["GetTriggerWidget"] = [&]() -> sol::object {
-        if (m_ctx_unit == UINT32_MAX) return sol::make_object(*m_lua, sol::nil);
-        auto cat = category_of(sim.world(), m_ctx_unit);
-        if (cat == simulation::Category::Destructable) {
-            auto d = make_destructable(sim.world(), m_ctx_unit);
-            return d.is_valid() ? sol::make_object(*m_lua, d) : sol::make_object(*m_lua, sol::nil);
         }
-        auto u = make_unit(sim.world(), m_ctx_unit);
-        return u.is_valid() ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
+        const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
+        if (!info || info->category != simulation::Category::Unit) {
+            return sol::make_object(*m_lua, sol::nil);
+        }
+        return unit_or_nil(as_unit(m_event_frame->entity));
+    };
+    lua["GetTriggerDestructable"] = [&]() -> sol::object {
+        if (!m_event_frame || !sim.world().validate(m_event_frame->entity)) {
+            return sol::make_object(*m_lua, sol::nil);
+        }
+        const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
+        if (!info || info->category != simulation::Category::Destructable) {
+            return sol::make_object(*m_lua, sol::nil);
+        }
+        return sol::make_object(*m_lua, as_destructable(m_event_frame->entity));
+    };
+    lua["GetTriggerWidget"] = [&]() -> sol::object {
+        if (!m_event_frame || !sim.world().validate(m_event_frame->entity)) {
+            return sol::make_object(*m_lua, sol::nil);
+        }
+        const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
+        if (!info) return sol::make_object(*m_lua, sol::nil);
+        if (info->category == simulation::Category::Destructable) {
+            return sol::make_object(*m_lua, as_destructable(m_event_frame->entity));
+        }
+        if (info->category == simulation::Category::Unit) {
+            return sol::make_object(*m_lua, as_unit(m_event_frame->entity));
+        }
+        return sol::make_object(*m_lua, sol::nil);
     };
     lua["GetTriggerPlayer"] = [&, player_or_nil]() -> sol::object {
-        return player_or_nil(simulation::Player{m_ctx_player});
+        return player_or_nil(simulation::Player{
+            m_event_frame ? m_event_frame->player : UINT32_MAX});
     };
     // GetTriggerNode() — id of the HUD node that fired a button_pressed
     // (or other node-event) trigger. Empty string outside a node-event
     // action.
-    lua["GetTriggerNode"] = [this]() -> std::string { return m_ctx_node_id; };
-    // GetTriggerItem() — item the current event is about (or nil).
-    // Set during item events (picked_up, dropped) and during ability
-    // casts that originated from an item slot. Authors hook this from
-    // an EVENT_ABILITY_CAST_FINISHED trigger to drive consumption etc.
-    lua["GetTriggerItem"] = [&, item_or_nil = [&](simulation::Item it) -> sol::object {
-        return it.is_valid() ? sol::make_object(*m_lua, it) : sol::make_object(*m_lua, sol::nil);
-    }]() -> sol::object {
-        return item_or_nil(m_ctx_item);
+    lua["GetTriggerNode"] = [this]() -> std::string {
+        return m_event_frame ? m_event_frame->node_id : std::string{};
     };
-    lua["GetTriggerAbilityId"] = [&]() -> std::string {
-        if (m_ctx_ability.empty()) {
-            log::warn(TAG, "GetTriggerAbilityId() called but no ability in context (event: '{}')", m_ctx_event);
+    lua["GetTriggerItem"] = [&, item_or_nil = [&](simulation::Item item) -> sol::object {
+        return sim.world().validate(item) ? sol::make_object(*m_lua, item)
+                                          : sol::make_object(*m_lua, sol::nil);
+    }]() -> sol::object {
+        if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
+        if (auto* event = std::get_if<ItemEvent>(&m_event_frame->payload)) {
+            return item_or_nil(event->item);
         }
-        return m_ctx_ability;
+        if (auto* event = std::get_if<AbilityEvent>(&m_event_frame->payload)) {
+            return item_or_nil(event->source_item);
+        }
+        return sol::make_object(*m_lua, sol::nil);
+    };
+    lua["GetTriggerAbilityId"] = [this]() -> std::string {
+        if (!m_event_frame) return {};
+        if (auto* event = std::get_if<AbilityEvent>(&m_event_frame->payload)) {
+            return event->ability_id;
+        }
+        if (auto* event = std::get_if<OrderEvent>(&m_event_frame->payload)) {
+            return event->ability_id;
+        }
+        return {};
     };
 
-    // Order-event context — populated by the on_order callback.
-    // GetTriggerOrderType returns one of: "move", "attack_move",
-    // "attack", "stop", "hold", "patrol", "cast", "train", "research",
-    // "build", "pickup", "drop", "swap_inventory_slot",
-    // "move_direction". For "cast" orders, GetTriggerAbilityId returns
-    // the ability id. GetOrderTargetUnit / X / Y are zero / nil when
-    // the order didn't carry that field (e.g. Stop has neither).
-    lua["GetTriggerOrderType"] = [&]() -> std::string { return m_ctx_order_type; };
-    lua["GetOrderTargetUnit"] = [&, unit_or_nil]() -> sol::object {
-        return unit_or_nil(make_unit(sim.world(), m_ctx_order_target_unit));
+    auto order_event = [this]() -> OrderEvent* {
+        return m_event_frame ? std::get_if<OrderEvent>(&m_event_frame->payload) : nullptr;
     };
-    lua["GetOrderTargetX"] = [&]() -> f32 { return m_ctx_order_target_x; };
-    lua["GetOrderTargetY"] = [&]() -> f32 { return m_ctx_order_target_y; };
-    lua["GetDamageSource"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+    lua["GetTriggerOrderType"] = [order_event]() -> std::string {
+        auto* event = order_event();
+        return event ? event->type : std::string{};
+    };
+    lua["GetOrderTargetUnit"] = [&, unit_or_nil, order_event]() -> sol::object {
+        auto* event = order_event();
+        return event ? unit_or_nil(event->target_unit)
+                     : sol::make_object(*m_lua, sol::nil);
+    };
+    lua["GetOrderTargetX"] = [order_event]() -> f32 {
+        auto* event = order_event();
+        return event ? event->target_x : 0.0f;
+    };
+    lua["GetOrderTargetY"] = [order_event]() -> f32 {
+        auto* event = order_event();
+        return event ? event->target_y : 0.0f;
+    };
+
+    auto damage_event = [this]() -> DamageEvent* {
+        return m_event_frame ? std::get_if<DamageEvent>(&m_event_frame->payload) : nullptr;
+    };
+    lua["GetDamageSource"] = [&, unit_or_nil, warn_wrong_event, damage_event]() -> sol::object {
         warn_wrong_event("GetDamageSource", {"global_damage", "unit_damage"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_damage_source));
+        auto* event = damage_event();
+        return event ? unit_or_nil(event->source) : sol::make_object(*m_lua, sol::nil);
     };
-    lua["GetDamageTarget"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+    lua["GetDamageTarget"] = [&, unit_or_nil, warn_wrong_event, damage_event]() -> sol::object {
         warn_wrong_event("GetDamageTarget", {"global_damage", "unit_damage"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_damage_target));
+        auto* event = damage_event();
+        return event ? unit_or_nil(event->target) : sol::make_object(*m_lua, sol::nil);
     };
-    lua["GetDamageAmount"] = [&, warn_wrong_event]() -> f32 {
+    lua["GetDamageAmount"] = [warn_wrong_event, damage_event]() -> f32 {
         warn_wrong_event("GetDamageAmount", {"global_damage", "unit_damage"});
-        return m_ctx_damage_amount;
+        auto* event = damage_event();
+        return event ? event->amount : 0.0f;
     };
-    lua["SetDamageAmount"] = [&, warn_wrong_event](f32 v) {
+    lua["SetDamageAmount"] = [warn_wrong_event, damage_event](f32 value) {
         if (warn_wrong_event("SetDamageAmount", {"global_damage", "unit_damage"})) return;
-        if (v < 0) v = 0;
-        m_ctx_damage_amount = v;
+        if (auto* event = damage_event()) event->amount = std::max(0.0f, value);
     };
-    lua["GetDamageType"] = [&, warn_wrong_event]() -> std::string {
+    lua["GetDamageType"] = [warn_wrong_event, damage_event]() -> std::string {
         warn_wrong_event("GetDamageType", {"global_damage", "unit_damage"});
-        return m_ctx_damage_type;
+        auto* event = damage_event();
+        return event ? event->type : std::string{};
     };
     lua["GetKillingUnit"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
         warn_wrong_event("GetKillingUnit", {"global_death", "unit_death"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_killer));
+        auto* event = m_event_frame ? std::get_if<DeathEvent>(&m_event_frame->payload) : nullptr;
+        return event ? unit_or_nil(event->killer) : sol::make_object(*m_lua, sol::nil);
     };
-
-    // GetAttacker — source of the current attack event. The target is
-    // `GetTriggerUnit()`. Valid inside global_attacked / unit_attacked
-    // actions; warns + returns nil elsewhere.
-    lua["GetAttacker"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+    lua["GetAttacker"] = [&, unit_or_nil, warn_wrong_event, damage_event]() -> sol::object {
         warn_wrong_event("GetAttacker", {"global_attacked", "unit_attacked"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_damage_source));
+        auto* event = damage_event();
+        return event ? unit_or_nil(event->source) : sol::make_object(*m_lua, sol::nil);
     };
 
-    // Heal context
-    lua["GetHealSource"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+    auto heal_event = [this]() -> HealEvent* {
+        return m_event_frame ? std::get_if<HealEvent>(&m_event_frame->payload) : nullptr;
+    };
+    lua["GetHealSource"] = [&, unit_or_nil, warn_wrong_event, heal_event]() -> sol::object {
         warn_wrong_event("GetHealSource", {"global_heal", "unit_heal"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_heal_source));
+        auto* event = heal_event();
+        return event ? unit_or_nil(event->source) : sol::make_object(*m_lua, sol::nil);
     };
-    lua["GetHealTarget"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+    lua["GetHealTarget"] = [&, unit_or_nil, warn_wrong_event, heal_event]() -> sol::object {
         warn_wrong_event("GetHealTarget", {"global_heal", "unit_heal"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_heal_target));
+        auto* event = heal_event();
+        return event ? unit_or_nil(event->target) : sol::make_object(*m_lua, sol::nil);
     };
-    lua["GetHealAmount"] = [&, warn_wrong_event]() -> f32 {
+    lua["GetHealAmount"] = [warn_wrong_event, heal_event]() -> f32 {
         warn_wrong_event("GetHealAmount", {"global_heal", "unit_heal"});
-        return m_ctx_heal_amount;
+        auto* event = heal_event();
+        return event ? event->amount : 0.0f;
     };
-    lua["SetHealAmount"] = [&, warn_wrong_event](f32 v) {
+    lua["SetHealAmount"] = [warn_wrong_event, heal_event](f32 value) {
         if (warn_wrong_event("SetHealAmount", {"global_heal", "unit_heal"})) return;
-        if (v < 0) v = 0;
-        m_ctx_heal_amount = v;
+        if (auto* event = heal_event()) event->amount = std::max(0.0f, value);
     };
-    lua["GetSpellTargetUnit"] = [&, unit_or_nil, warn_wrong_event]() -> sol::object {
+
+    auto ability_event = [this]() -> AbilityEvent* {
+        return m_event_frame ? std::get_if<AbilityEvent>(&m_event_frame->payload) : nullptr;
+    };
+    lua["GetSpellTargetUnit"] = [&, unit_or_nil, warn_wrong_event, ability_event]() -> sol::object {
         warn_wrong_event("GetSpellTargetUnit", {"global_ability_effect", "unit_ability_effect"});
-        return unit_or_nil(make_unit(sim.world(), m_ctx_spell_target_unit));
+        auto* event = ability_event();
+        return event ? unit_or_nil(event->target_unit) : sol::make_object(*m_lua, sol::nil);
     };
-    lua["GetSpellTargetX"] = [&, warn_wrong_event]() -> f32 {
+    lua["GetSpellTargetX"] = [warn_wrong_event, ability_event]() -> f32 {
         warn_wrong_event("GetSpellTargetX", {"global_ability_effect", "unit_ability_effect"});
-        return m_ctx_spell_target_x;
+        auto* event = ability_event();
+        return event ? event->target_pos.x : 0.0f;
     };
-    lua["GetSpellTargetY"] = [&, warn_wrong_event]() -> f32 {
+    lua["GetSpellTargetY"] = [warn_wrong_event, ability_event]() -> f32 {
         warn_wrong_event("GetSpellTargetY", {"global_ability_effect", "unit_ability_effect"});
-        return m_ctx_spell_target_y;
+        auto* event = ability_event();
+        return event ? event->target_pos.y : 0.0f;
     };
-    lua["GetSpellTargetPoint"] = [&, warn_wrong_event]() -> std::tuple<f32, f32> {
+    lua["GetSpellTargetPoint"] = [warn_wrong_event, ability_event]() -> std::tuple<f32, f32> {
         warn_wrong_event("GetSpellTargetPoint", {"global_ability_effect", "unit_ability_effect"});
-        return {m_ctx_spell_target_x, m_ctx_spell_target_y};
+        auto* event = ability_event();
+        return event ? std::tuple{event->target_pos.x, event->target_pos.y}
+                     : std::tuple{0.0f, 0.0f};
     };
 
     // ── Regions ───────────────────────────────────────────────────────
@@ -2576,11 +2645,11 @@ void ScriptEngine::bind_trigger_api() {
     };
 
     lua["IsUnitInRegion"] = [&](simulation::Unit unit, sol::table region) -> bool {
-        if (!region.valid()) return false;
+        if (!region.valid() || !sim.world().validate(unit)) return false;
         u32 id = region["_id"].get_or<u32>(0);
         auto it = sim.world().regions.find(id);
-        if (it == sim.world().regions.end()) return false;
-        return it->second.contained.count(unit.id) > 0;
+        if (it == sim.world().regions.end() || !it->second.alive) return false;
+        return it->second.contained.contains(unit.id);
     };
 
     lua["GetUnitsInRegion"] = [&](sol::table region) -> sol::table {
@@ -2588,13 +2657,11 @@ void ScriptEngine::bind_trigger_api() {
         if (!region.valid()) return out;
         u32 id = region["_id"].get_or<u32>(0);
         auto it = sim.world().regions.find(id);
-        if (it == sim.world().regions.end()) return out;
+        if (it == sim.world().regions.end() || !it->second.alive) return out;
         u32 idx = 1;
-        for (u32 uid : it->second.contained) {
-            const auto* hi = sim.world().handle_infos.get(uid);
-            simulation::Unit u; u.id = uid;
-            if (hi) u.generation = hi->generation;
-            out[idx++] = u;
+        for (u32 unit_id : it->second.contained) {
+            simulation::Unit unit{unit_id};
+            if (sim.world().validate(unit)) out[idx++] = unit;
         }
         return out;
     };
@@ -2623,7 +2690,9 @@ void ScriptEngine::bind_trigger_api() {
 
     // Read the region id for the currently firing region_enter /
     // region_leave action. UINT32_MAX outside that context.
-    lua["GetTriggerRegion"] = [&]() -> u32 { return m_ctx_region_id; };
+    lua["GetTriggerRegion"] = [this]() -> u32 {
+        return m_event_frame ? m_event_frame->region_id : UINT32_MAX;
+    };
 
     // ── Node events ─────────────────────────────────────────────────
     // TriggerRegisterNodeEvent(trig, node, event_name) — bind the
@@ -2694,7 +2763,10 @@ void ScriptEngine::bind_timer_api() {
         timer.interval = delay;
         timer.remaining = delay;
         timer.repeating = repeating;
-        timer.callback = [callback]() {
+        timer.callback = [this, callback]() {
+            EventFrame frame;
+            frame.event = "timer";
+            EventScope scope(*this, frame);
             auto result = callback();
             if (!result.valid()) {
                 sol::error err = result;
@@ -2726,7 +2798,8 @@ void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::
     // Wire selection change → on_select event
     if (m_selection) {
         m_selection->on_change = [this]() {
-            fire_event("global_select");
+            EventFrame frame;
+            dispatch(frame, "global_select");
         };
     }
 
@@ -2736,47 +2809,49 @@ void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::
     // target_filter, not script-overridable from this hook.
     if (m_commands) {
         m_commands->set_order_observer([this](const simulation::GameCommand& cmd) {
-            m_ctx_order_player = cmd.player.id;
-            m_ctx_order_queued = cmd.queued;
-            m_ctx_order_target_x = 0;
-            m_ctx_order_target_y = 0;
-            m_ctx_order_target_unit = UINT32_MAX;
+            OrderEvent order_event;
+            order_event.player = cmd.player.id;
+            order_event.queued = cmd.queued;
 
-            std::visit([this](auto&& payload) {
+            std::visit([&](const auto& payload) {
                 using T = std::decay_t<decltype(payload)>;
                 if constexpr (std::is_same_v<T, simulation::orders::Move>) {
-                    m_ctx_order_type = "move";
-                    m_ctx_order_target_x = payload.target.x;
-                    m_ctx_order_target_y = payload.target.y;
+                    order_event.type = "move";
+                    order_event.target_x = payload.target.x;
+                    order_event.target_y = payload.target.y;
                 } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
-                    m_ctx_order_type = "attack_move";
-                    m_ctx_order_target_x = payload.target.x;
-                    m_ctx_order_target_y = payload.target.y;
+                    order_event.type = "attack_move";
+                    order_event.target_x = payload.target.x;
+                    order_event.target_y = payload.target.y;
                 } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
-                    m_ctx_order_type = "attack";
-                    m_ctx_order_target_unit = payload.target.id;
+                    order_event.type = "attack";
+                    order_event.target_unit = payload.target;
                 } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
-                    m_ctx_order_type = "stop";
+                    order_event.type = "stop";
                 } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
-                    m_ctx_order_type = "hold";
+                    order_event.type = "hold";
                 } else if constexpr (std::is_same_v<T, simulation::orders::Patrol>) {
-                    m_ctx_order_type = "patrol";
+                    order_event.type = "patrol";
                     if (!payload.waypoints.empty()) {
-                        m_ctx_order_target_x = payload.waypoints[0].x;
-                        m_ctx_order_target_y = payload.waypoints[0].y;
+                        order_event.target_x = payload.waypoints[0].x;
+                        order_event.target_y = payload.waypoints[0].y;
                     }
                 } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
-                    m_ctx_order_type = "cast";
-                    m_ctx_order_target_unit = payload.target_unit.id;
-                    m_ctx_order_target_x = payload.target_pos.x;
-                    m_ctx_order_target_y = payload.target_pos.y;
+                    order_event.type = "cast";
+                    order_event.ability_id = payload.ability_id;
+                    order_event.target_unit = payload.target_unit;
+                    order_event.target_x = payload.target_pos.x;
+                    order_event.target_y = payload.target_pos.y;
                 } else {
-                    m_ctx_order_type = "other";
+                    order_event.type = "other";
                 }
             }, cmd.order);
 
-            fire_event("global_order", UINT32_MAX, "", cmd.player.id);
-            fire_event("player_order", UINT32_MAX, "", cmd.player.id);
+            EventFrame frame;
+            frame.player = cmd.player.id;
+            frame.payload = std::move(order_event);
+            dispatch(frame, "global_order");
+            dispatch(frame, "player_order");
         });
     }
 }
@@ -2803,7 +2878,7 @@ void ScriptEngine::bind_input_api() {
     };
 
     lua["SelectUnit"] = [this](simulation::Unit unit) {
-        if (!m_selection) return;
+        if (!m_selection || !m_sim || !m_sim->world().validate(unit)) return;
         m_selection->select(unit);
     };
 
@@ -2812,7 +2887,7 @@ void ScriptEngine::bind_input_api() {
     // (doesn't mutate it further), and the HUD action bar reads the
     // unit's abilities for its slots.
     lua["SetControlledUnit"] = [this](simulation::Unit unit) {
-        if (!m_selection) return;
+        if (!m_selection || !m_sim || !m_sim->world().validate(unit)) return;
         m_selection->select(unit);
     };
 
@@ -2821,12 +2896,8 @@ void ScriptEngine::bind_input_api() {
         std::vector<simulation::Unit> units;
         for (auto& [k, v] : tbl) {
             u32 id = v.as<u32>();
-            auto* info = m_sim->world().handle_infos.get(id);
-            if (info) {
-                simulation::Unit u;
-                u.id = id;
-                u.generation = info->generation;
-                units.push_back(u);
+            if (m_sim->world().handle_infos.has(id)) {
+                units.push_back(simulation::Unit{id});
             }
         }
         m_selection->select_multiple(std::move(units));
@@ -2838,22 +2909,37 @@ void ScriptEngine::bind_input_api() {
 
     lua["IsUnitSelected"] = [this](u32 unit_id) -> bool {
         if (!m_selection || !m_sim) return false;
-        auto* info = m_sim->world().handle_infos.get(unit_id);
-        if (!info) return false;
-        simulation::Unit u;
-        u.id = unit_id;
-        u.generation = info->generation;
-        return m_selection->is_selected(u);
+        if (!m_sim->world().handle_infos.has(unit_id)) return false;
+        return m_selection->is_selected(simulation::Unit{unit_id});
     };
 
-    // ── Order event context ──────────────────────────────────────────────
-
-    lua["GetOrderType"] = [this]() -> std::string { return m_ctx_order_type; };
-    lua["GetOrderTargetX"] = [this]() -> f32 { return m_ctx_order_target_x; };
-    lua["GetOrderTargetY"] = [this]() -> f32 { return m_ctx_order_target_y; };
-    lua["GetOrderTargetUnit"] = [this]() -> u32 { return m_ctx_order_target_unit; };
-    lua["GetOrderPlayer"] = [this]() -> u32 { return m_ctx_order_player; };
-    lua["IsOrderQueued"] = [this]() -> bool { return m_ctx_order_queued; };
+    auto current_order = [this]() -> OrderEvent* {
+        return m_event_frame ? std::get_if<OrderEvent>(&m_event_frame->payload) : nullptr;
+    };
+    lua["GetOrderType"] = [current_order]() -> std::string {
+        auto* event = current_order();
+        return event ? event->type : std::string{};
+    };
+    lua["GetOrderTargetX"] = [current_order]() -> f32 {
+        auto* event = current_order();
+        return event ? event->target_x : 0.0f;
+    };
+    lua["GetOrderTargetY"] = [current_order]() -> f32 {
+        auto* event = current_order();
+        return event ? event->target_y : 0.0f;
+    };
+    lua["GetOrderTargetUnit"] = [current_order]() -> u32 {
+        auto* event = current_order();
+        return event ? event->target_unit.id : UINT32_MAX;
+    };
+    lua["GetOrderPlayer"] = [current_order]() -> u32 {
+        auto* event = current_order();
+        return event ? event->player : UINT32_MAX;
+    };
+    lua["IsOrderQueued"] = [current_order]() -> bool {
+        auto* event = current_order();
+        return event && event->queued;
+    };
 }
 
 // ── HUD bindings ─────────────────────────────────────────────────────────
@@ -3010,7 +3096,9 @@ void ScriptEngine::bind_hud_api() {
 
         // Position: either `pos = { x, y, z }` world point or `unit = U`.
         if (args["unit"].valid()) {
-            info.unit = args["unit"].get<simulation::Unit>();
+            simulation::Unit unit = args["unit"].get<simulation::Unit>();
+            if (!m_sim || !m_sim->world().validate(unit)) return 0;
+            info.unit = unit;
         } else if (args["pos"].valid()) {
             sol::table p = args["pos"];
             info.pos = { p[1].get_or(0.0f), p[2].get_or(0.0f), p[3].get_or(0.0f) };
@@ -3054,8 +3142,8 @@ void ScriptEngine::bind_hud_api() {
         m_hud->set_text_tag_pos(unpack_id(h), x, y, z);
     };
     lua["SetTextTagPosUnit"] = [this, unpack_id](u64 h, simulation::Unit unit, f32 z_offset) {
-        if (!m_hud) return;
-        m_hud->set_text_tag_pos_unit(unpack_id(h), unit.id, z_offset);
+        if (!m_hud || !m_sim || !m_sim->world().validate(unit)) return;
+        m_hud->set_text_tag_pos_unit(unpack_id(h), unit, z_offset);
     };
     lua["SetTextTagColor"] = [this, unpack_id, parse_color](u64 h, const std::string& color) {
         if (!m_hud) return;
