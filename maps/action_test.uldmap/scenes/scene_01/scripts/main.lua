@@ -94,6 +94,10 @@ function main()
     ActionBarSetSlot(1, "holy_light")
     ActionBarSetSlot(2, "consecration")
 
+    local hero_x = GetUnitX(paladin)
+    local hero_y = GetUnitY(paladin)
+    CreateItem("potion_healing", hero_x + 180, hero_y + 40)
+
     -- Periodic creep spawner so there's something to hit. Waves cap at
     -- a modest count to keep the scene readable for preset testing.
     local wave          = 0

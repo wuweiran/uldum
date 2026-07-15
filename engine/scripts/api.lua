@@ -1390,7 +1390,7 @@ function SetButtonEnabled(id, enabled) end
 function TriggerRegisterNodeEvent(trig, node, event_name) end
 
 --------------------------------------------------------------------------------
--- HUD: composites (action_bar, minimap, joystick)
+-- HUD: composites
 --------------------------------------------------------------------------------
 -- Composites are engine-authored node groups whose layout comes from
 -- hud.json. These calls only toggle visibility / bindings; styling is
@@ -1425,6 +1425,10 @@ function MinimapSetVisible(visible) end
 --- Show / hide the mobile joystick composite. Inert on desktop maps.
 ---@param visible boolean
 function JoystickSetVisible(visible) end
+
+--- Show / hide the mobile nearby-item pickup bar. Inert on desktop maps.
+---@param visible boolean
+function PickupBarSetVisible(visible) end
 
 --------------------------------------------------------------------------------
 -- Game flow & session

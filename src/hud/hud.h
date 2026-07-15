@@ -31,6 +31,7 @@ struct JoystickConfig;         // joystick.h
 struct CastIndicatorConfig;    // cast_indicator.h
 struct CastIndicatorStyle;     // cast_indicator.h
 struct InventoryConfig;        // inventory.h
+struct PickupBarConfig;        // pickup_bar.h
 struct DisplayMessageConfig;   // display_message.h
 
 // Packed RGBA color, 0xAABBGGRR on little-endian hosts. Use rgba() helper
@@ -127,7 +128,7 @@ public:
 
     // True on touch-first platforms. App pushes this once from
     // `Platform::is_mobile()` at init so the hud.json loader can gate
-    // mobile-only composites (virtual joystick) without duplicating
+    // mobile-only composites without duplicating
     // the map.
     void set_is_mobile(bool mobile);
     bool is_mobile() const;
@@ -542,6 +543,13 @@ public:
     // the item handle attached so triggers can reach `GetTriggerItem`.
     void set_inventory_config(const InventoryConfig& cfg);
     void inventory_set_visible(bool visible);
+
+    void set_pickup_bar_config(const PickupBarConfig& cfg);
+    void pickup_bar_set_visible(bool visible);
+    void pickup_bar_update();
+
+    using PickupFn = std::function<void(simulation::Unit unit, simulation::Item item)>;
+    void set_pickup_fn(PickupFn fn);
 
     // display_message composite — queued in-game message overlay
     // (e.g. "Save point reached", "Defeat the boss within 60s"). One

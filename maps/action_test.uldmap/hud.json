@@ -85,6 +85,24 @@
         "knob_size_frac":    0.5,
         "deadzone_frac":     0.12
       }
+    },
+
+    "pickup_bar": {
+      "anchor": "br", "x": -73, "y": -159, "w": 132, "h": 44,
+      "discovery_radius": 360,
+      "style_params": { "bg": "#14162088" },
+      "slot_style": {
+        "bg":           "#303448F0",
+        "hover_bg":     "#484C60FA",
+        "press_bg":     "#666A84FF",
+        "border_color": "#FFD060D0",
+        "border_width": 1
+      },
+      "slots": [
+        { "anchor": "tl", "x": 3,  "y": 3, "w": 38, "h": 38 },
+        { "anchor": "tl", "x": 47, "y": 3, "w": 38, "h": 38 },
+        { "anchor": "tl", "x": 91, "y": 3, "w": 38, "h": 38 }
+      ]
     }
   },
 

@@ -115,6 +115,12 @@ Click / tap behavior:
 - **Active item** (passive abilities[0] is non-passive): fires that ability through the cast pump.
 - **Passive item**: no-op (slot reads as disabled-style).
 
+## HUD — mobile nearby pickup
+
+A map can declare `composites.pickup_bar` to expose nearby ground items on mobile. The `slots` style provides arbitrarily placed icon buttons; the `list` style provides PUBG-like rows with icon, name, and one clamped description line. Both use the same nearest-first item snapshot and whole-entry tap behavior, and hide when the lead selected unit has no inventory or no free slot.
+
+The composite's map-level `discovery_radius` is the only range it owns: it decides when entries appear. Either style submits the normal `PickupItem` order for the lead unit; `system_items` still validates the item, approaches it when needed, and performs the inventory transfer. Maps do not need to add per-item pickup fields for this HUD behavior.
+
 ## Lua API
 
 ```lua
@@ -156,7 +162,7 @@ These belong to later phases or to map-side Lua, not Phase 17:
 
 - **Shops / vendors / gold cost** — needs a generic resource system (Phase 18+ if a sample asks).
 - **Item placement via editor** — Phase 19's editor expansion. v1: items in the scene's `objects.json`.
-- **Auto-pickup-on-walk-over** — manual right-click only for v1.
+- **Auto-pickup-on-walk-over** — pickup remains explicit: desktop right-click or a mobile `pickup_bar` tap.
 - **Item recipes / combine** — Lua-implementable on top of triggers once items ship.
 - **Drop-all-on-death**, **stack merge**, **per-class restrictions** — all map-Lua patterns, not engine policy.
 

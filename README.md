@@ -34,7 +34,7 @@ Phase 26 (App architecture revamp) — `uldum_dev` refactored onto the new `Engi
 - **Server-authoritative networking.** ENet UDP, fog-filtered snapshots, host barrier on scene swap, reconnect-with-state-restore. Local single-player runs the same server in-process.
 - **Production server topology.** `uldum_worker` (one process per session, game-agnostic, Linux + Windows) + `uldum_server` orchestrator (HTTP API, per-player tokens, webhook dispatch).
 - **Shell UI** (game builds) — RmlUi 6 driven by project-supplied `.rml` / `.rcss`; networked lobby with host-authoritative slot table.
-- **HUD** (all builds) — custom retained-mode tree of atoms + composites (action_bar, command_bar, minimap, joystick, inventory), MSDF text, world overlays, drag-cast.
+- **HUD** (all builds) — custom retained-mode tree of atoms + composites (action_bar, command_bar, minimap, joystick, inventory, mobile nearby-item pickup), MSDF text, world overlays, drag-cast.
 - **In-engine terrain editor.** Sculpt / paint / cliff / ramp / pathing / object placement, source-folder or packed-map workflow.
 - **Build targets.** `uldum_dev`, `uldum_game` (per-project), `uldum_worker`, `uldum_server`, `uldum_editor`, `uldum_pack`. Windows + Android (dev APK and game-flavor APK).
 

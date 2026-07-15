@@ -1640,6 +1640,147 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
     }
 }
 
+static std::string clamp_text(HudRenderer::Impl& r, std::string_view text,
+                              f32 px_size, f32 max_width) {
+    if (max_width <= 0.0f || text.empty()) return {};
+    if (measure_text(r, text, px_size) <= max_width) return std::string(text);
+
+    constexpr std::string_view ELLIPSIS = "…";
+    f32 ellipsis_width = measure_text(r, ELLIPSIS, px_size);
+    if (ellipsis_width > max_width) return {};
+
+    std::string out;
+    const char* p = text.data();
+    const char* end = p + text.size();
+    while (p < end) {
+        const char* begin = p;
+        u32 cp = utf8_next(p, end);
+        if (cp == 0) break;
+        std::string candidate = out;
+        candidate.append(begin, p);
+        candidate.append(ELLIPSIS);
+        if (measure_text(r, candidate, px_size) > max_width) break;
+        out.append(begin, p);
+    }
+    out.append(ELLIPSIS);
+    return out;
+}
+
+static void draw_pickup_bar_slots(HudRenderer::Impl& r, Hud::Impl& s) {
+    const auto& cfg = s.pickup_bar_cfg;
+    if (!cfg.enabled || !s.pickup_bar_rt.visible || s.pickup_bar_rt.entries.empty()) return;
+    if ((cfg.style.bg.rgba >> 24) != 0) emit_rect(r, cfg.rect, cfg.style.bg);
+
+    const u32 count = std::min(static_cast<u32>(cfg.slots.size()),
+                               static_cast<u32>(s.pickup_bar_rt.entries.size()));
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+
+        Color bg = slot.style.bg;
+        if (slot.pressed) bg = slot.style.press_bg;
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        emit_rect(r, slot.rect, bg);
+
+        f32 bw = std::max(0.0f, slot.style.border_width);
+        Rect icon_rect{slot.rect.x + bw, slot.rect.y + bw,
+                       slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f};
+        if (s.world_ctx && s.world_ctx->world && s.world_ctx->types) {
+            const auto entry = s.pickup_bar_rt.entries[i];
+            const auto* info = s.world_ctx->world->item_infos.get(entry.item.id);
+            const auto* def = info ? s.world_ctx->types->get_item_type(info->type_id) : nullptr;
+            if (def && !def->icon_path.empty()) {
+                emit_image(r, icon_rect, def->icon_path, rgba(255, 255, 255, 255));
+            }
+        }
+
+        if (bw > 0.0f && (slot.style.border_color.rgba >> 24) != 0) {
+            const Rect& rc = slot.rect;
+            emit_rect(r, {rc.x, rc.y, rc.w, bw}, slot.style.border_color);
+            emit_rect(r, {rc.x, rc.y + rc.h - bw, rc.w, bw}, slot.style.border_color);
+            emit_rect(r, {rc.x, rc.y, bw, rc.h}, slot.style.border_color);
+            emit_rect(r, {rc.x + rc.w - bw, rc.y, bw, rc.h}, slot.style.border_color);
+        }
+    }
+}
+
+static void draw_pickup_bar_list(HudRenderer::Impl& r, Hud::Impl& s) {
+    const auto& cfg = s.pickup_bar_cfg;
+    if (!cfg.enabled || !s.pickup_bar_rt.visible || s.pickup_bar_rt.entries.empty()) return;
+    if ((cfg.style.bg.rgba >> 24) != 0) emit_rect(r, cfg.rect, cfg.style.bg);
+
+    const auto& ls = cfg.list_style;
+    const u32 count = std::min(static_cast<u32>(cfg.slots.size()),
+                               static_cast<u32>(s.pickup_bar_rt.entries.size()));
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+
+        Color bg = slot.style.bg;
+        if (slot.pressed) bg = slot.style.press_bg;
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        emit_rect(r, slot.rect, bg);
+
+        f32 bw = std::max(0.0f, slot.style.border_width);
+        f32 icon_size = std::min(ls.icon_size, std::max(0.0f, slot.rect.h - bw * 2.0f));
+        Rect icon_rect{slot.rect.x + bw, slot.rect.y + (slot.rect.h - icon_size) * 0.5f,
+                       icon_size, icon_size};
+
+        const auto entry = s.pickup_bar_rt.entries[i];
+        const simulation::ItemInfo* info = nullptr;
+        const simulation::ItemTypeDef* def = nullptr;
+        if (s.world_ctx && s.world_ctx->world) {
+            info = s.world_ctx->world->item_infos.get(entry.item.id);
+            if (info && s.world_ctx->types) def = s.world_ctx->types->get_item_type(info->type_id);
+        }
+        if (def && !def->icon_path.empty()) {
+            emit_image(r, icon_rect, def->icon_path, rgba(255, 255, 255, 255));
+        }
+
+        f32 text_x = icon_rect.x + icon_rect.w + 8.0f;
+        f32 text_right = slot.rect.x + slot.rect.w - bw - 6.0f;
+        f32 text_width = std::max(0.0f, text_right - text_x);
+        if (info) {
+            auto resolve_item_text = [&](std::string_view field) {
+                std::string key = "item." + info->type_id + "." + std::string(field);
+                if (s.locale_manager) return s.locale_manager->resolve(i18n::Pool::Map, key);
+                if (!def) return key;
+                return field == "name" ? def->display_name : def->tooltip;
+            };
+            std::string name = clamp_text(r, resolve_item_text("name"),
+                                          ls.name_text_size, text_width);
+            std::string description = clamp_text(r, resolve_item_text("tooltip"),
+                                                 ls.description_text_size, text_width);
+            f32 name_line_h = measure_line_height(r, ls.name_text_size);
+            f32 description_line_h = measure_line_height(r, ls.description_text_size);
+            f32 text_height = name_line_h + description_line_h;
+            f32 text_top = slot.rect.y + (slot.rect.h - text_height) * 0.5f;
+            f32 name_y = text_top + measure_ascent(r, ls.name_text_size);
+            f32 description_y = text_top + name_line_h
+                              + measure_ascent(r, ls.description_text_size);
+            emit_text(r, text_x, name_y, name, ls.name_color, ls.name_text_size);
+            emit_text(r, text_x, description_y, description,
+                      ls.description_color, ls.description_text_size);
+        }
+
+        if (bw > 0.0f && (slot.style.border_color.rgba >> 24) != 0) {
+            const Rect& rc = slot.rect;
+            emit_rect(r, {rc.x, rc.y, rc.w, bw}, slot.style.border_color);
+            emit_rect(r, {rc.x, rc.y + rc.h - bw, rc.w, bw}, slot.style.border_color);
+            emit_rect(r, {rc.x, rc.y, bw, rc.h}, slot.style.border_color);
+            emit_rect(r, {rc.x + rc.w - bw, rc.y, bw, rc.h}, slot.style.border_color);
+        }
+    }
+}
+
+static void draw_pickup_bar(HudRenderer::Impl& r, Hud::Impl& s) {
+    if (s.pickup_bar_cfg.style_id == PickupBarStyleId::List) {
+        draw_pickup_bar_list(r, s);
+    } else {
+        draw_pickup_bar_slots(r, s);
+    }
+}
+
 // ── Display message ──────────────────────────────────────────────────────
 
 static void draw_display_message(HudRenderer::Impl& r, Hud::Impl& s) {
@@ -1721,6 +1862,17 @@ static void tooltip_keys(const Hud::Impl& s,
             if (cmd.empty()) return;
             out_name.key = "ui.command." + cmd + ".name";
             out_body.key = "ui.command." + cmd + ".tooltip";
+            break;
+        }
+        case Hud::Impl::TooltipState::Source::PickupBar: {
+            u32 idx = static_cast<u32>(s.tooltip.slot_index);
+            if (!s.world_ctx || !s.world_ctx->world ||
+                idx >= s.pickup_bar_rt.entries.size()) return;
+            const auto item = s.pickup_bar_rt.entries[idx].item;
+            const auto* info = s.world_ctx->world->item_infos.get(item.id);
+            if (!info) return;
+            out_name.key = "item." + info->type_id + ".name";
+            out_body.key = "item." + info->type_id + ".tooltip";
             break;
         }
         default: break;
@@ -1807,6 +1959,11 @@ static void draw_tooltip(HudRenderer::Impl& r, Hud::Impl& s) {
     } else if (s.tooltip.source == TT::Source::CommandBar
                && idx < s.command_bar_cfg.slots.size()) {
         anchor = s.command_bar_cfg.slots[idx].rect;
+        have_anchor = true;
+    } else if (s.tooltip.source == TT::Source::PickupBar
+               && idx < s.pickup_bar_cfg.slots.size()
+               && idx < s.pickup_bar_rt.entries.size()) {
+        anchor = s.pickup_bar_cfg.slots[idx].rect;
         have_anchor = true;
     }
     if (!have_anchor) return;
@@ -2103,6 +2260,7 @@ void HudRenderer::draw_tree() {
     draw_action_bar(r, s);
     draw_command_bar(r, s);
     draw_inventory(r, s);
+    draw_pickup_bar(r, s);
     draw_display_message(r, s);
     draw_minimap(r, s);
     draw_joystick(r, s);

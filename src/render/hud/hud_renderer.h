@@ -67,8 +67,8 @@ public:
 
     // Walk Hud's node tree + composites, emitting draw commands into the
     // batcher. Composites (action_bar, command_bar, minimap, joystick,
-    // inventory, display_message, tooltip) draw inside this call after
-    // the node tree, matching the old Hud::draw_tree order.
+    // inventory, pickup_bar, display_message, tooltip) draw inside this
+    // call after the node tree, matching the old Hud::draw_tree order.
     void draw_tree();
 
     // Walk world-anchored overlays (entity bars, name labels, text tags)

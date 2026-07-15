@@ -108,7 +108,7 @@ Anchoring uses a 9-point enum for v1 (`tl tc tr ml mc mr bl bc br`) plus `(x, y,
 
 ### Engine composites
 
-Four composites, all singletons. All have a Lua content API; none accept style changes at runtime.
+Engine composites are singletons. All have a Lua content API; none accept style changes at runtime.
 
 | Composite | Role | Content API |
 |---|---|---|
@@ -116,6 +116,8 @@ Four composites, all singletons. All have a Lua content API; none accept style c
 | `command_bar` | engine-command slot group (Attack, Move, Stop, Hold, Patrol). Click / hotkey issues the order. | no Lua binding — purely map-authored |
 | `minimap` | Scaled terrain + fog + entity dots + click-to-pan. | `MinimapSetVisible` |
 | `joystick` | Virtual analog stick (mobile only; desktop skips it at load). | reads output vector; no Lua binding needed |
+| `inventory` | Selected unit's carried-item slots. | engine-driven |
+| `pickup_bar` | Nearby ground-item buttons for the lead selected unit (mobile only). | `PickupBarSetVisible` |
 
 Deferred composites (may ship later; v1 doesn't include them):
 
@@ -275,6 +277,47 @@ Hardcoded behavior:
 - Release → knob returns to center, output zeros.
 
 Lua API: `JoystickSetVisible(bool)`. No content API for reading the vector — the input preset handles that internally.
+
+### `pickup_bar`
+
+Mobile-only nearby-item affordance. The engine fills it each frame with visible, uncarried ground items near the lead selected unit, nearest first. The lead unit must belong to the local player, have an inventory, and have a free slot. Tapping a button or row submits the same authoritative `PickupItem` order for that unit only.
+
+The default `slots` style is icon-only. Its optional bar background can be fully transparent, and every slot has an independent authored placement:
+
+```json
+"pickup_bar": {
+  "style": "slots",
+  "anchor": "bc", "x": 0, "y": -24, "w": 132, "h": 44,
+  "discovery_radius": 360,
+  "style_params": { "bg": "#00000000" },
+  "slots": [
+    { "anchor": "tl", "x": 3,  "y": 3, "w": 38, "h": 38 },
+    { "anchor": "tl", "x": 91, "y": 3, "w": 38, "h": 38 }
+  ]
+}
+```
+
+The `list` style generates full-width rows automatically. Each whole row is tappable and shows the item icon, localized name, and one localized description line. Text that reaches the row's right edge is truncated with an ellipsis; long-press still opens the normal tooltip with the full text.
+
+```json
+"pickup_bar": {
+  "style": "list",
+  "anchor": "br", "x": -24, "y": -166, "w": 250, "h": 0,
+  "discovery_radius": 360,
+  "style_params": {
+    "bg": "#14162088", "max_rows": 3,
+    "row_height": 60, "row_gap": 4, "padding": 4, "icon_size": 48,
+    "row_bg": "#303448F0", "row_hover_bg": "#484C60FA",
+    "row_press_bg": "#666A84FF", "border_color": "#FFD060D0",
+    "border_width": 1, "name_color": "#FFFFFFFF", "name_text_size": 15,
+    "description_color": "#C8C8C8FF", "description_text_size": 11
+  }
+}
+```
+
+For list style, `h` is derived from padding, row height, gap, and `max_rows`; an authored `slots` array is ignored. `discovery_radius` only controls when entries appear—the simulation remains responsible for walking into claim range and completing the transfer.
+
+Lua API: `PickupBarSetVisible(bool)`. The declaration is ignored on desktop, where world-item right-click already issues the same order.
 
 Deferred:
 

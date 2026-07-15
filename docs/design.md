@@ -150,7 +150,7 @@ See `docs/model-format.md` for full model, animation, and art pipeline specifica
 ### UI
 
 - **Shell UI** (`src/shell/`, game builds only) — RmlUi 6 with a custom Vulkan / file / system interface set. Game projects ship their own `shell/` directory with `.rml` + `.rcss` + fonts; the App drives screen transitions through `engine.shell().load_document(...)` / `.bind(...)`.
-- **HUD** (`src/hud/`, all builds) — custom retained-mode tree of atoms (panel, label, image, bar, button) and composites (action_bar, command_bar, minimap, joystick, inventory). 2D quad batcher feeds the render graph; SDF text for crisp scaling. World-anchored overlays (health bars, name labels, text tags) ride the same batcher with world-to-screen projection.
+- **HUD** (`src/hud/`, all builds) — custom retained-mode tree of atoms (panel, label, image, bar, button) and composites (action_bar, command_bar, minimap, joystick, inventory, pickup_bar). 2D quad batcher feeds the render graph; SDF text for crisp scaling. World-anchored overlays (health bars, name labels, text tags) ride the same batcher with world-to-screen projection.
 - **Dev console / editor** — Dear ImGui (Vulkan + GLES backends both wired), used for the in-engine map editor and the dev runtime's map picker / session controls.
 
 ## 8. Simulation

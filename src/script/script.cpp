@@ -3025,6 +3025,7 @@ void ScriptEngine::bind_hud_api() {
     // their per-frame state internally.
     lua["MinimapSetVisible"]  = [this](bool v) { if (m_hud) m_hud->minimap_set_visible(v);  };
     lua["JoystickSetVisible"] = [this](bool v) { if (m_hud) m_hud->joystick_set_visible(v); };
+    lua["PickupBarSetVisible"] = [this](bool v) { if (m_hud) m_hud->pickup_bar_set_visible(v); };
 
     // CreateNode(template_id, { anchor, x, y, w, h, owner }): instantiate
     // a template defined in the map's hud.json `nodes` block at the

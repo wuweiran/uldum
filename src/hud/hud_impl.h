@@ -18,6 +18,7 @@
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
 #include "hud/inventory.h"
+#include "hud/pickup_bar.h"
 #include "hud/display_message.h"
 #include "render/hud/world.h"           // WorldOverlayConfig (POD); WorldContext fwd
 #include "simulation/handle_types.h"
@@ -192,6 +193,16 @@ struct Hud::Impl {
     Hud::InventoryDropFn         inventory_drop_fn;
     Hud::InventorySwapFn         inventory_swap_fn;
 
+    PickupBarConfig  pickup_bar_cfg{};
+    PickupBarRuntime pickup_bar_rt{};
+    i32 pickup_bar_hover_slot   = -1;
+    i32 pickup_bar_pressed_slot = -1;
+    u32 pickup_bar_debug_bits   = UINT32_MAX;
+    u32 pickup_bar_debug_unit   = UINT32_MAX;
+    u32 pickup_bar_debug_items  = UINT32_MAX;
+    u32 pickup_bar_debug_entries = UINT32_MAX;
+    Hud::PickupFn pickup_fn;
+
     // WC3-style item hold (desktop). Right-click on a slot lifts the
     // item: `held_item_slot` is the source slot, `held_item_id` is
     // the item being held (snapshotted so we can render its icon at
@@ -207,7 +218,7 @@ struct Hud::Impl {
 
     // Hover / long-press tooltip for action_bar, inventory, command_bar.
     struct TooltipState {
-        enum class Source : u8 { None, ActionBar, Inventory, CommandBar };
+        enum class Source : u8 { None, ActionBar, Inventory, CommandBar, PickupBar };
         Source source = Source::None;
         i32    slot_index = -1;
         std::chrono::steady_clock::time_point activate_at{};

@@ -775,6 +775,18 @@ bool Engine::start_session() {
         m_commands.submit(cmd);
     });
 
+    m_hud.set_pickup_fn([this](simulation::Unit unit, simulation::Item item) {
+        auto& world = active_world();
+        if (!world.contains(unit) || !world.contains(item)) return;
+
+        simulation::GameCommand cmd;
+        cmd.player = m_selection.player();
+        cmd.units = {unit};
+        cmd.order = simulation::orders::PickupItem{item};
+        m_commands.submit(cmd);
+        fire_local_ping(cmd);
+    });
+
     // Minimap click → jump the camera so its ground-focus point lands
     // at the clicked world coord. Preserves the current pitch/yaw so
     // the player's view angle stays consistent across jumps.
@@ -1837,6 +1849,8 @@ void Engine::run() {
                         m_selection.select_multiple(std::move(live));
                     }
                 }
+
+                m_hud.pickup_bar_update();
 
                 const auto& in = m_platform->input();
                 // Route the HUD's primary pointer around the joystick.

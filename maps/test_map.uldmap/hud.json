@@ -91,6 +91,29 @@
       ]
     },
 
+    "pickup_bar": {
+      "style": "list",
+      "anchor": "br", "x": -24, "y": -166, "w": 250, "h": 0,
+      "discovery_radius": 360,
+      "style_params": {
+        "bg":                    "#14162088",
+        "max_rows":              3,
+        "row_height":            60,
+        "row_gap":               4,
+        "padding":               4,
+        "icon_size":             48,
+        "row_bg":                "#303448F0",
+        "row_hover_bg":          "#484C60FA",
+        "row_press_bg":          "#666A84FF",
+        "border_color":          "#FFD060D0",
+        "border_width":          1,
+        "name_color":            "#FFFFFFFF",
+        "name_text_size":        15,
+        "description_color":     "#C8C8C8FF",
+        "description_text_size": 11
+      }
+    },
+
     "minimap": {
       "anchor": "bl", "x": 10, "y": -10, "w": 150, "h": 150,
       "style": "classic_rts",

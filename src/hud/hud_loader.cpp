@@ -9,6 +9,7 @@
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
 #include "hud/inventory.h"
+#include "hud/pickup_bar.h"
 #include "hud/display_message.h"
 #include "hud/layout.h"
 #include "asset/asset.h"
@@ -16,6 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -624,6 +626,115 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
             log::info(TAG, "inventory: {} slots", cfg.slots.size());
         }
 
+        if (auto pb = comps->find("pickup_bar"); pb != comps->end() && pb->is_object()) {
+            if (!hud.is_mobile()) {
+                log::info(TAG, "pickup_bar: skipped (non-mobile platform)");
+            } else {
+                PickupBarConfig cfg{};
+                cfg.enabled = true;
+                cfg.placement.anchor = parse_anchor(pb->value("anchor", "br"));
+                cfg.placement.x = pb->value("x", 0.0f);
+                cfg.placement.y = pb->value("y", 0.0f);
+                cfg.placement.w = pb->value("w", 0.0f);
+                cfg.placement.h = pb->value("h", 0.0f);
+                cfg.discovery_radius = std::max(0.0f, pb->value("discovery_radius", 320.0f));
+
+                std::string style_name = pb->value("style", "slots");
+                if (style_name == "list") {
+                    cfg.style_id = PickupBarStyleId::List;
+                } else if (style_name != "slots") {
+                    log::warn(TAG, "pickup_bar: unknown style '{}', using slots", style_name);
+                }
+
+                if (auto sp = pb->find("style_params"); sp != pb->end() && sp->is_object()) {
+                    if (auto v = sp->find("bg"); v != sp->end()) cfg.style.bg = parse_color(*v);
+                    if (cfg.style_id == PickupBarStyleId::List) {
+                        auto& ls = cfg.list_style;
+                        if (auto v = sp->find("max_rows"); v != sp->end() && v->is_number_unsigned()) ls.max_rows = v->get<u32>();
+                        if (auto v = sp->find("row_height"); v != sp->end() && v->is_number()) ls.row_height = v->get<f32>();
+                        if (auto v = sp->find("row_gap"); v != sp->end() && v->is_number()) ls.row_gap = v->get<f32>();
+                        if (auto v = sp->find("padding"); v != sp->end() && v->is_number()) ls.padding = v->get<f32>();
+                        if (auto v = sp->find("icon_size"); v != sp->end() && v->is_number()) ls.icon_size = v->get<f32>();
+                        if (auto v = sp->find("row_bg"); v != sp->end()) ls.row_bg = parse_color(*v);
+                        if (auto v = sp->find("row_hover_bg"); v != sp->end()) ls.row_hover_bg = parse_color(*v);
+                        if (auto v = sp->find("row_press_bg"); v != sp->end()) ls.row_press_bg = parse_color(*v);
+                        if (auto v = sp->find("border_color"); v != sp->end()) ls.border_color = parse_color(*v);
+                        if (auto v = sp->find("border_width"); v != sp->end() && v->is_number()) ls.border_width = v->get<f32>();
+                        if (auto v = sp->find("name_color"); v != sp->end()) ls.name_color = parse_color(*v);
+                        if (auto v = sp->find("name_text_size"); v != sp->end() && v->is_number()) ls.name_text_size = v->get<f32>();
+                        if (auto v = sp->find("description_color"); v != sp->end()) ls.description_color = parse_color(*v);
+                        if (auto v = sp->find("description_text_size"); v != sp->end() && v->is_number()) ls.description_text_size = v->get<f32>();
+                    }
+                }
+
+                if (cfg.style_id == PickupBarStyleId::List) {
+                    auto& ls = cfg.list_style;
+                    ls.max_rows = std::max(1u, ls.max_rows);
+                    ls.row_height = std::max(1.0f, ls.row_height);
+                    ls.row_gap = std::max(0.0f, ls.row_gap);
+                    ls.padding = std::max(0.0f, ls.padding);
+                    ls.icon_size = std::clamp(ls.icon_size, 1.0f, ls.row_height);
+                    ls.border_width = std::max(0.0f, ls.border_width);
+                    ls.name_text_size = std::max(1.0f, ls.name_text_size);
+                    ls.description_text_size = std::max(1.0f, ls.description_text_size);
+                    cfg.placement.h = ls.padding * 2.0f + ls.row_height * static_cast<f32>(ls.max_rows)
+                                      + ls.row_gap * static_cast<f32>(ls.max_rows - 1);
+                    cfg.rect = resolve(viewport_rect, cfg.placement);
+                    if (pb->contains("slots")) {
+                        log::warn(TAG, "pickup_bar: list style ignores authored slots");
+                    }
+                    PickupBarSlotStyle row_style{ls.row_bg, ls.row_hover_bg, ls.row_press_bg,
+                                                 ls.border_color, ls.border_width};
+                    for (u32 i = 0; i < ls.max_rows; ++i) {
+                        PickupBarSlot slot{};
+                        slot.style = row_style;
+                        slot.placement.anchor = parse_anchor("tl");
+                        slot.placement.x = ls.padding;
+                        slot.placement.y = ls.padding + static_cast<f32>(i) * (ls.row_height + ls.row_gap);
+                        slot.placement.w = std::max(0.0f, cfg.placement.w - ls.padding * 2.0f);
+                        slot.placement.h = ls.row_height;
+                        slot.rect = resolve(cfg.rect, slot.placement);
+                        cfg.slots.push_back(std::move(slot));
+                    }
+                } else {
+                    cfg.rect = resolve(viewport_rect, cfg.placement);
+                    PickupBarSlotStyle default_slot_style{};
+                    if (auto ss = pb->find("slot_style"); ss != pb->end() && ss->is_object()) {
+                        if (auto v = ss->find("bg"); v != ss->end()) default_slot_style.bg = parse_color(*v);
+                        if (auto v = ss->find("hover_bg"); v != ss->end()) default_slot_style.hover_bg = parse_color(*v);
+                        if (auto v = ss->find("press_bg"); v != ss->end()) default_slot_style.press_bg = parse_color(*v);
+                        if (auto v = ss->find("border_color"); v != ss->end()) default_slot_style.border_color = parse_color(*v);
+                        if (auto v = ss->find("border_width"); v != ss->end() && v->is_number()) default_slot_style.border_width = v->get<f32>();
+                    }
+                    if (auto slots = pb->find("slots"); slots != pb->end() && slots->is_array()) {
+                        for (const auto& js : *slots) {
+                            if (!js.is_object()) continue;
+                            PickupBarSlot slot{};
+                            slot.style = default_slot_style;
+                            slot.placement.anchor = parse_anchor(js.value("anchor", "tl"));
+                            slot.placement.x = js.value("x", 0.0f);
+                            slot.placement.y = js.value("y", 0.0f);
+                            slot.placement.w = js.value("w", 56.0f);
+                            slot.placement.h = js.value("h", 56.0f);
+                            slot.rect = resolve(cfg.rect, slot.placement);
+                            if (auto st = js.find("style"); st != js.end() && st->is_object()) {
+                                if (auto v = st->find("bg"); v != st->end()) slot.style.bg = parse_color(*v);
+                                if (auto v = st->find("hover_bg"); v != st->end()) slot.style.hover_bg = parse_color(*v);
+                                if (auto v = st->find("press_bg"); v != st->end()) slot.style.press_bg = parse_color(*v);
+                                if (auto v = st->find("border_color"); v != st->end()) slot.style.border_color = parse_color(*v);
+                                if (auto v = st->find("border_width"); v != st->end() && v->is_number()) slot.style.border_width = v->get<f32>();
+                            }
+                            cfg.slots.push_back(std::move(slot));
+                        }
+                    }
+                }
+
+                hud.set_pickup_bar_config(cfg);
+                log::info(TAG, "pickup_bar: style={} entries={} radius {}", style_name,
+                          cfg.slots.size(), cfg.discovery_radius);
+            }
+        }
+
         // display_message — receiving end for Lua's DisplayMessage().
         if (auto dm = comps->find("display_message"); dm != comps->end() && dm->is_object()) {
             DisplayMessageConfig cfg;
@@ -654,7 +765,8 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         for (auto it = comps->begin(); it != comps->end(); ++it) {
             const std::string& k = it.key();
             if (k == "action_bar" || k == "minimap" || k == "command_bar" ||
-                k == "joystick"   || k == "inventory" || k == "display_message") continue;
+                k == "joystick" || k == "inventory" || k == "pickup_bar" ||
+                k == "display_message") continue;
             // `cast_indicator` was renamed to top-level `targeting` (Phase 4a).
             if (k == "cast_indicator") {
                 log::warn(TAG, "composite 'cast_indicator' is deprecated; "

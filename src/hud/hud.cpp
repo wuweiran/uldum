@@ -184,6 +184,14 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
         }
     }
 
+    auto& pb = m_impl->pickup_bar_cfg;
+    if (pb.enabled) {
+        pb.rect = resolve(viewport, pb.placement);
+        for (auto& slot : pb.slots) {
+            slot.rect = resolve(pb.rect, slot.placement);
+        }
+    }
+
     // Lua-instantiated trees: same shape as composite reflow above,
     // just driven by the registry instead of a typed config struct.
     // For each entry, look up the root by id, re-resolve its rect
@@ -249,6 +257,13 @@ void Hud::reset_scene_state() {
     s.minimap_dragging           = false;
     s.inventory_hover_slot       = -1;
     s.inventory_pressed_slot     = -1;
+    s.pickup_bar_hover_slot      = -1;
+    s.pickup_bar_pressed_slot    = -1;
+    s.pickup_bar_debug_bits      = UINT32_MAX;
+    s.pickup_bar_debug_unit      = UINT32_MAX;
+    s.pickup_bar_debug_items     = UINT32_MAX;
+    s.pickup_bar_debug_entries   = UINT32_MAX;
+    s.pickup_bar_rt.entries.clear();
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
     s.tooltip                    = Impl::TooltipState{};
@@ -288,6 +303,13 @@ void Hud::reset_session_state() {
     s.minimap_dragging           = false;
     s.inventory_hover_slot       = -1;
     s.inventory_pressed_slot     = -1;
+    s.pickup_bar_hover_slot      = -1;
+    s.pickup_bar_pressed_slot    = -1;
+    s.pickup_bar_debug_bits      = UINT32_MAX;
+    s.pickup_bar_debug_unit      = UINT32_MAX;
+    s.pickup_bar_debug_items     = UINT32_MAX;
+    s.pickup_bar_debug_entries   = UINT32_MAX;
+    s.pickup_bar_rt.entries.clear();
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
     s.tooltip                    = Impl::TooltipState{};
@@ -310,6 +332,8 @@ void Hud::reset_session_state() {
     s.joystick_rt        = {};
     s.inventory_cfg      = {};
     s.inventory_rt       = {};
+    s.pickup_bar_cfg     = {};
+    s.pickup_bar_rt      = {};
     s.display_message_cfg = {};
     s.display_message_rt  = {};
     s.cast_indicator_cfg = {};
@@ -348,6 +372,7 @@ void Hud::reset_session_state() {
     s.inventory_use_at_target_fn = {};
     s.inventory_drop_fn          = {};
     s.inventory_swap_fn          = {};
+    s.pickup_fn                  = {};
     s.held_item_slot    = -1;
     s.held_item_id      = UINT32_MAX;
     s.held_item_icon.clear();
@@ -948,6 +973,152 @@ void Hud::set_inventory_config(const InventoryConfig& cfg) {
 
 void Hud::inventory_set_visible(bool visible) {
     if (m_impl) m_impl->inventory_rt.visible = visible;
+}
+
+void Hud::set_pickup_bar_config(const PickupBarConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->pickup_bar_cfg = cfg;
+    m_impl->pickup_bar_rt = PickupBarRuntime{};
+    m_impl->pickup_bar_hover_slot = -1;
+    m_impl->pickup_bar_pressed_slot = -1;
+}
+
+void Hud::pickup_bar_set_visible(bool visible) {
+    if (m_impl) m_impl->pickup_bar_rt.visible = visible;
+}
+
+void Hud::set_pickup_fn(PickupFn fn) {
+    if (m_impl) m_impl->pickup_fn = std::move(fn);
+}
+
+void Hud::pickup_bar_update() {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+    std::vector<PickupBarEntry> next;
+
+    auto report_debug = [&](u32 bits, u32 unit_id, u32 item_count, u32 entry_count) {
+        if (bits == s.pickup_bar_debug_bits && unit_id == s.pickup_bar_debug_unit &&
+            item_count == s.pickup_bar_debug_items &&
+            entry_count == s.pickup_bar_debug_entries) return;
+        s.pickup_bar_debug_bits = bits;
+        s.pickup_bar_debug_unit = unit_id;
+        s.pickup_bar_debug_items = item_count;
+        s.pickup_bar_debug_entries = entry_count;
+        log::info(TAG, "pickup_bar: mobile={} enabled={} visible={} slots={} selected={} "
+                       "owned={} inventory={} free_slot={} world_items={} nearby={} unit={}",
+                  (bits & 1u) != 0, (bits & 2u) != 0, (bits & 4u) != 0,
+                  s.pickup_bar_cfg.slots.size(), (bits & 8u) != 0,
+                  (bits & 16u) != 0, (bits & 32u) != 0, (bits & 64u) != 0,
+                  item_count, entry_count, unit_id);
+    };
+
+    const auto clear_interaction = [&]() {
+        for (auto& slot : s.pickup_bar_cfg.slots) {
+            slot.hovered = false;
+            slot.pressed = false;
+        }
+        s.pickup_bar_hover_slot = -1;
+        s.pickup_bar_pressed_slot = -1;
+        if (s.tooltip.source == Impl::TooltipState::Source::PickupBar) {
+            s.tooltip = Impl::TooltipState{};
+        }
+    };
+
+    const auto& cfg = s.pickup_bar_cfg;
+    u32 debug_bits = 0;
+    if (s.is_mobile) debug_bits |= 1u;
+    if (cfg.enabled) debug_bits |= 2u;
+    if (s.pickup_bar_rt.visible) debug_bits |= 4u;
+    if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) {
+        report_debug(debug_bits, UINT32_MAX, 0, 0);
+        if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
+        s.pickup_bar_rt.entries.clear();
+        return;
+    }
+    const auto& world = *s.world_ctx->world;
+    const u32 world_item_count = world.item_infos.count();
+    if (!s.is_mobile || !cfg.enabled || !s.pickup_bar_rt.visible || cfg.slots.empty()) {
+        report_debug(debug_bits, UINT32_MAX, world_item_count, 0);
+        if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
+        s.pickup_bar_rt.entries.clear();
+        return;
+    }
+
+    if (s.pickup_bar_pressed_slot >= 0) return;
+
+    const auto& selected = s.world_ctx->selection->selected();
+    if (selected.empty()) {
+        report_debug(debug_bits, UINT32_MAX, world_item_count, 0);
+        if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
+        s.pickup_bar_rt.entries.clear();
+        return;
+    }
+    debug_bits |= 8u;
+
+    simulation::Unit unit = selected.front();
+    const auto* owner = world.owners.get(unit.id);
+    const auto* unit_tf = world.transforms.get(unit.id);
+    const auto* inventory = world.inventories.get(unit.id);
+    if (owner && owner->id == s.world_ctx->local_player.id) debug_bits |= 16u;
+    if (inventory) debug_bits |= 32u;
+    if (!world.contains(unit) || !(debug_bits & 16u) || !unit_tf || !inventory) {
+        report_debug(debug_bits, unit.id, world_item_count, 0);
+        if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
+        s.pickup_bar_rt.entries.clear();
+        return;
+    }
+
+    bool has_free_slot = false;
+    for (simulation::Item item : inventory->slots) {
+        if (simulation::is_null_handle(item)) {
+            has_free_slot = true;
+            break;
+        }
+    }
+    if (has_free_slot) debug_bits |= 64u;
+    if (!has_free_slot) {
+        report_debug(debug_bits, unit.id, world_item_count, 0);
+        if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
+        s.pickup_bar_rt.entries.clear();
+        return;
+    }
+
+    struct Candidate {
+        simulation::Item item;
+        f32 distance_sq = 0.0f;
+    };
+    std::vector<Candidate> candidates;
+    const f32 radius_sq = cfg.discovery_radius * cfg.discovery_radius;
+    for (u32 item_id : world.item_infos.ids()) {
+        simulation::Item item{item_id};
+        if (!world.contains(item)) continue;
+        const auto* carriable = world.carriables.get(item_id);
+        if (!carriable || simulation::is_non_null_handle(carriable->carried_by)) continue;
+        const auto* item_tf = world.transforms.get(item_id);
+        if (!item_tf || !focus_visible(*s.world_ctx, item_tf->position)) continue;
+
+        f32 dx = item_tf->position.x - unit_tf->position.x;
+        f32 dy = item_tf->position.y - unit_tf->position.y;
+        f32 distance_sq = dx * dx + dy * dy;
+        if (distance_sq <= radius_sq) candidates.push_back({item, distance_sq});
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+        if (a.distance_sq != b.distance_sq) return a.distance_sq < b.distance_sq;
+        return a.item.id < b.item.id;
+    });
+
+    const u32 count = std::min(static_cast<u32>(candidates.size()),
+                               static_cast<u32>(cfg.slots.size()));
+    next.reserve(count);
+    for (u32 i = 0; i < count; ++i) {
+        next.push_back(PickupBarEntry{unit, candidates[i].item});
+    }
+
+    if (next != s.pickup_bar_rt.entries) clear_interaction();
+    s.pickup_bar_rt.entries = std::move(next);
+    report_debug(debug_bits, unit.id, world_item_count,
+                 static_cast<u32>(s.pickup_bar_rt.entries.size()));
 }
 
 // ── Display-message composite ────────────────────────────────────────────
@@ -2339,6 +2510,22 @@ static i32 inventory_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     return -1;
 }
 
+static i32 pickup_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
+    const auto& cfg = s.pickup_bar_cfg;
+    if (!cfg.enabled || !s.pickup_bar_rt.visible) return -1;
+    const u32 count = std::min(static_cast<u32>(cfg.slots.size()),
+                               static_cast<u32>(s.pickup_bar_rt.entries.size()));
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+        const Rect& r = slot.rect;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+            return static_cast<i32>(i);
+        }
+    }
+    return -1;
+}
+
 // Look up the local selection's lead unit's Inventory. Returns nullptr
 // when nothing is selected, the unit has no Inventory component, or
 // world context is incomplete.
@@ -2442,10 +2629,14 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     i32  bar_slot    = allow_hit_test ? action_bar_hit_test(s, x, y) : -1;
     i32  cmd_slot    = (allow_hit_test && bar_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
     i32  inv_slot    = (allow_hit_test && bar_slot < 0 && cmd_slot < 0) ? inventory_hit_test(s, x, y) : -1;
-    bool on_minimap  = allow_hit_test && (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && minimap_hit_test(s, x, y);
-    bool on_joystick = allow_hit_test && (bar_slot < 0) && (cmd_slot < 0) && (inv_slot < 0) && !on_minimap
-                       && (s.joystick_rt.captured_slot == 0
-                           || joystick_hit_test_point(s.joystick_cfg, x, y));
+    i32  pickup_slot = (allow_hit_test && bar_slot < 0 && cmd_slot < 0 && inv_slot < 0)
+                         ? pickup_bar_hit_test(s, x, y) : -1;
+    bool on_minimap  = allow_hit_test && bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 &&
+                        pickup_slot < 0 && minimap_hit_test(s, x, y);
+    bool on_joystick = allow_hit_test && bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 &&
+                       pickup_slot < 0 && !on_minimap &&
+                       (s.joystick_rt.captured_slot == 0
+                        || joystick_hit_test_point(s.joystick_cfg, x, y));
 
     // Hover tracking for the bar. `slot.hovered` drives the classic_rts
     // style's hover_bg swap; clearing the old slot before setting the
@@ -2480,6 +2671,16 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
         }
         s.inventory_hover_slot = inv_slot;
     }
+    if (pickup_slot != s.pickup_bar_hover_slot) {
+        if (s.pickup_bar_hover_slot >= 0 &&
+            static_cast<u32>(s.pickup_bar_hover_slot) < s.pickup_bar_cfg.slots.size()) {
+            s.pickup_bar_cfg.slots[s.pickup_bar_hover_slot].hovered = false;
+        }
+        if (pickup_slot >= 0) {
+            s.pickup_bar_cfg.slots[pickup_slot].hovered = true;
+        }
+        s.pickup_bar_hover_slot = pickup_slot;
+    }
 
     // Tooltip arming. The pointer dwelling on a slot for `delay_ms`
     // pops the tooltip; any change (different slot / left every slot)
@@ -2490,9 +2691,10 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // slot edges still fails the hit-test and clears it too.
     Impl::TooltipState::Source kind = Impl::TooltipState::Source::None;
     i32 kind_idx = -1;
-    if      (bar_slot >= 0) { kind = Impl::TooltipState::Source::ActionBar;  kind_idx = bar_slot; }
-    else if (cmd_slot >= 0) { kind = Impl::TooltipState::Source::CommandBar; kind_idx = cmd_slot; }
-    else if (inv_slot >= 0) { kind = Impl::TooltipState::Source::Inventory;  kind_idx = inv_slot; }
+    if      (bar_slot >= 0)    { kind = Impl::TooltipState::Source::ActionBar;  kind_idx = bar_slot; }
+    else if (cmd_slot >= 0)    { kind = Impl::TooltipState::Source::CommandBar; kind_idx = cmd_slot; }
+    else if (inv_slot >= 0)    { kind = Impl::TooltipState::Source::Inventory;  kind_idx = inv_slot; }
+    else if (pickup_slot >= 0) { kind = Impl::TooltipState::Source::PickupBar;  kind_idx = pickup_slot; }
     if (kind != s.tooltip.source || kind_idx != s.tooltip.slot_index) {
         s.tooltip.source     = kind;
         s.tooltip.slot_index = kind_idx;
@@ -2505,7 +2707,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     }
 
     Node* under = nullptr;
-    if (bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 && !on_minimap && !on_joystick) {
+    if (bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 && pickup_slot < 0 &&
+        !on_minimap && !on_joystick) {
         under = hit_test_tree(s.root.get(), x, y, s.local_player);
     }
 
@@ -2777,6 +2980,9 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 s.inventory_pressed_slot = inv_slot;
                 s.inventory_cfg.slots[inv_slot].pressed = true;
             }
+        } else if (pickup_slot >= 0) {
+            s.pickup_bar_pressed_slot = pickup_slot;
+            s.pickup_bar_cfg.slots[pickup_slot].pressed = true;
         } else if (on_minimap) {
             // Minimap press — start a drag that pans the camera. Each
             // pointer move while held re-fires minimap_jump_fn (handled
@@ -2880,6 +3086,21 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 }
             }
             s.inventory_pressed_slot = -1;
+        } else if (s.pickup_bar_pressed_slot >= 0) {
+            u32 idx = static_cast<u32>(s.pickup_bar_pressed_slot);
+            bool over = pickup_slot == s.pickup_bar_pressed_slot;
+            if (idx < s.pickup_bar_cfg.slots.size()) {
+                s.pickup_bar_cfg.slots[idx].pressed = false;
+            }
+            if (over && s.pickup_fn && idx < s.pickup_bar_rt.entries.size()) {
+                const auto entry = s.pickup_bar_rt.entries[idx];
+                if (s.world_ctx && s.world_ctx->world &&
+                    s.world_ctx->world->contains(entry.unit) &&
+                    s.world_ctx->world->contains(entry.item)) {
+                    s.pickup_fn(entry.unit, entry.item);
+                }
+            }
+            s.pickup_bar_pressed_slot = -1;
         } else if (s.pressed) {
             bool over = (under == s.pressed);
             std::string clicked_id = s.pressed->id;
@@ -2922,6 +3143,8 @@ bool Hud::input_captured() const {
         || m_impl->command_bar_pressed_slot >= 0
         || m_impl->inventory_hover_slot     >= 0
         || m_impl->inventory_pressed_slot   >= 0
+        || m_impl->pickup_bar_hover_slot    >= 0
+        || m_impl->pickup_bar_pressed_slot  >= 0
         || m_impl->held_item_slot           >= 0   // hold mode owns the next click
         || minimap_hit_test(*m_impl, m_impl->pointer_x, m_impl->pointer_y)
         || m_impl->minimap_dragging
