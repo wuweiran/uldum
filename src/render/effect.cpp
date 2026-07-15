@@ -199,7 +199,7 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
     for (auto& inst : m_instances) {
         if (!inst.alive) continue;
 
-        if (inst.attached_unit.is_valid() && get_pos) {
+        if (simulation::is_non_null_handle(inst.attached_unit) && get_pos) {
             glm::vec3 pos = get_pos(inst.attached_unit, inst.attach_point, ctx);
             if (pos.x != 0 || pos.y != 0 || pos.z != 0) {
                 inst.position = pos;

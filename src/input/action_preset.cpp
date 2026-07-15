@@ -49,7 +49,7 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
             ctx.commands.submit(cmd);
         } else if ((id == "attack" || id == "attack_move") && ctx.hud) {
             auto focus = ctx.hud->focus_target();
-            if (focus.is_valid() && ctx.simulation.world().validate(focus) &&
+            if (simulation::is_non_null_handle(focus) && ctx.simulation.world().contains(focus) &&
                 !ctx.selection.empty()) {
                 GameCommand cmd;
                 cmd.player = ctx.selection.player();
@@ -209,7 +209,7 @@ bool ActionPreset::handle_targeting(const InputContext& ctx) {
             if (def->widget_kinds != 0) {
                 target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
             }
-            if (target.is_valid()) {
+            if (simulation::is_non_null_handle(target)) {
                 GameCommand cmd;
                 cmd.player = sel.player();
                 cmd.units  = sel.selected();
@@ -256,7 +256,7 @@ void ActionPreset::handle_focus_click(const InputContext& ctx) {
     // Pick a unit at the click point. The picker returns an invalid
     // handle if no unit was hit (terrain or void).
     auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-    if (target.is_valid()) {
+    if (simulation::is_non_null_handle(target)) {
         // Don't lock focus on the hero itself — useless and would make
         // the reticle sit on the player.
         auto& sel = ctx.selection;

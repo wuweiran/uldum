@@ -135,7 +135,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
                 continue;
             }
             add_ability(world, *world.abilities, u, ability_id, /*level=*/1);
-            if (!world.validate(u)) return {};
+            if (!world.contains(u)) return {};
         }
     }
 
@@ -288,7 +288,7 @@ void release_pathing_blocker(World& world, u32 id) {
 }
 
 static void destroy_handle(World& world, Handle h) {
-    if (!world.validate(h)) return;
+    if (!world.contains(h)) return;
     release_pathing_blocker(world, h.id);
     remove_all_components(world, h.id);
 }
@@ -299,7 +299,7 @@ void destroy(World& world, Item item)         { destroy_handle(world, item); }
 void destroy(World& world, Doodad d)          { destroy_handle(world, d); }
 
 bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
-    if (!world.validate(unit) || !world.types) return false;
+    if (!world.contains(unit) || !world.types) return false;
     auto* hi = world.handle_infos.get(unit.id);
     if (!hi) return false;
 
@@ -461,7 +461,7 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
 // ── Unit API ───────────────────────────────────────────────────────────────
 
 void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string_view damage_type) {
-    if (!world.validate(target)) return;
+    if (!world.contains(target)) return;
     auto* hp = world.healths.get(target.id);
     if (!hp || hp->current <= 0) return;
 
@@ -482,27 +482,27 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
     // we'd write through a dangling pointer (heap corruption) or apply
     // damage to whichever unit's Health got swapped into the slot. The
     // handler may also have killed the target outright, so re-check.
-    if (!world.validate(target)) return;
+    if (!world.contains(target)) return;
     hp = world.healths.get(target.id);
     if (!hp || hp->current <= 0) return;
 
     hp->current -= amount;
     if (hp->current < 0) hp->current = 0;
     if (hp->current == 0) {
-        hp->killer = world.validate(source) ? source : Unit{};
+        hp->killer = world.contains(source) ? source : Unit{};
     }
     if (damage_type == "attack") ++hp->hit_count;   // normal-attack flinch only (WC3 Stand Hit)
 
     // Fight-back: if target is idle (no order, no current target), attack the source.
     // Only fight back against enemies (different owner).
-    if (source.is_valid() && world.validate(source)) {
+    if (is_non_null_handle(source) && world.contains(source)) {
         auto* src_owner = world.owners.get(source.id);
         auto* tgt_owner = world.owners.get(target.id);
         bool same_owner = src_owner && tgt_owner && src_owner->id == tgt_owner->id;
         if (!same_owner) {
             auto* oq = world.order_queues.get(target.id);
             auto* combat = world.combats.get(target.id);
-            if (oq && combat && !oq->current && !combat->target.is_valid()) {
+            if (oq && combat && !oq->current && is_null_handle(combat->target)) {
                 combat->target = source;
             }
         }
@@ -510,7 +510,7 @@ void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string
 }
 
 void issue_order(World& world, Unit unit, Order order) {
-    if (!world.validate(unit)) return;
+    if (!world.contains(unit)) return;
     auto* oq = world.order_queues.get(unit.id);
     if (!oq) return;
 
@@ -542,12 +542,12 @@ void issue_order(World& world, Unit unit, Order order) {
     // pierces_immune. Allied / self casts (e.g. healing your ally who's
     // magic-immune) pass through the immunity check.
     auto target_flags = [&](Unit t) -> u32 {
-        if (!t.is_valid() || !world.validate(t)) return 0;
+        if (is_null_handle(t) || !world.contains(t)) return 0;
         auto* sf = world.status_flags.get(t.id);
         return sf ? sf->flags : 0;
     };
     auto is_hostile = [&](Unit caster, Unit target) -> bool {
-        if (!world.validate(caster) || !world.validate(target)) return false;
+        if (!world.contains(caster) || !world.contains(target)) return false;
         auto* a = world.owners.get(caster.id);
         auto* b = world.owners.get(target.id);
         if (!a || !b) return false;
@@ -557,7 +557,7 @@ void issue_order(World& world, Unit unit, Order order) {
         u32 tf = target_flags(atk->target);
         if (tf & (status::Untargetable | status::Unattackable)) return;
     } else if (auto* cast = std::get_if<orders::Cast>(&order.payload)) {
-        if (cast->target_unit.is_valid()) {
+        if (is_non_null_handle(cast->target_unit)) {
             u32 tf = target_flags(cast->target_unit);
             if (tf & status::Untargetable) return;
             if (tf & status::MagicImmune) {
@@ -595,14 +595,14 @@ void issue_order(World& world, Unit unit, Order order) {
             }
         }
         // Self-target rejection for casts whose filter forbids it.
-        if (cast->target_unit.is_valid() && cast->target_unit.id == unit.id) {
+        if (is_non_null_handle(cast->target_unit) && cast->target_unit.id == unit.id) {
             const auto* def = world.abilities ? world.abilities->get(cast->ability_id) : nullptr;
             if (def && !def->target_filter.self_) return;
         }
     } else if (auto* mv = std::get_if<orders::Move>(&order.payload)) {
-        if (mv->target_unit.is_valid() && mv->target_unit.id == unit.id) return;
+        if (is_non_null_handle(mv->target_unit) && mv->target_unit.id == unit.id) return;
     } else if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
-        if (atk->target.is_valid() && atk->target.id == unit.id) return;
+        if (is_non_null_handle(atk->target) && atk->target.id == unit.id) return;
     }
 
     if (order.queued && oq->current && oq->queued.size() >= MAX_QUEUED_ORDERS) return;
@@ -613,7 +613,7 @@ void issue_order(World& world, Unit unit, Order order) {
         world.on_order(unit, order);
     }
 
-    if (!world.validate(unit)) return;
+    if (!world.contains(unit)) return;
     oq = world.order_queues.get(unit.id);
     if (!oq) return;
 
@@ -680,13 +680,13 @@ f32 unit_fly_height(const World& world, u32 id) {
 }
 
 f32 get_health(const World& world, Unit unit) {
-    if (!world.validate(unit)) return 0;
+    if (!world.contains(unit)) return 0;
     auto* h = world.healths.get(unit.id);
     return h ? h->current : 0;
 }
 
 void set_health(World& world, Unit unit, f32 health) {
-    if (!world.validate(unit)) return;
+    if (!world.contains(unit)) return;
     auto* h = world.healths.get(unit.id);
     if (!h) return;
     h->current = std::clamp(health, 0.0f, h->max);
@@ -694,47 +694,47 @@ void set_health(World& world, Unit unit, f32 health) {
 }
 
 glm::vec3 get_position(const World& world, Unit unit) {
-    if (!world.validate(unit)) return {};
+    if (!world.contains(unit)) return {};
     auto* t = world.transforms.get(unit.id);
     return t ? t->position : glm::vec3{};
 }
 
 void set_position(World& world, Unit unit, f32 x, f32 y) {
-    if (!world.validate(unit)) return;
+    if (!world.contains(unit)) return;
     auto* t = world.transforms.get(unit.id);
     if (t) { t->position.x = x; t->position.y = y; }
 }
 
 Player get_owner(const World& world, Unit unit) {
-    if (!world.validate(unit)) return {};
+    if (!world.contains(unit)) return {};
     auto* o = world.owners.get(unit.id);
     return o ? *o : Player{};
 }
 
 bool is_alive(const World& world, Unit unit) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* h = world.healths.get(unit.id);
     return h && h->current > 0;
 }
 
 bool is_dead(const World& world, Unit unit) {
-    return world.validate(unit) && world.dead_states.has(unit.id);
+    return world.contains(unit) && world.dead_states.has(unit.id);
 }
 
 bool is_building(const World& world, Unit unit) {
-    return world.validate(unit) && world.buildings.has(unit.id);
+    return world.contains(unit) && world.buildings.has(unit.id);
 }
 
 // ── Destructable API ───────────────────────────────────────────────────────
 
 f32 get_health(const World& world, Destructable d) {
-    if (!world.validate(d)) return 0;
+    if (!world.contains(d)) return 0;
     auto* h = world.healths.get(d.id);
     return h ? h->current : 0;
 }
 
 void kill(World& world, Destructable d) {
-    if (!world.validate(d)) return;
+    if (!world.contains(d)) return;
     auto* h = world.healths.get(d.id);
     if (h) h->current = 0;
 }
@@ -742,44 +742,44 @@ void kill(World& world, Destructable d) {
 // ── Item API ───────────────────────────────────────────────────────────────
 
 i32 get_charges(const World& world, Item item) {
-    if (!world.validate(item)) return 0;
+    if (!world.contains(item)) return 0;
     auto* info = world.item_infos.get(item.id);
     return info ? info->charges : 0;
 }
 
 void set_charges(World& world, Item item, i32 charges) {
-    if (!world.validate(item)) return;
+    if (!world.contains(item)) return;
     auto* info = world.item_infos.get(item.id);
     if (info) info->charges = charges;
 }
 
 i32 get_level(const World& world, Item item) {
-    if (!world.validate(item)) return 0;
+    if (!world.contains(item)) return 0;
     auto* info = world.item_infos.get(item.id);
     return info ? info->level : 0;
 }
 
 void set_level(World& world, Item item, i32 level) {
-    if (!world.validate(item)) return;
+    if (!world.contains(item)) return;
     auto* info = world.item_infos.get(item.id);
     if (info) info->level = level;
 }
 
 Unit get_item_owner(const World& world, Item item) {
-    if (!world.validate(item)) return {};
+    if (!world.contains(item)) return {};
     auto* c = world.carriables.get(item.id);
     return c ? c->carried_by : Unit{};
 }
 
 i32 give_item_to_unit(World& world, Unit unit, Item item) {
-    if (!world.validate(unit) || !world.validate(item)) return -1;
+    if (!world.contains(unit) || !world.contains(item)) return -1;
     auto* inventory = world.inventories.get(unit.id);
     auto* carriable = world.carriables.get(item.id);
-    if (!inventory || !carriable || carriable->carried_by.is_valid()) return -1;
+    if (!inventory || !carriable || is_non_null_handle(carriable->carried_by)) return -1;
 
     i32 slot = -1;
     for (i32 i = 0; i < static_cast<i32>(inventory->slots.size()); ++i) {
-        if (!inventory->slots[i].is_valid()) { slot = i; break; }
+        if (is_null_handle(inventory->slots[i])) { slot = i; break; }
     }
     if (slot < 0) return -1;
 
@@ -794,11 +794,11 @@ i32 give_item_to_unit(World& world, Unit unit, Item item) {
     }
     for (const auto& ability_id : abilities) {
         add_ability(world, *world.abilities, unit, ability_id, 1, item);
-        if (!world.validate(unit) || !world.validate(item)) break;
+        if (!world.contains(unit) || !world.contains(item)) break;
     }
 
-    if (!world.validate(unit)) {
-        if (world.validate(item)) {
+    if (!world.contains(unit)) {
+        if (world.contains(item)) {
             if (auto* current = world.carriables.get(item.id)) current->carried_by = {};
             if (auto* renderable = world.renderables.get(item.id)) {
                 renderable->visible = true;
@@ -806,7 +806,7 @@ i32 give_item_to_unit(World& world, Unit unit, Item item) {
         }
         return -1;
     }
-    if (!world.validate(item)) {
+    if (!world.contains(item)) {
         if (auto* current = world.inventories.get(unit.id);
             current && slot < static_cast<i32>(current->slots.size()) &&
             current->slots[slot] == item) {
@@ -814,7 +814,7 @@ i32 give_item_to_unit(World& world, Unit unit, Item item) {
         }
         for (const auto& ability_id : abilities) {
             remove_item_ability(world, unit, ability_id, item);
-            if (!world.validate(unit)) break;
+            if (!world.contains(unit)) break;
         }
         return -1;
     }
@@ -826,13 +826,13 @@ i32 give_item_to_unit(World& world, Unit unit, Item item) {
 }
 
 bool drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* inventory = world.inventories.get(unit.id);
     if (!inventory || slot < 0 || slot >= static_cast<i32>(inventory->slots.size())) {
         return false;
     }
     Item item = inventory->slots[slot];
-    if (!world.validate(item)) return false;
+    if (!world.contains(item)) return false;
 
     auto* carriable = world.carriables.get(item.id);
     if (!carriable || carriable->carried_by != unit) return false;
@@ -856,7 +856,7 @@ bool drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos) {
     if (auto* renderable = world.renderables.get(item.id)) renderable->visible = true;
 
     for (const auto& ability_id : abilities) {
-        if (!world.validate(unit)) break;
+        if (!world.contains(unit)) break;
         remove_item_ability(world, unit, ability_id, item);
     }
     return true;
@@ -887,13 +887,13 @@ static bool same_ability_source(const AbilitySource& source,
 
 bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
                  std::string_view ability_id, u32 level, Item granting_item) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
 
     const auto* def = reg.get(ability_id);
     AbilitySource source;
-    source.value = granting_item.is_valid()
+    source.value = is_non_null_handle(granting_item)
         ? decltype(source.value){ItemAbilitySource{granting_item}}
         : decltype(source.value){InnateAbilitySource{}};
     source.remaining_duration = default_ability_duration(def, level);
@@ -936,7 +936,7 @@ bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
 }
 
 bool remove_ability(World& world, Unit unit, std::string_view ability_id) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
 
@@ -965,7 +965,7 @@ bool remove_ability(World& world, Unit unit, std::string_view ability_id) {
 
 bool remove_item_ability(World& world, Unit unit,
                          std::string_view ability_id, Item granting_item) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
 
@@ -999,7 +999,7 @@ bool remove_item_ability(World& world, Unit unit,
 
 bool set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
                         std::string_view ability_id, u32 level) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
     const auto* def = reg.get(ability_id);
@@ -1029,7 +1029,7 @@ bool set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
 
 bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target,
                            std::string_view ability_id, Unit applier, f32 duration) {
-    if (!world.validate(target)) return false;
+    if (!world.contains(target)) return false;
     auto* aset = world.ability_sets.get(target.id);
     if (!aset) return false;
 
@@ -1081,7 +1081,7 @@ bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target
 }
 
 bool has_ability(const World& world, Unit unit, std::string_view ability_id) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return false;
     for (auto& a : aset->abilities) {
@@ -1091,7 +1091,7 @@ bool has_ability(const World& world, Unit unit, std::string_view ability_id) {
 }
 
 u32 get_ability_stack_count(const World& world, Unit unit, std::string_view ability_id) {
-    if (!world.validate(unit)) return 0;
+    if (!world.contains(unit)) return 0;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return 0;
     u32 count = 0;
@@ -1102,7 +1102,7 @@ u32 get_ability_stack_count(const World& world, Unit unit, std::string_view abil
 }
 
 u32 get_ability_level(const World& world, Unit unit, std::string_view ability_id) {
-    if (!world.validate(unit)) return 0;
+    if (!world.contains(unit)) return 0;
     auto* aset = world.ability_sets.get(unit.id);
     if (!aset) return 0;
     for (auto& a : aset->abilities) {
@@ -1133,13 +1133,13 @@ static void recompute_effective_flags(StatusFlags& sf) {
 }
 
 bool unit_has_status(const World& world, Unit unit, u32 flag) {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
     auto* sf = world.status_flags.get(unit.id);
     return sf && (sf->flags & flag) != 0;
 }
 
 void set_unit_status(World& world, Unit unit, u32 flag, bool on) {
-    if (!world.validate(unit)) return;
+    if (!world.contains(unit)) return;
     auto* sf = world.status_flags.get(unit.id);
     if (!sf) {
         if (!on) return;  // clearing a bit that doesn't exist: no-op
@@ -1153,7 +1153,7 @@ void set_unit_status(World& world, Unit unit, u32 flag, bool on) {
 }
 
 void clear_all_unit_status(World& world, Unit unit) {
-    if (!world.validate(unit)) return;
+    if (!world.contains(unit)) return;
     auto* sf = world.status_flags.get(unit.id);
     if (sf) {
         sf->manual_bits = 0;

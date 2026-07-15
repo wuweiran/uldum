@@ -286,8 +286,8 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 // the picker filters foreign units in fog out at
                 // smart-click time, so we already won't have started a
                 // Follow on someone we can't see).
-                if (m->target_unit.is_valid()) {
-                    if (!world.validate(m->target_unit)) {
+                if (is_non_null_handle(m->target_unit)) {
+                    if (!world.contains(m->target_unit)) {
                         oq->advance();
                         mov.moving = false;
                         mov.stuck_timer = 0;
@@ -308,7 +308,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
                 // AttackMove with active combat target: defer to approach
                 auto* combat = world.combats.get(id);
-                if (combat && combat->target.is_valid()) {
+                if (combat && is_non_null_handle(combat->target)) {
                     // Don't set goal from order — fall through to approach
                 } else {
                     goal2d = {am->target.x, am->target.y};
@@ -319,8 +319,8 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
         // Priority 2: Approach mode (set by combat/cast)
         if (!has_goal && mov.approach_range > 0) {
-            if (mov.approach_target.is_valid()) {
-                if (world.validate(mov.approach_target)) {
+            if (is_non_null_handle(mov.approach_target)) {
+                if (world.contains(mov.approach_target)) {
                     auto* ft = world.transforms.get(mov.approach_target.id);
                     if (ft) {
                         goal2d = {ft->position.x, ft->position.y};
@@ -668,7 +668,7 @@ static void deal_attack_damage(World& world, Unit source, Unit target, f32 amoun
 // side-table state, attaches PROJECTILE_HIT / PROJECTILE_DESTROYED
 // triggers, and (for the engine) marks is_attack + damage.
 Unit create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local) {
-    if (!world.validate(source)) return Unit{};
+    if (!world.contains(source)) return Unit{};
     auto* src_t = world.transforms.get(source.id);
     if (!src_t) return Unit{};
     Handle h = world.handles.allocate();
@@ -717,7 +717,7 @@ Unit create_projectile(World& world, Unit source, const std::string& model, glm:
 }
 
 void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed, f32 arc_height) {
-    if (!world.validate(proj_unit)) return;
+    if (!world.contains(proj_unit)) return;
     auto* p = world.projectiles.get(proj_unit.id);
     if (!p) return;
     p->path       = ProjectileComp::Path::Homing;
@@ -725,14 +725,14 @@ void emit_projectile_target(World& world, Unit proj_unit, Unit target, f32 speed
     p->speed      = speed;
     p->arc_height = arc_height;
     p->emitted    = true;
-    if (world.validate(target)) {
+    if (world.contains(target)) {
         if (auto* tt = world.transforms.get(target.id)) p->target_pos = tt->position;
     }
 }
 
 void emit_projectile_loc(World& world, Unit proj_unit, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance) {
-    if (!world.validate(proj_unit)) return;
+    if (!world.contains(proj_unit)) return;
     auto* p = world.projectiles.get(proj_unit.id);
     if (!p) return;
     p->path         = ProjectileComp::Path::Linear;
@@ -750,7 +750,7 @@ void emit_projectile_loc(World& world, Unit proj_unit, glm::vec3 loc, f32 speed,
 static Unit spawn_attack_projectile(World& world, Unit source, Unit target,
                                      f32 damage, const ProjectileSpec& spec) {
     Unit u = create_projectile(world, source, spec.model, spec.launch);  // "" → default "projectile" mesh
-    if (!u.is_valid()) return u;
+    if (is_null_handle(u)) return u;
     auto* p = world.projectiles.get(u.id);
     p->damage    = damage;
     p->is_attack = true;
@@ -783,7 +783,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
     }
 
     for (Unit unit : units) {
-        if (!world.validate(unit)) continue;
+        if (!world.contains(unit)) continue;
         u32 id = unit.id;
         auto* combat_comp = world.combats.get(id);
         auto* transform = world.transforms.get(id);
@@ -856,7 +856,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         //     for "drop target" as well as "pick up new target").
         // Friendly fire is intentionally allowed: A-click on an ally
         // is a force-attack and the engine honors it.
-        bool target_valid = target.is_valid() && world.validate(target);
+        bool target_valid = is_non_null_handle(target) && world.contains(target);
         if (target_valid && target.id == id) target_valid = false;
         if (target_valid) {
             auto* target_hp = world.healths.get(target.id);
@@ -932,7 +932,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                         f32 d = glm::length(et->position - transform->position);
                         if (d < best_dist) { best = e; best_dist = d; }
                     }
-                    if (best.is_valid()) {
+                    if (is_non_null_handle(best)) {
                         // Auto-acquire: set combat target only, no order created.
                         // This matches WC3 behavior — auto-attack is not an order.
                         combat.target = best;
@@ -1076,11 +1076,11 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 } else {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
-                if (!world.validate(self)) continue;
+                if (!world.contains(self)) continue;
 
                 if (world.on_sound && !attack_sound.empty()) {
                     world.on_sound(attack_sound, attack_pos);
-                    if (!world.validate(self)) continue;
+                    if (!world.contains(self)) continue;
                 }
 
                 auto* current_combat = world.combats.get(id);
@@ -1128,7 +1128,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
     }
 
     for (Unit unit : units) {
-        if (!world.validate(unit)) continue;
+        if (!world.contains(unit)) continue;
         u32 id = unit.id;
         auto* aset = world.ability_sets.get(id);
         if (!aset) continue;
@@ -1176,9 +1176,9 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             for (auto& removed : expired) {
                 world.on_ability_removed(unit, removed.ability_id,
                                          removed.source, false);
-                if (!world.validate(unit)) break;
+                if (!world.contains(unit)) break;
             }
-            if (!world.validate(unit)) continue;
+            if (!world.contains(unit)) continue;
             aset = world.ability_sets.get(id);
             if (!aset) continue;
         }
@@ -1252,7 +1252,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 auto* mov = world.movements.get(id);
                                 if (mov) {
                                     mov->approach_range = lvl.range;
-                                    if (world.validate(cast_order->target_unit)) {
+                                    if (world.contains(cast_order->target_unit)) {
                                         mov->approach_target = cast_order->target_unit;
                                     } else {
                                         mov->approach_goal = {cast_order->target_pos.x, cast_order->target_pos.y};
@@ -1286,7 +1286,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     // a widget, follow that widget; otherwise use the
                     // authored ground point.
                     glm::vec3 target_pos = aset->cast_target_pos;
-                    if (world.validate(aset->cast_target_unit)) {
+                    if (world.contains(aset->cast_target_unit)) {
                         auto* tt = world.transforms.get(aset->cast_target_unit.id);
                         if (tt) target_pos = tt->position;
                     }
@@ -1312,7 +1312,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         // The dist guard catches a point cast at the
                         // caster's own feet (avoids atan2(0,0)).
                         bool is_immediate = (def->form == AbilityForm::Instant);
-                        bool is_self = (world.validate(aset->cast_target_unit) &&
+                        bool is_self = (world.contains(aset->cast_target_unit) &&
                                         aset->cast_target_unit.id == id);
                         if (!is_immediate && !is_self && dist > 0.001f) {
                             f32 desired = std::atan2(to_target.y, to_target.x);
@@ -1435,7 +1435,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 
         // The cast FSM above may have run ability callbacks (Lua), which can
         // realloc the pool. Re-fetch before the aura block reads aset again.
-        if (!world.validate(unit)) continue;
+        if (!world.contains(unit)) continue;
         aset = world.ability_sets.get(id);
         if (!aset) continue;
 
@@ -1508,7 +1508,7 @@ void system_items(World& world, float /*dt*/) {
     }
 
     for (Unit unit_h : units) {
-        if (!world.validate(unit_h)) continue;
+        if (!world.contains(unit_h)) continue;
 
         u32 id = unit_h.id;
         auto* oq = world.order_queues.get(id);
@@ -1516,7 +1516,7 @@ void system_items(World& world, float /*dt*/) {
 
         if (auto* po = std::get_if<orders::PickupItem>(&oq->current->payload)) {
             Item item = po->item;
-            if (!world.validate(item)) {
+            if (!world.contains(item)) {
                 oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
@@ -1525,7 +1525,7 @@ void system_items(World& world, float /*dt*/) {
                 continue;
             }
             if (auto* car = world.carriables.get(item.id);
-                car && car->carried_by.is_valid()) {
+                car && is_non_null_handle(car->carried_by)) {
                 oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
@@ -1685,7 +1685,7 @@ static void begin_destroy_projectile(World& world, u32 id) {
     }
     Unit pu = world.unit(id);
     if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
-    if (!world.validate(pu)) return;
+    if (!world.contains(pu)) return;
     p = world.projectiles.get(id);
     if (!p || p->dying) return;
     p->dying       = true;
@@ -1705,7 +1705,7 @@ static void begin_destroy_projectile(World& world, u32 id) {
 
 // Public entry — explicit DestroyProjectile from Lua.
 void destroy_projectile(World& world, Unit proj_unit) {
-    if (!world.validate(proj_unit)) return;
+    if (!world.contains(proj_unit)) return;
     if (!world.projectiles.get(proj_unit.id)) return;
     begin_destroy_projectile(world, proj_unit.id);
 }
@@ -1720,7 +1720,7 @@ void system_projectile(World& world, float dt) {
     std::vector<Unit> to_teardown;
 
     for (Unit projectile : projectiles) {
-        if (!world.validate(projectile)) continue;
+        if (!world.contains(projectile)) continue;
         u32 id = projectile.id;
         auto* projectile_comp = world.projectiles.get(id);
         auto* transform = world.transforms.get(id);
@@ -1748,7 +1748,7 @@ void system_projectile(World& world, float dt) {
             // (the simplest of the on_target_lost options; configurable
             // variants can be added later).
             glm::vec3 aim;
-            if (world.validate(proj.target)) {
+            if (world.contains(proj.target)) {
                 auto* tt = world.transforms.get(proj.target.id);
                 if (tt) { aim = tt->position; aim.z += 32.0f; proj.target_pos = aim; }
                 else    { begin_destroy_projectile(world, id); continue; }
@@ -1769,14 +1769,14 @@ void system_projectile(World& world, float dt) {
                     Unit source = proj.source;
                     f32 damage  = proj.damage;
                     bool attack = proj.is_attack;
-                    if (world.validate(target) && world.on_projectile_hit) {
+                    if (world.contains(target) && world.on_projectile_hit) {
                         world.on_projectile_hit(pu, target);
                     }
-                    if (!world.validate(pu)) continue;
-                    if (attack && world.validate(target)) {
+                    if (!world.contains(pu)) continue;
+                    if (attack && world.contains(target)) {
                         deal_attack_damage(world, source, target, damage);
                     }
-                    if (world.validate(pu)) begin_destroy_projectile(world, id);
+                    if (world.contains(pu)) begin_destroy_projectile(world, id);
                     continue;
                 }
                 f32 step = proj.speed * dt;
@@ -1805,14 +1805,14 @@ void system_projectile(World& world, float dt) {
                 Unit source = proj.source;
                 f32 damage  = proj.damage;
                 bool attack = proj.is_attack;
-                if (world.validate(target) && world.on_projectile_hit) {
+                if (world.contains(target) && world.on_projectile_hit) {
                     world.on_projectile_hit(pu, target);
                 }
-                if (!world.validate(pu)) continue;
-                if (attack && world.validate(target)) {
+                if (!world.contains(pu)) continue;
+                if (attack && world.contains(target)) {
                     deal_attack_damage(world, source, target, damage);
                 }
-                if (world.validate(pu)) begin_destroy_projectile(world, id);
+                if (world.contains(pu)) begin_destroy_projectile(world, id);
                 continue;
             }
             f32 step = proj.speed * dt;
@@ -1877,13 +1877,13 @@ void system_projectile(World& world, float dt) {
             for (const Unit& hit : victims) {
                 // An earlier victim's callback may have killed / removed
                 // this one — don't feed a freed handle to Lua or damage.
-                if (!world.validate(hit)) continue;
+                if (!world.contains(hit)) continue;
                 if (world.on_projectile_hit) world.on_projectile_hit(pu, hit);
-                if (!world.validate(pu)) break;
-                if (pis_attack && world.validate(hit)) {
+                if (!world.contains(pu)) break;
+                if (pis_attack && world.contains(hit)) {
                     deal_attack_damage(world, psource, hit, pdamage);
                 }
-                if (!world.validate(pu)) break;
+                if (!world.contains(pu)) break;
                 auto* p = world.projectiles.get(id);
                 if (!p) break;
                 p->already_hit.push_back(hit);
@@ -1892,7 +1892,7 @@ void system_projectile(World& world, float dt) {
             // Expire on max_distance or on reaching target_pos with no
             // remaining travel. Re-fetch — a hit callback may already have
             // torn the projectile down.
-            if (!world.validate(pu)) continue;
+            if (!world.contains(pu)) continue;
             auto* p = world.projectiles.get(id);
             if (!p) continue;
             if ((p->max_distance > 0 && p->traveled >= p->max_distance) ||
@@ -1904,7 +1904,7 @@ void system_projectile(World& world, float dt) {
     }
 
     for (Unit projectile : to_teardown) {
-        if (world.validate(projectile)) destroy_projectile_entity(world, projectile.id);
+        if (world.contains(projectile)) destroy_projectile_entity(world, projectile.id);
     }
 }
 
@@ -2034,7 +2034,7 @@ void system_death(World& world, float dt) {
 
     static constexpr f32 DEATH_THRESHOLD = 0.05f;
     for (Handle entity : entities) {
-        if (!world.validate(entity) || world.dead_states.has(entity.id)) continue;
+        if (!world.contains(entity) || world.dead_states.has(entity.id)) continue;
 
         u32 id = entity.id;
         auto* hp = world.healths.get(id);
@@ -2046,15 +2046,15 @@ void system_death(World& world, float dt) {
 
         Unit dying{id};
         Unit killer = hp->killer;
-        if (!world.validate(killer)) killer = {};
+        if (!world.contains(killer)) killer = {};
         if (world.on_dying && info->category == Category::Unit) {
             world.on_dying(dying, killer);
-            if (!world.validate(entity)) continue;
+            if (!world.contains(entity)) continue;
             hp = world.healths.get(id);
             info = world.handle_infos.get(id);
             if (!hp || !info || hp->current >= DEATH_THRESHOLD) continue;
             killer = hp->killer;
-            if (!world.validate(killer)) killer = {};
+            if (!world.contains(killer)) killer = {};
         }
         hp->current = 0;
 
@@ -2068,13 +2068,13 @@ void system_death(World& world, float dt) {
                 auto* transform = world.transforms.get(id);
                 if (transform) world.on_sound(def->sound_death, transform->position);
             }
-            if (!world.validate(entity)) continue;
+            if (!world.contains(entity)) continue;
         }
 
         if (world.on_death &&
             (category == Category::Unit || category == Category::Destructable)) {
             world.on_death(dying, killer);
-            if (!world.validate(entity)) continue;
+            if (!world.contains(entity)) continue;
         }
 
         world.movements.remove(id);
@@ -2175,7 +2175,7 @@ void system_regions(World& world) {
                 if (previous.contains(unit_id)) continue;
                 if (!region_alive()) break;
                 Unit unit{unit_id};
-                if (world.validate(unit)) world.on_region_enter(region_id, unit);
+                if (world.contains(unit)) world.on_region_enter(region_id, unit);
             }
         }
 

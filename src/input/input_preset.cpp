@@ -24,7 +24,7 @@ std::optional<DerivedPing> derive_target_ping(const simulation::GameCommand& cmd
     } else if (const auto* p = std::get_if<o::PickupItem>(&cmd.order)) {
         target = simulation::Unit{p->item};
     }
-    if (!target.is_valid()) return std::nullopt;  // ground / non-target order
+    if (simulation::is_null_handle(target)) return std::nullopt;  // ground / non-target order
 
     const auto* t = world.transforms.get(target.id);
     if (!t) return std::nullopt;                  // target vanished this frame

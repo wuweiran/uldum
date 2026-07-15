@@ -702,7 +702,7 @@ static bool inventory_resolve_slot(const Hud::Impl& s,
     out_def  = nullptr;
     if (!inv || slot_index >= inv->slots.size()) return false;
     simulation::Item item = inv->slots[slot_index];
-    if (!item.is_valid() || !s.world_ctx || !s.world_ctx->world) return false;
+    if (simulation::is_null_handle(item) || !s.world_ctx || !s.world_ctx->world) return false;
     const auto* info = s.world_ctx->world->item_infos.get(item.id);
     if (!info) return false;
     out_item = item;
@@ -1905,8 +1905,8 @@ static void draw_text_tags(HudRenderer::Impl& r, Hud::Impl& s,
         if (rendered.empty()) continue;
 
         glm::vec3 world_anchor{0.0f};
-        if (t.unit.is_valid()) {
-            if (!world.validate(t.unit)) continue;
+        if (simulation::is_non_null_handle(t.unit)) {
+            if (!world.contains(t.unit)) continue;
             const auto* tf = world.transforms.get(t.unit.id);
             if (!tf) continue;
             world_anchor = tf->interp_position(alpha) + glm::vec3(0.0f, 0.0f, t.z_offset);

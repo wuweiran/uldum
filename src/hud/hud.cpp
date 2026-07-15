@@ -578,7 +578,7 @@ void Hud::update_focus(f32 /*dt*/) {
         return;
     }
     auto hero = sel.selected().front();
-    if (!world.validate(hero)) {
+    if (!world.contains(hero)) {
         s.focus_target_unit = simulation::Unit{};
         s.focus_manual = false;
         return;
@@ -591,7 +591,7 @@ void Hud::update_focus(f32 /*dt*/) {
     // Validate the current focus first. Both auto and manual share the
     // alive + visible checks; they differ only on the range condition.
     auto focus_alive_and_visible = [&](simulation::Unit u, glm::vec3& out_pos) -> bool {
-        if (!u.is_valid() || !world.validate(u)) return false;
+        if (simulation::is_null_handle(u) || !world.contains(u)) return false;
         auto* hp = world.healths.get(u.id);
         if (hp && hp->current <= 0) return false;
         auto* tf = world.transforms.get(u.id);
@@ -682,7 +682,7 @@ bool Hud::focus_is_manual() const {
 void Hud::set_focus_target(simulation::Unit unit) {
     if (!m_impl) return;
     m_impl->focus_target_unit = unit;
-    m_impl->focus_manual = unit.is_valid();
+    m_impl->focus_manual = simulation::is_non_null_handle(unit);
 }
 
 void Hud::clear_focus_target() {
@@ -1114,10 +1114,10 @@ Hud::TargetingIntent Hud::cursor_intent() const {
     f32 sy = m_impl->pointer_y * m_impl->ui_scale;
     // Item beats unit when both share the cursor — items are smaller so
     // the player almost always wants the item-pickup intent in that case.
-    if (auto item = ctx.pick_item(sx, sy); item.is_valid()) {
+    if (auto item = ctx.pick_item(sx, sy); simulation::is_non_null_handle(item)) {
         return TargetingIntent::Item;
     }
-    if (auto unit = ctx.pick_target(sx, sy); unit.is_valid()) {
+    if (auto unit = ctx.pick_target(sx, sy); simulation::is_non_null_handle(unit)) {
         const auto* owner = ctx.world->owners.get(unit.id);
         if (!owner) return TargetingIntent::Neutral;
         if (owner->id == ctx.local_player.id) return TargetingIntent::Ally;
@@ -1408,7 +1408,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // mid-drag we want the range ring + drag arrow origin to follow
     // along, not stay anchored where the press happened. Cancel if the
     // caster no longer exists.
-    if (!s.world_ctx->world->validate(s.drag_cast.caster)) {
+    if (!s.world_ctx->world->contains(s.drag_cast.caster)) {
         if (s.drag_cast.inventory_slot >= 0) {
             if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
                 s.inventory_cfg.slots[s.drag_cast.inventory_slot].pressed = false;
@@ -1690,7 +1690,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             fire_no_target = true;
         } else if (s.drag_cast.phase == Phase::Aiming) {
             if (s.drag_cast.widget_kinds != 0) {
-                if (s.drag_cast.snapped_target.is_valid()) fire_at_target = true;
+                if (simulation::is_non_null_handle(s.drag_cast.snapped_target)) fire_at_target = true;
                 else if (s.drag_cast.accept_point) fire_at_target = true;
             } else if (s.drag_cast.accept_point) {
                 fire_at_target = true;
@@ -1699,7 +1699,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         if (fire_no_target && s.inventory_use_fn && !s.drag_cast.ability_id.empty()) {
             s.inventory_use_fn(s.drag_cast.inventory_item_id, s.drag_cast.ability_id);
         } else if (fire_at_target && s.inventory_use_at_target_fn) {
-            u32 target_uid = s.drag_cast.snapped_target.is_valid()
+            u32 target_uid = simulation::is_non_null_handle(s.drag_cast.snapped_target)
                                ? s.drag_cast.snapped_target.id
                                : UINT32_MAX;
             glm::vec3 wp{s.drag_cast.drag_world_x,
@@ -1726,9 +1726,9 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     if (!commit && is_command && s.drag_cast.phase == Phase::Pressed) {
         if (s.drag_cast.command_id == "attack" ||
             s.drag_cast.command_id == "attack_move") {
-            if (s.focus_target_unit.is_valid() && s.world_ctx &&
+            if (simulation::is_non_null_handle(s.focus_target_unit) && s.world_ctx &&
                 s.world_ctx->world &&
-                s.world_ctx->world->validate(s.focus_target_unit)) {
+                s.world_ctx->world->contains(s.focus_target_unit)) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
                 if (auto* tf = s.world_ctx->world->transforms.get(
                                    s.focus_target_unit.id)) {
@@ -1751,8 +1751,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         // a heal-on-enemy focus falls back to the local snap instead
         // of casting on something the spell can't touch.
         bool focus_usable = false;
-        if (s.focus_target_unit.is_valid() && s.world_ctx && s.world_ctx->world &&
-            s.world_ctx->world->validate(s.focus_target_unit)) {
+        if (simulation::is_non_null_handle(s.focus_target_unit) && s.world_ctx && s.world_ctx->world &&
+            s.world_ctx->world->contains(s.focus_target_unit)) {
             const auto* def = s.world_ctx->abilities
                                 ? s.world_ctx->abilities->get(s.drag_cast.ability_id)
                                 : nullptr;
@@ -1766,7 +1766,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             if (focus_usable) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
                 commit = true;
-            } else if (s.drag_cast.snapped_target.is_valid()) {
+            } else if (simulation::is_non_null_handle(s.drag_cast.snapped_target)) {
                 commit = true;
             } else if (s.drag_cast.accept_point) {
                 commit = true;   // hybrid form: fall through to ground
@@ -1795,11 +1795,11 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     if (commit && !is_command &&
         s.drag_cast.form == simulation::AbilityForm::Target &&
         s.drag_cast.widget_kinds != 0 && !s.drag_cast.accept_point &&
-        !s.drag_cast.snapped_target.is_valid()) {
+        simulation::is_null_handle(s.drag_cast.snapped_target)) {
         commit = false;
     }
     if (commit) {
-        u32 target_uid = s.drag_cast.snapped_target.is_valid()
+        u32 target_uid = simulation::is_non_null_handle(s.drag_cast.snapped_target)
                            ? s.drag_cast.snapped_target.id
                            : UINT32_MAX;
         if (is_command) {
@@ -1859,7 +1859,7 @@ Hud::AbilityAimState Hud::aim_state() const {
         out.range      = dc.range;
         // Widget-snapped this frame? Hybrid forms can switch between
         // widget and point each frame as the cursor moves.
-        out.is_unit_target = dc.snapped_target.is_valid();
+        out.is_unit_target = simulation::is_non_null_handle(dc.snapped_target);
 
         // Shape mirrors the ability's indicator shape. For target_unit
         // forms, an area_radius > 0 still draws a circle around the
@@ -1878,7 +1878,7 @@ Hud::AbilityAimState Hud::aim_state() const {
         out.area_angle  = dc.area_angle;
         out.has_area    = (out.area_shape != AimAreaShape::None);
 
-        if (dc.snapped_target.is_valid() && m_impl->world_ctx &&
+        if (simulation::is_non_null_handle(dc.snapped_target) && m_impl->world_ctx &&
             m_impl->world_ctx->world) {
             const auto* tf = m_impl->world_ctx->world->transforms.get(
                                  dc.snapped_target.id);
@@ -2047,7 +2047,7 @@ Hud::AbilityAimState Hud::aim_state() const {
             f32 d2  = dx2 * dx2 + dy2 * dy2;
             if (d2 < best_d2) { best_d2 = d2; best = cand; }
         }
-        if (best.is_valid()) {
+        if (simulation::is_non_null_handle(best)) {
             const auto* tf = ctx.world->transforms.get(best.id);
             if (tf) {
                 out.snapped_id = best.id;
@@ -2367,7 +2367,7 @@ static bool inventory_resolve_slot(const Hud::Impl& s,
     out_def  = nullptr;
     if (!inv || slot_index >= inv->slots.size()) return false;
     simulation::Item item = inv->slots[slot_index];
-    if (!item.is_valid() || !s.world_ctx || !s.world_ctx->world) return false;
+    if (simulation::is_null_handle(item) || !s.world_ctx || !s.world_ctx->world) return false;
     const auto* info = s.world_ctx->world->item_infos.get(item.id);
     if (!info) return false;
     out_item = item;

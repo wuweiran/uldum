@@ -65,7 +65,7 @@ void SpatialGrid::get_cell_range(f32 x, f32 y, f32 radius, i32& min_cx, i32& min
 }
 
 bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter& filter) const {
-    if (!world.validate(unit)) return false;
+    if (!world.contains(unit)) return false;
 
     // Alive check
     if (filter.alive_only) {

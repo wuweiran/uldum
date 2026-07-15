@@ -646,7 +646,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
 
         simulation::Player owner{pu.owner};
         auto unit = simulation::create_unit(world, pu.type, owner, pu.x, pu.y, pu.facing);
-        if (!unit.is_valid()) continue;
+        if (simulation::is_null_handle(unit)) continue;
 
         auto* t = world.transforms.get(unit.id);
         if (t) t->position.z = sample_height(pu.x, pu.y);
@@ -695,7 +695,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
         }
 
         auto dest = simulation::create_destructable(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
-        if (!dest.is_valid()) continue;
+        if (simulation::is_null_handle(dest)) continue;
 
         if (auto* t = world.transforms.get(dest.id)) {
             t->position.z = sample_height(pd.x, pd.y);
@@ -720,7 +720,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
     u32 item_count = 0;
     for (const auto& pi : m_scene.items) {
         auto item = simulation::create_item(world, pi.type, pi.x, pi.y);
-        if (!item.is_valid()) continue;
+        if (simulation::is_null_handle(item)) continue;
         if (auto* t = world.transforms.get(item.id)) {
             t->position.z      = sample_height(pi.x, pi.y);
             t->prev_position.z = t->position.z;
@@ -732,7 +732,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
     u32 dood_count = 0;
     for (const auto& pd : m_scene.doodads) {
         auto dood = simulation::create_doodad(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
-        if (!dood.is_valid()) continue;
+        if (simulation::is_null_handle(dood)) continue;
         if (auto* t = world.transforms.get(dood.id)) {
             t->position.z = sample_height(pd.x, pd.y);
             t->prev_position.z = t->position.z;

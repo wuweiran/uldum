@@ -124,7 +124,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // is honored — without this, MP clients query the empty server
     // simulation's world and every target is rejected.
     const World& w = world();
-    if (!w.validate(target)) return false;
+    if (!w.contains(target)) return false;
 
     // Liveness gate. `alive` defaults true in JSON (parser-side), so
     // most filters only accept living targets. `dead` lets resurrect-

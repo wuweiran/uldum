@@ -875,7 +875,7 @@ void Editor::brush_ramp_clear() {
 void Editor::destroy_preview() {
     if (m_preview_type_id.empty()) return;
     auto& world = m_simulation.world();
-    if (world.validate(m_preview_handle)) {
+    if (world.contains(m_preview_handle)) {
         simulation::destroy(world, m_preview_handle);
     }
     m_preview_handle = {};
@@ -945,7 +945,7 @@ void Editor::update_object_preview() {
                 world, m_place_unit_type,
                 simulation::Player{m_place_unit_owner},
                 m_cursor_pos.x, m_cursor_pos.y, facing_rad);
-            if (!m_preview_handle.is_valid()) return;
+            if (simulation::is_null_handle(m_preview_handle)) return;
             m_preview_type_id = m_place_unit_type;
             m_preview_category = ObjectCategory::Unit;
             // Suppress the birth animation so the preview unit doesn't
@@ -985,7 +985,7 @@ void Editor::update_object_preview() {
                 world, m_place_destructable_type,
                 m_cursor_pos.x, m_cursor_pos.y, /*facing=*/0,
                 m_place_destructable_var);
-            if (!h.is_valid()) return;
+            if (simulation::is_null_handle(h)) return;
             m_preview_handle.id = h.id;
             m_preview_type_id           = m_place_destructable_type;
             m_preview_category          = ObjectCategory::Destructable;
@@ -1020,7 +1020,7 @@ void Editor::update_object_preview() {
                 world, m_place_doodad_type,
                 m_cursor_pos.x, m_cursor_pos.y, /*facing=*/0,
                 m_place_doodad_var);
-            if (!h.is_valid()) return;
+            if (simulation::is_null_handle(h)) return;
             m_preview_handle.id = h.id;
             m_preview_type_id           = m_place_doodad_type;
             m_preview_category          = ObjectCategory::Doodad;
@@ -1184,7 +1184,7 @@ void Editor::place_unit_at(f32 wx, f32 wy) {
     auto unit = simulation::create_unit(sim.world(), m_place_unit_type,
                                          simulation::Player{m_place_unit_owner},
                                          wx, wy, facing_rad);
-    if (!unit.is_valid()) return;
+    if (simulation::is_null_handle(unit)) return;
 
     if (auto* t = sim.world().transforms.get(unit.id)) {
         t->position.z = map::sample_height(td, wx, wy);
@@ -1223,7 +1223,7 @@ void Editor::place_item_at(f32 wx, f32 wy) {
     if (!td.is_valid()) return;
 
     auto item = simulation::create_item(sim.world(), m_place_item_type, wx, wy);
-    if (!item.is_valid()) return;
+    if (simulation::is_null_handle(item)) return;
     if (auto* t = sim.world().transforms.get(item.id)) {
         t->position.z = map::sample_height(td, wx, wy);
         t->prev_position.z = t->position.z;
@@ -1249,7 +1249,7 @@ void Editor::place_destructable_at(f32 wx, f32 wy) {
     auto dest = simulation::create_destructable(sim.world(), m_place_destructable_type,
                                                  wx, wy, /*facing=*/0,
                                                  m_place_destructable_var);
-    if (!dest.is_valid()) return;
+    if (simulation::is_null_handle(dest)) return;
     if (auto* t = sim.world().transforms.get(dest.id)) {
         t->position.z = map::sample_height(td, wx, wy);
     }
@@ -1289,7 +1289,7 @@ void Editor::place_doodad_at(f32 wx, f32 wy) {
     auto dood = simulation::create_doodad(sim.world(), m_place_doodad_type,
                                            wx, wy, /*facing=*/0,
                                            m_place_doodad_var);
-    if (!dood.is_valid()) return;
+    if (simulation::is_null_handle(dood)) return;
     if (auto* t = sim.world().transforms.get(dood.id)) {
         t->position.z = map::sample_height(td, wx, wy);
     }
@@ -1404,13 +1404,13 @@ void Editor::place_mode_continuous_tick(f32 screen_x, f32 screen_y) {
 
 void Editor::place_mode_on_delete() {
     auto& world = m_simulation.world();
-    if (m_selected_unit.is_valid() && world.validate(m_selected_unit)) {
+    if (simulation::is_non_null_handle(m_selected_unit) && world.contains(m_selected_unit)) {
         simulation::destroy(world, m_selected_unit);
-    } else if (m_selected_item.is_valid() && world.validate(m_selected_item)) {
+    } else if (simulation::is_non_null_handle(m_selected_item) && world.contains(m_selected_item)) {
         simulation::destroy(world, m_selected_item);
-    } else if (m_selected_doodad.is_valid() && world.validate(m_selected_doodad)) {
+    } else if (simulation::is_non_null_handle(m_selected_doodad) && world.contains(m_selected_doodad)) {
         simulation::destroy(world, m_selected_doodad);
-    } else if (m_selected_destructable.is_valid() && world.validate(m_selected_destructable)) {
+    } else if (simulation::is_non_null_handle(m_selected_destructable) && world.contains(m_selected_destructable)) {
         simulation::destroy(world, m_selected_destructable);
     }
     clear_selection();
@@ -1429,10 +1429,10 @@ void Editor::place_mode_draw_panel() {
     bool in_select = (m_object_tool == ObjectTool::Select);
     ObjectCategory sel_cat = ObjectCategory::Unit;
     if (in_select) {
-        if      (m_selected_unit.is_valid())         { sel_id = m_selected_unit.id;         sel_cat = ObjectCategory::Unit; }
-        else if (m_selected_item.is_valid())         { sel_id = m_selected_item.id;         sel_cat = ObjectCategory::Item; }
-        else if (m_selected_destructable.is_valid()) { sel_id = m_selected_destructable.id; sel_cat = ObjectCategory::Destructable; }
-        else if (m_selected_doodad.is_valid())       { sel_id = m_selected_doodad.id;       sel_cat = ObjectCategory::Doodad; }
+        if      (simulation::is_non_null_handle(m_selected_unit))         { sel_id = m_selected_unit.id;         sel_cat = ObjectCategory::Unit; }
+        else if (simulation::is_non_null_handle(m_selected_item))         { sel_id = m_selected_item.id;         sel_cat = ObjectCategory::Item; }
+        else if (simulation::is_non_null_handle(m_selected_destructable)) { sel_id = m_selected_destructable.id; sel_cat = ObjectCategory::Destructable; }
+        else if (simulation::is_non_null_handle(m_selected_doodad))       { sel_id = m_selected_doodad.id;       sel_cat = ObjectCategory::Doodad; }
     }
     bool has_selection = (sel_id != UINT32_MAX);
     ObjectCategory eff_cat = has_selection ? sel_cat : m_object_category;
@@ -2325,10 +2325,10 @@ void Editor::draw_overlays() {
     // selection radius (e.g. destructables).
     if (m_mode == EditMode::Object && m_object_tool == ObjectTool::Select) {
         u32 sel_id = UINT32_MAX;
-        if      (m_selected_unit.is_valid())         sel_id = m_selected_unit.id;
-        else if (m_selected_item.is_valid())         sel_id = m_selected_item.id;
-        else if (m_selected_destructable.is_valid()) sel_id = m_selected_destructable.id;
-        else if (m_selected_doodad.is_valid())       sel_id = m_selected_doodad.id;
+        if      (simulation::is_non_null_handle(m_selected_unit))         sel_id = m_selected_unit.id;
+        else if (simulation::is_non_null_handle(m_selected_item))         sel_id = m_selected_item.id;
+        else if (simulation::is_non_null_handle(m_selected_destructable)) sel_id = m_selected_destructable.id;
+        else if (simulation::is_non_null_handle(m_selected_doodad))       sel_id = m_selected_doodad.id;
         if (sel_id != UINT32_MAX) {
             const auto& world = m_simulation.world();
             const auto* t = world.transforms.get(sel_id);

@@ -153,13 +153,13 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 // shift-click on a foreign unit while you have own
                 // units selected does nothing.
                 auto unit = ctx.picker.pick_widget(input.mouse_x, input.mouse_y, sel.player());
-                if (!unit.is_valid()) {
+                if (simulation::is_null_handle(unit)) {
                     // Fall through to any entity (foreign units, selectable
                     // destructables like crates) — but not trees, which are
                     // flagged non-selectable.
                     unit = ctx.picker.pick_widget(input.mouse_x, input.mouse_y, {}, /*selectable_only=*/true);
                 }
-                if (unit.is_valid()) {
+                if (simulation::is_non_null_handle(unit)) {
                     auto* own = ctx.simulation.world().owners.get(unit.id);
                     bool is_own = own && own->id == sel.player().id;
                     if (input.key_shift && is_own) sel.toggle(unit);
@@ -229,7 +229,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 bool target_ok = false;
                 if (def->widget_kinds != 0) {
                     target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-                    if (target.is_valid()) {
+                    if (simulation::is_non_null_handle(target)) {
                         auto caster = sel.selected().front();
                         target_ok = ctx.simulation.target_filter_passes(
                             def->target_filter, caster, target);
@@ -286,7 +286,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             cmd.queued = input.key_shift;
 
             auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-            if (target.is_valid()) {
+            if (simulation::is_non_null_handle(target)) {
                 // Follow any unit — Move with target_unit set; the sim
                 // re-resolves the goal from its position each tick.
                 simulation::orders::Move m;
@@ -312,7 +312,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     if (m_target_mode == TargetingMode::AttackMove && input.mouse_left_pressed) {
         if (!sel.empty()) {
             auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
-            if (target.is_valid()) {
+            if (simulation::is_non_null_handle(target)) {
                 // A-click on unit: force Attack
                 GameCommand cmd;
                 cmd.player = sel.player();
@@ -354,7 +354,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         // item in that case). pick_item already excludes carried items
         // so dropped-near-self items still resolve cleanly.
         auto picked_item = ctx.picker.pick_item(input.mouse_x, input.mouse_y);
-        if (picked_item.is_valid()) {
+        if (simulation::is_non_null_handle(picked_item)) {
             GameCommand cmd;
             cmd.player = sel.player();
             cmd.units  = sel.selected();
@@ -367,7 +367,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         // Check if clicking on a unit
         auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
 
-        if (target.is_valid()) {
+        if (simulation::is_non_null_handle(target)) {
             // Clicking on a unit — determine if enemy or ally
             auto* target_owner = ctx.simulation.world().owners.get(target.id);
             bool is_enemy = false;

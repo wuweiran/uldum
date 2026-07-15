@@ -273,7 +273,7 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
         if (!info || info->category != simulation::Category::Item) continue;
         // Skip items currently being carried (they're "inside" a unit).
         auto* car = carriables.get(id);
-        if (car && car->carried_by.is_valid()) continue;
+        if (car && simulation::is_non_null_handle(car->carried_by)) continue;
 
         auto* transform = transforms.get(id);
         if (!transform) continue;

@@ -19,7 +19,7 @@ void CommandSystem::submit(const GameCommand& cmd) {
     // here because it spans player boundaries and isn't visible to
     // the upstream caller.
     for (auto& unit : cmd.units) {
-        if (!m_world->validate(unit)) continue;
+        if (!m_world->contains(unit)) continue;
 
         // Validate ownership: unit must belong to the commanding player
         auto* owner = m_world->owners.get(unit.id);

@@ -205,9 +205,9 @@ struct World {
     RegionEventCallback on_region_enter;
     RegionEventCallback on_region_leave;
 
-    // Validate a typed handle.
-    bool validate(Handle h) const {
-        return h.is_valid() && handle_infos.has(h.id);
+    // Whether this entity id is currently present in the world.
+    bool contains(Handle h) const {
+        return is_non_null_handle(h) && handle_infos.has(h.id);
     }
 
     // Build a Unit handle from an id owned by current world state.

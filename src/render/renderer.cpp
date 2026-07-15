@@ -3709,7 +3709,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
         m_effect_manager.update(frame_dt,
             [](simulation::Unit u, std::string_view attach, void* ctx) -> glm::vec3 {
                 auto* c = static_cast<EffectCtx*>(ctx);
-                if (!c->w->validate(u)) return {0,0,0};
+                if (!c->w->contains(u)) return {0,0,0};
                 auto* t = c->w->transforms.get(u.id);
                 if (!t) return {0,0,0};
                 glm::vec3 pos = t->position;

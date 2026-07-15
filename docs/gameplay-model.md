@@ -105,9 +105,10 @@ handle (base)                 Handle { id }                (not exposed)
 ```
 
 Each typed handle holds a monotonic `id`. IDs are never reused while a `World`
-exists, including across scene clears. Liveness is checked through the world's
-`HandleInfo` pool, so an old handle resolves to no entity rather than aliasing a
-new one.
+exists, including across scene clears. `is_null_handle` / `is_non_null_handle`
+only distinguish the `UINT32_MAX` sentinel used for “no entity”; `World::contains`
+checks the `HandleInfo` pool to determine whether an ID is currently present. An
+old handle therefore resolves to no entity rather than aliasing a new one.
 
 - **Type safety**: you cannot pass an Item where a Unit is expected — enforced at
   compile time in C++ and at runtime in Lua.
@@ -957,7 +958,7 @@ struct World {
     SparseSet<Renderable>             renderables;
 
     HandleAllocator handles;
-    bool validate(Handle h) const;
+    bool contains(Handle h) const;
 
     TypeRegistry* types;  // pointer, owned by Simulation
 };

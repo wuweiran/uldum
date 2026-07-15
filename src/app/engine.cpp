@@ -154,7 +154,7 @@ bool Engine::init(const LaunchArgs& args) {
     m_renderer.effect_manager().set_unit_pos_resolver(
         [this](simulation::Unit u, std::string_view attach) -> glm::vec3 {
             auto& world = active_world();
-            if (!world.validate(u)) return {0, 0, 0};
+            if (!world.contains(u)) return {0, 0, 0};
             auto* t = world.transforms.get(u.id);
             if (!t) return {0, 0, 0};
             glm::vec3 pos = t->position;
@@ -919,7 +919,7 @@ bool Engine::start_session() {
                    std::string_view attach_point) {
                 if (player_id == m_args.local_slot) {
                     auto& mgr = m_renderer.effect_manager();
-                    u32 local_id = entity.is_valid()
+                    u32 local_id = simulation::is_non_null_handle(entity)
                         ? mgr.create_on_unit(std::string(name), entity, pos,
                                              std::string(attach_point))
                         : mgr.create(std::string(name), pos);
@@ -1039,7 +1039,7 @@ bool Engine::start_session() {
                                               simulation::Unit entity, glm::vec3 pos,
                                               std::string_view attach_point) {
             auto& mgr = m_renderer.effect_manager();
-            u32 local_id = entity.is_valid()
+            u32 local_id = simulation::is_non_null_handle(entity)
                 ? mgr.create_on_unit(std::string(name), entity, pos,
                                      std::string(attach_point))
                 : mgr.create(std::string(name), pos);
@@ -2018,7 +2018,7 @@ void Engine::run() {
                 auto& world = active_world();
                 m_camera_controller.update(frame_dt,
                     [&world](simulation::Unit unit) -> glm::vec2 {
-                        if (!world.validate(unit)) {
+                        if (!world.contains(unit)) {
                             f32 nan = std::numeric_limits<f32>::quiet_NaN();
                             return { nan, nan };
                         }
@@ -2170,7 +2170,7 @@ void Engine::run() {
                     // doesn't fight the selection ring visually.
                     if (terrain) {
                         auto focus = m_hud.focus_target();
-                        if (focus.is_valid() && world.validate(focus)) {
+                        if (simulation::is_non_null_handle(focus) && world.contains(focus)) {
                             const auto* tf  = world.transforms.get(focus.id);
                             const auto* sel = world.selectables.get(focus.id);
                             if (tf) {
@@ -2229,7 +2229,7 @@ void Engine::run() {
                             glm::vec3 anchor = m_target_ping.pos;
                             f32 base_r = 48.0f;
                             f32 ping_fly = 0.0f;
-                            if (world.validate(m_target_ping.unit)) {
+                            if (world.contains(m_target_ping.unit)) {
                                 if (auto* tf = world.transforms.get(m_target_ping.unit.id)) {
                                     anchor = tf->interp_position(alpha);
                                 }

@@ -202,7 +202,6 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
 
     lua.new_usertype<simulation::Unit>("Unit",
         "id", &simulation::Unit::id,
-        "is_valid", &simulation::Unit::is_valid,
         sol::meta_function::equal_to, [](const simulation::Unit& a, const simulation::Unit& b) { return a == b; }
     );
     lua.new_usertype<simulation::Player>("Player",
@@ -214,12 +213,10 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     );
     lua.new_usertype<simulation::Item>("Item",
         "id", &simulation::Item::id,
-        "is_valid", &simulation::Item::is_valid,
         sol::meta_function::equal_to, [](const simulation::Item& a, const simulation::Item& b) { return a == b; }
     );
     lua.new_usertype<simulation::Destructable>("Destructable",
         "id", &simulation::Destructable::id,
-        "is_valid", &simulation::Destructable::is_valid,
         sol::meta_function::equal_to, [](const simulation::Destructable& a, const simulation::Destructable& b) { return a == b; }
     );
 
@@ -324,14 +321,14 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
             using T = std::decay_t<decltype(p)>;
             if constexpr (std::is_same_v<T, simulation::orders::Move>) {
                 type_tag = "move";
-                if (p.target_unit.is_valid()) target_unit = p.target_unit;
+                if (simulation::is_non_null_handle(p.target_unit)) target_unit = p.target_unit;
                 target_x = p.target.x; target_y = p.target.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
                 type_tag = "attack_move";
                 target_x = p.target.x; target_y = p.target.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
                 type_tag = "attack";
-                if (p.target.is_valid()) target_unit = p.target;
+                if (simulation::is_non_null_handle(p.target)) target_unit = p.target;
             } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
                 type_tag = "stop";
             } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
@@ -345,7 +342,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
             } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
                 type_tag = "cast";
                 ability_id = p.ability_id;
-                if (p.target_unit.is_valid()) target_unit = p.target_unit;
+                if (simulation::is_non_null_handle(p.target_unit)) target_unit = p.target_unit;
                 target_x = p.target_pos.x; target_y = p.target_pos.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
                 type_tag = "train";
@@ -745,7 +742,7 @@ void ScriptEngine::update(float dt) {
             // For unit-attached effects, track the unit's current
             // position so late-delivered players spawn the effect at
             // the unit's now-position.
-            if (world.validate(e.entity)) {
+            if (world.contains(e.entity)) {
                 if (auto* t = world.transforms.get(e.entity.id)) e.position = t->position;
             }
             for (u32 p = 0; p < m_player_count; ++p) {
@@ -774,8 +771,8 @@ bool ScriptEngine::effect_visible_to(const ActiveEffect& e, u32 player_id) const
     if (!m_sim) return true;
     const auto& world  = m_sim->world();
     const auto& vision = m_sim->vision();
-    if (e.entity.is_valid()) {
-        if (!world.validate(e.entity)) return false;
+    if (simulation::is_non_null_handle(e.entity)) {
+        if (!world.contains(e.entity)) return false;
         return vision.is_unit_visible_to(world, *m_sim, e.entity.id,
                                           simulation::Player{player_id});
     }
@@ -866,7 +863,7 @@ void ScriptEngine::bind_api() {
 
     // Helper: return nil for invalid units
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
-        return sim.world().validate(u) ? sol::make_object(*m_lua, u)
+        return sim.world().contains(u) ? sol::make_object(*m_lua, u)
                                        : sol::make_object(*m_lua, sol::nil);
     };
 
@@ -882,7 +879,7 @@ void ScriptEngine::bind_api() {
         // to radians for the internal transform.
         f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
         auto unit = simulation::create_unit(world, type_id, owner, x, y, facing_rad);
-        if (unit.is_valid()) {
+        if (simulation::is_non_null_handle(unit)) {
             auto* t = world.transforms.get(unit.id);
             if (t) t->position.z = ::uldum::map::sample_height(terrain_ref,x, y);
             auto* mov = world.movements.get(unit.id);
@@ -897,7 +894,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["RemoveUnit"] = [&](simulation::Unit unit) {
-        if (!sim.world().validate(unit)) return;
+        if (!sim.world().contains(unit)) return;
         EventFrame frame;
         frame.entity = unit;
         frame.registered_entity = unit;
@@ -910,7 +907,7 @@ void ScriptEngine::bind_api() {
         auto& world = sim.world();
         f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
         auto d = simulation::create_destructable(world, type_id, x, y, facing_rad, variation.value_or(0));
-        if (d.is_valid()) {
+        if (simulation::is_non_null_handle(d)) {
             if (auto* t = world.transforms.get(d.id)) t->position.z = ::uldum::map::sample_height(terrain_ref, x, y);
             // Stamp the pathing footprint. The map-load and editor placement
             // paths do this at their call site; a runtime CreateDestructable
@@ -958,7 +955,7 @@ void ScriptEngine::bind_api() {
 
     lua["IsUnitHero"] = [&](simulation::Unit unit) -> bool {
         auto& world = sim.world();
-        if (!world.validate(unit)) return false;
+        if (!world.contains(unit)) return false;
         auto* cls = world.classifications.get(unit.id);
         return cls && simulation::has_classification(cls->flags, "hero");
     };
@@ -968,7 +965,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetUnitTypeId"] = [&](simulation::Unit unit) -> std::string {
-        if (!sim.world().validate(unit)) return "";
+        if (!sim.world().contains(unit)) return "";
         auto* info = sim.world().handle_infos.get(unit.id);
         return info ? info->type_id : "";
     };
@@ -978,7 +975,7 @@ void ScriptEngine::bind_api() {
     // string. Units without a Movement (buildings, destructables) read as
     // "ground" — same default the combat target handshake uses.
     lua["GetUnitMoveType"] = [&](simulation::Unit u) -> std::string {
-        if (!sim.world().validate(u)) return simulation::move_type_name(simulation::MoveType::Ground);
+        if (!sim.world().contains(u)) return simulation::move_type_name(simulation::MoveType::Ground);
         auto* mov = sim.world().movements.get(u.id);
         return simulation::move_type_name(mov ? mov->type : simulation::MoveType::Ground);
     };
@@ -998,17 +995,17 @@ void ScriptEngine::bind_api() {
         return {position.x, position.y, position.z};
     };
     lua["SetUnitPosition"] = [&](simulation::Unit u, f32 x, f32 y) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* t = sim.world().transforms.get(u.id);
         if (t) { t->position.x = x; t->position.y = y; t->position.z = ::uldum::map::sample_height(terrain_ref,x, y); }
     };
     lua["GetUnitFacing"] = [&](simulation::Unit u) -> f32 {
-        if (!sim.world().validate(u)) return 0;
+        if (!sim.world().contains(u)) return 0;
         auto* t = sim.world().transforms.get(u.id);
         return t ? t->facing * 57.2957795f : 0;  // rad → deg
     };
     lua["SetUnitFacing"] = [&](simulation::Unit u, f32 degrees) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* t = sim.world().transforms.get(u.id);
         if (t) t->facing = degrees * 0.0174532925f;  // deg → rad
     };
@@ -1025,7 +1022,7 @@ void ScriptEngine::bind_api() {
     lua["SetUnitAnimation"] = [&](simulation::Unit u, const std::string& clip,
                                    sol::optional<bool> looping) {
         auto& w = sim.world();
-        if (!w.validate(u)) return;
+        if (!w.contains(u)) return;
         auto* q = w.anim_queues.get(u.id);
         if (q) {
             q->clips.clear();
@@ -1041,7 +1038,7 @@ void ScriptEngine::bind_api() {
 
     lua["QueueUnitAnimation"] = [&](simulation::Unit u, const std::string& clip) {
         auto& w = sim.world();
-        if (!w.validate(u)) return;
+        if (!w.contains(u)) return;
         auto* q = w.anim_queues.get(u.id);
         if (q) {
             q->clips.push_back(clip);
@@ -1053,7 +1050,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["ResetUnitAnimation"] = [&](simulation::Unit u) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         sim.world().anim_queues.remove(u.id);
     };
 
@@ -1062,7 +1059,7 @@ void ScriptEngine::bind_api() {
         return simulation::get_health(sim.world(), u);
     };
     lua["GetUnitMaxHealth"] = [&](simulation::Unit u) -> f32 {
-        if (!sim.world().validate(u)) return 0;
+        if (!sim.world().contains(u)) return 0;
         auto* h = sim.world().healths.get(u.id); return h ? h->max : 0;
     };
     lua["SetUnitHealth"] = [&](simulation::Unit u, f32 hp) {
@@ -1071,7 +1068,7 @@ void ScriptEngine::bind_api() {
 
     // Attributes
     lua["GetUnitAttribute"] = [&](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().validate(u)) return 0;
+        if (!sim.world().contains(u)) return 0;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return 0;
         auto it = ab->numeric.find(name);
@@ -1079,7 +1076,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
         // Writes to base; the next recalc re-sums passive ability
@@ -1095,7 +1092,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name) -> std::string {
-        if (!sim.world().validate(u)) return "";
+        if (!sim.world().contains(u)) return "";
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return "";
         auto it = ab->string_attrs.find(name);
@@ -1104,7 +1101,7 @@ void ScriptEngine::bind_api() {
 
     lua["SetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name,
                                          const std::string& value) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
         ab->string_attrs[name] = value;
@@ -1119,7 +1116,7 @@ void ScriptEngine::bind_api() {
     // the schema (max + regen) used to seed each unit on spawn.
 
     lua["GetUnitState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().validate(u)) return 0;
+        if (!sim.world().contains(u)) return 0;
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return 0;
         auto it = sb->states.find(name);
@@ -1127,7 +1124,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetUnitMaxState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().validate(u)) return 0;
+        if (!sim.world().contains(u)) return 0;
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return 0;
         auto it = sb->states.find(name);
@@ -1135,7 +1132,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetUnitState"] = [&](simulation::Unit u, const std::string& name, f32 value) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return;
         auto it = sb->states.find(name);
@@ -1190,14 +1187,14 @@ void ScriptEngine::bind_api() {
 
     // Classification
     lua["HasClassification"] = [&](simulation::Unit u, const std::string& flag) -> bool {
-        if (!sim.world().validate(u)) return false;
+        if (!sim.world().contains(u)) return false;
         auto* cls = sim.world().classifications.get(u.id);
         return cls && simulation::has_classification(cls->flags, flag);
     };
 
     // Owner
     lua["GetUnitOwner"] = [&, player_or_nil](simulation::Unit u) -> sol::object {
-        if (!sim.world().validate(u)) return sol::make_object(*m_lua, sol::nil);
+        if (!sim.world().contains(u)) return sol::make_object(*m_lua, sol::nil);
         auto* o = sim.world().owners.get(u.id);
         return o ? player_or_nil(*o) : sol::make_object(*m_lua, sol::nil);
     };
@@ -1211,7 +1208,7 @@ void ScriptEngine::bind_api() {
     // transfers a unit out of a player's control should clear the
     // selection on that client separately if it matters.
     lua["SetUnitOwner"] = [&](simulation::Unit u, simulation::Player p) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* o = sim.world().owners.get(u.id);
         if (!o) return;
         *o = p;
@@ -1225,7 +1222,7 @@ void ScriptEngine::bind_api() {
 
     lua["IssueOrder"] = [&](simulation::Unit unit, const std::string& order_type, sol::variadic_args va) {
         auto& world = sim.world();
-        if (!world.validate(unit)) return;
+        if (!world.contains(unit)) return;
 
         simulation::Order order;
         if (order_type == "move" && va.size() >= 2) {
@@ -1290,7 +1287,7 @@ void ScriptEngine::bind_api() {
     // PROJECTILE_DESTROYED triggers between create and emit.
     lua["CreateProjectile"] = [&](simulation::Unit source, const std::string& model) -> sol::object {
         auto u = simulation::create_projectile(sim.world(), source, model);
-        return u.is_valid() ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
+        return simulation::is_non_null_handle(u) ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
     };
     lua["EmitProjectileTarget"] = [&](simulation::Unit proj, simulation::Unit target,
                                        f32 speed, sol::optional<f32> arc_height) {
@@ -1310,16 +1307,16 @@ void ScriptEngine::bind_api() {
     // projectiles and consumed by the built-in hit handler; ability
     // projectiles can use damage as a free-form field via Set/Get.
     lua["GetProjectileDamage"] = [&](simulation::Unit proj) -> f32 {
-        if (!sim.world().validate(proj)) return 0.0f;
+        if (!sim.world().contains(proj)) return 0.0f;
         auto* p = sim.world().projectiles.get(proj.id);
         return p ? p->damage : 0.0f;
     };
     lua["SetProjectileDamage"] = [&](simulation::Unit proj, f32 damage) {
-        if (!sim.world().validate(proj)) return;
+        if (!sim.world().contains(proj)) return;
         if (auto* p = sim.world().projectiles.get(proj.id)) p->damage = damage;
     };
     lua["IsProjectileNormalAttack"] = [&](simulation::Unit proj) -> bool {
-        if (!sim.world().validate(proj)) return false;
+        if (!sim.world().contains(proj)) return false;
         auto* p = sim.world().projectiles.get(proj.id);
         return p && p->is_attack;
     };
@@ -1344,7 +1341,7 @@ void ScriptEngine::bind_api() {
     lua["GetProjectileSource"] = [&, unit_or_nil]() -> sol::object {
         if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
         auto* event = std::get_if<ProjectileEvent>(&m_event_frame->payload);
-        if (!event || !sim.world().validate(event->projectile)) {
+        if (!event || !sim.world().contains(event->projectile)) {
             return sol::make_object(*m_lua, sol::nil);
         }
         auto* projectile = sim.world().projectiles.get(event->projectile.id);
@@ -1361,7 +1358,7 @@ void ScriptEngine::bind_api() {
             log::warn(TAG, "TriggerRegisterProjectileEvent: event name is nil or empty");
             return;
         }
-        if (!sim.world().validate(proj) || !sim.world().projectiles.has(proj.id)) return;
+        if (!sim.world().contains(proj) || !sim.world().projectiles.has(proj.id)) return;
         std::string event_name = event_obj.as<std::string>();
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
@@ -1381,7 +1378,7 @@ void ScriptEngine::bind_api() {
     lua["SetAbilityModifier"] = [&](simulation::Unit u, const std::string& ability_id,
                                      const std::string& key, f32 value) -> bool {
         auto& w = sim.world();
-        if (!w.validate(u)) return false;
+        if (!w.contains(u)) return false;
         auto* aset = w.ability_sets.get(u.id);
         if (!aset) return false;
         bool changed = false;
@@ -1419,7 +1416,7 @@ void ScriptEngine::bind_api() {
     // removing, write back after re-adding. Returns 0 / no-op when the
     // unit doesn't have the ability.
     lua["GetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id) -> f32 {
-        if (!sim.world().validate(u)) return 0.0f;
+        if (!sim.world().contains(u)) return 0.0f;
         auto* aset = sim.world().ability_sets.get(u.id);
         if (!aset) return 0.0f;
         for (const auto& a : aset->abilities) {
@@ -1429,7 +1426,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id, f32 secs) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* aset = sim.world().ability_sets.get(u.id);
         if (!aset) return;
         f32 clamped = std::max(0.0f, secs);
@@ -1447,7 +1444,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["ResetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id) {
-        if (!sim.world().validate(u)) return;
+        if (!sim.world().contains(u)) return;
         auto* aset = sim.world().ability_sets.get(u.id);
         if (!aset) return;
         bool changed = false;
@@ -1483,7 +1480,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["HealUnit"] = [&](simulation::Unit source, simulation::Unit target, f32 amount) {
-        if (amount <= 0 || !sim.world().validate(target)) return;
+        if (amount <= 0 || !sim.world().contains(target)) return;
         auto* hp = sim.world().healths.get(target.id);
         if (!hp) return;
         EventFrame frame;
@@ -1493,7 +1490,7 @@ void ScriptEngine::bind_api() {
         dispatch(frame, "global_heal");
         dispatch(frame, "unit_heal");
         amount = std::get<HealEvent>(frame.payload).amount;
-        if (amount <= 0 || !sim.world().validate(target)) return;
+        if (amount <= 0 || !sim.world().contains(target)) return;
         hp = sim.world().healths.get(target.id);
         if (hp) {
             hp->current = std::min(hp->current + amount, hp->max);
@@ -1502,9 +1499,9 @@ void ScriptEngine::bind_api() {
     };
 
     lua["KillUnit"] = [&](simulation::Unit unit, sol::optional<simulation::Unit> killer) {
-        if (!sim.world().validate(unit)) return;
+        if (!sim.world().contains(unit)) return;
         if (auto* hp = sim.world().healths.get(unit.id)) {
-            hp->killer = killer && sim.world().validate(*killer) ? *killer : simulation::Unit{};
+            hp->killer = killer && sim.world().contains(*killer) ? *killer : simulation::Unit{};
             hp->current = 0;
         }
     };
@@ -1593,7 +1590,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetDistanceBetween"] = [&](simulation::Unit u1, simulation::Unit u2) -> f32 {
-        if (!sim.world().validate(u1) || !sim.world().validate(u2)) return 0;
+        if (!sim.world().contains(u1) || !sim.world().contains(u2)) return 0;
         auto* t1 = sim.world().transforms.get(u1.id);
         auto* t2 = sim.world().transforms.get(u2.id);
         if (!t1 || !t2) return 0;
@@ -1603,7 +1600,7 @@ void ScriptEngine::bind_api() {
 
     // Radians from u1 toward u2, measured from +X axis (atan2 convention).
     lua["GetAngleBetween"] = [&](simulation::Unit u1, simulation::Unit u2) -> f32 {
-        if (!sim.world().validate(u1) || !sim.world().validate(u2)) return 0;
+        if (!sim.world().contains(u1) || !sim.world().contains(u2)) return 0;
         auto* t1 = sim.world().transforms.get(u1.id);
         auto* t2 = sim.world().transforms.get(u2.id);
         if (!t1 || !t2) return 0;
@@ -1687,7 +1684,7 @@ void ScriptEngine::bind_api() {
             const std::string& name, simulation::Unit unit,
             sol::optional<std::string> attach_point,
             sol::optional<sol::table> opts) -> u32 {
-        if (!sim.world().validate(unit)) return 0;
+        if (!sim.world().contains(unit)) return 0;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return 0;
         ActiveEffect e;
@@ -1748,7 +1745,7 @@ void ScriptEngine::bind_api() {
             const std::string& name, simulation::Unit unit,
             sol::optional<std::string> attach_point,
             sol::optional<sol::table> opts) {
-        if (!sim.world().validate(unit)) return;
+        if (!sim.world().contains(unit)) return;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
         ActiveEffect e;
@@ -1769,7 +1766,7 @@ void ScriptEngine::bind_api() {
     // its own audio engine. Wire format docs: see protocol.h.
     lua["PlaySound"] = [this](std::string_view path, simulation::Unit unit) {
         auto& sim = *m_sim;
-        if (!sim.world().validate(unit)) return;
+        if (!sim.world().contains(unit)) return;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return;
         if (m_audio)        m_audio->play_sfx(path, t->position);
@@ -1902,7 +1899,7 @@ void ScriptEngine::bind_api() {
         if (!m_camera_set_target_controller_fn) return;
         u32 mask = parse_players_mask(players);
         simulation::Unit unit = u.value_or(simulation::Unit{});
-        if (unit.is_valid() && (!m_sim || !m_sim->world().validate(unit))) return;
+        if (simulation::is_non_null_handle(unit) && (!m_sim || !m_sim->world().contains(unit))) return;
         m_camera_set_target_controller_fn(mask, unit);
     };
 
@@ -1970,19 +1967,19 @@ void ScriptEngine::bind_api() {
     };
 
     lua["IsUnitVisibleToPlayer"] = [&sim](simulation::Unit u, simulation::Player p) -> bool {
-        if (!sim.world().validate(u)) return false;
+        if (!sim.world().contains(u)) return false;
         return sim.vision().is_unit_visible_to(sim.world(), sim, u.id, p);
     };
 
     lua["IsUnitDetected"] = [&sim](simulation::Unit u, simulation::Player p) -> bool {
-        if (!sim.world().validate(u)) return false;
+        if (!sim.world().contains(u)) return false;
         const auto* tv = sim.world().true_sight_vis.get(u.id);
         return tv && (tv->revealed_to_mask & (1u << p.id));
     };
 
     lua["UnitReveal"] = [&sim](simulation::Unit u, simulation::Player p, bool on) {
         auto& w = sim.world();
-        if (!w.validate(u) || !p.is_valid()) return;
+        if (!w.contains(u) || !p.is_valid()) return;
         u32 bit = 1u << p.id;
         auto* fv = w.forced_vis.get(u.id);
         if (on) {
@@ -1996,7 +1993,7 @@ void ScriptEngine::bind_api() {
 
     lua["UnitShareVision"] = [&sim](simulation::Unit u, simulation::Player p, bool on) {
         auto& w = sim.world();
-        if (!w.validate(u) || !p.is_valid()) return;
+        if (!w.contains(u) || !p.is_valid()) return;
         auto* s = w.sights.get(u.id);
         if (!s) return;
         auto it = std::find(s->share_to_players.begin(), s->share_to_players.end(), p.id);
@@ -2039,13 +2036,13 @@ void ScriptEngine::bind_api() {
     // Map Lua drives consumption / level-up / merge / drop-on-death.
 
     auto item_or_nil = [&](simulation::Item it) -> sol::object {
-        return sim.world().validate(it) ? sol::make_object(*m_lua, it)
+        return sim.world().contains(it) ? sol::make_object(*m_lua, it)
                                         : sol::make_object(*m_lua, sol::nil);
     };
 
     lua["CreateItem"] = [&, item_or_nil](const std::string& type_id, f32 x, f32 y) -> sol::object {
         auto item = simulation::create_item(sim.world(), type_id, x, y);
-        if (item.is_valid()) {
+        if (simulation::is_non_null_handle(item)) {
             if (auto* t = sim.world().transforms.get(item.id)) {
                 t->position.z      = ::uldum::map::sample_height(terrain_ref, x, y);
                 t->prev_position.z = t->position.z;
@@ -2054,7 +2051,7 @@ void ScriptEngine::bind_api() {
         return item_or_nil(item);
     };
     lua["RemoveItem"] = [&](simulation::Item item) {
-        if (!sim.world().validate(item)) return;
+        if (!sim.world().contains(item)) return;
 
         simulation::Unit carrier;
         if (auto* car = sim.world().carriables.get(item.id)) {
@@ -2070,7 +2067,7 @@ void ScriptEngine::bind_api() {
             }
         }
 
-        if (sim.world().validate(carrier)) {
+        if (sim.world().contains(carrier)) {
             if (auto* inv = sim.world().inventories.get(carrier.id)) {
                 for (auto& slot : inv->slots) {
                     if (slot == item) {
@@ -2083,20 +2080,20 @@ void ScriptEngine::bind_api() {
                 car->carried_by = {};
             }
             for (const auto& ability_id : abilities) {
-                if (!sim.world().validate(carrier)) break;
+                if (!sim.world().contains(carrier)) break;
                 simulation::remove_item_ability(sim.world(), carrier,
                                                 ability_id, item);
             }
         }
 
-        if (sim.world().validate(item)) simulation::destroy(sim.world(), item);
+        if (sim.world().contains(item)) simulation::destroy(sim.world(), item);
     };
 
     lua["GiveItem"] = [&](simulation::Unit unit, simulation::Item item) -> i32 {
         return simulation::give_item_to_unit(sim.world(), unit, item);
     };
     lua["UnitDropItemFromSlot"] = [&](simulation::Unit unit, i32 slot, sol::optional<f32> x, sol::optional<f32> y) {
-        if (!sim.world().validate(unit)) return false;
+        if (!sim.world().contains(unit)) return false;
         glm::vec3 pos{0, 0, 0};
         if (auto* tf = sim.world().transforms.get(unit.id)) pos = tf->position;
         if (x) pos.x = *x;
@@ -2105,11 +2102,11 @@ void ScriptEngine::bind_api() {
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) return false;
         auto item = inv->slots[slot];
-        if (!item.is_valid()) return false;
+        if (simulation::is_null_handle(item)) return false;
         return simulation::drop_item_from_unit(sim.world(), unit, slot, pos);
     };
     lua["UnitGetItemFromSlot"] = [&, item_or_nil](simulation::Unit unit, i32 slot) -> sol::object {
-        if (!sim.world().validate(unit)) return sol::make_object(*m_lua, sol::nil);
+        if (!sim.world().contains(unit)) return sol::make_object(*m_lua, sol::nil);
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) {
             return sol::make_object(*m_lua, sol::nil);
@@ -2117,24 +2114,24 @@ void ScriptEngine::bind_api() {
         return item_or_nil(inv->slots[slot]);
     };
     lua["UnitItemCount"] = [&](simulation::Unit unit) -> i32 {
-        if (!sim.world().validate(unit)) return 0;
+        if (!sim.world().contains(unit)) return 0;
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv) return 0;
         i32 n = 0;
-        for (auto& it : inv->slots) if (it.is_valid()) ++n;
+        for (auto& it : inv->slots) if (simulation::is_non_null_handle(it)) ++n;
         return n;
     };
     lua["UnitInventorySize"] = [&](simulation::Unit unit) -> i32 {
-        if (!sim.world().validate(unit)) return 0;
+        if (!sim.world().contains(unit)) return 0;
         auto* inv = sim.world().inventories.get(unit.id);
         return inv ? static_cast<i32>(inv->slots.size()) : 0;
     };
     lua["UnitHasItemOfType"] = [&](simulation::Unit unit, const std::string& type_id) -> bool {
-        if (!sim.world().validate(unit)) return false;
+        if (!sim.world().contains(unit)) return false;
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv) return false;
         for (auto& it : inv->slots) {
-            if (!sim.world().validate(it)) continue;
+            if (!sim.world().contains(it)) continue;
             auto* info = sim.world().item_infos.get(it.id);
             if (info && info->type_id == type_id) return true;
         }
@@ -2142,13 +2139,13 @@ void ScriptEngine::bind_api() {
     };
 
     lua["GetItemTypeId"]  = [&](simulation::Item item) -> std::string {
-        if (!sim.world().validate(item)) return {};
+        if (!sim.world().contains(item)) return {};
         auto* info = sim.world().item_infos.get(item.id);
         return info ? info->type_id : std::string{};
     };
     lua["GetItemCharges"] = [&](simulation::Item item) -> i32 { return simulation::get_charges(sim.world(), item); };
     lua["SetItemCharges"] = [&](simulation::Item item, i32 n) {
-        if (!sim.world().validate(item)) return;
+        if (!sim.world().contains(item)) return;
         simulation::set_charges(sim.world(), item, n);
         if (m_unit_update_fn) {
             auto pkt = network::build_update_item_charges(item.id, n);
@@ -2157,7 +2154,7 @@ void ScriptEngine::bind_api() {
     };
     lua["GetItemLevel"]   = [&](simulation::Item item) -> i32 { return simulation::get_level(sim.world(), item); };
     lua["SetItemLevel"]   = [&](simulation::Item item, i32 n) {
-        if (!sim.world().validate(item)) return;
+        if (!sim.world().contains(item)) return;
         simulation::set_level(sim.world(), item, n);
         if (m_unit_update_fn) {
             auto pkt = network::build_update_item_level(item.id, n);
@@ -2168,7 +2165,7 @@ void ScriptEngine::bind_api() {
         return unit_or_nil(simulation::get_item_owner(sim.world(), item));
     };
     lua["GetItemPosition"] = [&](simulation::Item item) -> std::tuple<f32, f32, f32> {
-        if (!sim.world().validate(item)) return {0.0f, 0.0f, 0.0f};
+        if (!sim.world().contains(item)) return {0.0f, 0.0f, 0.0f};
         auto* tf = sim.world().transforms.get(item.id);
         if (!tf) return {0.0f, 0.0f, 0.0f};
         return {tf->position.x, tf->position.y, tf->position.z};
@@ -2233,7 +2230,7 @@ void ScriptEngine::bind_trigger_api() {
             log::warn(TAG, "TriggerRegisterUnitEvent: event name is nil or empty");
             return;
         }
-        if (!m_sim || !m_sim->world().validate(unit)) return;
+        if (!m_sim || !m_sim->world().contains(unit)) return;
         std::string event_name = event_obj.as<std::string>();
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
@@ -2250,7 +2247,7 @@ void ScriptEngine::bind_trigger_api() {
             log::warn(TAG, "TriggerRegisterDestructableEvent: event name is nil or empty");
             return;
         }
-        if (!m_sim || !m_sim->world().validate(dest)) return;
+        if (!m_sim || !m_sim->world().contains(dest)) return;
         std::string event_name = event_obj.as<std::string>();
         u32 id = t["_id"].get<u32>();
         auto it = m_triggers.find(id);
@@ -2351,7 +2348,7 @@ void ScriptEngine::bind_trigger_api() {
     auto& sim = *m_sim;
 
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
-        return sim.world().validate(u) ? sol::make_object(*m_lua, u)
+        return sim.world().contains(u) ? sol::make_object(*m_lua, u)
                                        : sol::make_object(*m_lua, sol::nil);
     };
 
@@ -2374,7 +2371,7 @@ void ScriptEngine::bind_trigger_api() {
         return m_event_frame ? m_event_frame->event : std::string{};
     };
     lua["GetTriggerUnit"] = [&, unit_or_nil]() -> sol::object {
-        if (!m_event_frame || !sim.world().validate(m_event_frame->entity)) {
+        if (!m_event_frame || !sim.world().contains(m_event_frame->entity)) {
             return sol::make_object(*m_lua, sol::nil);
         }
         const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
@@ -2384,7 +2381,7 @@ void ScriptEngine::bind_trigger_api() {
         return unit_or_nil(as_unit(m_event_frame->entity));
     };
     lua["GetTriggerDestructable"] = [&]() -> sol::object {
-        if (!m_event_frame || !sim.world().validate(m_event_frame->entity)) {
+        if (!m_event_frame || !sim.world().contains(m_event_frame->entity)) {
             return sol::make_object(*m_lua, sol::nil);
         }
         const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
@@ -2394,7 +2391,7 @@ void ScriptEngine::bind_trigger_api() {
         return sol::make_object(*m_lua, as_destructable(m_event_frame->entity));
     };
     lua["GetTriggerWidget"] = [&]() -> sol::object {
-        if (!m_event_frame || !sim.world().validate(m_event_frame->entity)) {
+        if (!m_event_frame || !sim.world().contains(m_event_frame->entity)) {
             return sol::make_object(*m_lua, sol::nil);
         }
         const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
@@ -2418,7 +2415,7 @@ void ScriptEngine::bind_trigger_api() {
         return m_event_frame ? m_event_frame->node_id : std::string{};
     };
     lua["GetTriggerItem"] = [&, item_or_nil = [&](simulation::Item item) -> sol::object {
-        return sim.world().validate(item) ? sol::make_object(*m_lua, item)
+        return sim.world().contains(item) ? sol::make_object(*m_lua, item)
                                           : sol::make_object(*m_lua, sol::nil);
     }]() -> sol::object {
         if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
@@ -2645,7 +2642,7 @@ void ScriptEngine::bind_trigger_api() {
     };
 
     lua["IsUnitInRegion"] = [&](simulation::Unit unit, sol::table region) -> bool {
-        if (!region.valid() || !sim.world().validate(unit)) return false;
+        if (!region.valid() || !sim.world().contains(unit)) return false;
         u32 id = region["_id"].get_or<u32>(0);
         auto it = sim.world().regions.find(id);
         if (it == sim.world().regions.end() || !it->second.alive) return false;
@@ -2661,7 +2658,7 @@ void ScriptEngine::bind_trigger_api() {
         u32 idx = 1;
         for (u32 unit_id : it->second.contained) {
             simulation::Unit unit{unit_id};
-            if (sim.world().validate(unit)) out[idx++] = unit;
+            if (sim.world().contains(unit)) out[idx++] = unit;
         }
         return out;
     };
@@ -2878,7 +2875,7 @@ void ScriptEngine::bind_input_api() {
     };
 
     lua["SelectUnit"] = [this](simulation::Unit unit) {
-        if (!m_selection || !m_sim || !m_sim->world().validate(unit)) return;
+        if (!m_selection || !m_sim || !m_sim->world().contains(unit)) return;
         m_selection->select(unit);
     };
 
@@ -2887,7 +2884,7 @@ void ScriptEngine::bind_input_api() {
     // (doesn't mutate it further), and the HUD action bar reads the
     // unit's abilities for its slots.
     lua["SetControlledUnit"] = [this](simulation::Unit unit) {
-        if (!m_selection || !m_sim || !m_sim->world().validate(unit)) return;
+        if (!m_selection || !m_sim || !m_sim->world().contains(unit)) return;
         m_selection->select(unit);
     };
 
@@ -3097,7 +3094,7 @@ void ScriptEngine::bind_hud_api() {
         // Position: either `pos = { x, y, z }` world point or `unit = U`.
         if (args["unit"].valid()) {
             simulation::Unit unit = args["unit"].get<simulation::Unit>();
-            if (!m_sim || !m_sim->world().validate(unit)) return 0;
+            if (!m_sim || !m_sim->world().contains(unit)) return 0;
             info.unit = unit;
         } else if (args["pos"].valid()) {
             sol::table p = args["pos"];
@@ -3142,7 +3139,7 @@ void ScriptEngine::bind_hud_api() {
         m_hud->set_text_tag_pos(unpack_id(h), x, y, z);
     };
     lua["SetTextTagPosUnit"] = [this, unpack_id](u64 h, simulation::Unit unit, f32 z_offset) {
-        if (!m_hud || !m_sim || !m_sim->world().validate(unit)) return;
+        if (!m_hud || !m_sim || !m_sim->world().contains(unit)) return;
         m_hud->set_text_tag_pos_unit(unpack_id(h), unit, z_offset);
     };
     lua["SetTextTagColor"] = [this, unpack_id, parse_color](u64 h, const std::string& color) {

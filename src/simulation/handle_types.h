@@ -12,9 +12,16 @@ namespace uldum::simulation {
 struct Handle {
     u32 id = UINT32_MAX;
 
-    bool is_valid() const { return id != UINT32_MAX; }
     bool operator==(const Handle&) const = default;
 };
+
+inline bool is_null_handle(Handle handle) {
+    return handle.id == UINT32_MAX;
+}
+
+inline bool is_non_null_handle(Handle handle) {
+    return handle.id != UINT32_MAX;
+}
 
 // Typed handles — distinct types inheriting Handle's layout.
 struct Unit         : Handle {};
