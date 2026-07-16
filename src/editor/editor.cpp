@@ -30,6 +30,11 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace uldum::editor {
 
+// Win32 file-dialog helpers — defined lower in this file; forward-declared so
+// asset_ctx() (higher up) can build the panel's import picker.
+static std::string pick_open_file(HWND hwnd, const wchar_t* title,
+                                  const wchar_t* filter_label, const wchar_t* filter_pattern);
+
 // ── Undo helpers (used by begin_stroke/end_stroke/apply_edit) ────────────
 
 static void copy_region(const map::TerrainData& td, u32 min_vx, u32 min_vy, u32 max_vx, u32 max_vy,
@@ -119,6 +124,12 @@ bool Editor::init(const std::string& map_path) {
         return false;
     }
 
+    // Audio — for the Asset Manager's sound preview. Non-fatal: the editor
+    // is usable without audio, so a failed init just disables previews.
+    if (!m_audio.init()) {
+        log::warn(TAG, "AudioEngine init failed — sound preview disabled");
+    }
+
     // Renderer
     if (!m_renderer.init(m_rhi)) {
         log::error(TAG, "Renderer init failed");
@@ -191,6 +202,10 @@ bool Editor::init(const std::string& map_path) {
             static_cast<WPARAM>(wparam), static_cast<LPARAM>(lparam));
         return result != 0;
     });
+
+    // Build the Asset Manager tree for the initially-loaded map (after ImGui
+    // is up, since selection-time previews use the ImGui Vulkan backend).
+    if (m_map_loaded) m_assets.on_map_loaded(asset_ctx());
 
     log::info(TAG, "=== Editor initialized ===");
     return true;
@@ -282,6 +297,9 @@ void Editor::run() {
         f32 frame_dt = std::chrono::duration<f32>(current_time - previous_time).count();
         previous_time = current_time;
         if (frame_dt > 0.25f) frame_dt = 0.25f;
+
+        // Advance audio (reaps finished one-shot sound previews).
+        m_audio.update(frame_dt);
 
         // Terrain cursor — raycast and snap to nearest vertex
         auto& input = m_platform->input();
@@ -880,6 +898,29 @@ void Editor::destroy_preview() {
     }
     m_preview_handle = {};
     m_preview_type_id.clear();
+}
+
+// Assemble the per-frame context the Asset Manager panel operates on.
+AssetPanelContext Editor::asset_ctx() {
+    AssetPanelContext ctx;
+    ctx.assets     = &m_asset;
+    ctx.audio      = &m_audio;
+    ctx.rhi        = &m_rhi;
+    ctx.map_root   = m_map_loaded ? m_map.map_root() : std::string{};
+    ctx.map_loaded = m_map_loaded;
+    // Files are only mutable when editing a loose source folder — packed maps
+    // stay read-only (the panel disables import/rename/delete accordingly).
+    ctx.editable   = m_map_loaded && std::filesystem::is_directory(m_map.map_root());
+
+    // Native asset picker for the panel's Import action.
+    ctx.pick_import_file = [this]() -> std::string {
+        return pick_open_file(
+            static_cast<HWND>(m_platform->native_window_handle()),
+            L"Import Asset",
+            L"Assets (*.glb;*.gltf;*.ktx2;*.ogg)",
+            L"*.glb;*.gltf;*.ktx2;*.ogg");
+    };
+    return ctx;
 }
 
 // Sample a fresh effective variation from the active destructable
@@ -1770,6 +1811,11 @@ void Editor::reset_editing_state() {
     m_region_drag_active = false;
     m_undo_stack.clear();
     m_redo_stack.clear();
+
+    // Drop the Asset Manager's live preview entity + GPU texture. Its file
+    // tree is map-scoped (assets live at map root, shared across scenes), so
+    // it survives a scene switch; open_map rebuilds it via on_map_loaded.
+    m_assets.clear_transient(asset_ctx());
 }
 
 void Editor::switch_scene(const std::string& scene_name) {
@@ -1847,6 +1893,7 @@ void Editor::open_map(const std::string& path) {
             // matching call in the initial map-load path above).
             m_simulation.sync_pathing_blockers();
         }
+        m_assets.on_map_loaded(asset_ctx());
         log::info(TAG, "Opened map: {}", m_map_path);
     } else {
         log::error(TAG, "Failed to open map: {}", m_map_path);
@@ -2549,6 +2596,13 @@ void Editor::draw_ui() {
             }
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Scene Switcher", nullptr, &m_show_scene);
+            ImGui::MenuItem("Tool Panel",     nullptr, &m_show_tools);
+            ImGui::MenuItem("Info Panel",     nullptr, &m_show_info);
+            ImGui::MenuItem("Map Explorer",   nullptr, &m_show_assets);
+            ImGui::EndMenu();
+        }
         ImGui::EndMainMenuBar();
     }
 
@@ -2568,8 +2622,8 @@ void Editor::draw_ui() {
     }
 
     // Scene window
-    if (m_map_loaded && !m_scenes.empty()) {
-        ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    if (m_show_scene && m_map_loaded && !m_scenes.empty()) {
+        ImGui::Begin("Scene Switcher", &m_show_scene, ImGuiWindowFlags_AlwaysAutoResize);
         for (auto& scene : m_scenes) {
             bool selected = (scene == m_current_scene);
             if (ImGui::RadioButton(scene.c_str(), selected)) {
@@ -2580,9 +2634,10 @@ void Editor::draw_ui() {
     }
 
     // Tool panel — content depends on the active edit mode.
+    if (m_show_tools) {
     ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(260, 460), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Tools");
+    ImGui::Begin("Tool Panel", &m_show_tools);
 
     if (m_mode == EditMode::Object) {
         place_mode_draw_panel();
@@ -2644,11 +2699,13 @@ void Editor::draw_ui() {
     } // end Terrain-mode tool palette
 
     ImGui::End();
+    } // if (m_show_tools)
 
     // Info panel
+    if (m_show_info) {
     ImGui::SetNextWindowPos(ImVec2(10, 440), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420, 160), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Info");
+    ImGui::Begin("Info Panel", &m_show_info);
     if (m_map_loaded) {
         auto& td = m_map.terrain();
         ImGui::Text("Map: %s", m_map.manifest().name.c_str());
@@ -2694,6 +2751,9 @@ void Editor::draw_ui() {
     }
     ImGui::Text("FPS: %.0f", ImGui::GetIO().Framerate);
     ImGui::End();
+    } // if (m_show_info)
+
+    if (m_show_assets) m_assets.draw(asset_ctx(), &m_show_assets);
 
     draw_import_dialog();
 }
@@ -3122,11 +3182,16 @@ void Editor::region_mode_panel() {
 void Editor::shutdown() {
     log::info(TAG, "=== Shutting down Editor ===");
 
+    // Release asset-preview GPU resources first — RemoveTexture + destroy_texture
+    // need the ImGui backend and RHI still alive.
+    m_assets.release_all(asset_ctx());
+
     shutdown_imgui();
     m_map.shutdown();
     m_simulation.shutdown();
     m_overlays.shutdown();
     m_renderer.shutdown();
+    m_audio.shutdown();
     m_asset.shutdown();
     m_rhi.shutdown();
     m_platform->shutdown();

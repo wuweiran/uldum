@@ -3,8 +3,10 @@
 #include "platform/platform.h"
 #include "rhi/rhi.h"
 #include "asset/asset.h"
+#include "audio/audio.h"
 #include "render/renderer.h"
 #include "editor/editor_overlays.h"
+#include "editor/asset_panel.h"
 #include "simulation/simulation.h"
 #include "map/map.h"
 #include "core/types.h"
@@ -106,10 +108,22 @@ private:
     std::unique_ptr<platform::Platform> m_platform;
     rhi::Rhi          m_rhi;
     asset::AssetManager     m_asset;
+    audio::AudioEngine      m_audio;
     render::Renderer        m_renderer;
     EditorOverlays          m_overlays;
     simulation::Simulation  m_simulation;
     map::MapManager         m_map;
+
+    // Asset Manager window (browse / preview / inspect the map's files).
+    AssetPanel        m_assets;
+    AssetPanelContext asset_ctx();
+
+    // View-menu window visibility. World-editing panels default on; the
+    // Asset Manager is available but hidden until the maker opens it.
+    bool m_show_scene  = true;
+    bool m_show_tools  = true;
+    bool m_show_info   = true;
+    bool m_show_assets = false;
 
     // ImGui
     VkDescriptorPool m_imgui_pool = VK_NULL_HANDLE;
