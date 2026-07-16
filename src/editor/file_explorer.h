@@ -36,10 +36,9 @@ namespace uldum::editor {
 enum class FileKind : u8 { Model, Texture, Sound, Script, Json, Bin, Other };
 
 // Everything the panel needs each frame, owned by Editor and passed in so the
-// panel never reaches into Editor privates. `pick_import_file` opens the
-// Editor's native file dialog and returns the chosen source path (empty if
-// cancelled). `check_syntax` / `validate_scene` run Lua validation and return
-// display lines (Editor owns the scriptcheck logic + engine-source paths).
+// panel never reaches into Editor privates. `import_png` opens the Editor's
+// PNG→KTX2 import flow targeting a map-relative folder. `check_syntax` /
+// `validate_scene` run Lua validation.
 struct FileExplorerContext {
     asset::AssetManager* assets    = nullptr;
     audio::AudioEngine*  audio     = nullptr;
@@ -49,7 +48,7 @@ struct FileExplorerContext {
     std::string          map_root;          // virtual + fs root of the open map
     bool                 map_loaded = false;
     bool                 editable   = false; // source-folder map → files mutable
-    std::function<std::string()> pick_import_file;
+    std::function<void(const std::string& folder)> import_png;
     std::function<std::vector<std::string>(const std::string& rel)>   check_syntax;
     std::function<std::vector<std::string>(const std::string& scene)> validate_scene;
 };
@@ -62,6 +61,10 @@ public:
 
     // Rebuild the file tree for a newly-opened map. Clears any prior preview.
     void on_map_loaded(const FileExplorerContext& ctx);
+
+    // Rebuild the tree next draw, keeping selection (call after an import writes
+    // a new file into the map).
+    void mark_tree_dirty() { m_tree_dirty = true; }
 
     // Drop the live preview entity + selection (scene switch / reset). Keeps the
     // built tree if the map is unchanged; Editor calls on_map_loaded to rebuild.
@@ -97,11 +100,9 @@ private:
     // File management (source-folder maps only; asset kinds only).
     void begin_rename(const FileExplorerContext& ctx, const std::string& rel);
     void begin_delete(const FileExplorerContext& ctx, const std::string& rel);
-    void begin_import(const std::string& folder_rel);
     void draw_manage_popups(const FileExplorerContext& ctx);
     void do_rename(const FileExplorerContext& ctx);
     void do_delete(const FileExplorerContext& ctx);
-    void do_import(const FileExplorerContext& ctx);
     int  count_references(const FileExplorerContext& ctx, const std::string& rel) const;
 
     void free_texture(const FileExplorerContext& ctx);
@@ -141,14 +142,18 @@ private:
     void*              m_tex_id = nullptr;   // ImTextureID (VkDescriptorSet)
     u32                m_tex_w = 0, m_tex_h = 0;
 
-    // Pending file operation, driven through modal popups.
-    enum class Pending : u8 { None, Rename, Delete, Import };
+    // Pending file operation, driven through modal popups (rename / delete).
+    enum class Pending : u8 { None, Rename, Delete };
     Pending     m_pending = Pending::None;
     bool        m_open_modal = false;
-    std::string m_pending_rel;              // file (rename/delete) or folder (import)
+    std::string m_pending_rel;              // file targeted by rename / delete
     std::array<char, 128> m_name_buf{};
     std::string m_manage_msg;               // error shown in the modal
     int         m_ref_count = 0;            // references to the pending target
+
+    // An import rebuilds the tree, but that can't run while draw_tree is
+    // iterating m_root.children — defer the rebuild to the next draw().
+    bool m_tree_dirty = false;
 };
 
 } // namespace uldum::editor

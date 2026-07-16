@@ -342,6 +342,9 @@ private:
 
     void draw_import_dialog();
     void run_png_import();
+    // Right-click Import PNG: native-pick the source, target `folder`, open the
+    // (Browse/Path-less) convert modal.
+    void open_png_import(const std::string& folder);
 };
 
 } // namespace uldum::editor

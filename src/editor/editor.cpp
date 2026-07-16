@@ -83,6 +83,11 @@ bool Editor::init(const std::string& map_path) {
     if (!map_path.empty()) m_map_path = map_path;
     log::info(TAG, "=== Initializing Uldum Editor ===");
 
+    // Claim the main thread as an STA before anything else touches COM. The
+    // native file dialogs (IFileOpenDialog) require STA; miniaudio's device
+    // init would otherwise flip this thread to MTA first and hang Show().
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
 #ifdef ULDUM_DEBUG
     log::set_level(log::Level::Trace);
 #else
@@ -915,14 +920,7 @@ FileExplorerContext Editor::file_ctx() {
     // stay read-only (the panel disables import/rename/delete accordingly).
     ctx.editable   = m_map_loaded && std::filesystem::is_directory(m_map.map_root());
 
-    // Native asset picker for the panel's Import action.
-    ctx.pick_import_file = [this]() -> std::string {
-        return pick_open_file(
-            static_cast<HWND>(m_platform->native_window_handle()),
-            L"Import Asset",
-            L"Assets (*.glb;*.gltf;*.ktx2;*.ogg)",
-            L"*.glb;*.gltf;*.ktx2;*.ogg");
-    };
+    ctx.import_png     = [this](const std::string& folder) { open_png_import(folder); };
     ctx.check_syntax   = [this](const std::string& rel)   { return check_script_syntax(rel); };
     ctx.validate_scene = [this](const std::string& scene) { return validate_scene_scripts(scene); };
 
@@ -2573,17 +2571,6 @@ void Editor::draw_ui() {
                 }
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Import PNG...", nullptr, false, m_map_loaded)) {
-                m_import_open = true;
-                // Sensible defaults: textures land under textures/ unless
-                // the author overrides. Filename gets derived from the
-                // source PNG once one is picked.
-                if (m_import_path[0] == '\0') {
-                    constexpr const char* def = "textures";
-                    std::memcpy(m_import_path.data(), def, std::strlen(def) + 1);
-                }
-            }
-            ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 PostQuitMessage(0);
             }
@@ -2771,51 +2758,10 @@ void Editor::draw_import_dialog() {
                            "it into the loaded map's directory tree.");
         ImGui::Separator();
 
-        // Source row — text input + Browse button.
-        ImGui::InputText("##src", m_import_src.data(), m_import_src.size());
-        ImGui::SameLine();
-        if (ImGui::Button("Browse##src")) {
-            std::string path = pick_open_file(
-                static_cast<HWND>(m_platform->native_window_handle()),
-                L"Pick a PNG", L"PNG image (*.png)", L"*.png");
-            if (!path.empty()) {
-                std::size_t n = std::min(path.size(), m_import_src.size() - 1);
-                std::memcpy(m_import_src.data(), path.data(), n);
-                m_import_src[n] = '\0';
-                // Default the output filename from the source stem on
-                // first pick — leave it alone if the author already
-                // typed something so we don't trample their edit.
-                if (m_import_filename[0] == '\0') {
-                    std::filesystem::path src(path);
-                    std::string stem = src.stem().string() + ".ktx2";
-                    std::size_t m = std::min(stem.size(), m_import_filename.size() - 1);
-                    std::memcpy(m_import_filename.data(), stem.data(), m);
-                    m_import_filename[m] = '\0';
-                }
-                // Detect source dimensions (header-only read). Used to
-                // seed the resize fields with a sensible default; if
-                // detection fails the prior values (or 256×256) stay.
-                int sw = 0, sh = 0, comp = 0;
-                if (stbi_info(path.c_str(), &sw, &sh, &comp) && sw > 0 && sh > 0) {
-                    m_import_src_w = sw;
-                    m_import_src_h = sh;
-                    if (!m_import_resize) {
-                        m_import_w = sw;
-                        m_import_h = sh;
-                    }
-                } else {
-                    m_import_src_w = 0;
-                    m_import_src_h = 0;
-                }
-            }
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("Source PNG");
-
-        ImGui::InputText("Path",
-                         m_import_path.data(), m_import_path.size());
-        ImGui::SameLine();
-        ImGui::TextDisabled("(relative to map root, e.g. textures/icons/abilities)");
+        // Source PNG + destination folder are chosen before the modal opens
+        // (right-click a folder → Import PNG → native picker).
+        ImGui::Text("Source: %s", m_import_src.data());
+        ImGui::Text("Folder: %s", m_import_path.data());
 
         ImGui::InputText("Filename",
                          m_import_filename.data(), m_import_filename.size());
@@ -2858,6 +2804,7 @@ void Editor::draw_import_dialog() {
             // instead of a tool-output dump.
             ImGui::CloseCurrentPopup();
             m_import_show_result = true;
+            if (m_import_result == ImportResult::Success) m_files.mark_tree_dirty();
         }
         if (!can_convert) ImGui::EndDisabled();
         ImGui::SameLine();
@@ -2946,6 +2893,38 @@ void Editor::run_png_import() {
         log::error(TAG, "Import: basisu failed (exit {}) for '{}'",
                    rc, src.string());
     }
+}
+
+void Editor::open_png_import(const std::string& folder) {
+    if (!m_map_loaded) return;
+    std::string src = pick_open_file(
+        static_cast<HWND>(m_platform->native_window_handle()),
+        L"Import PNG", L"PNG image (*.png)", L"*.png");
+    if (src.empty()) return;
+
+    std::size_t n = std::min(src.size(), m_import_src.size() - 1);
+    std::memcpy(m_import_src.data(), src.data(), n);
+    m_import_src[n] = '\0';
+
+    std::filesystem::path p(src);
+    std::string stem = p.stem().string() + ".ktx2";
+    std::size_t m = std::min(stem.size(), m_import_filename.size() - 1);
+    std::memcpy(m_import_filename.data(), stem.data(), m);
+    m_import_filename[m] = '\0';
+
+    std::size_t f = std::min(folder.size(), m_import_path.size() - 1);
+    std::memcpy(m_import_path.data(), folder.data(), f);
+    m_import_path[f] = '\0';
+
+    int sw = 0, sh = 0, comp = 0;
+    if (stbi_info(src.c_str(), &sw, &sh, &comp) && sw > 0 && sh > 0) {
+        m_import_src_w = sw; m_import_src_h = sh;
+        m_import_w = sw; m_import_h = sh;
+    } else {
+        m_import_src_w = m_import_src_h = 0;
+    }
+
+    m_import_open = true;
 }
 
 // ── ImGui teardown ───────────────────────────────────────────────────────

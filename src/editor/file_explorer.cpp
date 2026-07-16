@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -133,6 +134,9 @@ void FileExplorer::insert_path(TreeNode& root, const std::string& rel) {
 // ── Draw ─────────────────────────────────────────────────────────────────────
 
 void FileExplorer::draw(const FileExplorerContext& ctx, bool* p_open) {
+    // Rebuild after a prior import, before draw_tree iterates m_root.
+    if (m_tree_dirty) { build_tree(ctx); m_tree_dirty = false; }
+
     ImGui::SetNextWindowSize(ImVec2(560, 460), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Map Explorer", p_open)) { ImGui::End(); return; }
 
@@ -165,9 +169,9 @@ void FileExplorer::draw_tree(const FileExplorerContext& ctx) {
 void FileExplorer::draw_node(const FileExplorerContext& ctx, TreeNode& node) {
     if (node.is_dir) {
         bool open = ImGui::TreeNodeEx(node.name.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth);
-        // Right-click a folder → import an asset into it (source maps only).
+        // Right-click a folder → import a PNG (converted to KTX2) into it.
         if (ctx.editable && ImGui::BeginPopupContextItem(node.rel.c_str())) {
-            if (ImGui::MenuItem("Import asset here...")) begin_import(node.rel);
+            if (ImGui::MenuItem("Import PNG...") && ctx.import_png) ctx.import_png(node.rel);
             ImGui::EndPopup();
         }
         if (open) {
@@ -524,15 +528,7 @@ void FileExplorer::begin_delete(const FileExplorerContext& ctx, const std::strin
     m_ref_count   = count_references(ctx, rel);
 }
 
-void FileExplorer::begin_import(const std::string& folder_rel) {
-    m_pending     = Pending::Import;
-    m_pending_rel = folder_rel;   // deferred: the native picker runs after the tree
-}
-
 void FileExplorer::draw_manage_popups(const FileExplorerContext& ctx) {
-    // Import runs the native file dialog outside the tree/popup stack.
-    if (m_pending == Pending::Import) { do_import(ctx); m_pending = Pending::None; return; }
-
     if (m_open_modal) {
         ImGui::OpenPopup(m_pending == Pending::Rename ? "Rename asset" : "Delete asset");
         m_open_modal = false;
@@ -603,26 +599,6 @@ void FileExplorer::do_delete(const FileExplorerContext& ctx) {
     build_tree(ctx);
     m_pending = Pending::None;
     ImGui::CloseCurrentPopup();
-}
-
-void FileExplorer::do_import(const FileExplorerContext& ctx) {
-    if (!ctx.pick_import_file) return;
-    std::string src = ctx.pick_import_file();
-    if (src.empty()) return;   // cancelled
-
-    fs::path srcp(src);
-    std::string base = srcp.filename().string();
-    if (kind_of(base) == FileKind::Other) {
-        log::warn(TAG, "Import ignored: '{}' is not an asset (.glb/.gltf/.ktx2/.ogg)", base);
-        return;
-    }
-    fs::path dst = fs::path(ctx.map_root) / m_pending_rel / base;
-    std::error_code ec;
-    fs::create_directories(dst.parent_path(), ec);
-    fs::copy_file(srcp, dst, fs::copy_options::overwrite_existing, ec);
-    if (ec) { log::error(TAG, "Import failed: {}", ec.message()); return; }
-    log::info(TAG, "Imported '{}' into '{}'", base, m_pending_rel);
-    build_tree(ctx);
 }
 
 // ── Teardown ─────────────────────────────────────────────────────────────────
