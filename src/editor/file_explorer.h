@@ -26,6 +26,7 @@
 namespace uldum::asset      { class AssetManager; }
 namespace uldum::audio      { class AudioEngine; }
 namespace uldum::rhi        { class Rhi; }
+namespace uldum::render     { class Renderer; }
 
 namespace uldum::editor {
 
@@ -43,6 +44,8 @@ struct FileExplorerContext {
     asset::AssetManager* assets    = nullptr;
     audio::AudioEngine*  audio     = nullptr;
     rhi::Rhi*            rhi       = nullptr;
+    render::Renderer*    renderer  = nullptr;   // drives the offscreen model viewer
+    void*                model_view_tex_id = nullptr;  // ImTextureID for the viewer color target
     std::string          map_root;          // virtual + fs root of the open map
     bool                 map_loaded = false;
     bool                 editable   = false; // source-folder map → files mutable

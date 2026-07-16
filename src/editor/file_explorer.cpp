@@ -5,6 +5,7 @@
 #include "asset/texture.h"
 #include "audio/audio.h"
 #include "render/gpu_texture.h"
+#include "render/renderer.h"
 #include "rhi/rhi.h"
 #include "core/log.h"
 
@@ -218,6 +219,46 @@ void FileExplorer::draw_inspector(const FileExplorerContext& ctx) {
                 ImGui::TextDisabled("Clips:");
                 for (const auto& c : m_clip_names) { ImGui::SameLine(); ImGui::TextUnformatted(c.c_str()); }
             }
+            // 3D orbit preview (offscreen render target). An InvisibleButton over
+            // the image captures the mouse so dragging orbits the model instead of
+            // moving the window; wheel zooms while hovered.
+            if (ctx.model_view_tex_id && ctx.renderer && ctx.renderer->viewer_has_model()) {
+                f32 side = std::min(ImGui::GetContentRegionAvail().x, 360.0f);
+                ImVec2 origin = ImGui::GetCursorScreenPos();
+                ImGui::InvisibleButton("##model_view", ImVec2(side, side));
+                ImGui::GetWindowDrawList()->AddImage(
+                    reinterpret_cast<ImTextureID>(ctx.model_view_tex_id),
+                    origin, ImVec2(origin.x + side, origin.y + side));
+                if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                    ImVec2 d = ImGui::GetIO().MouseDelta;
+                    ctx.renderer->viewer_orbit(d.x, d.y);
+                }
+                if (ImGui::IsItemHovered() && ImGui::GetIO().MouseWheel != 0.0f)
+                    ctx.renderer->viewer_zoom(ImGui::GetIO().MouseWheel);
+                ImGui::TextDisabled("drag = orbit,  wheel = zoom");
+
+                // Animation clip switcher (WC3-style: prev / name / next). The
+                // name sits in a fixed-width centered slot so the right arrow
+                // doesn't shift as clip names change length.
+                const auto& clips = ctx.renderer->viewer_clips();
+                if (!clips.empty()) {
+                    i32 cur = ctx.renderer->viewer_clip();
+                    i32 n   = static_cast<i32>(clips.size());
+                    if (ImGui::ArrowButton("##clip_prev", ImGuiDir_Left))
+                        ctx.renderer->viewer_set_clip(cur <= 0 ? n - 1 : cur - 1);
+                    ImGui::SameLine();
+                    const char* label = (cur < 0) ? "(bind pose)" : clips[cur].c_str();
+                    constexpr f32 kSlot = 140.0f;
+                    f32 tw = ImGui::CalcTextSize(label).x;
+                    f32 x0 = ImGui::GetCursorPosX();
+                    ImGui::SetCursorPosX(x0 + std::max(0.0f, (kSlot - tw) * 0.5f));
+                    ImGui::TextUnformatted(label);
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::SetCursorPosX(x0 + kSlot);
+                    if (ImGui::ArrowButton("##clip_next", ImGuiDir_Right))
+                        ctx.renderer->viewer_set_clip(cur >= n - 1 ? 0 : cur + 1);
+                }
+            }
             if (!m_model_warnings.empty()) {
                 ImGui::Separator();
                 ImGui::TextDisabled("Loader warnings:");
@@ -329,6 +370,7 @@ void FileExplorer::clear_selection_preview(const FileExplorerContext& ctx) {
     m_json_error.clear();
     m_bin_label.clear();
     m_sound_secs = 0.0f;
+    if (ctx.renderer) ctx.renderer->viewer_set_model("");   // stop rendering the offscreen model
 }
 
 void FileExplorer::select_model(const FileExplorerContext& ctx, const std::string& rel) {
@@ -353,6 +395,11 @@ void FileExplorer::select_model(const FileExplorerContext& ctx, const std::strin
                                   md->meshes.size() + md->skinned_meshes.size(), verts,
                                   md->skeleton.bones.size(), md->animations.size(), md->materials.size());
     for (const auto& a : md->animations) m_clip_names.push_back(a.name);
+
+    // Hand the model to the renderer's offscreen viewer (loads via its own cache,
+    // renders isolated). Only meaningful for a source-folder map the renderer's
+    // asset mounts can resolve; harmless otherwise (viewer no-ops on load fail).
+    if (ctx.renderer) ctx.renderer->viewer_set_model(rel);
 }
 
 void FileExplorer::select_texture(const FileExplorerContext& ctx, const std::string& rel) {

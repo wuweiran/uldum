@@ -156,6 +156,22 @@ public:
     // Returns 0 if the model or clip is missing.
     f32 clip_duration(std::string_view model_path, std::string_view clip_name);
 
+    // ── Model viewer (editor) ────────────────────────────────────────────
+    // Renders ONE model into an offscreen texture, isolated from the scene
+    // (own camera, own 1x pipelines, own headlight — no world, no shadow/env).
+    // Lazily creates its target + pipelines on first use.
+    void viewer_set_model(std::string_view path);
+    void viewer_orbit(f32 dx, f32 dy);
+    void viewer_zoom(f32 delta);
+    void render_model_viewer(rhi::CommandList& cmd, f32 dt);
+    rhi::TextureHandle viewer_color_texture() const { return m_mv_color; }
+    rhi::SamplerHandle viewer_sampler() const { return m_mv_sampler; }
+    bool viewer_has_model() const { return !m_mv_path.empty(); }
+    // Animation clip selection for the previewed model.
+    const std::vector<std::string>& viewer_clips() const { return m_mv_clips; }
+    i32  viewer_clip() const { return m_mv_clip; }
+    void viewer_set_clip(i32 index);   // -1 = bind pose; else index into viewer_clips()
+
 private:
     bool create_descriptor_layouts();
     bool create_mesh_pipeline();
@@ -174,6 +190,10 @@ private:
     rhi::DescriptorSetHandle allocate_terrain_descriptor(const TerrainMaterial& mat);
     rhi::DescriptorSetHandle allocate_shadow_descriptor();
     rhi::DescriptorSetHandle allocate_bone_descriptor(rhi::BufferHandle bone_buffer, usize size);
+
+    // Model viewer (editor): lazily builds the offscreen target + 1x pipelines.
+    bool ensure_model_viewer();
+    void destroy_model_viewer();
 
     void draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world, f32 alpha);
 
@@ -418,6 +438,30 @@ private:
 
     // Per-entity animation instances (entity id → AnimationInstance)
     std::unordered_map<u32, AnimationInstance> m_anim_instances;
+
+    // ── Model viewer (editor) ────────────────────────────────────────────
+    // Offscreen target + isolated pipelines, built lazily by ensure_model_viewer.
+    static constexpr u32 kMvSize = 512;
+    rhi::TextureHandle        m_mv_color{};
+    rhi::TextureHandle        m_mv_depth{};
+    rhi::SamplerHandle        m_mv_sampler{};
+    rhi::PipelineHandle       m_mv_static_pipeline{};
+    rhi::PipelineLayoutHandle m_mv_static_layout{};
+    rhi::PipelineHandle       m_mv_skinned_pipeline{};
+    rhi::PipelineLayoutHandle m_mv_skinned_layout{};
+    bool                      m_mv_inited = false;
+    std::string               m_mv_path;               // current model ("" = none)
+    // One bone SSBO for the previewed skinned model (single-buffered — the
+    // viewer waits idle on teardown, so no per-frame ring needed).
+    rhi::BufferHandle         m_mv_bone_buffer{};
+    rhi::DescriptorSetHandle  m_mv_bone_descriptor{};
+    AnimationInstance         m_mv_anim;
+    std::vector<std::string>  m_mv_clips;               // clip names of the current model
+    i32                       m_mv_clip = -1;           // selected clip (-1 = bind pose)
+    f32                       m_mv_orbit_yaw   = 0.0f;
+    f32                       m_mv_orbit_pitch = -0.35f;
+    f32                       m_mv_distance    = 300.0f;
+    glm::vec3                 m_mv_target{0.0f};
 
     // Particle system + glow system + effect system
     ParticleSystem  m_particles;

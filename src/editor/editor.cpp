@@ -500,6 +500,9 @@ void Editor::run() {
         rhi::CommandList cmd = m_rhi.begin_frame();
         if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
             m_renderer.draw_shadows(cmd, m_simulation.world());
+            // Offscreen model-viewer pass (no-op unless a model is selected in
+            // the Map Explorer). Same slot as shadows — before the swapchain pass.
+            m_renderer.render_model_viewer(cmd, frame_dt);
             m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
             m_overlays.draw(cmd, m_renderer.camera().view_projection());
@@ -922,6 +925,22 @@ FileExplorerContext Editor::file_ctx() {
     };
     ctx.check_syntax   = [this](const std::string& rel)   { return check_script_syntax(rel); };
     ctx.validate_scene = [this](const std::string& scene) { return validate_scene_scripts(scene); };
+
+    // Model viewer: hand the panel the renderer + a lazily-built ImTextureID for
+    // the offscreen color target (created on first model select, so poll here).
+    ctx.renderer = &m_renderer;
+    if (!m_model_view_tex_id) {
+        rhi::TextureHandle tex = m_renderer.viewer_color_texture();
+        rhi::SamplerHandle smp = m_renderer.viewer_sampler();
+        if (tex.is_valid() && smp.is_valid()) {
+            VkImageView view = m_rhi.resolve_view(tex);
+            VkSampler   samp = m_rhi.resolve(smp);
+            if (view != VK_NULL_HANDLE && samp != VK_NULL_HANDLE)
+                m_model_view_tex_id = reinterpret_cast<void*>(
+                    ImGui_ImplVulkan_AddTexture(samp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+        }
+    }
+    ctx.model_view_tex_id = m_model_view_tex_id;
     return ctx;
 }
 
@@ -3164,6 +3183,11 @@ void Editor::shutdown() {
     // Release asset-preview GPU resources first — RemoveTexture + destroy_texture
     // need the ImGui backend and RHI still alive.
     m_files.release_all(file_ctx());
+    if (m_model_view_tex_id) {
+        m_rhi.wait_idle();
+        ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(m_model_view_tex_id));
+        m_model_view_tex_id = nullptr;
+    }
 
     shutdown_imgui();
     m_map.shutdown();

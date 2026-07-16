@@ -390,6 +390,7 @@ void Renderer::shutdown() {
     if (!m_rhi) return;
     m_rhi->wait_idle();
 
+    destroy_model_viewer();
     m_particles.shutdown();
     destroy_terrain_mesh(*m_rhi, m_terrain);
     for (auto& [eid, anim] : m_anim_instances) {
@@ -2727,6 +2728,297 @@ rhi::DescriptorSetHandle Renderer::allocate_bone_descriptor(rhi::BufferHandle bo
     w.buffer_range = size;
     m_rhi->update_descriptor_set(set, std::span{&w, 1});
     return set;
+}
+
+// ── Model viewer (editor, offscreen) ──────────────────────────────────────
+
+// Build one 1x-MSAA pipeline for the offscreen viewer. `skinned` picks the
+// vertex shader + adds the bone-SSBO set. Shared frag samples diffuse at set 0.
+static rhi::PipelineHandle make_mv_pipeline(rhi::Rhi& rhi, bool skinned,
+                                            rhi::DescriptorSetLayoutHandle diffuse_layout,
+                                            rhi::DescriptorSetLayoutHandle bone_layout,
+                                            rhi::TextureFormat color_fmt,
+                                            rhi::PipelineLayoutHandle& out_layout) {
+    auto vert_h = load_shader(rhi, skinned ? "engine/shaders/model_view_skinned.vert.spv"
+                                           : "engine/shaders/model_view.vert.spv");
+    auto frag_h = load_shader(rhi, "engine/shaders/model_view.frag.spv");
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
+        rhi.destroy_shader_module(vert_h);
+        rhi.destroy_shader_module(frag_h);
+        return {};
+    }
+
+    rhi::PushConstantRange pcs[2]{};
+    pcs[0].stages = rhi::ShaderStage::Vertex;   pcs[0].offset = 0;   pcs[0].size = 2 * sizeof(glm::mat4);
+    pcs[1].stages = rhi::ShaderStage::Fragment; pcs[1].offset = 128; pcs[1].size = sizeof(glm::vec4);
+
+    rhi::DescriptorSetLayoutHandle sets[2] = { diffuse_layout, bone_layout };
+    rhi::PipelineLayoutDesc pl{};
+    pl.set_layouts    = std::span{sets, skinned ? 2u : 1u};   // set 0 diffuse (+ set 1 bones)
+    pl.push_constants = std::span{pcs, 2};
+    out_layout = rhi.create_pipeline_layout(pl);
+    if (!out_layout.is_valid()) { rhi.destroy_shader_module(vert_h); rhi.destroy_shader_module(frag_h); return {}; }
+
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
+
+    rhi::VertexBindingDesc binding{ 0, skinned ? static_cast<u32>(sizeof(asset::SkinnedVertex))
+                                               : static_cast<u32>(sizeof(asset::Vertex)), false };
+    rhi::VertexAttributeDesc static_attrs[3]{
+        { 0, 0, offsetof(asset::Vertex, position), rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(asset::Vertex, normal),   rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(asset::Vertex, texcoord), rhi::TextureFormat::R32G32_SFLOAT },
+    };
+    rhi::VertexAttributeDesc skinned_attrs[5]{
+        { 0, 0, offsetof(asset::SkinnedVertex, position),     rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(asset::SkinnedVertex, normal),       rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(asset::SkinnedVertex, texcoord),     rhi::TextureFormat::R32G32_SFLOAT },
+        { 3, 0, offsetof(asset::SkinnedVertex, bone_indices), rhi::TextureFormat::R32G32B32A32_UINT },
+        { 4, 0, offsetof(asset::SkinnedVertex, bone_weights), rhi::TextureFormat::R32G32B32A32_SFLOAT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = skinned ? std::span{skinned_attrs, 5} : std::span{static_attrs, 3};
+
+    rhi::RasterizerState rs{};
+    rs.cull_mode  = rhi::CullMode::Back;
+    rs.front_face = rhi::FrontFace::CounterClockwise;
+
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = true;
+    ds.depth_compare      = rhi::CompareOp::Less;
+
+    rhi::BlendAttachmentState ba{};   // opaque
+    rhi::MultisampleState ms{}; ms.sample_count = 1;
+
+    rhi::TextureFormat depth_fmt = rhi::TextureFormat::D32_SFLOAT;
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = out_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::TriangleList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    auto pipeline = rhi.create_graphics_pipeline(desc);
+    rhi.destroy_shader_module(vert_h);
+    rhi.destroy_shader_module(frag_h);
+    return pipeline;
+}
+
+bool Renderer::ensure_model_viewer() {
+    if (m_mv_inited) return true;
+    if (!m_rhi) return false;
+
+    rhi::TextureFormat color_fmt = rhi::TextureFormat::R8G8B8A8_UNORM;
+
+    rhi::TextureDesc ctd{};
+    ctd.width = kMvSize; ctd.height = kMvSize; ctd.format = color_fmt;
+    ctd.usage = rhi::TextureUsage::ColorAttachment | rhi::TextureUsage::Sampled;
+    m_mv_color = m_rhi->create_texture(ctd);
+
+    rhi::TextureDesc dtd{};
+    dtd.width = kMvSize; dtd.height = kMvSize; dtd.format = rhi::TextureFormat::D32_SFLOAT;
+    dtd.usage = rhi::TextureUsage::DepthAttachment;
+    m_mv_depth = m_rhi->create_texture(dtd);
+
+    rhi::SamplerDesc sd{};
+    sd.address_u = sd.address_v = sd.address_w = rhi::AddressMode::ClampToEdge;
+    m_mv_sampler = m_rhi->create_sampler(sd);
+
+    m_mv_static_pipeline  = make_mv_pipeline(*m_rhi, false, m_mesh_desc_layout, m_bone_desc_layout, color_fmt, m_mv_static_layout);
+    m_mv_skinned_pipeline = make_mv_pipeline(*m_rhi, true,  m_mesh_desc_layout, m_bone_desc_layout, color_fmt, m_mv_skinned_layout);
+
+    if (!m_mv_color.is_valid() || !m_mv_depth.is_valid() ||
+        !m_mv_static_pipeline.is_valid() || !m_mv_skinned_pipeline.is_valid()) {
+        log::error(TAG, "Model viewer init failed");
+        return false;
+    }
+    m_mv_inited = true;
+    log::info(TAG, "Model viewer initialized ({}x{})", kMvSize, kMvSize);
+    return true;
+}
+
+void Renderer::viewer_set_model(std::string_view path) {
+    if (path == m_mv_path) return;
+    if (path.empty()) { m_mv_path.clear(); return; }
+    if (!ensure_model_viewer()) return;
+
+    auto* lm = get_or_load_model(std::string(path));
+    if (!lm) { m_mv_path.clear(); return; }
+    m_mv_path.assign(path);
+
+    // Auto-frame: distance from the model's bounding radius, target at center-ish.
+    f32 r = lm->mesh.bounding_radius > 0.0f ? lm->mesh.bounding_radius : 64.0f;
+    m_mv_distance    = r * 3.0f;
+    m_mv_target      = glm::vec3{0.0f, 0.0f, r * 0.4f};   // lift target toward model mid-height
+    m_mv_orbit_yaw   = 0.6f;
+    m_mv_orbit_pitch = -0.35f;
+
+    m_mv_anim = AnimationInstance{};
+    m_mv_anim.model = &lm->data;
+    m_mv_clips.clear();
+    for (const auto& a : lm->data.animations) m_mv_clips.push_back(a.name);
+    i32 idle = find_clip_by_name(lm->data, "idle");
+    viewer_set_clip(idle >= 0 ? idle : (m_mv_clips.empty() ? -1 : 0));
+
+    u32 bones = static_cast<u32>(lm->data.skeleton.bones.size());
+    if (lm->is_skinned && bones > 0) {
+        if (!m_mv_bone_buffer.is_valid()) {
+            rhi::BufferDesc bd{};
+            bd.size   = 128 * sizeof(glm::mat4);   // max bones — sized once, reused across models
+            bd.usage  = rhi::BufferUsage::Storage;
+            bd.memory = rhi::MemoryUsage::HostSequential;
+            m_mv_bone_buffer     = m_rhi->create_buffer(bd);
+            m_mv_bone_descriptor = allocate_bone_descriptor(m_mv_bone_buffer, 128 * sizeof(glm::mat4));
+        }
+        if (auto* dst = static_cast<glm::mat4*>(m_rhi->mapped_ptr(m_mv_bone_buffer)))
+            for (u32 i = 0; i < bones; ++i) dst[i] = glm::mat4{1.0f};
+    }
+}
+
+void Renderer::viewer_orbit(f32 dx, f32 dy) {
+    m_mv_orbit_yaw   += dx * 0.01f;
+    m_mv_orbit_pitch -= dy * 0.01f;   // drag down tilts the view down
+    m_mv_orbit_pitch = std::clamp(m_mv_orbit_pitch, -1.5f, 1.5f);
+}
+
+void Renderer::viewer_zoom(f32 delta) {
+    m_mv_distance *= (delta > 0.0f) ? 0.9f : 1.1f;
+    m_mv_distance = std::max(m_mv_distance, 8.0f);
+}
+
+void Renderer::viewer_set_clip(i32 index) {
+    if (index >= static_cast<i32>(m_mv_clips.size())) index = -1;
+    m_mv_clip = index;
+    // Route the chosen clip through the Custom state (looping); -1 = bind pose.
+    m_mv_anim.state_to_clip[static_cast<u8>(AnimState::Custom)] = index;
+    m_mv_anim.current_state = AnimState::Custom;
+    m_mv_anim.previous_state = AnimState::Custom;
+    m_mv_anim.time = 0.0f;
+    m_mv_anim.blend_factor = 1.0f;   // no crossfade on manual switch
+    m_mv_anim.looping = true;
+    m_mv_anim.finished = false;
+}
+
+void Renderer::render_model_viewer(rhi::CommandList& cmd, f32 dt) {
+    if (m_mv_path.empty() || !m_mv_inited) return;
+    auto* lm = get_or_load_model(m_mv_path);   // re-fetch (cache survives end_session rollback)
+    if (!lm) return;
+
+    // Orbit camera → view/projection (own near/far so small assets don't clip).
+    f32 cp = std::cos(m_mv_orbit_pitch), sp = std::sin(m_mv_orbit_pitch);
+    f32 cy = std::cos(m_mv_orbit_yaw),   sy = std::sin(m_mv_orbit_yaw);
+    glm::vec3 dir{ cp * sy, cp * cy, sp };
+    glm::vec3 eye = m_mv_target - dir * m_mv_distance;
+    glm::mat4 view = glm::lookAt(eye, m_mv_target, glm::vec3{0, 0, 1});
+    glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(45.0f), 1.0f,
+                                           std::max(m_mv_distance * 0.02f, 0.5f), m_mv_distance * 8.0f);
+    proj[1][1] *= -1.0f;
+    glm::mat4 vp = proj * view;
+
+    // Model matrix: Y-up→Z-up flip for non-native (all loaded glTF), like the scene.
+    glm::mat4 model{1.0f};
+    if (!lm->mesh.native_z_up)
+        model = glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1, 0, 0});
+    glm::mat4 mvp = vp * model;
+
+    bool skinned = lm->is_skinned && !lm->data.skeleton.bones.empty();
+    if (skinned && m_mv_bone_descriptor.is_valid()) {
+        update_animation(m_mv_anim, dt);
+        evaluate_animation(m_mv_anim);
+        if (auto* dst = m_rhi->mapped_ptr(m_mv_bone_buffer); dst && !m_mv_anim.bone_matrices.empty())
+            std::memcpy(dst, m_mv_anim.bone_matrices.data(),
+                        m_mv_anim.bone_matrices.size() * sizeof(glm::mat4));
+    }
+
+    // Barriers → attachment layouts.
+    rhi::ImageBarrier cb{};
+    cb.image = m_mv_color; cb.src_stage = rhi::PipelineStage::FragmentShader; cb.src_access = rhi::AccessFlag::ShaderRead;
+    cb.dst_stage = rhi::PipelineStage::ColorAttachmentOutput; cb.dst_access = rhi::AccessFlag::ColorAttachmentWrite;
+    cb.old_layout = rhi::ImageLayout::Undefined; cb.new_layout = rhi::ImageLayout::ColorAttachmentOptimal;
+    cb.aspect = rhi::ImageAspect::Color;
+    cmd.image_barrier(cb);
+
+    rhi::ImageBarrier db{};
+    db.image = m_mv_depth; db.dst_stage = rhi::PipelineStage::EarlyFragmentTests | rhi::PipelineStage::LateFragmentTests;
+    db.dst_access = rhi::AccessFlag::DepthStencilAttachmentWrite;
+    db.old_layout = rhi::ImageLayout::Undefined; db.new_layout = rhi::ImageLayout::DepthAttachmentOptimal;
+    db.aspect = rhi::ImageAspect::Depth;
+    cmd.image_barrier(db);
+
+    rhi::ColorAttachment ca{};
+    ca.image = m_mv_color; ca.layout = rhi::ImageLayout::ColorAttachmentOptimal;
+    ca.load = rhi::LoadOp::Clear; ca.store = rhi::StoreOp::Store;
+    ca.clear = { 0.11f, 0.12f, 0.14f, 1.0f };
+    rhi::DepthAttachment da{};
+    da.image = m_mv_depth; da.layout = rhi::ImageLayout::DepthAttachmentOptimal;
+    da.load = rhi::LoadOp::Clear; da.store = rhi::StoreOp::Store; da.clear = { 1.0f, 0 };
+
+    rhi::RenderingDesc rd{};
+    rd.color_attachments = std::span{&ca, 1};
+    rd.depth = &da;
+    rd.area_width = kMvSize; rd.area_height = kMvSize;
+    cmd.begin_rendering(rd);
+    cmd.set_viewport(0, 0, static_cast<f32>(kMvSize), static_cast<f32>(kMvSize));
+    cmd.set_scissor(0, 0, kMvSize, kMvSize);
+
+    auto pipeline = skinned ? m_mv_skinned_pipeline : m_mv_static_pipeline;
+    auto layout   = skinned ? m_mv_skinned_layout   : m_mv_static_layout;
+    cmd.bind_pipeline(pipeline);
+
+    struct { glm::mat4 mvp; glm::mat4 model; } vpush{ mvp, model };
+    cmd.push_constants(layout, rhi::ShaderStage::Vertex, 0, sizeof(vpush), &vpush);
+    cmd.bind_vertex_buffer(0, lm->mesh.vertex_buffer);
+    cmd.bind_index_buffer(lm->mesh.index_buffer, 0, rhi::IndexType::U32);
+    if (skinned) cmd.bind_descriptor_set(layout, 1, m_mv_bone_descriptor);
+
+    for (const auto& sm : lm->submeshes) {
+        // Skinned submeshes carry a per-submesh diffuse descriptor; static ones
+        // use the bindless array (no descriptor) — fall back to the model's
+        // single-texture material set, which the loader always populates.
+        rhi::DescriptorSetHandle diffuse = sm.descriptor_set.is_valid()
+                                             ? sm.descriptor_set : lm->material.descriptor_set;
+        if (!diffuse.is_valid()) continue;
+        cmd.bind_descriptor_set(layout, 0, diffuse);
+        glm::vec4 base = sm.base_color_factor;
+        cmd.push_constants(layout, rhi::ShaderStage::Fragment, 128, sizeof(base), &base);
+        // Index/vertex offsets differ by type: skinned indices are rebased into
+        // the merged buffer (vertexOffset 0); static submeshes keep 0-based
+        // per-primitive indices, so vertexOffset must be their mega-slice base.
+        i32 vtx_off = skinned ? 0 : static_cast<i32>(sm.mesh.first_vertex);
+        cmd.draw_indexed(sm.mesh.index_count, 1, sm.mesh.first_index, vtx_off, 0);
+    }
+
+    cmd.end_rendering();
+
+    rhi::ImageBarrier cr{};
+    cr.image = m_mv_color; cr.src_stage = rhi::PipelineStage::ColorAttachmentOutput; cr.src_access = rhi::AccessFlag::ColorAttachmentWrite;
+    cr.dst_stage = rhi::PipelineStage::FragmentShader; cr.dst_access = rhi::AccessFlag::ShaderRead;
+    cr.old_layout = rhi::ImageLayout::ColorAttachmentOptimal; cr.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    cr.aspect = rhi::ImageAspect::Color;
+    cmd.image_barrier(cr);
+}
+
+void Renderer::destroy_model_viewer() {
+    if (!m_rhi || !m_mv_inited) return;
+    m_rhi->destroy_pipeline(m_mv_static_pipeline);
+    m_rhi->destroy_pipeline_layout(m_mv_static_layout);
+    m_rhi->destroy_pipeline(m_mv_skinned_pipeline);
+    m_rhi->destroy_pipeline_layout(m_mv_skinned_layout);
+    if (m_mv_bone_descriptor.is_valid()) m_rhi->free_descriptor_set(m_mv_bone_descriptor);
+    m_rhi->destroy_buffer(m_mv_bone_buffer);
+    m_rhi->destroy_sampler(m_mv_sampler);
+    m_rhi->destroy_texture(m_mv_color);
+    m_rhi->destroy_texture(m_mv_depth);
+    m_mv_inited = false;
+    m_mv_path.clear();
 }
 
 // ── Shadow depth pass ─────────────────────────────────────────────────────

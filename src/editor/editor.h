@@ -117,6 +117,9 @@ private:
     // Map Explorer window (browse / preview / inspect the map's files).
     FileExplorer        m_files;
     FileExplorerContext file_ctx();
+    // ImTextureID for the renderer's offscreen model-viewer color target,
+    // created lazily once the target exists, freed on shutdown.
+    void*               m_model_view_tex_id = nullptr;
 
     // View-menu window visibility. World-editing panels default on; the
     // Map Explorer is available but hidden until the maker opens it.
