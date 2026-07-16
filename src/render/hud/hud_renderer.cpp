@@ -2294,7 +2294,7 @@ void HudRenderer::draw_tree() {
     }
 
     if (s.held_item_slot >= 0 && !s.held_item_icon.empty()) {
-        constexpr f32 kHeldIconSize = 28.0f;
+        constexpr f32 kHeldIconSize = 48.0f;
         f32 cx = s.pointer_x;
         f32 cy = s.pointer_y;
         Rect rc{ cx - kHeldIconSize * 0.5f, cy - kHeldIconSize * 0.5f,

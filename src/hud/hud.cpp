@@ -2007,6 +2007,7 @@ Hud::AbilityAimState Hud::aim_state() const {
     const auto& dc = m_impl->drag_cast;
 
     // Mobile drag-cast path — feeds aim state directly from the gesture.
+    if (dc.inventory_slot >= 0 && !dc.inventory_targetable) return out;
     if (dc.phase != Impl::DragCastPhase::Idle) {
         out.active        = true;
         out.source        = (dc.inventory_slot >= 0)
@@ -3002,6 +3003,25 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     }
     // Release edge: up on this frame, was down last frame.
     if (!button_down && s.pointer_down_prev) {
+        // Touch long-press lifts an item with the finger still down, so the
+        // drop commits here on release rather than on the next press edge.
+        if (s.is_mobile && s.held_item_slot >= 0) {
+            i32 target = inv_slot;
+            if (target >= 0 && target != s.held_item_slot) {
+                if (s.inventory_swap_fn) s.inventory_swap_fn(s.held_item_slot, target);
+            } else if (target < 0 && s.world_ctx && s.world_ctx->screen_to_world
+                       && s.inventory_drop_fn) {
+                glm::vec3 wp;
+                if (s.world_ctx->screen_to_world(x * s.ui_scale, y * s.ui_scale, wp)) {
+                    s.inventory_drop_fn(s.held_item_id, s.held_item_slot, wp);
+                }
+            }
+            s.held_item_slot = -1;
+            s.held_item_id   = UINT32_MAX;
+            s.held_item_icon.clear();
+            s.pointer_down_prev = button_down;
+            return;
+        }
         if (s.action_bar_pressed_slot >= 0) {
             // "Clicked" = released while still over the slot that was
             // pressed. The lift-fixup at the top of handle_pointer
