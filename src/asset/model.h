@@ -113,6 +113,10 @@ struct ModelData {
     bool has_skeleton() const { return !skeleton.empty(); }
 };
 
-std::expected<ModelData, std::string> load_model_from_memory(const u8* data, u32 size, std::string_view source_path = "");
+// `out_warnings`, when non-null, collects the non-fatal loader warnings emitted
+// during load (the editor's asset inspector uses this; runtime passes nullptr).
+std::expected<ModelData, std::string> load_model_from_memory(
+    const u8* data, u32 size, std::string_view source_path = "",
+    std::vector<std::string>* out_warnings = nullptr);
 
 } // namespace uldum::asset

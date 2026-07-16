@@ -403,6 +403,23 @@ void AudioEngine::set_volume(Channel channel, f32 volume) {
 
 // ── Path resolution ───────────────────────────────────────────────────────
 
+f32 AudioEngine::sound_length_seconds(std::string_view path) const {
+    auto* mgr = asset::AssetManager::instance();
+    if (!mgr) return 0.0f;
+    auto bytes = mgr->read_file_bytes(std::string(path));
+    if (bytes.empty()) return 0.0f;
+
+    ma_decoder dec;
+    if (ma_decoder_init_memory(bytes.data(), bytes.size(), nullptr, &dec) != MA_SUCCESS)
+        return 0.0f;
+    ma_uint64 frames = 0;
+    f32 secs = 0.0f;
+    if (ma_decoder_get_length_in_pcm_frames(&dec, &frames) == MA_SUCCESS && dec.outputSampleRate > 0)
+        secs = static_cast<f32>(frames) / static_cast<f32>(dec.outputSampleRate);
+    ma_decoder_uninit(&dec);
+    return secs;
+}
+
 std::string AudioEngine::resolve_path(std::string_view path) const {
     // All audio goes through the AssetManager's mounted packages. For each
     // candidate virtual path, read bytes once and register them with

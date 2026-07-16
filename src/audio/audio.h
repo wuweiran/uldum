@@ -45,6 +45,10 @@ public:
     SoundHandle play_ambient(std::string_view path, glm::vec3 position);
     void stop_ambient(SoundHandle handle, f32 fade_out = 0.5f);
 
+    // Total duration of a sound file in seconds, or 0 if it can't be read.
+    // Decodes the header only (no playback) — used by editor inspection.
+    f32 sound_length_seconds(std::string_view path) const;
+
     // Volume control (0.0 to 1.0)
     void set_volume(Channel channel, f32 volume);
 

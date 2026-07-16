@@ -6,7 +6,7 @@
 #include "audio/audio.h"
 #include "render/renderer.h"
 #include "editor/editor_overlays.h"
-#include "editor/asset_panel.h"
+#include "editor/file_explorer.h"
 #include "simulation/simulation.h"
 #include "map/map.h"
 #include "core/types.h"
@@ -114,12 +114,12 @@ private:
     simulation::Simulation  m_simulation;
     map::MapManager         m_map;
 
-    // Asset Manager window (browse / preview / inspect the map's files).
-    AssetPanel        m_assets;
-    AssetPanelContext asset_ctx();
+    // Map Explorer window (browse / preview / inspect the map's files).
+    FileExplorer        m_files;
+    FileExplorerContext file_ctx();
 
     // View-menu window visibility. World-editing panels default on; the
-    // Asset Manager is available but hidden until the maker opens it.
+    // Map Explorer is available but hidden until the maker opens it.
     bool m_show_scene  = true;
     bool m_show_tools  = true;
     bool m_show_info   = true;
@@ -138,11 +138,12 @@ private:
     void switch_scene(const std::string& scene_name);
     void open_map(const std::string& path);
 
-    // Tier-1 Lua script validation (dev/editor only). Walks the map's *.lua
-    // and syntax-checks each via uldum_scriptcheck. Results surface in a popup.
-    void validate_scripts();
-    bool                     m_script_check_open = false;
-    std::vector<std::string> m_script_check_results;  // display lines (errors, or an all-clean note)
+    // Lua validation via uldum_scriptcheck (dev/editor only), surfaced in the
+    // Map Explorer's inspector. Syntax is per-file; full validation (syntax +
+    // undefined engine calls) is per-scene, over the script set that shares the
+    // scene's runtime. Both return display lines.
+    std::vector<std::string> check_script_syntax(const std::string& rel);
+    std::vector<std::string> validate_scene_scripts(const std::string& scene);
 
     // Tool state
     Tool  m_tool           = Tool::Raise;

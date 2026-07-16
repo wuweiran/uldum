@@ -1,4 +1,4 @@
-#include "editor/asset_panel.h"
+#include "editor/file_explorer.h"
 
 #include "asset/asset.h"
 #include "asset/model.h"
@@ -10,6 +10,8 @@
 
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -25,62 +27,42 @@ namespace uldum::editor {
 namespace fs = std::filesystem;
 
 namespace {
-constexpr const char* TAG = "AssetPanel";
+constexpr const char* TAG = "FileExplorer";
 
-// Clip names the animation state machine matches (docs/model-format.md).
-bool is_engine_clip(std::string_view name) {
-    static constexpr std::array<std::string_view, 6> kClips{
-        "idle", "walk", "attack", "spell", "hit", "death"};
-    return std::find(kClips.begin(), kClips.end(), name) != kClips.end();
-}
-
-AssetKind kind_of(std::string_view rel) {
+FileKind kind_of(std::string_view rel) {
     auto ends = [&](std::string_view s) { return rel.size() >= s.size() && rel.substr(rel.size() - s.size()) == s; };
-    if (ends(".glb") || ends(".gltf")) return AssetKind::Model;
-    if (ends(".ktx2"))                 return AssetKind::Texture;
-    if (ends(".ogg"))                  return AssetKind::Sound;
-    return AssetKind::Other;
+    if (ends(".glb") || ends(".gltf")) return FileKind::Model;
+    if (ends(".ktx2"))                 return FileKind::Texture;
+    if (ends(".ogg"))                  return FileKind::Sound;
+    if (ends(".lua"))                  return FileKind::Script;
+    if (ends(".json"))                 return FileKind::Json;
+    if (ends(".bin"))                  return FileKind::Bin;
+    return FileKind::Other;
 }
 
-bool is_asset_kind(AssetKind k) { return k != AssetKind::Other; }
-
-// Read-only warnings the engine's loader would raise for this model. Facts
-// only — no advice, no proposed fixes.
-std::vector<Finding> model_warnings(const asset::ModelData& m) {
-    std::vector<Finding> out;
-
-    if (m.meshes.empty() && m.skinned_meshes.empty())
-        out.push_back({Severity::Warning, "No triangle meshes — nothing will render."});
-
-    u32 bones = static_cast<u32>(m.skeleton.bones.size());
-    if (bones > 128)
-        out.push_back({Severity::Warning, std::format("{} bones exceeds the 128-bone limit.", bones)});
-
-    if (!m.animations.empty() && !m.has_skeleton())
-        out.push_back({Severity::Warning, "Animations on an unskinned model are dropped."});
-
-    for (const auto& a : m.animations)
-        if (!is_engine_clip(a.name))
-            out.push_back({Severity::Warning, std::format("Clip '{}' matches no engine state.", a.name)});
-
-    for (const auto& mat : m.materials)
-        if (mat.alpha_mode == asset::AlphaMode::Blend) {
-            out.push_back({Severity::Warning, "A material uses alphaMode BLEND — rendered as OPAQUE."});
-            break;
-        }
-
-    return out;
+// Managed assets can be imported / renamed / deleted. Scripts and other files
+// (JSON, terrain) are visible but never mutated from here.
+bool is_managed_kind(FileKind k) {
+    return k == FileKind::Model || k == FileKind::Texture || k == FileKind::Sound;
 }
 
-ImVec4 severity_color(Severity s) {
-    return s == Severity::Warning ? ImVec4{0.95f, 0.80f, 0.35f, 1.0f}
-                                  : ImVec4{0.70f, 0.80f, 0.95f, 1.0f};
+// If `rel` lives under scenes/<name>/, return <name>; else empty. A .lua under
+// a scene validates against that scene's runtime set; a shared script doesn't.
+std::string scene_of(std::string_view rel) {
+    constexpr std::string_view kPfx = "scenes/";
+    if (rel.substr(0, kPfx.size()) != kPfx) return {};
+    rel.remove_prefix(kPfx.size());
+    auto slash = rel.find('/');
+    return slash == std::string_view::npos ? std::string{} : std::string(rel.substr(0, slash));
 }
+
+constexpr ImVec4 kWarnColor{0.95f, 0.80f, 0.35f, 1.0f};   // loader warnings
+constexpr ImVec4 kErrorColor{0.95f, 0.45f, 0.40f, 1.0f};  // load failure
 } // namespace
 
 // ── Tree build ───────────────────────────────────────────────────────────────
 
-void AssetPanel::build_tree(const AssetPanelContext& ctx) {
+void FileExplorer::build_tree(const FileExplorerContext& ctx) {
     m_root = TreeNode{};
     m_root.is_dir = true;
     if (!ctx.assets || ctx.map_root.empty()) return;
@@ -114,7 +96,7 @@ void AssetPanel::build_tree(const AssetPanelContext& ctx) {
 
 // Insert a map-relative file path into the tree, creating folder nodes as
 // needed. Children are kept sorted (folders first, then files, each A→Z).
-void AssetPanel::insert_path(TreeNode& root, const std::string& rel) {
+void FileExplorer::insert_path(TreeNode& root, const std::string& rel) {
     TreeNode* cur = &root;
     std::string_view path = rel;
     std::string accum;
@@ -132,7 +114,7 @@ void AssetPanel::insert_path(TreeNode& root, const std::string& rel) {
             node.name   = std::string(seg);
             node.rel    = accum;
             node.is_dir = !is_file;
-            node.kind   = is_file ? kind_of(seg) : AssetKind::Other;
+            node.kind   = is_file ? kind_of(seg) : FileKind::Other;
             // Insert sorted: folders before files, then lexicographic.
             auto pos = std::find_if(cur->children.begin(), cur->children.end(),
                 [&](const TreeNode& n) {
@@ -149,7 +131,7 @@ void AssetPanel::insert_path(TreeNode& root, const std::string& rel) {
 
 // ── Draw ─────────────────────────────────────────────────────────────────────
 
-void AssetPanel::draw(const AssetPanelContext& ctx, bool* p_open) {
+void FileExplorer::draw(const FileExplorerContext& ctx, bool* p_open) {
     ImGui::SetNextWindowSize(ImVec2(560, 460), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Map Explorer", p_open)) { ImGui::End(); return; }
 
@@ -175,11 +157,11 @@ void AssetPanel::draw(const AssetPanelContext& ctx, bool* p_open) {
     ImGui::End();
 }
 
-void AssetPanel::draw_tree(const AssetPanelContext& ctx) {
+void FileExplorer::draw_tree(const FileExplorerContext& ctx) {
     for (auto& child : m_root.children) draw_node(ctx, child);
 }
 
-void AssetPanel::draw_node(const AssetPanelContext& ctx, TreeNode& node) {
+void FileExplorer::draw_node(const FileExplorerContext& ctx, TreeNode& node) {
     if (node.is_dir) {
         bool open = ImGui::TreeNodeEx(node.name.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth);
         // Right-click a folder → import an asset into it (source maps only).
@@ -199,11 +181,11 @@ void AssetPanel::draw_node(const AssetPanelContext& ctx, TreeNode& node) {
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
                                ImGuiTreeNodeFlags_SpanAvailWidth;
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
-    bool manageable = ctx.editable && is_asset_kind(node.kind);
-    if (!is_asset_kind(node.kind))
+    bool manageable = ctx.editable && is_managed_kind(node.kind);
+    if (!is_managed_kind(node.kind))
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));  // non-assets dimmed
     ImGui::TreeNodeEx(node.name.c_str(), flags);
-    if (!is_asset_kind(node.kind)) ImGui::PopStyleColor();
+    if (!is_managed_kind(node.kind)) ImGui::PopStyleColor();
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
         select(ctx, node.rel, node.kind);
@@ -217,7 +199,7 @@ void AssetPanel::draw_node(const AssetPanelContext& ctx, TreeNode& node) {
     }
 }
 
-void AssetPanel::draw_inspector(const AssetPanelContext& ctx) {
+void FileExplorer::draw_inspector(const FileExplorerContext& ctx) {
     if (m_selected_rel.empty()) {
         ImGui::TextDisabled("Select a file to inspect.");
         return;
@@ -226,21 +208,25 @@ void AssetPanel::draw_inspector(const AssetPanelContext& ctx) {
     ImGui::Separator();
 
     switch (m_selected_kind) {
-        case AssetKind::Model: {
+        case FileKind::Model: {
+            if (!m_model_error.empty()) {
+                ImGui::TextColored(kErrorColor, "%s", m_model_error.c_str());
+                break;
+            }
             ImGui::TextUnformatted(m_model_summary.c_str());
             if (!m_clip_names.empty()) {
                 ImGui::TextDisabled("Clips:");
                 for (const auto& c : m_clip_names) { ImGui::SameLine(); ImGui::TextUnformatted(c.c_str()); }
             }
-            if (!m_findings.empty()) {
+            if (!m_model_warnings.empty()) {
                 ImGui::Separator();
                 ImGui::TextDisabled("Loader warnings:");
-                for (const auto& f : m_findings)
-                    ImGui::TextColored(severity_color(f.severity), "%s", f.message.c_str());
+                for (const auto& w : m_model_warnings)
+                    ImGui::TextColored(kWarnColor, "%s", w.c_str());
             }
             break;
         }
-        case AssetKind::Texture: {
+        case FileKind::Texture: {
             if (m_tex_id) {
                 f32 avail = ImGui::GetContentRegionAvail().x;
                 f32 w = static_cast<f32>(m_tex_w), h = static_cast<f32>(m_tex_h);
@@ -248,23 +234,61 @@ void AssetPanel::draw_inspector(const AssetPanelContext& ctx) {
                 ImGui::Image(reinterpret_cast<ImTextureID>(m_tex_id), ImVec2(w, h));
                 ImGui::Text("%u x %u", m_tex_w, m_tex_h);
             } else {
-                ImGui::TextColored(severity_color(Severity::Warning), "Failed to load texture.");
+                ImGui::TextColored(kErrorColor, "Failed to load texture.");
             }
             break;
         }
-        case AssetKind::Sound: {
+        case FileKind::Sound: {
             if (ImGui::Button("Play") && ctx.audio) ctx.audio->play_sfx_2d(m_selected_rel);
+            if (m_sound_secs > 0.0f) {
+                ImGui::SameLine();
+                if (m_sound_secs < 60.0f) ImGui::Text("%.1fs", m_sound_secs);
+                else ImGui::Text("%d:%02d", static_cast<int>(m_sound_secs) / 60,
+                                  static_cast<int>(m_sound_secs) % 60);
+            }
+            break;
+        }
+        case FileKind::Script: {
+            // A scene script validates the whole scene (syntax + undefined engine
+            // calls). Any other .lua gets a file-granularity syntax check.
+            if (!m_script_scene.empty()) {
+                if (ImGui::Button("Validate") && ctx.validate_scene)
+                    m_script_results = ctx.validate_scene(m_script_scene);
+                ImGui::SameLine();
+                ImGui::TextDisabled("scene '%s'", m_script_scene.c_str());
+            } else {
+                if (ImGui::Button("Check syntax") && ctx.check_syntax)
+                    m_script_results = ctx.check_syntax(m_selected_rel);
+            }
+            for (const auto& line : m_script_results) {
+                if (line.starts_with("["))   // "[syntax]"/"[global]" = a finding
+                    ImGui::TextColored(kErrorColor, "%s", line.c_str());
+                else
+                    ImGui::TextUnformatted(line.c_str());   // clean / note line
+            }
+            break;
+        }
+        case FileKind::Json: {
+            ImGui::TextDisabled("%s", m_json_label.c_str());
+            for (const auto& line : m_json_info) ImGui::TextUnformatted(line.c_str());
+            ImGui::Separator();
+            if (m_json_error.empty()) ImGui::TextUnformatted("Valid JSON");
+            else                      ImGui::TextColored(kErrorColor, "%s", m_json_error.c_str());
+            break;
+        }
+        case FileKind::Bin: {
+            ImGui::TextDisabled("%s", m_bin_label.c_str());
             break;
         }
         default:
-            ImGui::TextDisabled("Script / data file — not previewable.");
+            ImGui::TextDisabled("Data file — not previewable.");
             break;
     }
 }
 
 // ── Selection ────────────────────────────────────────────────────────────────
 
-void AssetPanel::select(const AssetPanelContext& ctx, const std::string& rel, AssetKind kind) {
+void FileExplorer::select(const FileExplorerContext& ctx, const std::string& rel, FileKind kind) {
     if (rel == m_selected_rel) return;
     clear_selection_preview(ctx);
 
@@ -272,30 +296,53 @@ void AssetPanel::select(const AssetPanelContext& ctx, const std::string& rel, As
     m_selected_kind = kind;
 
     switch (kind) {
-        case AssetKind::Model:   select_model(ctx, rel);   break;
-        case AssetKind::Texture: select_texture(ctx, rel); break;
-        default: break;   // sounds play on demand; scripts/data show path only
+        case FileKind::Model:   select_model(ctx, rel);   break;
+        case FileKind::Texture: select_texture(ctx, rel); break;
+        case FileKind::Script:  m_script_scene = scene_of(rel); break;
+        case FileKind::Json:    inspect_json(ctx, rel);   break;
+        case FileKind::Sound:
+            if (ctx.audio) m_sound_secs = ctx.audio->sound_length_seconds(rel);
+            break;
+        case FileKind::Bin: {
+            // Recognized by name; not parsed (opaque binary).
+            std::string_view base = rel;
+            base.remove_prefix(base.find_last_of('/') + 1);
+            if      (base == "terrain.bin")    m_bin_label = "Terrain data (heightmap, cliffs, tiles, pathing)";
+            else if (base == "placements.bin") m_bin_label = "Placements (preplaced objects, regions, cameras)";
+            else                               m_bin_label = "Binary data file";
+            break;
+        }
+        default: break;   // Other kinds show path only
     }
 }
 
-void AssetPanel::clear_selection_preview(const AssetPanelContext& ctx) {
+void FileExplorer::clear_selection_preview(const FileExplorerContext& ctx) {
     free_texture(ctx);
     m_model_summary.clear();
     m_clip_names.clear();
-    m_findings.clear();
+    m_model_warnings.clear();
+    m_model_error.clear();
+    m_script_scene.clear();
+    m_script_results.clear();
+    m_json_label.clear();
+    m_json_info.clear();
+    m_json_error.clear();
+    m_bin_label.clear();
+    m_sound_secs = 0.0f;
 }
 
-void AssetPanel::select_model(const AssetPanelContext& ctx, const std::string& rel) {
+void FileExplorer::select_model(const FileExplorerContext& ctx, const std::string& rel) {
     if (!ctx.assets) return;
 
     auto bytes = ctx.assets->read_file_bytes(rel);
     if (bytes.empty()) {
-        m_findings.push_back({Severity::Warning, "File not found in the mounted map."});
+        m_model_error = "File not found in the mounted map.";
         return;
     }
-    auto md = asset::load_model_from_memory(bytes.data(), static_cast<u32>(bytes.size()), rel);
+    auto md = asset::load_model_from_memory(bytes.data(), static_cast<u32>(bytes.size()), rel,
+                                            &m_model_warnings);
     if (!md) {
-        m_findings.push_back({Severity::Warning, std::format("Load failed: {}", md.error())});
+        m_model_error = std::format("Load failed: {}", md.error());
         return;
     }
 
@@ -306,10 +353,9 @@ void AssetPanel::select_model(const AssetPanelContext& ctx, const std::string& r
                                   md->meshes.size() + md->skinned_meshes.size(), verts,
                                   md->skeleton.bones.size(), md->animations.size(), md->materials.size());
     for (const auto& a : md->animations) m_clip_names.push_back(a.name);
-    m_findings = model_warnings(*md);
 }
 
-void AssetPanel::select_texture(const AssetPanelContext& ctx, const std::string& rel) {
+void FileExplorer::select_texture(const FileExplorerContext& ctx, const std::string& rel) {
     if (!ctx.assets || !ctx.rhi) return;
     auto bytes = ctx.assets->read_file_bytes(rel);
     if (bytes.empty()) return;
@@ -326,9 +372,71 @@ void AssetPanel::select_texture(const AssetPanelContext& ctx, const std::string&
     }
 }
 
+// Recognize a map JSON by its path and pull a few shallow fields — a friendly
+// "what is this" + a line of contents, plus whether it's well-formed. Pure
+// nlohmann; touches no loader. Every field read is type-guarded (untrusted map
+// data), so a wrong-shaped file degrades to the generic key/element count.
+void FileExplorer::inspect_json(const FileExplorerContext& ctx, const std::string& rel) {
+    if (!ctx.assets) return;
+    auto bytes = ctx.assets->read_file_bytes(rel);
+    std::string_view sv(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+    auto is = [&](std::string_view p) { return rel == p; };
+    auto under = [&](std::string_view dir, std::string_view file) {
+        return rel.size() > dir.size() && rel.starts_with(dir) &&
+               rel.substr(rel.find_last_of('/') + 1) == file;
+    };
+    // (label, is-a-registry-of-entries) — registries preview as a keyed count.
+    std::string label; bool registry = false;
+    if      (is("manifest.json"))                    label = "Map manifest";
+    else if (is("tileset.json"))                     label = "Tileset";
+    else if (is("hud.json"))                         label = "HUD layout";
+    else if (under("types/", "units.json"))          { label = "Unit definitions";         registry = true; }
+    else if (under("types/", "abilities.json"))      { label = "Ability definitions";      registry = true; }
+    else if (under("types/", "items.json"))          { label = "Item definitions";         registry = true; }
+    else if (under("types/", "destructables.json"))  { label = "Destructable definitions"; registry = true; }
+    else if (under("types/", "doodads.json"))        { label = "Doodad definitions";       registry = true; }
+    else if (under("types/", "effects.json"))        { label = "Effect definitions";       registry = true; }
+    else if (rel.find("scenes/") == 0 && rel.ends_with("scene.json")) label = "Scene config";
+    else if (rel.find("strings/") == 0)              { label = "Localized strings";        registry = true; }
+    else                                             label = "JSON file";
+    m_json_label = label;
+
+    auto doc = nlohmann::json::parse(sv, nullptr, /*allow_exceptions=*/false);
+    if (doc.is_discarded()) {
+        m_json_error = "Invalid JSON (parse failed).";
+        return;
+    }
+
+    auto str_field = [&](const char* k) -> std::string {
+        auto it = doc.find(k);
+        return (it != doc.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+    };
+
+    if (registry && doc.is_object()) {
+        m_json_info.push_back(std::format("{} entries", doc.size()));
+    } else if (label == "Map manifest") {
+        if (auto s = str_field("name");   !s.empty()) m_json_info.push_back("name: " + s);
+        if (auto s = str_field("author"); !s.empty()) m_json_info.push_back("author: " + s);
+        if (auto s = str_field("game_mode"); !s.empty()) m_json_info.push_back("mode: " + s);
+        if (auto s = str_field("suggested_players"); !s.empty()) m_json_info.push_back("players: " + s);
+    } else if (label == "Tileset") {
+        auto it = doc.find("layers");
+        if (it != doc.end() && it->is_array()) m_json_info.push_back(std::format("{} layers", it->size()));
+    } else if (label == "HUD layout") {
+        if (auto s = str_field("preset"); !s.empty()) m_json_info.push_back("preset: " + s);
+        auto it = doc.find("composites");
+        if (it != doc.end() && it->is_object()) m_json_info.push_back(std::format("{} composites", it->size()));
+    } else {
+        // Unknown shape — still say something useful.
+        if (doc.is_object())      m_json_info.push_back(std::format("{} top-level keys", doc.size()));
+        else if (doc.is_array())  m_json_info.push_back(std::format("{} elements", doc.size()));
+    }
+}
+
 // ── File management (asset kinds only, source-folder maps only) ───────────────
 
-int AssetPanel::count_references(const AssetPanelContext& ctx, const std::string& rel) const {
+int FileExplorer::count_references(const FileExplorerContext& ctx, const std::string& rel) const {
     // A map references assets by their map-relative path inside the type/data
     // JSON and Lua. A plain substring scan over those text files is enough to
     // warn "this is still used" before a rename/delete.
@@ -349,7 +457,7 @@ int AssetPanel::count_references(const AssetPanelContext& ctx, const std::string
     return hits;
 }
 
-void AssetPanel::begin_rename(const AssetPanelContext& ctx, const std::string& rel) {
+void FileExplorer::begin_rename(const FileExplorerContext& ctx, const std::string& rel) {
     m_pending     = Pending::Rename;
     m_open_modal  = true;
     m_pending_rel = rel;
@@ -361,7 +469,7 @@ void AssetPanel::begin_rename(const AssetPanelContext& ctx, const std::string& r
     std::memcpy(m_name_buf.data(), base.c_str(), std::min(base.size(), m_name_buf.size() - 1));
 }
 
-void AssetPanel::begin_delete(const AssetPanelContext& ctx, const std::string& rel) {
+void FileExplorer::begin_delete(const FileExplorerContext& ctx, const std::string& rel) {
     m_pending     = Pending::Delete;
     m_open_modal  = true;
     m_pending_rel = rel;
@@ -369,12 +477,12 @@ void AssetPanel::begin_delete(const AssetPanelContext& ctx, const std::string& r
     m_ref_count   = count_references(ctx, rel);
 }
 
-void AssetPanel::begin_import(const std::string& folder_rel) {
+void FileExplorer::begin_import(const std::string& folder_rel) {
     m_pending     = Pending::Import;
     m_pending_rel = folder_rel;   // deferred: the native picker runs after the tree
 }
 
-void AssetPanel::draw_manage_popups(const AssetPanelContext& ctx) {
+void FileExplorer::draw_manage_popups(const FileExplorerContext& ctx) {
     // Import runs the native file dialog outside the tree/popup stack.
     if (m_pending == Pending::Import) { do_import(ctx); m_pending = Pending::None; return; }
 
@@ -386,11 +494,11 @@ void AssetPanel::draw_manage_popups(const AssetPanelContext& ctx) {
     if (ImGui::BeginPopupModal("Rename asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("%s", m_pending_rel.c_str());
         if (m_ref_count > 0)
-            ImGui::TextColored(severity_color(Severity::Warning),
+            ImGui::TextColored(kWarnColor,
                                "Referenced by %d map file(s) — renaming will break those paths.", m_ref_count);
         ImGui::InputText("New name", m_name_buf.data(), m_name_buf.size());
         if (!m_manage_msg.empty())
-            ImGui::TextColored(severity_color(Severity::Warning), "%s", m_manage_msg.c_str());
+            ImGui::TextColored(kWarnColor, "%s", m_manage_msg.c_str());
         if (ImGui::Button("Rename")) do_rename(ctx);
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) { m_pending = Pending::None; ImGui::CloseCurrentPopup(); }
@@ -400,10 +508,10 @@ void AssetPanel::draw_manage_popups(const AssetPanelContext& ctx) {
     if (ImGui::BeginPopupModal("Delete asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Delete %s?", m_pending_rel.c_str());
         if (m_ref_count > 0)
-            ImGui::TextColored(severity_color(Severity::Warning),
+            ImGui::TextColored(kWarnColor,
                                "Referenced by %d map file(s) — those paths will dangle.", m_ref_count);
         if (!m_manage_msg.empty())
-            ImGui::TextColored(severity_color(Severity::Warning), "%s", m_manage_msg.c_str());
+            ImGui::TextColored(kWarnColor, "%s", m_manage_msg.c_str());
         if (ImGui::Button("Delete")) do_delete(ctx);
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) { m_pending = Pending::None; ImGui::CloseCurrentPopup(); }
@@ -411,14 +519,14 @@ void AssetPanel::draw_manage_popups(const AssetPanelContext& ctx) {
     }
 }
 
-void AssetPanel::do_rename(const AssetPanelContext& ctx) {
+void FileExplorer::do_rename(const FileExplorerContext& ctx) {
     std::string new_name = m_name_buf.data();
     if (new_name.empty() || new_name.find('/') != std::string::npos ||
         new_name.find('\\') != std::string::npos) {
         m_manage_msg = "Enter a file name (no path separators).";
         return;
     }
-    if (kind_of(new_name) == AssetKind::Other) {
+    if (kind_of(new_name) == FileKind::Other) {
         m_manage_msg = "Keep an asset extension (.glb/.gltf/.ktx2/.ogg).";
         return;
     }
@@ -439,7 +547,7 @@ void AssetPanel::do_rename(const AssetPanelContext& ctx) {
     ImGui::CloseCurrentPopup();
 }
 
-void AssetPanel::do_delete(const AssetPanelContext& ctx) {
+void FileExplorer::do_delete(const FileExplorerContext& ctx) {
     std::error_code ec;
     fs::remove(fs::path(ctx.map_root) / m_pending_rel, ec);
     if (ec) { m_manage_msg = "Delete failed: " + ec.message(); return; }
@@ -450,14 +558,14 @@ void AssetPanel::do_delete(const AssetPanelContext& ctx) {
     ImGui::CloseCurrentPopup();
 }
 
-void AssetPanel::do_import(const AssetPanelContext& ctx) {
+void FileExplorer::do_import(const FileExplorerContext& ctx) {
     if (!ctx.pick_import_file) return;
     std::string src = ctx.pick_import_file();
     if (src.empty()) return;   // cancelled
 
     fs::path srcp(src);
     std::string base = srcp.filename().string();
-    if (kind_of(base) == AssetKind::Other) {
+    if (kind_of(base) == FileKind::Other) {
         log::warn(TAG, "Import ignored: '{}' is not an asset (.glb/.gltf/.ktx2/.ogg)", base);
         return;
     }
@@ -472,7 +580,7 @@ void AssetPanel::do_import(const AssetPanelContext& ctx) {
 
 // ── Teardown ─────────────────────────────────────────────────────────────────
 
-void AssetPanel::free_texture(const AssetPanelContext& ctx) {
+void FileExplorer::free_texture(const FileExplorerContext& ctx) {
     if (!m_tex_id && m_tex.width == 0) return;
     if (ctx.rhi) ctx.rhi->wait_idle();   // GPU may still reference the descriptor this frame
     if (m_tex_id) {
@@ -486,20 +594,20 @@ void AssetPanel::free_texture(const AssetPanelContext& ctx) {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-void AssetPanel::on_map_loaded(const AssetPanelContext& ctx) {
+void FileExplorer::on_map_loaded(const FileExplorerContext& ctx) {
     clear_transient(ctx);
     build_tree(ctx);
 }
 
-void AssetPanel::clear_transient(const AssetPanelContext& ctx) {
+void FileExplorer::clear_transient(const FileExplorerContext& ctx) {
     clear_selection_preview(ctx);
     m_selected_rel.clear();
-    m_selected_kind = AssetKind::Other;
+    m_selected_kind = FileKind::Other;
     m_pending = Pending::None;
     m_open_modal = false;
 }
 
-void AssetPanel::release_all(const AssetPanelContext& ctx) {
+void FileExplorer::release_all(const FileExplorerContext& ctx) {
     clear_transient(ctx);
     m_root = TreeNode{};
 }

@@ -31,7 +31,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 namespace uldum::editor {
 
 // Win32 file-dialog helpers — defined lower in this file; forward-declared so
-// asset_ctx() (higher up) can build the panel's import picker.
+// file_ctx() (higher up) can build the panel's import picker.
 static std::string pick_open_file(HWND hwnd, const wchar_t* title,
                                   const wchar_t* filter_label, const wchar_t* filter_pattern);
 
@@ -124,7 +124,7 @@ bool Editor::init(const std::string& map_path) {
         return false;
     }
 
-    // Audio — for the Asset Manager's sound preview. Non-fatal: the editor
+    // Audio — for the Map Explorer's sound preview. Non-fatal: the editor
     // is usable without audio, so a failed init just disables previews.
     if (!m_audio.init()) {
         log::warn(TAG, "AudioEngine init failed — sound preview disabled");
@@ -203,9 +203,9 @@ bool Editor::init(const std::string& map_path) {
         return result != 0;
     });
 
-    // Build the Asset Manager tree for the initially-loaded map (after ImGui
+    // Build the Map Explorer tree for the initially-loaded map (after ImGui
     // is up, since selection-time previews use the ImGui Vulkan backend).
-    if (m_map_loaded) m_assets.on_map_loaded(asset_ctx());
+    if (m_map_loaded) m_files.on_map_loaded(file_ctx());
 
     log::info(TAG, "=== Editor initialized ===");
     return true;
@@ -900,9 +900,9 @@ void Editor::destroy_preview() {
     m_preview_type_id.clear();
 }
 
-// Assemble the per-frame context the Asset Manager panel operates on.
-AssetPanelContext Editor::asset_ctx() {
-    AssetPanelContext ctx;
+// Assemble the per-frame context the Map Explorer panel operates on.
+FileExplorerContext Editor::file_ctx() {
+    FileExplorerContext ctx;
     ctx.assets     = &m_asset;
     ctx.audio      = &m_audio;
     ctx.rhi        = &m_rhi;
@@ -920,6 +920,8 @@ AssetPanelContext Editor::asset_ctx() {
             L"Assets (*.glb;*.gltf;*.ktx2;*.ogg)",
             L"*.glb;*.gltf;*.ktx2;*.ogg");
     };
+    ctx.check_syntax   = [this](const std::string& rel)   { return check_script_syntax(rel); };
+    ctx.validate_scene = [this](const std::string& scene) { return validate_scene_scripts(scene); };
     return ctx;
 }
 
@@ -1812,10 +1814,10 @@ void Editor::reset_editing_state() {
     m_undo_stack.clear();
     m_redo_stack.clear();
 
-    // Drop the Asset Manager's live preview entity + GPU texture. Its file
-    // tree is map-scoped (assets live at map root, shared across scenes), so
-    // it survives a scene switch; open_map rebuilds it via on_map_loaded.
-    m_assets.clear_transient(asset_ctx());
+    // Drop the Map Explorer's selection + any GPU texture it holds. Its file
+    // tree is map-scoped (shared across scenes), so it survives a scene switch;
+    // open_map rebuilds it via on_map_loaded.
+    m_files.clear_transient(file_ctx());
 }
 
 void Editor::switch_scene(const std::string& scene_name) {
@@ -1893,113 +1895,109 @@ void Editor::open_map(const std::string& path) {
             // matching call in the initial map-load path above).
             m_simulation.sync_pathing_blockers();
         }
-        m_assets.on_map_loaded(asset_ctx());
+        m_files.on_map_loaded(file_ctx());
         log::info(TAG, "Opened map: {}", m_map_path);
     } else {
         log::error(TAG, "Failed to open map: {}", m_map_path);
     }
 }
 
-void Editor::validate_scripts() {
+// Tier-1 syntax check on a single .lua (file granularity). Returns display
+// lines. Undefined-global analysis is deliberately NOT run here — a lone file
+// false-positives on globals its scene-mates legitimately define.
+std::vector<std::string> Editor::check_script_syntax(const std::string& rel) {
     namespace fs = std::filesystem;
-    m_script_check_results.clear();
-
+    std::vector<std::string> out;
     const std::string root = m_map.map_root();
-    if (root.empty() || !fs::is_directory(root)) {
-        m_script_check_results.push_back("No source map folder to validate.");
-        m_script_check_open = true;
-        return;
-    }
+    if (root.empty() || !fs::is_directory(root)) { out.push_back("No source map folder."); return out; }
+
+    std::ifstream f(fs::path(root) / rel, std::ios::binary);
+    std::string src((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    auto err = script::check_syntax(src, rel);
+    if (err) out.push_back(std::format("[syntax] {}:{}: {}", err->chunk, err->line, err->message));
+    else     out.push_back("Syntax OK.");
+    return out;
+}
+
+// Full validation for one scene: syntax + undefined-engine-calls over the exact
+// script set that shares the scene's runtime VM — the scene's own scripts, the
+// shared map scripts, and the engine library (matching how the engine runs one
+// scene at a time). Returns display lines.
+std::vector<std::string> Editor::validate_scene_scripts(const std::string& scene) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    const std::string root = m_map.map_root();
+    if (root.empty() || !fs::is_directory(root)) { out.push_back("No source map folder."); return out; }
 
     auto slurp = [](const fs::path& p) -> std::string {
         std::ifstream f(p, std::ios::binary);
         if (!f) return {};
-        return std::string((std::istreambuf_iterator<char>(f)),
-                           std::istreambuf_iterator<char>());
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     };
 
-    // Gather every .lua under the map root (scenes/, scripts/, etc.). Chunk
+    // Scene runtime set: this scene's scripts + the shared map scripts. Chunk
     // name = path relative to the map root so results read cleanly.
     std::vector<script::NamedSource> scripts;
     std::error_code ec;
-    for (auto it = fs::recursive_directory_iterator(root, ec);
-         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-        if (!it->is_regular_file()) continue;
-        if (it->path().extension() != ".lua") continue;
-        std::string src = slurp(it->path());
-        std::string rel = fs::relative(it->path(), root, ec).string();
-        scripts.push_back({rel.empty() ? it->path().string() : rel, std::move(src)});
-    }
+    auto gather = [&](const fs::path& dir) {
+        if (!fs::is_directory(dir, ec)) return;
+        for (auto it = fs::recursive_directory_iterator(dir, ec);
+             !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (!it->is_regular_file() || it->path().extension() != ".lua") continue;
+            std::string rel = fs::relative(it->path(), root, ec).string();
+            scripts.push_back({rel.empty() ? it->path().string() : rel, slurp(it->path())});
+        }
+    };
+    gather(fs::path(root) / "scenes" / scene / "scripts");
+    gather(fs::path(root) / "scripts");
 
     // ── Tier 1: syntax ──
     auto errors = script::check_all(scripts);
     if (!errors.empty()) {
-        for (const auto& e : errors) {
-            std::string line = e.chunk + ":" + std::to_string(e.line) + ": " + e.message;
-            m_script_check_results.push_back("[syntax] " + line);
-            log::error(TAG, "Script syntax error: {}", line);
-        }
-        // Undefined-global analysis needs clean parses — stop at syntax errors.
-        m_script_check_open = true;
-        return;
+        for (const auto& e : errors)
+            out.push_back(std::format("[syntax] {}:{}: {}", e.chunk, e.line, e.message));
+        return out;   // undefined-global analysis needs clean parses
     }
 
-    // ── Tier 2: undefined globals (project-scoped) ──
-    // Known globals come straight from engine SOURCE (script.cpp bindings +
-    // constants.lua), so the set can't drift from the real API. ULDUM_SOURCE_DIR
-    // is the repo root baked in at compile time (target_compile_definitions).
-    std::vector<script::UndefinedGlobal> undefined;
-    std::string tier2_note;
+    // ── Tier 2: undefined globals (scene-scoped project set) ──
+    // Known globals come from engine SOURCE (script.cpp bindings + constants.lua)
+    // so the set can't drift from the real API. ULDUM_SOURCE_DIR is the repo root
+    // baked in at compile time.
 #ifdef ULDUM_SOURCE_DIR
-    {
-        fs::path srcroot = ULDUM_SOURCE_DIR;
-        std::string binds  = slurp(srcroot / "src" / "script" / "script.cpp");
-        std::string consts = slurp(srcroot / "engine" / "scripts" / "constants.lua");
-        if (binds.empty()) {
-            tier2_note = "(undefined-global check skipped: engine source not found)";
-        } else {
-            script::GlobalSet known = script::extract_known_globals(binds, consts);
-            // The engine loads shared engine/scripts/*.lua into the same global
-            // env as the map's scripts, so a global defined there (or in another
-            // map script) is legitimately callable. Add the engine libs to the
-            // project set, excluding api.lua (documentation stubs, not runtime).
-            std::vector<script::NamedSource> project = scripts;
-            fs::path libdir = srcroot / "engine" / "scripts";
-            for (auto it = fs::recursive_directory_iterator(libdir, ec);
-                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-                if (!it->is_regular_file() || it->path().extension() != ".lua") continue;
-                if (it->path().filename() == "api.lua") continue;
-                project.push_back({it->path().filename().string(), slurp(it->path())});
-            }
-            undefined = script::check_globals_project(project, known);
-            // Only surface flags whose chunk is a MAP script (relative path) —
-            // engine libs are trusted; we don't lint them here.
-            std::erase_if(undefined, [](const script::UndefinedGlobal& u) {
-                return u.chunk.find('/') == std::string::npos &&
-                       u.chunk.find('\\') == std::string::npos &&
-                       u.chunk.find(".uldmap") == std::string::npos;
-            });
-        }
+    fs::path srcroot = ULDUM_SOURCE_DIR;
+    std::string binds  = slurp(srcroot / "src" / "script" / "script.cpp");
+    std::string consts = slurp(srcroot / "engine" / "scripts" / "constants.lua");
+    if (binds.empty()) {
+        out.push_back(std::format("All {} script(s) parse. (undefined-global check skipped: engine source not found)", scripts.size()));
+        return out;
+    }
+    script::GlobalSet known = script::extract_known_globals(binds, consts);
+    // Engine libs share the same global env, so globals they define are callable.
+    // Add them to the project set (excluding api.lua — doc stubs, not runtime).
+    std::vector<script::NamedSource> project = scripts;
+    fs::path libdir = srcroot / "engine" / "scripts";
+    for (auto it = fs::recursive_directory_iterator(libdir, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file() || it->path().extension() != ".lua") continue;
+        if (it->path().filename() == "api.lua") continue;
+        project.push_back({it->path().filename().string(), slurp(it->path())});
+    }
+    auto undefined = script::check_globals_project(project, known);
+    // Only surface flags in MAP scripts (relative paths); engine libs are trusted.
+    std::erase_if(undefined, [](const script::UndefinedGlobal& u) {
+        return u.chunk.find('/') == std::string::npos &&
+               u.chunk.find('\\') == std::string::npos;
+    });
+    if (undefined.empty()) {
+        out.push_back(std::format("All {} script(s) OK — no syntax errors, no undefined globals.", scripts.size()));
+    } else {
+        for (const auto& u : undefined)
+            out.push_back(std::format("[global] {}:{}:{}: undefined global '{}'", u.chunk, u.line, u.column, u.name));
     }
 #else
-    tier2_note = "(undefined-global check unavailable in this build)";
+    out.push_back(std::format("All {} script(s) parse. (undefined-global check unavailable in this build)", scripts.size()));
 #endif
-
-    if (undefined.empty()) {
-        std::string ok = "All " + std::to_string(scripts.size()) +
-                         " script(s) OK — no syntax errors, no undefined globals.";
-        if (!tier2_note.empty()) ok += " " + tier2_note;
-        m_script_check_results.push_back(ok);
-        log::info(TAG, "Script validation: {} script(s) clean {}", scripts.size(), tier2_note);
-    } else {
-        for (const auto& u : undefined) {
-            std::string line = u.chunk + ":" + std::to_string(u.line) + ":" +
-                               std::to_string(u.column) + ": undefined global '" + u.name + "'";
-            m_script_check_results.push_back("[global] " + line);
-            log::error(TAG, "Script undefined global: {}", line);
-        }
-    }
-    m_script_check_open = true;
+    return out;
 }
 
 // Win32 folder picker
@@ -2567,10 +2565,6 @@ void Editor::draw_ui() {
                 }
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Validate Scripts", nullptr, false, m_map_loaded)) {
-                validate_scripts();
-            }
-            ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 PostQuitMessage(0);
             }
@@ -2604,21 +2598,6 @@ void Editor::draw_ui() {
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
-    }
-
-    // Script-validation results popup (opened by File → Validate Scripts).
-    if (m_script_check_open) {
-        ImGui::OpenPopup("Script Validation");
-        m_script_check_open = false;
-    }
-    if (ImGui::BeginPopupModal("Script Validation", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        for (const auto& line : m_script_check_results) {
-            ImGui::TextUnformatted(line.c_str());
-        }
-        ImGui::Separator();
-        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
     }
 
     // Scene window
@@ -2753,7 +2732,7 @@ void Editor::draw_ui() {
     ImGui::End();
     } // if (m_show_info)
 
-    if (m_show_assets) m_assets.draw(asset_ctx(), &m_show_assets);
+    if (m_show_assets) m_files.draw(file_ctx(), &m_show_assets);
 
     draw_import_dialog();
 }
@@ -3184,7 +3163,7 @@ void Editor::shutdown() {
 
     // Release asset-preview GPU resources first — RemoveTexture + destroy_texture
     // need the ImGui backend and RHI still alive.
-    m_assets.release_all(asset_ctx());
+    m_files.release_all(file_ctx());
 
     shutdown_imgui();
     m_map.shutdown();

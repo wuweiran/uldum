@@ -754,7 +754,7 @@ A map maker building a real game has no way to see or vet the assets their map d
 
 **Phase 27a — Map Explorer.** A file explorer over the map package, showing every file in the map's own on-disk folder structure — browsable the way the maker organized it, not sorted into engine buckets. It behaves as an asset manager: only asset files (models, textures, sounds) can be imported, renamed, or deleted; scripts, data, and terrain files are visible but never mutated, so a maker can't accidentally delete a Lua file here. Management applies to source-folder maps only, and a rename or delete warns when it would break a path the map still references.
 
-**Phase 27b — Asset inspection (read-only).** Selecting a file inspects it without altering the map: a texture shows as an image, a sound plays on demand, and a model reports its factual makeup (meshes, vertices, bones, animation clips, materials) plus any warnings the engine's loader would raise.
+**Phase 27b — File inspection (read-only).** Selecting a file inspects it in the way that suits its kind, without altering the map: a texture shows as an image, a sound plays on demand, a model reports its factual makeup (meshes, vertices, bones, animation clips, materials) plus any warnings the engine's loader raises, and a script is validated. This folds the editor's standalone script validation into the explorer.
 
 **Phase 27c — Model viewer.** A dedicated, isolated 3D view of a selected model — orbit to inspect it as the engine renders it. Deferred to its own phase because it needs a separate offscreen render path rather than the live scene renderer.
 

@@ -2,7 +2,7 @@ add_executable(uldum_editor
     main.cpp
     editor.cpp
     editor_overlays.cpp
-    asset_panel.cpp
+    file_explorer.cpp
 )
 
 target_include_directories(uldum_editor PRIVATE ${ULDUM_SRC})

@@ -17,6 +17,18 @@
 
 namespace uldum::asset {
 
+// Non-fatal warnings for the current load go both to the log and, when the
+// caller opts in, to a sink it owns — keeping diagnostics out of ModelData
+// (a runtime struct). thread_local: loading is single-threaded per thread.
+static thread_local std::vector<std::string>* g_warn_sink = nullptr;
+
+template <typename... Args>
+static void model_warn(std::format_string<Args...> fmt, Args&&... args) {
+    std::string msg = std::format(fmt, std::forward<Args>(args)...);
+    log::warn("Asset", "{}", msg);
+    if (g_warn_sink) g_warn_sink->push_back(std::move(msg));
+}
+
 static glm::vec3 read_vec3(const cgltf_accessor* acc, cgltf_size index) {
     glm::vec3 v{0.0f};
     cgltf_accessor_read_float(acc, index, &v.x, 3);
@@ -126,7 +138,7 @@ static void extract_animations(const cgltf_data* data, const NodeToBoneMap& node
 
             if (!warned_interp &&
                 sampler.interpolation != cgltf_interpolation_type_linear) {
-                log::warn("Asset", "Animation '{}' uses {} interpolation; the engine plays all channels as linear.",
+                model_warn("Animation '{}' uses {} interpolation; the engine plays all channels as linear.",
                           clip.name,
                           sampler.interpolation == cgltf_interpolation_type_step ? "STEP" : "CUBICSPLINE");
                 warned_interp = true;
@@ -218,7 +230,7 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
                 if (result) {
                     textures.push_back(std::move(*result));
                 } else {
-                    log::warn("Asset", "Model '{}': embedded KTX2 image {} failed to decode: {}",
+                    model_warn("Model '{}': embedded KTX2 image {} failed to decode: {}",
                               model_path, static_cast<u32>(i), result.error());
                 }
                 continue;
@@ -227,7 +239,7 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
             int w = 0, h = 0, channels = 0;
             u8* pixels = stbi_load_from_memory(buf, len, &w, &h, &channels, 4);
             if (!pixels) {
-                log::warn("Asset", "Model '{}': embedded image {} failed to decode (unsupported format? mime '{}', size {} bytes)",
+                model_warn("Model '{}': embedded image {} failed to decode (unsupported format? mime '{}', size {} bytes)",
                           model_path, static_cast<u32>(i),
                           img.mime_type ? img.mime_type : "?", len);
                 continue;
@@ -252,7 +264,7 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
                 if (result) {
                     textures.push_back(std::move(*result));
                 } else {
-                    log::warn("Asset", "Model '{}': external KTX2 image '{}' failed to load: {}",
+                    model_warn("Model '{}': external KTX2 image '{}' failed to load: {}",
                               model_path, img.uri, result.error());
                 }
                 continue;
@@ -261,7 +273,7 @@ static void extract_textures(const cgltf_data* data, std::string_view model_path
             int w = 0, h = 0, channels = 0;
             u8* pixels = stbi_load(img_str.c_str(), &w, &h, &channels, 4);
             if (!pixels) {
-                log::warn("Asset", "Model '{}': external image '{}' failed to load (missing? unsupported format?)",
+                model_warn("Model '{}': external image '{}' failed to load (missing? unsupported format?)",
                           model_path, img.uri);
                 continue;
             }
@@ -316,7 +328,7 @@ static void extract_materials(const cgltf_data* data,
                 // BLEND primitives degrade to Opaque (and emit a warning
                 // so authors notice rather than silently lose transparency).
                 dst.alpha_mode = AlphaMode::Opaque;
-                log::warn("Asset", "Model '{}': material '{}' uses alphaMode=BLEND; "
+                model_warn("Model '{}': material '{}' uses alphaMode=BLEND; "
                                    "rendering as Opaque until sorted transparent pass lands.",
                           model_path, src.name ? src.name : "?");
                 break;
@@ -331,7 +343,13 @@ static void extract_materials(const cgltf_data* data,
 
 static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* data, std::string_view path);
 
-std::expected<ModelData, std::string> load_model_from_memory(const u8* data_bytes, u32 size, std::string_view source_path) {
+std::expected<ModelData, std::string> load_model_from_memory(const u8* data_bytes, u32 size, std::string_view source_path,
+                                                             std::vector<std::string>* out_warnings) {
+    // Route model_warn(...) into the caller's sink for this load. RAII-restored.
+    std::vector<std::string>* prev = g_warn_sink;
+    g_warn_sink = out_warnings;
+    struct SinkGuard { std::vector<std::string>* p; ~SinkGuard() { g_warn_sink = p; } } guard{prev};
+
     cgltf_options options{};
     cgltf_data* data = nullptr;
 
@@ -380,13 +398,13 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
             return std::unexpected(std::format("glTF '{}': skin has no joints", path_str));
         }
         if (data->skins_count > 1) {
-            log::warn("Asset", "Model '{}' has {} skins; using skins[0] and ignoring the rest.",
+            model_warn("Model '{}' has {} skins; using skins[0] and ignoring the rest.",
                       path_str, static_cast<u32>(data->skins_count));
         }
         extract_skeleton(data->skins[0], model.skeleton, node_to_bone);
         extract_animations(data, node_to_bone, model.animations);
     } else if (data->animations_count > 0) {
-        log::warn("Asset", "Model '{}' has {} animation(s) but no skin — node-level animations are not extracted; re-author with an Armature + skinned mesh.",
+        model_warn("Model '{}' has {} animation(s) but no skin — node-level animations are not extracted; re-author with an Armature + skinned mesh.",
                   path_str, static_cast<u32>(data->animations_count));
     }
 
@@ -442,7 +460,7 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
         for (cgltf_size pi = 0; pi < mesh.primitives_count; ++pi) {
             const cgltf_primitive& prim = mesh.primitives[pi];
             if (prim.type != cgltf_primitive_type_triangles) {
-                log::warn("Asset", "Model '{}': mesh '{}' primitive {} is non-triangles (type {}) — skipping; engine only renders triangles.",
+                model_warn("Model '{}': mesh '{}' primitive {} is non-triangles (type {}) — skipping; engine only renders triangles.",
                           path_str, mesh.name ? mesh.name : "?", static_cast<u32>(pi),
                           static_cast<int>(prim.type));
                 continue;
@@ -470,11 +488,11 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
                 }
             }
             if (extra_uv_sets > 0) {
-                log::warn("Asset", "Model '{}': mesh '{}' has {} additional UV set(s); only TEXCOORD_0 is used.",
+                model_warn("Model '{}': mesh '{}' has {} additional UV set(s); only TEXCOORD_0 is used.",
                           path_str, mesh.name ? mesh.name : "?", extra_uv_sets);
             }
             if (extra_joint_sets > 0) {
-                log::warn("Asset", "Model '{}': mesh '{}' has {} additional JOINTS_n set(s); only JOINTS_0 / WEIGHTS_0 (4 influences) are used.",
+                model_warn("Model '{}': mesh '{}' has {} additional JOINTS_n set(s); only JOINTS_0 / WEIGHTS_0 (4 influences) are used.",
                           path_str, mesh.name ? mesh.name : "?", extra_joint_sets);
             }
 
