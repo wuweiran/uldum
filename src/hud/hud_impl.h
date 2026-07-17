@@ -115,6 +115,13 @@ struct Hud::Impl {
         // origin updates accordingly).
         simulation::Unit caster{};
         f32          caster_x = 0, caster_y = 0, caster_z = 0;
+        // Caster position frozen at press. When world_anchored (RTS
+        // preset), the drag point is derived from this fixed origin so
+        // the destination stays on the world spot the player aimed at,
+        // even as the caster walks. Action preset leaves world_anchored
+        // false → the drag point follows the live caster (hero-centric).
+        f32          press_caster_x = 0, press_caster_y = 0, press_caster_z = 0;
+        bool         world_anchored = false;
         // Drag point in world space, recomputed each frame.
         f32          drag_world_x = 0, drag_world_y = 0, drag_world_z = 0;
         // Ability snapshotted on press (id + range + form). Snapshot

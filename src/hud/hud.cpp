@@ -1650,8 +1650,13 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     glm::vec3 forward{-syaw, cyaw, 0.0f};
     f32 ddx = px - s.drag_cast.press_x;
     f32 ddy = py - s.drag_cast.press_y;
-    glm::vec3 caster{s.drag_cast.caster_x, s.drag_cast.caster_y, s.drag_cast.caster_z};
-    glm::vec3 drag = caster + right * (ddx * SENS) - forward * (ddy * SENS);
+    // World-anchored (RTS): derive the drag point from the caster's position
+    // AT PRESS, so the destination stays put as the unit walks. Action preset
+    // uses the live caster so the aim follows the hero.
+    glm::vec3 origin = s.drag_cast.world_anchored
+        ? glm::vec3{s.drag_cast.press_caster_x, s.drag_cast.press_caster_y, s.drag_cast.press_caster_z}
+        : glm::vec3{s.drag_cast.caster_x, s.drag_cast.caster_y, s.drag_cast.caster_z};
+    glm::vec3 drag = origin + right * (ddx * SENS) - forward * (ddy * SENS);
     if (s.world_ctx->terrain) {
         drag.z = map::sample_height(*s.world_ctx->terrain, drag.x, drag.y);
     }
@@ -2785,6 +2790,10 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.caster_x    = tf->position.x;
                         s.drag_cast.caster_y    = tf->position.y;
                         s.drag_cast.caster_z    = tf->position.z;
+                        s.drag_cast.press_caster_x = tf->position.x;
+                        s.drag_cast.press_caster_y = tf->position.y;
+                        s.drag_cast.press_caster_z = tf->position.z;
+                        s.drag_cast.world_anchored = (s.preset != "action");
                         s.drag_cast.drag_world_x = tf->position.x;
                         s.drag_cast.drag_world_y = tf->position.y;
                         s.drag_cast.drag_world_z = tf->position.z;
@@ -2839,6 +2848,10 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.caster_x    = tf->position.x;
                         s.drag_cast.caster_y    = tf->position.y;
                         s.drag_cast.caster_z    = tf->position.z;
+                        s.drag_cast.press_caster_x = tf->position.x;
+                        s.drag_cast.press_caster_y = tf->position.y;
+                        s.drag_cast.press_caster_z = tf->position.z;
+                        s.drag_cast.world_anchored = (s.preset != "action");
                         s.drag_cast.drag_world_x = tf->position.x;
                         s.drag_cast.drag_world_y = tf->position.y;
                         s.drag_cast.drag_world_z = tf->position.z;
@@ -2953,6 +2966,10 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.caster_x    = tf->position.x;
                         s.drag_cast.caster_y    = tf->position.y;
                         s.drag_cast.caster_z    = tf->position.z;
+                        s.drag_cast.press_caster_x = tf->position.x;
+                        s.drag_cast.press_caster_y = tf->position.y;
+                        s.drag_cast.press_caster_z = tf->position.z;
+                        s.drag_cast.world_anchored = (s.preset != "action");
                         s.drag_cast.drag_world_x = tf->position.x;
                         s.drag_cast.drag_world_y = tf->position.y;
                         s.drag_cast.drag_world_z = tf->position.z;
