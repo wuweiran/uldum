@@ -1247,12 +1247,34 @@ void Hud::command_bar_set_armed_command(std::string_view command_id) {
 
 // Return the command-bar slot index under (x, y), or -1 if none.
 // Mirrors action_bar_hit_test — same shape, different struct.
+bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
+    if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) return false;
+    const auto& sel = s.world_ctx->selection->selected();
+    if (sel.empty()) return false;
+    const simulation::World& world = *s.world_ctx->world;
+    simulation::Unit lead = sel.front();
+    const auto* own = world.owners.get(lead.id);
+    if (!own || own->id != s.world_ctx->local_player.id) return false;
+
+    const auto* mv  = world.movements.get(lead.id);
+    bool can_move   = mv && mv->speed > 0.0f;
+    bool can_attack = world.combats.get(lead.id) != nullptr;
+
+    if (command == "attack")        return can_attack;
+    if (command == "attack_move")   return can_attack && can_move;
+    if (command == "move" ||
+        command == "patrol" ||
+        command == "hold_position") return can_move;
+    if (command == "stop")          return can_move || can_attack;
+    return true;   // unknown / map-custom command — leave it to the map author
+}
+
 static i32 command_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     const auto& cfg = s.command_bar_cfg;
     if (!cfg.enabled || !s.command_bar_rt.visible) return -1;
     for (u32 i = 0; i < cfg.slots.size(); ++i) {
         const auto& slot = cfg.slots[i];
-        if (!slot.visible) continue;
+        if (!slot.visible || !command_bar_slot_applies(s, slot.command)) continue;
         const Rect& r = slot.rect;
         if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
             return static_cast<i32>(i);
@@ -2279,6 +2301,7 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
         if (cfg.enabled && s.command_bar_rt.visible && s.command_bar_fn) {
             for (auto& slot : cfg.slots) {
                 if (!slot.visible || slot.hotkey.empty() || slot.command.empty()) continue;
+                if (!command_bar_slot_applies(s, slot.command)) continue;
                 bool down   = input::InputBindings::resolve_key(slot.hotkey, input);
                 bool rising = down && !slot.hotkey_prev_down;
                 slot.hotkey_prev_down = down;

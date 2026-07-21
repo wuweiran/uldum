@@ -305,4 +305,13 @@ inline bool is_castable_form(simulation::AbilityForm f) {
     return f == F::Instant || f == F::Target;
 }
 
+// WC3-style command card. The bar always draws; each slot self-gates on
+// `command_bar_slot_applies`. It's false when the selection isn't a unit the
+// local player owns, or when the lead unit lacks the capability the command
+// needs (move/patrol/hold need locomotion, attack needs a weapon) — such
+// slots render as an empty frame with no icon and can't be clicked. Defined
+// in hud.cpp (has the sim includes); shared by the input-side hit-test and
+// the renderer so shown ⇔ clickable stay in lockstep.
+bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command);
+
 } // namespace uldum::hud

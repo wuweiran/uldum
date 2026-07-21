@@ -711,14 +711,6 @@ static bool inventory_resolve_slot(const Hud::Impl& s,
     return true;
 }
 
-static bool command_bar_slots_active(const Hud::Impl& s) {
-    if (!s.world_ctx || !s.world_ctx->selection ||
-        s.world_ctx->selection->selected().empty()) return false;
-    u32 lead = s.world_ctx->selection->selected().front().id;
-    const auto* own = s.world_ctx->world ? s.world_ctx->world->owners.get(lead) : nullptr;
-    return own && own->id == s.world_ctx->local_player.id;
-}
-
 // ── Inline draw primitive impls used by composite helpers below ──────────
 // These mirror HudRenderer::draw_rect / draw_image / draw_text but take
 // the renderer Impl directly so composite helpers can call them without
@@ -1179,14 +1171,14 @@ static void draw_action_bar(HudRenderer::Impl& r, Hud::Impl& s) {
 static void draw_command_bar_round(HudRenderer::Impl& r, Hud::Impl& s) {
     const auto& cfg = s.command_bar_cfg;
 
-    bool slots_active = command_bar_slots_active(s);
     const std::string& armed = s.command_bar_armed_command;
     auto now = std::chrono::steady_clock::now();
 
     for (const auto& slot : cfg.slots) {
         if (!slot.visible) continue;
-        bool is_armed = slots_active && (!armed.empty() && slot.command == armed);
-        bool press_visual = slot.pressed || now < slot.press_pulse_until;
+        bool applies = command_bar_slot_applies(s, slot.command);
+        bool is_armed = applies && !armed.empty() && slot.command == armed;
+        bool press_visual = applies && (slot.pressed || now < slot.press_pulse_until);
 
         f32 cx = slot.rect.x + slot.rect.w * 0.5f;
         f32 cy = slot.rect.y + slot.rect.h * 0.5f;
@@ -1194,12 +1186,12 @@ static void draw_command_bar_round(HudRenderer::Impl& r, Hud::Impl& s) {
         if (button_r <= 0.0f) button_r = std::min(slot.rect.w, slot.rect.h) * 0.5f;
 
         Color bg = slot.style.bg;
-        if (slots_active && press_visual)      bg = slot.style.press_bg;
-        else if (is_armed)                     bg = slot.style.press_bg;
-        else if (slots_active && slot.hovered) bg = slot.style.hover_bg;
+        if (press_visual)              bg = slot.style.press_bg;
+        else if (is_armed)             bg = slot.style.press_bg;
+        else if (applies && slot.hovered) bg = slot.style.hover_bg;
         draw_disc(r, cx, cy, button_r, bg);
 
-        if (slots_active && !slot.icon.empty()) {
+        if (applies && !slot.icon.empty()) {
             emit_image_disc(r, cx, cy, button_r, slot.icon, rgba(255, 255, 255, 255));
         }
 
@@ -1214,7 +1206,7 @@ static void draw_command_bar_round(HudRenderer::Impl& r, Hud::Impl& s) {
             draw_ring_arc(r, cx, cy, r_outer, button_r, 0.0f, 6.2831853f, border_color);
         }
 
-        if (slots_active && !slot.hotkey.empty()) {
+        if (applies && !slot.hotkey.empty()) {
             f32 px_size = button_r * 0.45f;
             if (px_size < 10.0f) px_size = 10.0f;
             f32 text_w = measure_text(r, slot.hotkey, px_size);
@@ -1245,23 +1237,23 @@ static void draw_command_bar(HudRenderer::Impl& r, Hud::Impl& s) {
         return;
     }
 
-    bool slots_active = command_bar_slots_active(s);
     const std::string& armed = s.command_bar_armed_command;
 
     for (const auto& slot : cfg.slots) {
         if (!slot.visible) continue;
-        bool is_armed = slots_active && (!armed.empty() && slot.command == armed);
+        bool applies = command_bar_slot_applies(s, slot.command);
+        bool is_armed = applies && !armed.empty() && slot.command == armed;
 
         Color bg = slot.style.bg;
-        if (slots_active && slot.pressed)      bg = slot.style.press_bg;
-        else if (is_armed)                     bg = slot.style.press_bg;
-        else if (slots_active && slot.hovered) bg = slot.style.hover_bg;
+        if (applies && slot.pressed)      bg = slot.style.press_bg;
+        else if (is_armed)                bg = slot.style.press_bg;
+        else if (applies && slot.hovered) bg = slot.style.hover_bg;
         emit_rect(r, slot.rect, bg);
 
         f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
         Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
                         slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
-        if (slots_active && !slot.icon.empty()) {
+        if (applies && !slot.icon.empty()) {
             emit_image(r, icon_rect, slot.icon, rgba(255, 255, 255, 255));
         }
 
@@ -1279,7 +1271,7 @@ static void draw_command_bar(HudRenderer::Impl& r, Hud::Impl& s) {
             emit_rect(r, { rc.x + rc.w - border_w, rc.y, border_w, rc.h }, border_color);
         }
 
-        if (slots_active && !slot.hotkey.empty()) {
+        if (applies && !slot.hotkey.empty()) {
             f32 px_size = slot.rect.h * 0.28f;
             if (px_size < 10.0f) px_size = 10.0f;
             f32 text_w = measure_text(r, slot.hotkey, px_size);
