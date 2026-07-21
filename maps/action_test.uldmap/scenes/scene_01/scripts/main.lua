@@ -19,6 +19,7 @@ function main()
     register_hit_vfx()
     register_death_vfx()
     register_damage_text()
+    register_rune_system()
 
     -- Find the preplaced Paladin. The scene places exactly one unit for
     -- player 0; GetUnitsInRange is fine for such a small set.
@@ -94,6 +95,8 @@ function main()
     ActionBarSetSlot(1, "holy_light")
     ActionBarSetSlot(2, "consecration")
 
+    -- One rune_book seeded next to the hero so the pickup path is testable
+    -- without waiting on a creep drop. Creeps drop more via register_rune_system.
     local hero_x = GetUnitX(paladin)
     local hero_y = GetUnitY(paladin)
     CreateItem("rune_book", hero_x + 50, hero_y + 60)
@@ -126,4 +129,58 @@ function main()
     end)
 
     Log("[Action] Setup complete — use WASD to move, left-click to attack, Q for Holy Light")
+end
+
+-- Rune system: enemies have a 1-in-3 chance to drop a rune_book on death.
+-- Picking one up rolls a random permanent stat bump and shows a matching
+-- VFX pair (a burst where the book shatters + an aura over the hero). Each
+-- rune keys a distinct colour so the player reads the reward at a glance.
+--
+-- These are permanent, same-source bumps, so they go through the base layer
+-- directly (read-modify-write on GetUnitBaseAttribute → SetUnitBaseAttribute)
+-- rather than stacking an ability instance per pickup. Eating 100 books is
+-- then one number, not 100 AbilityInstances the tick loop walks forever.
+-- (An ability would be the right call instead if these needed to expire or
+-- be strippable — the base layer is for the sticky part.)
+local RUNES = {
+    { attr = "armor",      delta = 1,  burst = "rune_armor_burst", aura = "rune_armor_aura" },
+    { attr = "move_speed", delta = 3, burst = "rune_swift_burst", aura = "rune_swift_aura" },
+    { attr = "damage",     delta = 2,  burst = "rune_might_burst", aura = "rune_might_aura" },
+}
+
+function register_rune_system()
+    -- Drop: 1-in-3 per creep death, spawned where the corpse fell.
+    local drop_trig = CreateTrigger()
+    TriggerRegisterEvent(drop_trig, EVENT_GLOBAL_DEATH)
+    TriggerAddCondition(drop_trig, function()
+        local unit = GetTriggerUnit()
+        return unit and GetUnitTypeId(unit) == "creep" and RandomInt(1, 3) == 1
+    end)
+    TriggerAddAction(drop_trig, function()
+        local unit = GetTriggerUnit()
+        CreateItem("rune_book", GetUnitX(unit), GetUnitY(unit))
+    end)
+
+    -- Pickup: pick a random rune, bump its base stat, shatter + aura VFX.
+    local pickup_trig = CreateTrigger()
+    TriggerRegisterEvent(pickup_trig, EVENT_GLOBAL_ITEM_PICKED_UP)
+    TriggerAddCondition(pickup_trig, function()
+        local item = GetTriggerItem()
+        return item and GetItemTypeId(item) == "rune_book"
+    end)
+    TriggerAddAction(pickup_trig, function()
+        local hero = GetTriggerUnit()
+        local item = GetTriggerItem()
+        if not (hero and item) then return end
+
+        local rune = RUNES[RandomInt(1, #RUNES)]
+        SetUnitBaseAttribute(hero, rune.attr,
+            GetUnitBaseAttribute(hero, rune.attr) + rune.delta)
+
+        local ix, iy, iz = GetItemPosition(item)
+        PlayEffect(rune.burst, ix, iy, iz)
+        PlayEffectOnUnit(rune.aura, hero, "overhead")
+    end)
+
+    Log("[Action] Rune system active — creeps drop rune_book (1/3)")
 end

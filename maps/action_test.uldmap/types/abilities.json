@@ -22,14 +22,6 @@
             { "modifiers": { "armor": 4.5 } }
         ]
     },
-    "item_armor_bonus": {
-        "name": "Armor Bonus",
-        "form": "passive",
-        "stackable": true,
-        "levels": [
-            { "modifiers": { "armor": 5 } }
-        ]
-    },
     "holy_light": {
         "name": "Holy Light",
         "icon": "textures/icons/holy_light.ktx2",
