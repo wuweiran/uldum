@@ -259,10 +259,6 @@ void Hud::reset_scene_state() {
     s.inventory_pressed_slot     = -1;
     s.pickup_bar_hover_slot      = -1;
     s.pickup_bar_pressed_slot    = -1;
-    s.pickup_bar_debug_bits      = UINT32_MAX;
-    s.pickup_bar_debug_unit      = UINT32_MAX;
-    s.pickup_bar_debug_items     = UINT32_MAX;
-    s.pickup_bar_debug_entries   = UINT32_MAX;
     s.pickup_bar_rt.entries.clear();
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
@@ -305,10 +301,6 @@ void Hud::reset_session_state() {
     s.inventory_pressed_slot     = -1;
     s.pickup_bar_hover_slot      = -1;
     s.pickup_bar_pressed_slot    = -1;
-    s.pickup_bar_debug_bits      = UINT32_MAX;
-    s.pickup_bar_debug_unit      = UINT32_MAX;
-    s.pickup_bar_debug_items     = UINT32_MAX;
-    s.pickup_bar_debug_entries   = UINT32_MAX;
     s.pickup_bar_rt.entries.clear();
     s.focus_target_unit          = simulation::Unit{};
     s.focus_manual               = false;
@@ -996,22 +988,6 @@ void Hud::pickup_bar_update() {
     auto& s = *m_impl;
     std::vector<PickupBarEntry> next;
 
-    auto report_debug = [&](u32 bits, u32 unit_id, u32 item_count, u32 entry_count) {
-        if (bits == s.pickup_bar_debug_bits && unit_id == s.pickup_bar_debug_unit &&
-            item_count == s.pickup_bar_debug_items &&
-            entry_count == s.pickup_bar_debug_entries) return;
-        s.pickup_bar_debug_bits = bits;
-        s.pickup_bar_debug_unit = unit_id;
-        s.pickup_bar_debug_items = item_count;
-        s.pickup_bar_debug_entries = entry_count;
-        log::info(TAG, "pickup_bar: mobile={} enabled={} visible={} slots={} selected={} "
-                       "owned={} inventory={} free_slot={} world_items={} nearby={} unit={}",
-                  (bits & 1u) != 0, (bits & 2u) != 0, (bits & 4u) != 0,
-                  s.pickup_bar_cfg.slots.size(), (bits & 8u) != 0,
-                  (bits & 16u) != 0, (bits & 32u) != 0, (bits & 64u) != 0,
-                  item_count, entry_count, unit_id);
-    };
-
     const auto clear_interaction = [&]() {
         for (auto& slot : s.pickup_bar_cfg.slots) {
             slot.hovered = false;
@@ -1025,20 +1001,13 @@ void Hud::pickup_bar_update() {
     };
 
     const auto& cfg = s.pickup_bar_cfg;
-    u32 debug_bits = 0;
-    if (s.is_mobile) debug_bits |= 1u;
-    if (cfg.enabled) debug_bits |= 2u;
-    if (s.pickup_bar_rt.visible) debug_bits |= 4u;
     if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) {
-        report_debug(debug_bits, UINT32_MAX, 0, 0);
         if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
         s.pickup_bar_rt.entries.clear();
         return;
     }
     const auto& world = *s.world_ctx->world;
-    const u32 world_item_count = world.item_infos.count();
     if (!s.is_mobile || !cfg.enabled || !s.pickup_bar_rt.visible || cfg.slots.empty()) {
-        report_debug(debug_bits, UINT32_MAX, world_item_count, 0);
         if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
         s.pickup_bar_rt.entries.clear();
         return;
@@ -1048,21 +1017,17 @@ void Hud::pickup_bar_update() {
 
     const auto& selected = s.world_ctx->selection->selected();
     if (selected.empty()) {
-        report_debug(debug_bits, UINT32_MAX, world_item_count, 0);
         if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
         s.pickup_bar_rt.entries.clear();
         return;
     }
-    debug_bits |= 8u;
 
     simulation::Unit unit = selected.front();
     const auto* owner = world.owners.get(unit.id);
     const auto* unit_tf = world.transforms.get(unit.id);
     const auto* inventory = world.inventories.get(unit.id);
-    if (owner && owner->id == s.world_ctx->local_player.id) debug_bits |= 16u;
-    if (inventory) debug_bits |= 32u;
-    if (!world.contains(unit) || !(debug_bits & 16u) || !unit_tf || !inventory) {
-        report_debug(debug_bits, unit.id, world_item_count, 0);
+    bool owned = owner && owner->id == s.world_ctx->local_player.id;
+    if (!world.contains(unit) || !owned || !unit_tf || !inventory) {
         if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
         s.pickup_bar_rt.entries.clear();
         return;
@@ -1075,9 +1040,7 @@ void Hud::pickup_bar_update() {
             break;
         }
     }
-    if (has_free_slot) debug_bits |= 64u;
     if (!has_free_slot) {
-        report_debug(debug_bits, unit.id, world_item_count, 0);
         if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
         s.pickup_bar_rt.entries.clear();
         return;
@@ -1117,8 +1080,6 @@ void Hud::pickup_bar_update() {
 
     if (next != s.pickup_bar_rt.entries) clear_interaction();
     s.pickup_bar_rt.entries = std::move(next);
-    report_debug(debug_bits, unit.id, world_item_count,
-                 static_cast<u32>(s.pickup_bar_rt.entries.size()));
 }
 
 // ── Display-message composite ────────────────────────────────────────────

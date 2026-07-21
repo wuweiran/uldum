@@ -149,8 +149,6 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
             def.levels.push_back({});
         }
 
-        log::trace(TAG, "Registered ability '{}' (form={}, levels={})",
-                   def.id, val.value("form", "passive"), def.levels.size());
         m_defs[key] = std::move(def);
 
         // Cache string-typed top-level fields for i18n raw fallback.

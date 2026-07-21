@@ -172,8 +172,6 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     }
 
     Unit unit{h.id};
-
-    log::trace(TAG, "Created unit '{}' (id={}, owner={})", type_id, id, owner.id);
     return unit;
 }
 
@@ -217,8 +215,6 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
     // a missing Movement gracefully (target_radius 0, layer defaults Ground).
 
     Destructable d{h.id};
-
-    log::trace(TAG, "Created destructable '{}' (id={})", type_id, id);
     return d;
 }
 
@@ -268,8 +264,6 @@ Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 f
     }
 
     Doodad d{h.id};
-
-    log::trace(TAG, "Created doodad '{}' (id={})", type_id, id);
     return d;
 }
 

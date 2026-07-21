@@ -204,10 +204,6 @@ struct Hud::Impl {
     PickupBarRuntime pickup_bar_rt{};
     i32 pickup_bar_hover_slot   = -1;
     i32 pickup_bar_pressed_slot = -1;
-    u32 pickup_bar_debug_bits   = UINT32_MAX;
-    u32 pickup_bar_debug_unit   = UINT32_MAX;
-    u32 pickup_bar_debug_items  = UINT32_MAX;
-    u32 pickup_bar_debug_entries = UINT32_MAX;
     Hud::PickupFn pickup_fn;
 
     // WC3-style item hold (desktop). Right-click on a slot lifts the

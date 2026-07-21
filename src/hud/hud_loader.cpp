@@ -627,9 +627,7 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         }
 
         if (auto pb = comps->find("pickup_bar"); pb != comps->end() && pb->is_object()) {
-            if (!hud.is_mobile()) {
-                log::info(TAG, "pickup_bar: skipped (non-mobile platform)");
-            } else {
+            if (hud.is_mobile()) {
                 PickupBarConfig cfg{};
                 cfg.enabled = true;
                 cfg.placement.anchor = parse_anchor(pb->value("anchor", "br"));
@@ -730,8 +728,6 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 }
 
                 hud.set_pickup_bar_config(cfg);
-                log::info(TAG, "pickup_bar: style={} entries={} radius {}", style_name,
-                          cfg.slots.size(), cfg.discovery_radius);
             }
         }
 
