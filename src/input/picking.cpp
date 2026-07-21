@@ -271,6 +271,7 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
 
         auto* info = handle_infos.get(id);
         if (!info || info->category != simulation::Category::Item) continue;
+        if (m_world->dead_states.has(id)) continue;
         // Skip items currently being carried (they're "inside" a unit).
         auto* car = carriables.get(id);
         if (car && simulation::is_non_null_handle(car->carried_by)) continue;

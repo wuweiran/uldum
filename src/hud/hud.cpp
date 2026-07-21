@@ -1055,6 +1055,7 @@ void Hud::pickup_bar_update() {
     for (u32 item_id : world.item_infos.ids()) {
         simulation::Item item{item_id};
         if (!world.contains(item)) continue;
+        if (world.dead_states.has(item_id)) continue;
         const auto* carriable = world.carriables.get(item_id);
         if (!carriable || simulation::is_non_null_handle(carriable->carried_by)) continue;
         const auto* item_tf = world.transforms.get(item_id);
