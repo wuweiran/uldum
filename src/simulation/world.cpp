@@ -1365,6 +1365,29 @@ void recalculate_modifiers(World& world, u32 id) {
         mov->speed = std::max(0.0f, (base_speed + fv) * (1.0f + pv));
     }
 
+    // Attack damage. Like move_speed, it lives on its own component
+    // (Combat), not in the attribute block, so it needs an explicit
+    // pass: rebuild from the type def's base and re-apply damage
+    // (additive) / damage_mult every recalc. Without this, a passive
+    // `modifiers: { damage: N }` writes into the attribute block's
+    // numeric map — which the attack path never reads — and the buff
+    // silently does nothing.
+    if (auto* combat = world.combats.get(id)) {
+        f32 base_damage = 0;
+        if (world.types) {
+            if (auto* info = world.handle_infos.get(id)) {
+                if (auto* def = world.types->get_unit_type(info->type_id)) {
+                    base_damage = def->damage;
+                }
+            }
+        }
+        auto fit = flat.find("damage");
+        auto pit = pct.find("damage");
+        f32 fv = (fit != flat.end()) ? fit->second : 0.0f;
+        f32 pv = (pit != pct.end())  ? pit->second  : 0.0f;
+        combat->damage = std::max(0.0f, (base_damage + fv) * (1.0f + pv));
+    }
+
     // Visual attributes (alpha, eventually scale / tint) live on
     // Renderable rather than the attribute block — the renderer reads
     // them every frame without an attribute lookup. Compose them here
