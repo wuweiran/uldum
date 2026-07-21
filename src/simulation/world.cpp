@@ -62,7 +62,7 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         return {};
     }
 
-    Handle h = world.handles.allocate();
+    Handle h = world.entities.allocate();
     u32 id = h.id;
 
     // All game objects
@@ -183,7 +183,7 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
         return {};
     }
 
-    Handle h = world.handles.allocate();
+    Handle h = world.entities.allocate();
     u32 id = h.id;
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
@@ -226,7 +226,7 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
         return {};
     }
 
-    Handle h = world.handles.allocate();
+    Handle h = world.entities.allocate();
     u32 id = h.id;
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, 0, def->model_scale, {x, y, 0.0f}, 0});
@@ -252,8 +252,8 @@ Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 f
         return {};
     }
 
-    Handle h = world.handles.allocate();
-    u32 id = h.id;
+    Entity e = world.entities.allocate();
+    u32 id = e.id;
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Doodad});
@@ -263,7 +263,7 @@ Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 f
         world.renderables.add(id, Renderable{def->models[idx], true});
     }
 
-    Doodad d{h.id};
+    Doodad d{e.id};
     return d;
 }
 

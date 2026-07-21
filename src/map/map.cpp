@@ -3,7 +3,7 @@
 #include "asset/asset.h"
 #include "simulation/simulation.h"
 #include "simulation/world.h"
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 #include "simulation/pathfinding.h"  // PATHING_SUBDIV
 #include "core/hash.h"
 #include "core/log.h"
@@ -732,7 +732,7 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
     u32 dood_count = 0;
     for (const auto& pd : m_scene.doodads) {
         auto dood = simulation::create_doodad(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
-        if (simulation::is_null_handle(dood)) continue;
+        if (simulation::is_null_entity(dood)) continue;
         if (auto* t = world.transforms.get(dood.id)) {
             t->position.z = sample_height(pd.x, pd.y);
             t->prev_position.z = t->position.z;

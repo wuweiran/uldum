@@ -1,6 +1,6 @@
 #pragma once
 
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>

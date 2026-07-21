@@ -957,8 +957,8 @@ struct World {
     SparseSet<DeadState>              dead_states;
     SparseSet<Renderable>             renderables;
 
-    HandleAllocator handles;
-    bool contains(Handle h) const;
+    EntityAllocator entities;
+    bool contains(Entity e) const;
 
     TypeRegistry* types;  // pointer, owned by Simulation
 };

@@ -8,7 +8,7 @@
 
 #include "core/types.h"
 #include "hud/hud.h"
-#include "simulation/handle_types.h"  // Player
+#include "simulation/entity_types.h"  // Player
 
 #include <glm/vec3.hpp>
 

@@ -1349,7 +1349,7 @@ void Editor::place_doodad_at(f32 wx, f32 wy) {
     auto dood = simulation::create_doodad(sim.world(), m_place_doodad_type,
                                            wx, wy, /*facing=*/0,
                                            m_place_doodad_var);
-    if (simulation::is_null_handle(dood)) return;
+    if (simulation::is_null_entity(dood)) return;
     if (auto* t = sim.world().transforms.get(dood.id)) {
         t->position.z = map::sample_height(td, wx, wy);
     }
@@ -1468,7 +1468,7 @@ void Editor::place_mode_on_delete() {
         simulation::destroy(world, m_selected_unit);
     } else if (simulation::is_non_null_handle(m_selected_item) && world.contains(m_selected_item)) {
         simulation::destroy(world, m_selected_item);
-    } else if (simulation::is_non_null_handle(m_selected_doodad) && world.contains(m_selected_doodad)) {
+    } else if (simulation::is_non_null_entity(m_selected_doodad) && world.contains(m_selected_doodad)) {
         simulation::destroy(world, m_selected_doodad);
     } else if (simulation::is_non_null_handle(m_selected_destructable) && world.contains(m_selected_destructable)) {
         simulation::destroy(world, m_selected_destructable);
@@ -1492,7 +1492,7 @@ void Editor::place_mode_draw_panel() {
         if      (simulation::is_non_null_handle(m_selected_unit))         { sel_id = m_selected_unit.id;         sel_cat = ObjectCategory::Unit; }
         else if (simulation::is_non_null_handle(m_selected_item))         { sel_id = m_selected_item.id;         sel_cat = ObjectCategory::Item; }
         else if (simulation::is_non_null_handle(m_selected_destructable)) { sel_id = m_selected_destructable.id; sel_cat = ObjectCategory::Destructable; }
-        else if (simulation::is_non_null_handle(m_selected_doodad))       { sel_id = m_selected_doodad.id;       sel_cat = ObjectCategory::Doodad; }
+        else if (simulation::is_non_null_entity(m_selected_doodad))       { sel_id = m_selected_doodad.id;       sel_cat = ObjectCategory::Doodad; }
     }
     bool has_selection = (sel_id != UINT32_MAX);
     ObjectCategory eff_cat = has_selection ? sel_cat : m_object_category;
@@ -2390,7 +2390,7 @@ void Editor::draw_overlays() {
         if      (simulation::is_non_null_handle(m_selected_unit))         sel_id = m_selected_unit.id;
         else if (simulation::is_non_null_handle(m_selected_item))         sel_id = m_selected_item.id;
         else if (simulation::is_non_null_handle(m_selected_destructable)) sel_id = m_selected_destructable.id;
-        else if (simulation::is_non_null_handle(m_selected_doodad))       sel_id = m_selected_doodad.id;
+        else if (simulation::is_non_null_entity(m_selected_doodad))       sel_id = m_selected_doodad.id;
         if (sel_id != UINT32_MAX) {
             const auto& world = m_simulation.world();
             const auto* t = world.transforms.get(sel_id);

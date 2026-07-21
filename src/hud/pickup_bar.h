@@ -3,7 +3,7 @@
 #include "core/types.h"
 #include "hud/hud.h"
 #include "hud/layout.h"
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 
 #include <vector>
 

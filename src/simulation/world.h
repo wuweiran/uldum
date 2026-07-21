@@ -1,7 +1,7 @@
 #pragma once
 
-#include "simulation/handle_types.h"
-#include "simulation/handle_allocator.h"
+#include "simulation/entity_types.h"
+#include "simulation/entity_allocator.h"
 #include "simulation/sparse_set.h"
 #include "simulation/components.h"
 #include "simulation/order.h"
@@ -71,8 +71,8 @@ struct World {
     std::unordered_map<u32, Region> regions;
     u32 next_region_id = 0;
 
-    // Handle allocator
-    HandleAllocator handles;
+    // Entity id allocator
+    EntityAllocator entities;
 
     // Optional predicate: "can the local viewer see world position (x, y)
     // right now?" Set by the host/single-player app from its Vision +

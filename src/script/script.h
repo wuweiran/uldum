@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/types.h"
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 
 #include <glm/vec3.hpp>
 #include <nlohmann/json.hpp>

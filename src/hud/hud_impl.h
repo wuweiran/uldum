@@ -21,7 +21,7 @@
 #include "hud/pickup_bar.h"
 #include "hud/display_message.h"
 #include "render/hud/world.h"           // WorldOverlayConfig (POD); WorldContext fwd
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 #include "simulation/ability_def.h"    // AbilityForm, IndicatorShape
 
 #include <nlohmann/json.hpp>

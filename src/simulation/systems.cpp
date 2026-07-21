@@ -671,7 +671,7 @@ Unit create_projectile(World& world, Unit source, const std::string& model, glm:
     if (!world.contains(source)) return Unit{};
     auto* src_t = world.transforms.get(source.id);
     if (!src_t) return Unit{};
-    Handle h = world.handles.allocate();
+    Handle h = world.entities.allocate();
     // Launch point: offset from the source in its facing frame, scaled by
     // the source's render scale so the authored (model-local) offset tracks
     // any model_scale. x=forward, y=lateral(right), z=height. Zero = feet.

@@ -3,7 +3,7 @@
 #include "network/protocol.h"
 #include "simulation/world.h"
 #include "simulation/vision.h"
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 #include "simulation/command.h"
 
 #include <glm/vec3.hpp>

@@ -1466,7 +1466,7 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
     // Skip if already exists
     if (world.handle_infos.has(entity_id)) return;
 
-    world.handles.reserve(entity_id);
+    world.entities.reserve(entity_id);
 
     // Projectiles take a minimal-components path — no Health, no Combat,
     // no Movement, no Owner, no Selectable. They render but don't

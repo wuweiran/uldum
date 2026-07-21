@@ -8,7 +8,7 @@
 #include "core/types.h"
 #include "hud/hud.h"
 #include "i18n/locale.h"
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 
 #include <glm/vec3.hpp>
 #include <string>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 #include "core/types.h"
 
 #include <array>

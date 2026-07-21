@@ -8,26 +8,47 @@
 
 namespace uldum::simulation {
 
-// Base handle — stable entity id shared by all game object types.
-struct Handle {
+// Entity — the stable ECS id shared by every game object. It's just the key
+// that joins an object's column-split components (transform, renderable, …)
+// across the World's sparse sets. This is the generic ECS identity, with no
+// gameplay or scripting meaning on its own.
+struct Entity {
     u32 id = UINT32_MAX;
 
-    bool operator==(const Handle&) const = default;
+    bool operator==(const Entity&) const = default;
 };
 
-inline bool is_null_handle(Handle handle) {
-    return handle.id == UINT32_MAX;
+// `Handle` is the SAME id, named for its gameplay/scripting role. In the WC3
+// sense a "handle" is a script-addressable object; the typed gameplay ids
+// below (Unit / Item / Destructable) are handles because they get Lua
+// usertypes. Decoration (Doodad) is an Entity but NOT a handle — it has no
+// script binding — so it derives straight from Entity to say so in the type.
+using Handle = Entity;
+
+inline bool is_null_entity(Entity e) {
+    return e.id == UINT32_MAX;
 }
 
-inline bool is_non_null_handle(Handle handle) {
-    return handle.id != UINT32_MAX;
+inline bool is_non_null_entity(Entity e) {
+    return e.id != UINT32_MAX;
 }
 
-// Typed handles — distinct types inheriting Handle's layout.
+// Gameplay-facing spelling of the same check, kept so the ~90 handle-oriented
+// call sites read in handle vocabulary.
+inline bool is_null_handle(Handle h) {
+    return is_null_entity(h);
+}
+
+inline bool is_non_null_handle(Handle h) {
+    return is_non_null_entity(h);
+}
+
+// Typed gameplay handles — script-addressable, so they carry Handle vocabulary.
 struct Unit         : Handle {};
 struct Destructable : Handle {};
 struct Item         : Handle {};
-struct Doodad       : Handle {};
+// Doodad is pure decoration with no script binding: an Entity, not a handle.
+struct Doodad       : Entity {};
 
 struct Player {
     u32 id = UINT32_MAX;

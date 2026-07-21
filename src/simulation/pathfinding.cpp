@@ -1,5 +1,5 @@
 #include "simulation/pathfinding.h"
-#include "simulation/handle_types.h"
+#include "simulation/entity_types.h"
 #include "simulation/world.h"
 #include "map/terrain_data.h"
 #include "core/log.h"

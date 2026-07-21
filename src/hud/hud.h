@@ -2,7 +2,7 @@
 
 #include "core/types.h"
 #include "i18n/locale.h"
-#include "simulation/handle_types.h"  // simulation::Unit
+#include "simulation/entity_types.h"  // simulation::Unit
 
 #include <glm/vec3.hpp>
 #include <nlohmann/json_fwd.hpp>
