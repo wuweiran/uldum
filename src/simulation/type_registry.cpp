@@ -263,22 +263,22 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
             def.pathing_footprint_h = fp->at(1).get<u32>();
         }
 
-        // Widget classifications for the attack handshake — same map-defined
-        // string tags units use. "tree" makes the destructable un-choppable by
-        // ordinary units (only tree-targeting attacks hit it); "structure" reads
-        // as building-like; omitted / anything else → debris (crate/barrel:
-        // ordinary units can smash). structure + debris are both default-hittable.
-        if (auto c = val.find("classifications"); c != val.end() && c->is_array()) {
+        // "Targeted As" — WC3's attack-handshake axis (how the destructable is
+        // hit). "tree" makes it un-choppable by ordinary units (only
+        // tree-targeting attacks hit it); "structure" reads as building-like;
+        // omitted / anything else → debris (crate/barrel: ordinary units can
+        // smash). structure + debris are both default-hittable.
+        if (auto c = val.find("targeted_as"); c != val.end() && c->is_array()) {
             for (auto& cid : *c) {
-                if (cid.is_string()) def.classifications.push_back(cid.get<std::string>());
+                if (cid.is_string()) def.targeted_as.push_back(cid.get<std::string>());
             }
         }
-        def.target_bit = widget_target_from_classifications(def.classifications);
+        def.target_bit = widget_target_from_targeted_as(def.targeted_as);
 
         // Selectable by left-click? WC3: trees aren't selectable; crates/other
-        // destructables are. Default follows the "tree" classification; an
-        // explicit "selectable" field overrides either way.
-        def.selectable = !has_classification(def.classifications, "tree");
+        // destructables are. Default follows the "tree" tag; an explicit
+        // "selectable" field overrides either way.
+        def.selectable = !has_classification(def.targeted_as, "tree");
         if (auto s = val.find("selectable"); s != val.end() && s->is_boolean()) {
             def.selectable = s->get<bool>();
         }
@@ -306,16 +306,16 @@ bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std:
         def.model_path      = val.value("model", "");
         def.model_scale     = val.value("model_scale", 1.0f);
         def.pickup_radius   = val.value("pickup_radius", 48.0f);
+        def.item_class      = parse_item_class(val.value("type", std::string("permanent")));
         def.initial_charges = val.value("initial_charges", 0);
         def.initial_level   = val.value("initial_level",   0);
+        if (def.item_class != ItemClass::Charged && def.initial_charges != 0) {
+            log::warn(TAG, "Item '{}': 'initial_charges' is only meaningful on type 'charged' — ignoring", key);
+            def.initial_charges = 0;
+        }
         if (auto a = val.find("abilities"); a != val.end() && a->is_array()) {
             for (auto& aid : *a) {
                 if (aid.is_string()) def.abilities.push_back(aid.get<std::string>());
-            }
-        }
-        if (auto c = val.find("classifications"); c != val.end() && c->is_array()) {
-            for (auto& cid : *c) {
-                if (cid.is_string()) def.classifications.push_back(cid.get<std::string>());
             }
         }
 

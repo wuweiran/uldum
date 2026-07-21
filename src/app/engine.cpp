@@ -976,6 +976,14 @@ bool Engine::start_session() {
                     all_instances);
                 m_network.host_broadcast_update(unit.id, pkt);
             };
+        // Engine-owned charged-item spend: push the new charge count to
+        // clients (the per-tick entity delta doesn't carry charges; the
+        // destroy-at-0 case rides S_DESTROY instead).
+        m_server.simulation().world().on_item_charges_changed =
+            [this](simulation::Item item, i32 charges) {
+                auto pkt = network::build_update_item_charges(item.id, charges);
+                m_network.host_broadcast_update(item.id, pkt);
+            };
         // Renderer-owned hook so the simulation can match projectile
         // death timers to the actual animation clip duration.
         m_server.simulation().world().get_clip_duration =

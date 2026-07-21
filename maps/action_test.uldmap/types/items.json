@@ -1,9 +1,10 @@
 {
-    "potion_healing": {
-        "display_name": "Potion of Healing",
-        "icon": "textures/icons/potion_healing.ktx2",
-        "charges": 1,
-        "cooldown": 5.0,
-        "gold_cost": 150
+    "rune_book": {
+        "name": "Rune Book",
+        "icon": "textures/icons/rune_book.ktx2",
+        "model": "models/book.glb",
+        "pickup_radius": 96,
+        "type": "powerup",
+        "abilities": []
     }
 }

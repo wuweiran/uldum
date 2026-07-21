@@ -195,18 +195,17 @@ function main()
 
     ---------------------------------------------------------------------------
     -- Items: drop two healing potions and one ring-of-armor near the
-    -- paladin so the player can right-click to pick them up. The cast
-    -- of `use_potion_healing` heals the caster and the trigger below
-    -- decrements the item's `charges` field, removing the item when it
-    -- reaches zero. Ring of Armor is a passive item — its slot icon
-    -- shows but clicking does nothing; the armor bonus applies while
-    -- carried.
+    -- paladin so the player can right-click to pick them up. The potion is
+    -- class "charged", so the engine spends a charge on each use and
+    -- destroys it at zero; the trigger below only applies the heal effect.
+    -- Ring of Armor is a passive item — its slot icon shows but clicking
+    -- does nothing; the armor bonus applies while carried.
     ---------------------------------------------------------------------------
     CreateItem("potion_healing", -1275, -930)
     Log("[Scene02] Spawned potion_healing at (-1275, -930)")
 
     abilities.register_healing_potion()
-    Log("[Scene02] Healing-potion charge consumption registered")
+    Log("[Scene02] Healing-potion heal effect registered")
 
     ---------------------------------------------------------------------------
     -- Crates: a cluster of attackable destructables near the heroes. Each

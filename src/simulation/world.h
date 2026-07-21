@@ -5,6 +5,7 @@
 #include "simulation/sparse_set.h"
 #include "simulation/components.h"
 #include "simulation/order.h"
+#include "simulation/type_registry.h"
 
 #include <glm/vec3.hpp>
 #include <functional>
@@ -16,7 +17,6 @@
 
 namespace uldum::simulation {
 
-class TypeRegistry;
 class AbilityRegistry;
 
 struct World {
@@ -197,6 +197,14 @@ struct World {
     ItemPickupCallback on_item_picked_up;
     ItemDropCallback   on_item_dropped;
 
+    // Fired when the engine changes an item's charge count on its own (a
+    // charged item spending a charge). Lets the host push the new value to
+    // clients — the per-tick entity delta doesn't carry charges. Not fired
+    // for the destroy-at-0 case (S_DESTROY already syncs that) nor for Lua's
+    // own SetItemCharges (which sends its own packet).
+    using ItemChargesChangedCallback = std::function<void(Item item, i32 charges)>;
+    ItemChargesChangedCallback on_item_charges_changed;
+
     // Region events — fired by system_regions each tick when a unit
     // crosses into / out of a region's shape. Map Lua hooks these via
     // TriggerRegisterEnterRegion / LeaveRegion. Engine takes no
@@ -364,15 +372,28 @@ void     set_level(World& world, Item item, i32 level);
 // Carrying-unit lookup. Returns invalid Unit if the item is on the
 // ground (or not in any inventory).
 Unit     get_item_owner(const World& world, Item item);
+// Resolve an item's class from its type def. Returns Permanent if the item
+// or its type is unknown (safe default).
+ItemClass item_class(const World& world, Item item);
+
 // Pickup → inventory slot transfer. Grants the item's abilities to the
 // carrier, marks the Carriable, hides ground rendering, and returns the
 // slot index. Returns -1 on failure (full inventory, invalid handles,
-// item already carried). On success, fires no event itself — the
-// systems caller drives event emission.
+// item already carried, or a powerup — powerups never occupy a slot).
+// On success, fires no event itself — the systems caller drives event
+// emission.
 i32      give_item_to_unit(World& world, Unit unit, Item item);
 // Drop → place item at world position, remove from carrier inventory,
 // revoke its abilities, restore ground rendering. Returns false if the
 // item isn't currently carried by `unit`.
 bool     drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos);
+
+// Destroy an item, playing its "death" clip first if it's a visible ground
+// item with a death clip (deferred via DeadState, sized to the clip; the
+// corpse pipeline in system_death hides + frees it at clip end). A carried
+// or already-hidden item (visible == false) is destroyed instantly — there's
+// nothing on screen to animate. Use this instead of `destroy()` at any
+// item-removal site that could be on the ground (powerup consume, RemoveItem).
+void     kill_item(World& world, Item item);
 
 } // namespace uldum::simulation

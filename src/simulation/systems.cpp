@@ -1118,6 +1118,25 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 static u32 s_aura_tick_counter = 0;
 static constexpr u32 AURA_SCAN_INTERVAL = 8;  // every 8 ticks = 0.25s at 32Hz
 
+// Charged-item consumption. Called when an ability's effect fires with the
+// item that sourced the cast: spend one charge, and destroy the item at 0.
+// No-op for non-charged sources (permanent items, innate casts). Runs after
+// the Lua effect callback, which for charged items no longer touches charges.
+static void spend_item_charge(World& world, Item source_item) {
+    if (is_null_handle(source_item) || !world.contains(source_item)) return;
+    if (item_class(world, source_item) != ItemClass::Charged) return;
+    i32 remaining = get_charges(world, source_item) - 1;
+    set_charges(world, source_item, remaining);
+    if (remaining <= 0) {
+        // kill_item self-decides: a carried charged item is invisible → instant
+        // destroy; the rare cast from a charged item lying on the ground plays
+        // its death clip. S_DESTROY (or the death corpse pipeline) syncs it.
+        kill_item(world, source_item);
+    } else if (world.on_item_charges_changed) {
+        world.on_item_charges_changed(source_item, remaining);
+    }
+}
+
 void system_ability(World& world, float dt, const AbilityRegistry& abilities, const SpatialGrid& grid) {
     bool aura_scan_tick = (++s_aura_tick_counter % AURA_SCAN_INTERVAL == 0);
 
@@ -1365,12 +1384,15 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 inst->cooldown_remaining = lvl.cooldown;
                                 aset->cast_state = CastState::Backswing;
                                 aset->cast_timer = lvl.backsw_time;
-                                if (world.on_ability_effect) {
+                                {
                                     std::string ability_id = aset->casting_id;
                                     Unit target = aset->cast_target_unit;
                                     Item source_item = aset->cast_source_item;
-                                    world.on_ability_effect(caster, ability_id, target,
-                                                            target_pos, source_item);
+                                    if (world.on_ability_effect) {
+                                        world.on_ability_effect(caster, ability_id, target,
+                                                                target_pos, source_item);
+                                    }
+                                    spend_item_charge(world, source_item);
                                 }
                             }
                         }
@@ -1416,6 +1438,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 world.on_ability_effect(caster, ability_id, target,
                                                         target_pos, source_item);
                             }
+                            spend_item_charge(world, source_item);
                         }
                         break;
                     }
@@ -1516,7 +1539,8 @@ void system_items(World& world, float /*dt*/) {
 
         if (auto* po = std::get_if<orders::PickupItem>(&oq->current->payload)) {
             Item item = po->item;
-            if (!world.contains(item)) {
+            // Gone, or dying on the ground (playing its death clip) → abandon.
+            if (!world.contains(item) || world.dead_states.has(item.id)) {
                 oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
@@ -1556,6 +1580,17 @@ void system_items(World& world, float /*dt*/) {
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
                     mov->approach_target = Unit{};
+                }
+
+                // Powerup: consumed on contact regardless of inventory space.
+                // The engine grants/casts nothing — it fires the pickup event
+                // (slot = -1 signals "not slotted") so map Lua can apply the
+                // effect via GetTriggerItem, then removes the item (playing its
+                // death clip on the ground via kill_item).
+                if (item_class(world, item) == ItemClass::Powerup) {
+                    if (world.on_item_picked_up) world.on_item_picked_up(unit_h, item, -1);
+                    if (world.contains(item)) kill_item(world, item);
+                    continue;
                 }
 
                 i32 slot = give_item_to_unit(world, unit_h, item);

@@ -25,9 +25,8 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
     "model": "models/potion.glb",
     "pickup_radius": 48,
     "abilities": ["use_healing_potion"],
-    "initial_charges": 3,
-    "initial_level": 1,
-    "classifications": ["consumable"]
+    "type": "charged",
+    "initial_charges": 3
   },
 
   "boots_of_speed": {
@@ -36,7 +35,7 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
     "model": "models/boots.glb",
     "pickup_radius": 48,
     "abilities": ["boots_passive"]
-    // initial_charges / initial_level default to 0
+    // type defaults to "permanent"; initial_charges / initial_level default to 0
   }
 }
 ```
@@ -47,10 +46,20 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
 | `icon` | yes | — | Slot icon (KTX2 path). |
 | `model` | yes | — | Ground model (glTF). |
 | `pickup_radius` | yes | 48 | World-units the carrier must be within to claim. |
-| `abilities` | yes | — | Ordered list of ability ids. First = fireable if non-passive. |
-| `initial_charges` | no | 0 | Initial value of the `charges` integer. |
-| `initial_level` | no | 0 | Initial value of the `level` integer. |
-| `classifications` | no | `[]` | String tags for `target_filter` and Lua queries. |
+| `abilities` | yes | — | Ordered list of ability ids. First = fireable if non-passive. Ignored for `powerup`. |
+| `type` | no | `permanent` | WC3 item type — drives engine behavior. One of `permanent` / `charged` / `powerup` (see below). |
+| `initial_charges` | no | 0 | Starting charge count. Only meaningful on `type: charged` (warned + ignored otherwise). |
+| `initial_level` | no | 0 | Initial value of the `level` integer (engine renders the badge, never interprets). |
+
+### `type` — WC3 item type
+
+The single field that decides how the engine treats the item:
+
+- **`permanent`** (default) — sits in a slot, grants its `abilities` while carried, ungrants on drop. The classic passive/active item.
+- **`charged`** — sits in a slot, grants its use ability; the engine **spends one charge when that ability's effect fires and destroys the item at 0**. The map's trigger only applies the gameplay effect — no charge bookkeeping in Lua.
+- **`powerup`** — **consumed on pickup**: no slot needed (works at a full inventory), the engine grants nothing and casts nothing, then destroys the item. Map Lua applies the effect via `EVENT_*_ITEM_PICKED_UP` + `GetTriggerItem()`. `abilities` is ignored.
+
+The `EVENT_*_ITEM_*` and cast events still fire in every case, so a map can layer custom behavior on top of the engine default.
 
 ## Inventory
 
@@ -74,29 +83,27 @@ Transitions:
 - **Use** (active items): same path as `Order::Cast`. Cast pipeline tracks "this cast originated from item X" so the cast event payload carries `source_item`, surfaced via `GetTriggerItem()` inside trigger actions. **The engine never decrements `charges` or destroys the item** — map Lua does.
 - **Death**: no engine policy. Maps wanting drop-on-death write a single trigger.
 
-## The two free integer fields
+## The two integer fields
 
-`charges` and `level`. Both are component data the engine stores per-item and exposes via Lua. **No engine semantics** beyond rendering them.
+`charges` and `level`. Both are component data the engine stores per-item, renders as corner badges, and exposes to Lua.
 
 - Engine stores → can serialize for save/load when that lands.
 - Engine renders → as corner badges (see HUD section).
 - Lua reads / writes via getter / setter pairs.
 
-That's it. No auto-decrement on cast, no destroy-at-zero, no level-up formula. Authors who want WC3-style consumables write ~10 lines of Lua:
+**`charges` has engine semantics for `type: charged`**: when the item's ability effect fires, the engine spends one charge and destroys the item at 0 — no Lua bookkeeping. The map's trigger only applies the gameplay effect:
 
 ```lua
 local trig = CreateTrigger()
-TriggerRegisterEvent(trig, EVENT_GLOBAL_ABILITY_ENDCAST)
+TriggerRegisterEvent(trig, EVENT_GLOBAL_ABILITY_EFFECT)
+TriggerAddCondition(trig, function() return GetTriggerAbilityId() == "use_healing_potion" end)
 TriggerAddAction(trig, function()
-    local item = GetTriggerItem()         -- nil if cast wasn't from an item
-    if not item then return end
-    local c = GetItemCharges(item) - 1
-    SetItemCharges(item, c)
-    if c <= 0 then RemoveItem(item) end
+    local caster = GetTriggerUnit()
+    HealUnit(caster, caster, 250)     -- the effect; the engine handles the charge
 end)
 ```
 
-The engine has zero opinion on this. A map that wants charges to *recharge over time*, or to *not consume*, or to *consume two per cast*, or to *level up after N uses* — all are Lua, all using the same primitives.
+The `EVENT_*_ITEM_*` and cast events still fire, so a map that wants charges to *recharge over time*, *consume two per cast*, or *not destroy at 0* can still drive it by hand via `GetItemCharges` / `SetItemCharges` / `RemoveItem`. `level` remains a free integer with no engine semantics (level-up formulas are Lua).
 
 ## HUD — `inventory` composite
 

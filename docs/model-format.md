@@ -129,6 +129,23 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **Hit flinch**: `hit` plays only on an otherwise-idle widget struck by a **normal attack** — spells, damage-over-time and splash don't flinch. Walking, attacking, casting and dying always outrank it, so a busy unit never flinches (no jitter, no throttle). Authoring it is optional; with no `hit` clip the widget simply doesn't recoil. Best for destructibles (crate/tree wobble) and idle units. Plays once for the clip's own length, then returns to `idle` — a new hit retriggers it.
 - **Flying units**: There is **no separate `fly` state** (this matches WC3). A flyer is a gameplay/movement property of the unit, not an animation tag — the model just plays `walk` while it moves through the air, so author the **wing-flap loop as the `walk` clip** (and a hover/glide as `idle`). The other clips (`attack`, `spell`, `death`) work the same as for ground units.
 
+### Item animations
+
+Items are widgets too, so they share the same name-matched clip system — but only three states are meaningful for a ground item (the other clips are ignored). Carried items are hidden (no animation while in a slot), so all three only ever play on the ground:
+
+| Clip Name | When Active | Looping |
+|-----------|-------------|---------|
+| `idle` | The item is lying on the ground | Yes |
+| `birth` | Plays once when the item is dropped / created on the ground (materialize / drop-in) | No |
+| `death` | Plays once when the item is **destroyed on the ground** — a consumed `powerup`, a `charged` item spending its last charge on the ground, or Lua `RemoveItem`. Then the item is removed. | No (holds last frame) |
+
+- **`idle` is the WC3 "Stand" loop** — spinning powerups/runes, bobbing potions, a glowing tome. Author it as a looping transform baked into the model. This is the whole of item liveliness; most items need only `idle`.
+- **Pickup into an inventory is instant** — no `death` clip plays when a unit *collects* an item (matches WC3). `death` is for an item leaving the world *on the ground*, not for one going into a slot.
+- **Preplaced items** (authored in the map) come up already in `idle` — they do **not** replay `birth` on map load. Only items created/dropped at runtime birth.
+- All three are **optional**: with no clip for a state the bind pose is used (a static potion model just sits there — no crash, no motion).
+- Items are not skeletal fighters — `walk` / `attack` / `spell` / `hit` clips on an item model are ignored.
+
+
 ### glTF Example
 
 ```json

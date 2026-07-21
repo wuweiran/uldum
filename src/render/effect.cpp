@@ -13,23 +13,23 @@ namespace uldum::render {
 
 static constexpr const char* TAG = "Effect";
 
-// Engine-internal: which particle shape draws a given particle effect type.
+// Engine-internal: which particle shape draws a given particle effect kind.
 // Authors never see this — they pick a phenomenon (Spark/Spray), the engine
 // picks the shape. Swapping a row here is a no-schema visual tweak.
-static u32 shape_for(EffectType t) {
-    switch (t) {
-        case EffectType::Spark: return ParticleSystem::SHAPE_ORB;      // gaussian orb
-        case EffectType::Spray: return ParticleSystem::SHAPE_DROPLET;  // teardrop
+static u32 shape_for(EffectKind k) {
+    switch (k) {
+        case EffectKind::Spark: return ParticleSystem::SHAPE_ORB;      // gaussian orb
+        case EffectKind::Spray: return ParticleSystem::SHAPE_DROPLET;  // teardrop
         default:                return ParticleSystem::SHAPE_ORB;
     }
 }
 
-static EffectType parse_type(const std::string& s) {
-    if (s == "spray") return EffectType::Spray;
-    if (s == "glow")  return EffectType::Glow;
-    if (s == "spark" || s.empty()) return EffectType::Spark;
-    log::warn(TAG, "Unknown effect type '{}', defaulting to spark", s);
-    return EffectType::Spark;
+static EffectKind parse_kind(const std::string& s) {
+    if (s == "spray") return EffectKind::Spray;
+    if (s == "glow")  return EffectKind::Glow;
+    if (s == "spark" || s.empty()) return EffectKind::Spark;
+    log::warn(TAG, "Unknown effect kind '{}', defaulting to spark", s);
+    return EffectKind::Spark;
 }
 
 // ── EffectRegistry ────────────────────────────────────────────────────────
@@ -67,13 +67,13 @@ void EffectRegistry::load_from_json(const std::string& path) {
     for (auto& [name, val] : j.items()) {
         EffectDef def;
         def.name = name;
-        def.type = parse_type(val.value("type", std::string("spark")));
-        // One `color` for every type. Glow uses it as the shaft/light tint;
+        def.kind = parse_kind(val.value("type", std::string("spark")));
+        // One `color` for every kind. Glow uses it as the shaft/light tint;
         // particles spawn at this color and fade its alpha → 0 over their life
         // (built-in disappearance — no second color needed).
         if (val.contains("color")) def.color = read_color(val["color"], 1.0f);
 
-        if (def.type == EffectType::Glow) {
+        if (def.kind == EffectKind::Glow) {
             auto& b = def.glow;
             b.height    = val.value("height", b.height);
             b.radius    = val.value("radius", b.radius);
@@ -104,15 +104,15 @@ void EffectRegistry::load_from_json(const std::string& path) {
 // ── EffectManager ─────────────────────────────────────────────────────────
 
 u32 EffectManager::emit(const EffectDef& def, glm::vec3 pos) {
-    if (def.type == EffectType::Glow) {
+    if (def.kind == EffectKind::Glow) {
         return m_glow ? m_glow->spawn(pos, def.glow, def.color) : 0;
     }
-    // Particle types (Spark / Spray). Burst-only here; continuous emission is
+    // Particle kinds (Spark / Spray). Burst-only here; continuous emission is
     // handled by update() for emitters with emit_rate > 0.
     const auto& p = def.particle;
     if (p.count > 0 && p.emit_rate <= 0 && m_particles) {
         m_particles->burst(pos, p.count, def.color, p.speed, p.life,
-                           p.size, p.gravity, shape_for(def.type), p.spread, p.radius);
+                           p.size, p.gravity, shape_for(def.kind), p.spread, p.radius);
     }
     return 0;
 }
@@ -131,7 +131,7 @@ u32 EffectManager::create(const std::string& name, glm::vec3 position) {
 
     // Initial spawn (burst-only particles, or a glow). Continuous particle
     // emitters (emit_rate>0) are driven by update().
-    if (def->type != EffectType::Glow && def->particle.emit_rate > 0) {
+    if (def->kind != EffectKind::Glow && def->particle.emit_rate > 0) {
         // continuous — update() spawns; no initial burst
     } else {
         inst.glow_id = emit(*def, position);
@@ -165,7 +165,7 @@ u32 EffectManager::create_on_unit(const std::string& name, simulation::Unit unit
     inst.attach_point  = std::move(attach_point);
     inst.duration      = -1;
 
-    if (def->type != EffectType::Glow && def->particle.emit_rate > 0) {
+    if (def->kind != EffectKind::Glow && def->particle.emit_rate > 0) {
         // continuous — update() spawns
     } else {
         inst.glow_id = emit(*def, inst.position);
@@ -216,8 +216,8 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
             }
         }
 
-        // Continuous emission (particle types with emit_rate > 0 only).
-        if (inst.def && inst.def->type != EffectType::Glow &&
+        // Continuous emission (particle kinds with emit_rate > 0 only).
+        if (inst.def && inst.def->kind != EffectKind::Glow &&
             inst.def->particle.emit_rate > 0 && m_particles) {
             const auto& p = inst.def->particle;
             inst.emit_accumulator += p.emit_rate * dt;
@@ -226,7 +226,7 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
                 inst.emit_accumulator -= static_cast<f32>(to_spawn);
                 m_particles->burst(inst.position, to_spawn, inst.def->color,
                                    p.speed, p.life, p.size, p.gravity,
-                                   shape_for(inst.def->type), p.spread, p.radius);
+                                   shape_for(inst.def->kind), p.spread, p.radius);
             }
         }
 

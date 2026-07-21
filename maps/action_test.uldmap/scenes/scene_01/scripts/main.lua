@@ -96,7 +96,7 @@ function main()
 
     local hero_x = GetUnitX(paladin)
     local hero_y = GetUnitY(paladin)
-    CreateItem("potion_healing", hero_x + 180, hero_y + 40)
+    CreateItem("rune_book", hero_x + 50, hero_y + 60)
 
     -- Periodic creep spawner so there's something to hit. Waves cap at
     -- a modest count to keep the scene readable for preset testing.

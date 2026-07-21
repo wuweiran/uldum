@@ -113,11 +113,11 @@ inline constexpr u8 TARGET_BIT_DEBRIS    = 1u << 6;
 // default; tree is excluded (must be named explicitly).
 inline constexpr u8 TARGET_MASK_DEFAULT_WIDGETS = TARGET_BIT_STRUCTURE | TARGET_BIT_DEBRIS;
 
-// Derive a destructable's widget target bit from its classification flags —
-// the same map-defined string tags units use ("structure", "hero", …). "tree"
-// is choppable only by tree-targeting attacks; "structure" reads as a building;
-// anything else (incl. omitted) defaults to DEBRIS (crate/barrel: smashable).
-inline u8 widget_target_from_classifications(const std::vector<std::string>& flags) {
+// Derive a destructable's widget target bit from its "targeted_as" flags —
+// WC3's "Targeted As" axis (how a thing is hit). "tree" is choppable only by
+// tree-targeting attacks; "structure" reads as a building; anything else
+// (incl. omitted) defaults to DEBRIS (crate/barrel: smashable).
+inline u8 widget_target_from_targeted_as(const std::vector<std::string>& flags) {
     for (const auto& f : flags) {
         if (f == "tree")      return TARGET_BIT_TREE;
         if (f == "structure") return TARGET_BIT_STRUCTURE;

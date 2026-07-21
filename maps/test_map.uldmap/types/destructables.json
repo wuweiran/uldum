@@ -9,7 +9,7 @@
         "health": { "max": 50 },
         "attributes": { "armor": 0, "armor_type": "fortified" },
         "pathing_footprint": [3, 3],
-        "classifications": ["tree"]
+        "targeted_as": ["tree"]
     },
     "crate": {
         "models": ["models/destructables/crate.glb"],
@@ -17,6 +17,6 @@
         "health": { "max": 100 },
         "attributes": { "armor": 0, "armor_type": "wood" },
         "pathing_footprint": [2, 2],
-        "classifications": ["debris"]
+        "targeted_as": ["debris"]
     }
 }

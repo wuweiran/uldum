@@ -248,8 +248,9 @@ function M.register_wind_walk(opts)
     end)
 end
 
--- Healing potion — global. Heals the caster and decrements the item's
--- charges field; removes the item when charges hit zero.
+-- Healing potion — global. Heals the caster. The item is class "charged",
+-- so the engine spends a charge and destroys it at zero; this trigger only
+-- applies the gameplay effect.
 function M.register_healing_potion(opts)
     opts = opts or {}
     local amount = opts.amount or 250
@@ -261,15 +262,9 @@ function M.register_healing_potion(opts)
     end)
     TriggerAddAction(trig, function()
         local caster = GetTriggerUnit()
-        local item   = GetTriggerItem()
         if not caster or not IsUnitAlive(caster) then return end
         PlayEffectOnUnit("heal_potion", caster, "overhead")
         HealUnit(caster, caster, amount)
-        if item then
-            local c = GetItemCharges(item) - 1
-            SetItemCharges(item, c)
-            if c <= 0 then RemoveItem(item) end
-        end
         Log(string.format("[Potion] %s healed for %d", GetUnitTypeId(caster), amount))
     end)
 end

@@ -816,19 +816,19 @@ on emit.
 ```json
 {
     "potion_healing": {
-        "display_name": "Potion of Healing",
+        "name": "Potion of Healing",
         "icon": "textures/icons/potion_healing.ktx2",
-        "charges": 1,
-        "cooldown": 5.0,
-        "on_use": {
-            "effect": "heal",
-            "target": "self",
-            "value": 250
-        },
-        "gold_cost": 150
+        "model": "models/potion_healing.glb",
+        "pickup_radius": 96,
+        "abilities": ["use_potion_healing"],
+        "type": "charged",
+        "initial_charges": 3
     }
 }
 ```
+
+See [items.md](items.md) for the full item schema and the `type` field
+(`permanent` / `charged` / `powerup`).
 
 ### Ability Definition Example
 

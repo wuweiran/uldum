@@ -102,8 +102,8 @@ struct DestructableTypeDef {
     std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
     u32                      pathing_footprint_w = 0;       // tiles; 0 = no pathing block
     u32                      pathing_footprint_h = 0;
-    std::vector<std::string> classifications;               // map-defined tags ("structure", "tree", "debris", …)
-    u8                       target_bit = TARGET_BIT_DEBRIS;  // derived from classifications (attack handshake)
+    std::vector<std::string> targeted_as;                   // WC3 "Targeted As" tags ("structure", "tree", "debris", …)
+    u8                       target_bit = TARGET_BIT_DEBRIS;  // derived from targeted_as (attack handshake)
     bool                     selectable = true;             // left-clickable? auto-false for "tree", JSON-overridable
 };
 
@@ -114,6 +114,21 @@ struct DoodadTypeDef {
     std::vector<std::string> models;
     f32                      model_scale = 1.0f;
 };
+
+// WC3-style item class — the single field that drives engine item behavior.
+// Permanent: sits in a slot, grants its abilities while carried (default).
+// Charged: sits in a slot, grants its use ability; the engine spends 1 charge
+//   when that ability's effect fires and destroys the item at 0.
+// Powerup: consumed on pickup (no slot needed, works at full inventory); the
+//   engine grants nothing and casts nothing — map Lua applies the effect via
+//   the pickup event. `abilities` is ignored for powerups.
+enum class ItemClass : u8 { Permanent, Charged, Powerup };
+
+inline ItemClass parse_item_class(std::string_view s) {
+    if (s == "charged") return ItemClass::Charged;
+    if (s == "powerup") return ItemClass::Powerup;
+    return ItemClass::Permanent;
+}
 
 struct ItemTypeDef {
     std::string              id;
@@ -127,17 +142,18 @@ struct ItemTypeDef {
     std::string              model_path;      // ground render model (glTF)
     f32                      model_scale  = 1.0f;
     f32                      pickup_radius = 48.0f;
+    ItemClass                item_class   = ItemClass::Permanent;
     // Abilities granted to the carrier while the item is in inventory.
     // Activeness is implicit — if abilities[0].form is non-passive, the
     // inventory slot fires that ability on click/hotkey; otherwise the
     // slot is inert (passive item). Subsequent abilities still apply
     // their effects (modifiers / auras) but never fire.
     std::vector<std::string> abilities;
-    // Two free integer fields the engine stores + renders but never
-    // interprets. Map Lua handles consumption / level-up logic.
+    // Charged-class starting charge count. Meaningless (and warned) on
+    // other classes. `initial_level` is a free integer the engine renders
+    // (badge) but never interprets.
     i32                      initial_charges = 0;
     i32                      initial_level   = 0;
-    std::vector<std::string> classifications;
 };
 
 class TypeRegistry {

@@ -235,7 +235,15 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
     world.item_infos.add(id, ItemInfo{std::string(type_id), def->initial_charges, def->initial_level});
     world.carriables.add(id, Carriable{});
     if (!def->model_path.empty()) {
-        world.renderables.add(id, Renderable{def->model_path, true, true});
+        Renderable r{def->model_path, true};
+        // Birth ("materialize") plays only for an item dropped/created in the
+        // local viewer's sight — same rule units use. A preplaced item, or one
+        // created out of view (or on a host with no viewer predicate), comes up
+        // already Idle so it doesn't replay birth on map load / reveal.
+        if (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y)) {
+            r.skip_birth = true;
+        }
+        world.renderables.add(id, std::move(r));
     }
 
     Item item{h.id};
@@ -747,6 +755,14 @@ void set_charges(World& world, Item item, i32 charges) {
     if (info) info->charges = charges;
 }
 
+ItemClass item_class(const World& world, Item item) {
+    if (!world.contains(item) || !world.types) return ItemClass::Permanent;
+    const auto* info = world.item_infos.get(item.id);
+    if (!info) return ItemClass::Permanent;
+    const auto* def = world.types->get_item_type(info->type_id);
+    return def ? def->item_class : ItemClass::Permanent;
+}
+
 i32 get_level(const World& world, Item item) {
     if (!world.contains(item)) return 0;
     auto* info = world.item_infos.get(item.id);
@@ -767,6 +783,12 @@ Unit get_item_owner(const World& world, Item item) {
 
 i32 give_item_to_unit(World& world, Unit unit, Item item) {
     if (!world.contains(unit) || !world.contains(item)) return -1;
+    // A dying item (playing its death clip on the ground) can't be grabbed.
+    if (world.dead_states.has(item.id)) return -1;
+    // Powerups are consumed on pickup and never occupy a slot — the
+    // walk-over path handles them directly. Refuse here so nothing can
+    // slot one accidentally (also covers Lua's GiveItem).
+    if (item_class(world, item) == ItemClass::Powerup) return -1;
     auto* inventory = world.inventories.get(unit.id);
     auto* carriable = world.carriables.get(item.id);
     if (!inventory || !carriable || is_non_null_handle(carriable->carried_by)) return -1;
@@ -854,6 +876,41 @@ bool drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos) {
         remove_item_ability(world, unit, ability_id, item);
     }
     return true;
+}
+
+void kill_item(World& world, Item item) {
+    if (!world.contains(item)) return;
+
+    // Only a visible item on the ground has anything to animate. A carried /
+    // already-hidden item (or one whose death is already running) is removed
+    // outright.
+    auto* r = world.renderables.get(item.id);
+    bool on_ground = r && r->visible;
+    if (!on_ground || world.dead_states.has(item.id)) {
+        destroy(world, item);
+        return;
+    }
+
+    // Size the corpse window to the actual "death" clip so the item hides +
+    // frees exactly when the animation ends. No clip (or no resolver, e.g. a
+    // headless server) → instant destroy; there's no visual to hold for.
+    f32 clip = 0.0f;
+    if (world.get_clip_duration && !r->model_path.empty()) {
+        clip = world.get_clip_duration(r->model_path, "death");
+    }
+    if (clip <= 0.0f) {
+        destroy(world, item);
+        return;
+    }
+
+    // Reuse the unit corpse pipeline: derive_anim_state plays Death while a
+    // DeadState is present, and system_death Phase 2 hides then frees the item
+    // at cleanup_delay. Per-instance durations, so the fixed unit defaults are
+    // untouched. Clients learn the death via the S_STATE 0x08 flag.
+    DeadState d{};
+    d.corpse_duration = clip;
+    d.cleanup_delay   = clip;
+    world.dead_states.add(item.id, std::move(d));
 }
 
 // ── Ability API ───────────────────────────────────────────────────────────

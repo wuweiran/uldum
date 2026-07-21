@@ -40,13 +40,13 @@ loaded by both host and client at session start, so the registries stay symmetri
 }
 ```
 
-### Common fields (all types)
+### Common fields (all kinds)
 
 | Field | Default | Meaning |
 |---|---|---|
 | `type` | `spark` | The phenomenon: `spark`, `spray`, or `glow`. Selects the backend + param set below. |
 
-Color: every type takes a single **`color`** (RGBA). For particles (`spark`/
+Color: every kind takes a single **`color`** (RGBA). For particles (`spark`/
 `spray`) the particle spawns at this color and its **alpha fades linearly to 0**
 over each particle's `life` — a built-in disappearance, no second color needed.
 For `glow` it's the steady shaft/light tint; brightness rises and falls via the

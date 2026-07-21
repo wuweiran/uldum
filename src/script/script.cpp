@@ -2041,6 +2041,12 @@ void ScriptEngine::bind_api() {
     };
 
     lua["CreateItem"] = [&, item_or_nil](const std::string& type_id, f32 x, f32 y) -> sol::object {
+        // Snap to the nearest reachable ground cell so an item never strands on
+        // a cliff wall / water / blocked footprint where no unit can pick it up.
+        // No-op when (x,y) is already occupiable, so intentional placements on
+        // valid ground are untouched.
+        glm::vec2 g = sim.pathfinder().find_nearest_valid(x, y, simulation::MoveType::Ground);
+        x = g.x; y = g.y;
         auto item = simulation::create_item(sim.world(), type_id, x, y);
         if (simulation::is_non_null_handle(item)) {
             if (auto* t = sim.world().transforms.get(item.id)) {
@@ -2086,7 +2092,7 @@ void ScriptEngine::bind_api() {
             }
         }
 
-        if (sim.world().contains(item)) simulation::destroy(sim.world(), item);
+        if (sim.world().contains(item)) simulation::kill_item(sim.world(), item);
     };
 
     lua["GiveItem"] = [&](simulation::Unit unit, simulation::Item item) -> i32 {
@@ -2098,6 +2104,12 @@ void ScriptEngine::bind_api() {
         if (auto* tf = sim.world().transforms.get(unit.id)) pos = tf->position;
         if (x) pos.x = *x;
         if (y) pos.y = *y;
+        // Snap the drop point to reachable ground (no-op if already valid) and
+        // re-sample terrain height there, so a dropped item can't land in a
+        // cliff wall / water and rests on the surface at the snapped spot.
+        glm::vec2 g = sim.pathfinder().find_nearest_valid(pos.x, pos.y, simulation::MoveType::Ground);
+        pos.x = g.x; pos.y = g.y;
+        pos.z = ::uldum::map::sample_height(terrain_ref, pos.x, pos.y);
         // pull existing item slot
         auto* inv = sim.world().inventories.get(unit.id);
         if (!inv || slot < 0 || slot >= static_cast<i32>(inv->slots.size())) return false;

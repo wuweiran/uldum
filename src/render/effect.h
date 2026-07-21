@@ -28,10 +28,10 @@ class GlowSystem;
 //   • Glow  — engine-owned light visual (volumetric Tyndall shafts today;
 //             "hero glow" and other light effects in future). Glow backend.
 //
-// Engine, not authors, decides the particle shape per type (see effect.cpp
-// shape_for()). One effect = exactly one type; no composition.
+// Engine, not authors, decides the particle shape per kind (see effect.cpp
+// shape_for()). One effect = exactly one kind; no composition.
 
-enum class EffectType : u8 { Spark, Spray, Glow };
+enum class EffectKind : u8 { Spark, Spray, Glow };
 
 // Particle-backend params (Spark / Spray).
 struct ParticleParams {
@@ -62,7 +62,7 @@ struct GlowParams {
 
 struct EffectDef {
     std::string    name;
-    EffectType     type = EffectType::Spark;
+    EffectKind     kind = EffectKind::Spark;
     glm::vec4      color{1, 0.8f, 0.2f, 1};   // tint; particles fade its alpha→0 over life
     ParticleParams particle{};   // meaningful for Spark / Spray
     GlowParams     glow{};       // meaningful for Glow
@@ -143,7 +143,7 @@ public:
 
 private:
     // Spawn an effect's initial visual at `pos`: particle burst (Spark/Spray)
-    // or a glow (Glow). The one place that maps EffectType → backend. Returns
+    // or a glow (Glow). The one place that maps EffectKind → backend. Returns
     // the glow handle for Glow effects (so a unit-attached glow can be tracked
     // and moved each frame); 0 for particles.
     u32 emit(const EffectDef& def, glm::vec3 pos);
