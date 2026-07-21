@@ -819,7 +819,6 @@ on emit.
         "name": "Potion of Healing",
         "icon": "textures/icons/potion_healing.ktx2",
         "model": "models/potion_healing.glb",
-        "pickup_radius": 96,
         "abilities": ["use_potion_healing"],
         "type": "charged",
         "initial_charges": 3

@@ -305,7 +305,6 @@ bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std:
         def.icon_path       = val.value("icon", "");
         def.model_path      = val.value("model", "");
         def.model_scale     = val.value("model_scale", 1.0f);
-        def.pickup_radius   = val.value("pickup_radius", 48.0f);
         def.item_class      = parse_item_class(val.value("type", std::string("permanent")));
         def.initial_charges = val.value("initial_charges", 0);
         def.initial_level   = val.value("initial_level",   0);

@@ -3,7 +3,6 @@
         "name": "Rune Book",
         "icon": "textures/icons/rune_book.ktx2",
         "model": "models/book.glb",
-        "pickup_radius": 96,
         "type": "powerup",
         "abilities": []
     }

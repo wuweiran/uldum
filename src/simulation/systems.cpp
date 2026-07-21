@@ -1514,12 +1514,16 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
 // Keeps the cast / combat pattern symmetric: the order ("walk to item,
 // then take it") is split between this loop's claim check and the
 // movement system's approach machinery. We set `approach_goal` to the
-// item position with `approach_range = pickup_radius`; movement walks
+// item position with `approach_range = PICKUP_RANGE`; movement walks
 // the unit there, this system fires the actual transfer once the unit
 // is in range.
 //
 // Drops happen instantly — no walk — so DropItem is a one-shot per
 // tick.
+
+// Unified pickup reach for every item — one engine-wide constant on purpose,
+// not per-item data. Used by walk-over completion and the right-click gate.
+static constexpr f32 PICKUP_RANGE = 96.0f;
 
 void system_items(World& world, float /*dt*/) {
     if (!world.types) return;
@@ -1565,17 +1569,10 @@ void system_items(World& world, float /*dt*/) {
                 continue;
             }
 
-            f32 pickup_r = 48.0f;
-            if (auto* info = world.item_infos.get(item.id)) {
-                if (auto* def = world.types->get_item_type(info->type_id)) {
-                    pickup_r = def->pickup_radius;
-                }
-            }
-
             f32 dx = tf_item->position.x - tf_unit->position.x;
             f32 dy = tf_item->position.y - tf_unit->position.y;
             f32 dist2 = dx * dx + dy * dy;
-            if (dist2 <= pickup_r * pickup_r) {
+            if (dist2 <= PICKUP_RANGE * PICKUP_RANGE) {
                 oq->current.reset();
                 if (auto* mov = world.movements.get(id)) {
                     mov->approach_range = 0;
@@ -1603,7 +1600,7 @@ void system_items(World& world, float /*dt*/) {
             if (auto* mov = world.movements.get(id)) {
                 mov->approach_target = Unit{};
                 mov->approach_goal = {tf_item->position.x, tf_item->position.y};
-                mov->approach_range = pickup_r;
+                mov->approach_range = PICKUP_RANGE;
             }
         } else if (auto* drop = std::get_if<orders::DropItem>(&oq->current->payload)) {
             constexpr f32 DROP_RANGE = 150.0f;

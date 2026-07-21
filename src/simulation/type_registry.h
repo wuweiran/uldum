@@ -141,7 +141,6 @@ struct ItemTypeDef {
     std::string              icon_path;       // HUD slot icon (KTX2)
     std::string              model_path;      // ground render model (glTF)
     f32                      model_scale  = 1.0f;
-    f32                      pickup_radius = 48.0f;
     ItemClass                item_class   = ItemClass::Permanent;
     // Abilities granted to the carrier while the item is in inventory.
     // Activeness is implicit — if abilities[0].form is non-passive, the

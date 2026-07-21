@@ -20,6 +20,8 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
     bool click_consumed = handle_targeting(ctx);
     if (!click_consumed) handle_focus_click(ctx);
     if (!click_consumed) handle_movement(ctx);
+    // Skipped when targeting consumed this frame's right-click (cancel > pickup).
+    if (!click_consumed) handle_pickup_click(ctx);
 
     if (!m_pending_ability.empty()) {
         std::string id = std::move(m_pending_ability);
@@ -178,21 +180,28 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
 }
 
 // ── Ability targeting ────────────────────────────────────────────────────
-// Mirrors RtsPreset: once armed (from dispatch_ability), the next left-
-// click commits the cast on that target (or ground point). Esc cancels.
-// Gated by hud_captured so clicking a different slot while armed doesn't
-// double-fire.
+// Once armed (from dispatch_ability), the next left-click commits the cast on
+// that target (or ground point); Esc or right-click cancels.
 
 bool ActionPreset::handle_targeting(const InputContext& ctx) {
     auto& input = ctx.input;
     auto& sel   = ctx.selection;
     if (!m_targeting_ability) return false;
 
+    // Esc / right-click bail out, before the hud_captured gate so cancel works
+    // over world or HUD. Right-click returns true so pickup is skipped.
+    if (input.key_escape) {
+        m_targeting_ability = false;
+        m_targeting_ability_id.clear();
+        return false;
+    }
+    if (input.mouse_right_pressed) {
+        m_targeting_ability = false;
+        m_targeting_ability_id.clear();
+        return true;
+    }
+
     if (ctx.hud_captured) {
-        if (input.key_escape) {
-            m_targeting_ability = false;
-            m_targeting_ability_id.clear();
-        }
         return false;
     }
 
@@ -232,10 +241,6 @@ bool ActionPreset::handle_targeting(const InputContext& ctx) {
         return true;
     }
 
-    if (input.key_escape) {
-        m_targeting_ability = false;
-        m_targeting_ability_id.clear();
-    }
     return false;
 }
 
@@ -265,6 +270,34 @@ void ActionPreset::handle_focus_click(const InputContext& ctx) {
         // Click on empty terrain — release any manual lock so auto
         // resumes choosing.
         ctx.hud->clear_focus_target();
+    }
+}
+
+// ── Right-click item pickup ──────────────────────────────────────────────
+// WoW-style: right-click a ground item → PickupItem order (hero walks over,
+// grabs within PICKUP_RANGE). Reuses the RTS/mobile order path. Right-click on
+// nothing does nothing, leaving the button free for future binds.
+
+void ActionPreset::handle_pickup_click(const InputContext& ctx) {
+    auto& input = ctx.input;
+    if (!input.mouse_right_pressed) return;
+    if (ctx.hud_captured) return;
+    auto& sel = ctx.selection;
+    if (sel.empty()) return;
+
+    auto item = ctx.picker.pick_item(input.mouse_x, input.mouse_y);
+    if (!simulation::is_non_null_handle(item)) return;
+
+    GameCommand cmd;
+    cmd.player = sel.player();
+    cmd.units  = sel.selected();
+    cmd.order  = simulation::orders::PickupItem{item};
+    ctx.commands.submit(cmd);
+    // Yellow item ping, matching RTS right-click.
+    if (ctx.target_ping_fn) {
+        if (auto ping = derive_target_ping(cmd, ctx.simulation)) {
+            ctx.target_ping_fn(ping->unit, ping->pos, ping->kind);
+        }
     }
 }
 

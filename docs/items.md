@@ -23,7 +23,6 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
     "name": "Healing Potion",
     "icon": "textures/icons/healing_potion.ktx2",
     "model": "models/potion.glb",
-    "pickup_radius": 48,
     "abilities": ["use_healing_potion"],
     "type": "charged",
     "initial_charges": 3
@@ -33,7 +32,6 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
     "name": "Boots of Speed",
     "icon": "textures/icons/boots.ktx2",
     "model": "models/boots.glb",
-    "pickup_radius": 48,
     "abilities": ["boots_passive"]
     // type defaults to "permanent"; initial_charges / initial_level default to 0
   }
@@ -45,7 +43,6 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
 | `name` | yes | — | Display name (HUD tooltip later). |
 | `icon` | yes | — | Slot icon (KTX2 path). |
 | `model` | yes | — | Ground model (glTF). |
-| `pickup_radius` | yes | 48 | World-units the carrier must be within to claim. |
 | `abilities` | yes | — | Ordered list of ability ids. First = fireable if non-passive. Ignored for `powerup`. |
 | `type` | no | `permanent` | WC3 item type — drives engine behavior. One of `permanent` / `charged` / `powerup` (see below). |
 | `initial_charges` | no | 0 | Starting charge count. Only meaningful on `type: charged` (warned + ignored otherwise). |
@@ -78,7 +75,7 @@ The `EVENT_*_ITEM_*` and cast events still fire in every case, so a map can laye
 
 Transitions:
 
-- **PickUp**: smart right-click on a ground item issues `Order::PickUp(item_handle)`. Unit walks to within `pickup_radius` of the item, on arrival moves into the first free slot. Fires `EVENT_UNIT_ITEM_PICKED_UP` (unit-scoped) and `EVENT_GLOBAL_ITEM_PICKED_UP` (global). Failure modes: target-filter rejection (e.g. another player's hero), inventory full → drop the order with a log line.
+- **PickUp**: smart right-click on a ground item issues `Order::PickUp(item_handle)` — in RTS *and* Action presets on desktop, and via the nearby-item bar on mobile. The unit walks to within the engine's unified pickup range (one hardcoded constant, `PICKUP_RANGE` — not per-item), on arrival moves into the first free slot. Fires `EVENT_UNIT_ITEM_PICKED_UP` (unit-scoped) and `EVENT_GLOBAL_ITEM_PICKED_UP` (global). Failure modes: target-filter rejection (e.g. another player's hero), inventory full → drop the order with a log line.
 - **Drop**: `UnitDropItemFromSlot(unit, slot)` from Lua or HUD drag-out. Item appears at unit's position. Fires `EVENT_UNIT_ITEM_DROPPED` / `EVENT_GLOBAL_ITEM_DROPPED`.
 - **Use** (active items): same path as `Order::Cast`. Cast pipeline tracks "this cast originated from item X" so the cast event payload carries `source_item`, surfaced via `GetTriggerItem()` inside trigger actions. **The engine never decrements `charges` or destroys the item** — map Lua does.
 - **Death**: no engine policy. Maps wanting drop-on-death write a single trigger.

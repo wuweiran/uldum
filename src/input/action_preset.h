@@ -42,6 +42,9 @@ private:
     // HUD's focus_target manually. Hitting an enemy locks focus on it;
     // hitting empty terrain releases the lock so auto-acquire resumes.
     void handle_focus_click(const InputContext& ctx);
+    // Right-click a ground item → PickupItem order on the hero (WoW-style
+    // walk-over grab). Right-click on nothing stays free.
+    void handle_pickup_click(const InputContext& ctx);
     void handle_camera_gestures(const InputContext& ctx);
     void handle_camera_follow(const InputContext& ctx);
 

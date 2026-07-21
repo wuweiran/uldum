@@ -231,7 +231,9 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
 
     world.transforms.add(id, Transform{{x, y, 0.0f}, 0, def->model_scale, {x, y, 0.0f}, 0});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item});
-    world.selectables.add(id, Selectable{32.0f, 24.0f, 1});
+    // Defaults (radius/height = 0) = AUTO: renderer fits the click cylinder to
+    // the model AABB × scale, same as units. priority is unused for items.
+    world.selectables.add(id, Selectable{});
     world.item_infos.add(id, ItemInfo{std::string(type_id), def->initial_charges, def->initial_level});
     world.carriables.add(id, Carriable{});
     if (!def->model_path.empty()) {
