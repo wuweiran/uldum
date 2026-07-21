@@ -1346,9 +1346,11 @@ void recalculate_modifiers(World& world, u32 id) {
         }
     }
 
-    // Movement speed. Lives on Movement, not in the attribute block,
-    // so it needs an explicit pass: rebuild from the type def's base
-    // and re-apply move_speed (additive) / move_speed_mult every recalc.
+    // Movement speed. Lives on Movement, not in the attribute block, so
+    // it needs an explicit pass: rebuild the base from the per-unit
+    // override (what SetUnitAttribute last wrote to base["move_speed"])
+    // or, absent one, the type def, then re-apply move_speed (additive) /
+    // move_speed_mult every recalc.
     if (auto* mov = world.movements.get(id)) {
         f32 base_speed = 0;
         if (world.types) {
@@ -1358,6 +1360,10 @@ void recalculate_modifiers(World& world, u32 id) {
                 }
             }
         }
+        if (auto* attrs = world.attribute_blocks.get(id)) {
+            auto it = attrs->base.find("move_speed");
+            if (it != attrs->base.end()) base_speed = it->second;
+        }
         auto fit = flat.find("move_speed");
         auto pit = pct.find("move_speed");
         f32 fv = (fit != flat.end()) ? fit->second : 0.0f;
@@ -1366,12 +1372,12 @@ void recalculate_modifiers(World& world, u32 id) {
     }
 
     // Attack damage. Like move_speed, it lives on its own component
-    // (Combat), not in the attribute block, so it needs an explicit
-    // pass: rebuild from the type def's base and re-apply damage
-    // (additive) / damage_mult every recalc. Without this, a passive
-    // `modifiers: { damage: N }` writes into the attribute block's
-    // numeric map — which the attack path never reads — and the buff
-    // silently does nothing.
+    // (Combat), not in the attribute block, so it needs an explicit pass:
+    // rebuild the base from the per-unit override (base["damage"]) or the
+    // type def, then re-apply damage (additive) / damage_mult. Without
+    // this, a passive `modifiers: { damage: N }` writes into the attribute
+    // block's numeric map — which the attack path never reads — and the
+    // buff silently does nothing.
     if (auto* combat = world.combats.get(id)) {
         f32 base_damage = 0;
         if (world.types) {
@@ -1380,6 +1386,10 @@ void recalculate_modifiers(World& world, u32 id) {
                     base_damage = def->damage;
                 }
             }
+        }
+        if (auto* attrs = world.attribute_blocks.get(id)) {
+            auto it = attrs->base.find("damage");
+            if (it != attrs->base.end()) base_damage = it->second;
         }
         auto fit = flat.find("damage");
         auto pit = pct.find("damage");

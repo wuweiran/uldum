@@ -1185,7 +1185,7 @@ Flagged units get a status-icon strip near the HP bar (same place WC3's buff ico
 
 **Attributes (numeric + string):**
 
-- Base values replaced wholesale from the new type's `attributes_numeric` / `attributes_string`. Direct Lua mutations (`SetUnitAttribute`) made before morph are lost — re-apply them in the morph helper if they should survive.
+- Base values replaced wholesale from the new type's `attributes_numeric` / `attributes_string`. Direct Lua mutations (`SetUnitBaseAttribute`) made before morph are lost — re-apply them in the morph helper if they should survive.
 - Modifiers from passive abilities are gone with the old attribute block. After the component swap, `recalculate_modifiers` runs so any passive surviving on the ability set re-applies its modifiers to the fresh block. (Today `recalculate_modifiers` is a stub; the call is plumbed for when the modifier system lands.)
 - Attribute ids only on the old type → gone. Ids only on the new type → start at the new type's declared value.
 

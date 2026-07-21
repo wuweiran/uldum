@@ -1067,26 +1067,68 @@ void ScriptEngine::bind_api() {
     };
 
     // Attributes
-    lua["GetUnitAttribute"] = [&](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().contains(u)) return 0;
-        auto* ab = sim.world().attribute_blocks.get(u.id);
+    // Effective value = what combat/movement actually use. For most
+    // attributes that's the recalc'd numeric map; damage and move_speed
+    // live on their own components (Combat/Movement), so read those
+    // directly — the numeric map's entry for them is a phantom the
+    // attack/move paths never consult.
+    auto effective_attr = [&](simulation::Unit u, const std::string& name) -> f32 {
+        auto& w = sim.world();
+        if (name == "damage") {
+            if (auto* c = w.combats.get(u.id)) return c->damage;
+        } else if (name == "move_speed") {
+            if (auto* m = w.movements.get(u.id)) return m->speed;
+        }
+        auto* ab = w.attribute_blocks.get(u.id);
         if (!ab) return 0;
         auto it = ab->numeric.find(name);
         return it != ab->numeric.end() ? it->second : 0;
     };
 
-    lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
+    // Base value = pre-modifier. Per-unit override in base wins; else the
+    // type def supplies the base for the two component-resident stats.
+    auto base_attr = [&](simulation::Unit u, const std::string& name) -> f32 {
+        auto& w = sim.world();
+        if (auto* ab = w.attribute_blocks.get(u.id)) {
+            auto it = ab->base.find(name);
+            if (it != ab->base.end()) return it->second;
+        }
+        if (auto* info = w.handle_infos.get(u.id); info && w.types) {
+            if (auto* def = w.types->get_unit_type(info->type_id)) {
+                if (name == "damage")     return def->damage;
+                if (name == "move_speed") return def->move_speed;
+            }
+        }
+        return 0;
+    };
+
+    lua["GetUnitAttribute"] = [&, effective_attr](simulation::Unit u, const std::string& name) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        return effective_attr(u, name);
+    };
+
+    // Pre-modifier base — use this for read-modify-write (e.g. permanent
+    // +2 armor) so you don't fold a transient aura bonus into the base.
+    lua["GetUnitBaseAttribute"] = [&, base_attr](simulation::Unit u, const std::string& name) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        return base_attr(u, name);
+    };
+
+    // Writes the base; the next recalc re-sums passive ability modifiers
+    // on top (a +3 armor aura still adds 3 after the script writes a new
+    // base). Works for damage / move_speed too: recalc reads base as the
+    // per-unit override for those component-resident stats. Requires an
+    // AttributeBlock — a unit authored with no `attributes` can't be set.
+    // Named *Base* on purpose: the effective value is computed, never set —
+    // GetUnitAttribute reads it, this writes the base it's derived from.
+    lua["SetUnitBaseAttribute"] = [&, effective_attr](simulation::Unit u, const std::string& name, f32 value) {
         if (!sim.world().contains(u)) return;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
-        // Writes to base; the next recalc re-sums passive ability
-        // modifiers on top so a +3 armor aura still adds 3 after the
-        // script writes a new base.
         ab->base[name] = value;
         simulation::recalculate_modifiers(sim.world(), u.id);
         if (m_unit_update_fn) {
-            f32 effective = ab->numeric.count(name) ? ab->numeric.at(name) : value;
-            auto pkt = network::build_update_attr(u.id, name, effective);
+            auto pkt = network::build_update_attr(u.id, name, effective_attr(u, name));
             m_unit_update_fn(u.id, pkt);
         }
     };

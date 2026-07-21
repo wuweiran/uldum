@@ -310,8 +310,9 @@ GetUnitMaxState(unit, state_id) → float
 SetUnitState(unit, state_id, value)
 
 -- Attributes (map-defined: armor, strength, etc.)
-GetUnitAttribute(unit, attr_id) → float (numeric)
-SetUnitAttribute(unit, attr_id, value)
+GetUnitAttribute(unit, attr_id) → float
+GetUnitBaseAttribute(unit, attr_id) → float
+SetUnitBaseAttribute(unit, attr_id, value)
 GetUnitStringAttribute(unit, attr_id) → string
 SetUnitStringAttribute(unit, attr_id, value)
 

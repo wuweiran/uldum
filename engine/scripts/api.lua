@@ -358,17 +358,28 @@ function SetUnitState(unit, state_id, value) end
 -- Attributes (map-defined: armor, strength, etc.)
 --------------------------------------------------------------------------------
 
---- Get a numeric attribute.
+--- Get a numeric attribute's EFFECTIVE value (base + all active
+--- ability/item/aura modifiers) — what combat and movement actually use.
 ---@param unit unit
 ---@param attr_id string   e.g. "armor", "strength"
 ---@return number
 function GetUnitAttribute(unit, attr_id) end
 
---- Set a numeric attribute.
+--- Get a numeric attribute's BASE value (pre-modifier). Use this for
+--- read-modify-write (e.g. a permanent +2) so a transient aura bonus
+--- isn't folded into the base.
+---@param unit unit
+---@param attr_id string
+---@return number
+function GetUnitBaseAttribute(unit, attr_id) end
+
+--- Set a numeric attribute's BASE value. The effective value is computed
+--- (base + modifiers) and can't be set directly — the next recalc would
+--- overwrite it. Modifiers still stack on top of the new base.
 ---@param unit unit
 ---@param attr_id string
 ---@param value number
-function SetUnitAttribute(unit, attr_id, value) end
+function SetUnitBaseAttribute(unit, attr_id, value) end
 
 --- Get a string attribute (e.g. "armor_type").
 ---@param unit unit
