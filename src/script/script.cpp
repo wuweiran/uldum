@@ -2937,8 +2937,16 @@ void ScriptEngine::bind_input_api() {
     // SelectUnit. The Action preset locks selection to this unit
     // (doesn't mutate it further), and the HUD action bar reads the
     // unit's abilities for its slots.
+    //
+    // "Controlled" implies ownership: the map script runs once for the
+    // session, but the local player may be any slot. Refuse a unit the
+    // local player doesn't own so a player-1 client doesn't inherit the
+    // player-0 hero's portrait, abilities, and reticle. A rejected call
+    // leaves the selection empty and the HUD shows nothing.
     lua["SetControlledUnit"] = [this](simulation::Unit unit) {
         if (!m_selection || !m_sim || !m_sim->world().contains(unit)) return;
+        auto* owner = m_sim->world().owners.get(unit.id);
+        if (!owner || owner->id != m_selection->player().id) return;
         m_selection->select(unit);
     };
 
