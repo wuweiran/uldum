@@ -1162,13 +1162,6 @@ void Hud::emit_order_error(std::string_view base, std::string_view specifier,
     auto& s = *m_impl;
     if (!s.display_message_cfg.enabled) return;   // no overlay authored → silent
 
-    // Throttle: same reason within 1.5s is dropped so a spam-click on a
-    // dark ability doesn't flood the line stack.
-    std::string throttle_key = std::string(base) + "." + std::string(specifier);
-    if (throttle_key == s.last_order_error_key && s.order_error_since < 1.5f) return;
-    s.last_order_error_key = throttle_key;
-    s.order_error_since    = 0.0f;
-
     // Resolve chain: text.json `ui.error.<base>.<specifier>` → `ui.error.
     // <base>` → engine built-in. First hit wins. The reject is client-
     // local, so we resolve to a final string here and store it literally
@@ -1201,18 +1194,29 @@ void Hud::emit_order_error(std::string_view base, std::string_view specifier,
     }
     if (!found) text = builtin();
 
-    i18n::LocalizedString loc;
-    loc.key = std::move(text);   // literal — resolve() round-trips an unknown key
-    display_message(std::move(loc), 0.0f, 1u << local_player());
-
+    // WC3: the error sound plays on EVERY rejected order — no cooldown.
     if (s.play_sound_fn && !s.error_sound.empty()) {
         s.play_sound_fn(s.error_sound);
     }
+
+    // The text does not stack: if the newest line is the same message,
+    // just refresh its timer so repeated rejects keep it up instead of
+    // piling identical lines onto the ≤max_lines stack.
+    u32 mask = 1u << local_player();
+    auto& lines = s.display_message_rt.lines;
+    if (!lines.empty() && lines.back().players_mask == mask &&
+        lines.back().loc.key == text) {
+        lines.back().age = 0.0f;
+        return;
+    }
+
+    i18n::LocalizedString loc;
+    loc.key = std::move(text);   // literal — resolve() round-trips an unknown key
+    display_message(std::move(loc), 0.0f, mask);
 }
 
 void Hud::update_display_messages(f32 dt) {
     if (!m_impl) return;
-    m_impl->order_error_since += dt;
     auto& rt = m_impl->display_message_rt;
     if (rt.lines.empty()) return;
     for (auto& l : rt.lines) l.age += dt;
@@ -1824,10 +1828,19 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                         if (!any_can_hit) continue;
                     }
                 }
-                if (!is_command &&
-                    !s.world_ctx->simulation->target_filter_passes(
-                        def->target_filter, caster_unit, cand)) {
-                    continue;
+                if (!is_command) {
+                    // Batch cast: snap if ANY selected unit can target the
+                    // candidate (matches the batch-attack rule above).
+                    bool any_can_cast = false;
+                    if (s.world_ctx->selection) {
+                        for (auto u : s.world_ctx->selection->selected()) {
+                            if (s.world_ctx->simulation->target_filter_passes(
+                                    def->target_filter, u, cand)) {
+                                any_can_cast = true; break;
+                            }
+                        }
+                    }
+                    if (!any_can_cast) continue;
                 }
                 const auto* tf = world.transforms.get(id);
                 if (!tf) continue;
@@ -2288,10 +2301,14 @@ Hud::AbilityAimState Hud::aim_state() const {
             const auto* hi = ctx.world->handle_infos.get(id);
             if (!hi || hi->category != simulation::Category::Unit) continue;
             simulation::Unit cand{id};
-            if (!ctx.simulation->target_filter_passes(def->target_filter,
-                                                      caster_unit, cand)) {
-                continue;
+            // Batch cast: snap if ANY selected unit can target the candidate.
+            bool any_can_cast = false;
+            for (auto u : ctx.selection->selected()) {
+                if (ctx.simulation->target_filter_passes(def->target_filter, u, cand)) {
+                    any_can_cast = true; break;
+                }
             }
+            if (!any_can_cast) continue;
             const auto* tf = ctx.world->transforms.get(id);
             if (!tf) continue;
             f32 dx2 = tf->position.x - out.drag_x;

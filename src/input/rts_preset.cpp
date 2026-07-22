@@ -251,9 +251,14 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                     target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
                     if (simulation::is_non_null_handle(target)) {
                         target_picked = true;
-                        auto caster = sel.selected().front();
-                        target_ok = ctx.simulation.target_filter_passes(
-                            def->target_filter, caster, target, &reject_specifier);
+                        // Batch cast: valid if ANY selected unit can target
+                        // it (each unit that can't is dropped by the sim).
+                        for (auto u : sel.selected()) {
+                            if (ctx.simulation.target_filter_passes(
+                                    def->target_filter, u, target, &reject_specifier)) {
+                                target_ok = true; break;
+                            }
+                        }
                     }
                 }
                 if (target_ok) {
