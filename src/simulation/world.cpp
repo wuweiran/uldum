@@ -103,17 +103,23 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
         m.type = def->move_type;
         world.movements.add(id, std::move(m));
     }
-    {
+    // Combat is opt-in: only units whose type declares a `weapon` get the
+    // component. system_combat iterates world.combats.ids(), so a unit
+    // without it is invisible to the entire combat loop — no auto-acquire,
+    // no attack orders resolving, no fight-back. Buildings and other
+    // non-combatants leave the weapon absent.
+    if (def->weapon) {
+        const auto& w = *def->weapon;
         Combat combat;
-        combat.damage           = def->damage;
-        combat.range            = def->attack_range;
-        combat.attack_cooldown  = def->attack_cooldown;
-        combat.dmg_time         = def->dmg_time;
-        combat.backsw_time      = def->backsw_time;
+        combat.damage           = w.damage;
+        combat.range            = w.attack_range;
+        combat.attack_cooldown  = w.attack_cooldown;
+        combat.dmg_time         = w.dmg_time;
+        combat.backsw_time      = w.backsw_time;
         combat.dmg_pt           = def->dmg_pt;
-        combat.projectile       = def->projectile;
+        combat.projectile       = w.projectile;
         combat.acquire_range    = def->acquire_range;
-        combat.target_mask      = def->target_mask;
+        combat.target_mask      = w.target_mask;
         world.combats.add(id, std::move(combat));
     }
     world.sights.add(id, Sight{def->sight_range});
@@ -391,19 +397,30 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
         m->approach_range   = 0.0f;
     }
 
-    // Combat: swap, cancel any in-flight attack.
-    if (auto* c = world.combats.get(id)) {
-        c->damage           = new_def->damage;
-        c->range            = new_def->attack_range;
-        c->attack_cooldown  = new_def->attack_cooldown;
-        c->dmg_time         = new_def->dmg_time;
-        c->backsw_time      = new_def->backsw_time;
+    // Combat: presence tracks the new type. Morphing into a unit with a
+    // weapon adds the component; morphing into a weaponless type (e.g. a
+    // unit → building) removes it so it drops out of the combat loop;
+    // otherwise update fields in place and cancel any in-flight attack.
+    if (new_def->weapon) {
+        const auto& w = *new_def->weapon;
+        auto* c = world.combats.get(id);
+        if (!c) {
+            world.combats.add(id, Combat{});
+            c = world.combats.get(id);
+        }
+        c->damage           = w.damage;
+        c->range            = w.attack_range;
+        c->attack_cooldown  = w.attack_cooldown;
+        c->dmg_time         = w.dmg_time;
+        c->backsw_time      = w.backsw_time;
         c->dmg_pt           = new_def->dmg_pt;
-        c->projectile       = new_def->projectile;
+        c->projectile       = w.projectile;
         c->acquire_range    = new_def->acquire_range;
-        c->target_mask      = new_def->target_mask;
+        c->target_mask      = w.target_mask;
         c->target           = Unit{};
         c->attack_state     = AttackState::Idle;
+    } else {
+        world.combats.remove(id);
     }
 
     // Sight (per-unit sight radius).
@@ -1383,7 +1400,7 @@ void recalculate_modifiers(World& world, u32 id) {
         if (world.types) {
             if (auto* info = world.handle_infos.get(id)) {
                 if (auto* def = world.types->get_unit_type(info->type_id)) {
-                    base_damage = def->damage;
+                    if (def->weapon) base_damage = def->weapon->damage;
                 }
             }
         }

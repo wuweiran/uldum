@@ -1220,6 +1220,9 @@ bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
 
     const auto* mv  = world.movements.get(lead.id);
     bool can_move   = mv && mv->speed > 0.0f;
+    // Combat is opt-in (create_unit only adds the component when the type
+    // declares a `combat` block), so presence IS the capability — a
+    // barracks has no Combat component and thus no attack command.
     bool can_attack = world.combats.get(lead.id) != nullptr;
 
     if (command == "attack")        return can_attack;

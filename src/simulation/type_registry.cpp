@@ -108,13 +108,16 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.pathing_footprint_h = val.value("pathing_footprint_h", 0u);
         }
 
-        if (val.contains("combat")) {
-            auto& c = val["combat"];
-            def.damage           = c.value("damage", 10.0f);
-            def.attack_range     = c.value("range", 1.0f);
-            def.attack_cooldown  = c.value("cooldown", 1.0f);
-            def.dmg_time         = c.value("dmg_time", 0.3f);
-            def.backsw_time      = c.value("backsw_time", 0.3f);
+        // Weapon block (def-side vocabulary). Presence → the unit can
+        // fight; absence → no weapon → no Combat component at spawn.
+        if (val.contains("weapon")) {
+            auto& c = val["weapon"];
+            UnitTypeDef::WeaponDef w;
+            w.damage           = c.value("damage", 10.0f);
+            w.attack_range     = c.value("range", 1.0f);
+            w.attack_cooldown  = c.value("cooldown", 1.0f);
+            w.dmg_time         = c.value("dmg_time", 0.3f);
+            w.backsw_time      = c.value("backsw_time", 0.3f);
             // Ranged attack: a `projectile` block makes this attack fire a
             // missile. Its presence replaces the old `ranged` flag.
             if (c.contains("projectile")) {
@@ -129,9 +132,8 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
                                    l.value("side", 0.0f),
                                    l.value("height", 0.0f)};
                 }
-                def.projectile = std::move(spec);
+                w.projectile = std::move(spec);
             }
-            def.acquire_range    = c.value("acquire_range", 10.0f);
             // Attack target layers. JSON "targets": ["ground","air",...]. Omitted
             // → surface (ground/water/amphibious) + structure, NOT air — units
             // opt into anti-air. parse_target_mask({}) supplies the implicit
@@ -140,8 +142,13 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             if (c.contains("targets") && c["targets"].is_array()) {
                 for (auto& t : c["targets"]) if (t.is_string()) tl.push_back(t.get<std::string>());
             }
-            def.target_mask = parse_target_mask(tl);
+            w.target_mask = parse_target_mask(tl);
+            def.weapon = std::move(w);
         }
+
+        // Acquisition range is unit-level (WC3 semantics), authored as a
+        // sibling of `weapon`. Only meaningful when a weapon exists.
+        def.acquire_range = val.value("acquire_range", 10.0f);
 
         if (val.contains("animation")) {
             auto& a = val["animation"];
@@ -213,7 +220,8 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         }
 
         log::trace(TAG, "Registered unit type '{}' (hp={}, speed={}, dmg={})",
-                   def.id, def.max_health, def.move_speed, def.damage);
+                   def.id, def.max_health, def.move_speed,
+                   def.weapon ? def.weapon->damage : 0.0f);
         m_unit_types[key] = std::move(def);
 
         // Cache string-typed top-level fields for i18n raw fallback.

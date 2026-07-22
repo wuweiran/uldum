@@ -1536,18 +1536,16 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
     world.healths.add(entity_id, simulation::Health{max_health, max_health, 0});
     world.movements.add(entity_id, simulation::Movement{});
     world.movements.get(entity_id)->collision_radius = collision_radius;
-    {
-        simulation::Combat combat{};
-        if (m_client_types) {
-            auto* ud = m_client_types->get_unit_type(type_id);
-            if (ud) {
-                combat.dmg_pt = ud->dmg_pt;
-                combat.dmg_time = ud->dmg_time;
-                combat.backsw_time = ud->backsw_time;
-                combat.attack_cooldown = ud->attack_cooldown;
-            }
+    if (m_client_types) {
+        auto* ud = m_client_types->get_unit_type(type_id);
+        if (ud && ud->weapon) {
+            simulation::Combat combat{};
+            combat.dmg_pt = ud->dmg_pt;
+            combat.dmg_time = ud->weapon->dmg_time;
+            combat.backsw_time = ud->weapon->backsw_time;
+            combat.attack_cooldown = ud->weapon->attack_cooldown;
+            world.combats.add(entity_id, std::move(combat));
         }
-        world.combats.add(entity_id, std::move(combat));
     }
 
     if (sight_range > 0) {

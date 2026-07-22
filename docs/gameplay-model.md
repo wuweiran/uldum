@@ -711,7 +711,7 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
             "attack_type": "normal"
         },
         "movement": { "speed": 270, "turn_rate": 0.6, "type": "ground" },
-        "combat": { "damage": 13, "range": 1.0, "cooldown": 1.35 },
+        "weapon": { "damage": 13, "range": 1.0, "cooldown": 1.35 },
         "vision": { "day": 1400, "night": 800 },
         "abilities": ["attack", "move", "stop", "hold_position", "defend"],
         "classifications": ["ground"],
@@ -740,7 +740,7 @@ A hero is a unit with `"classifications": ["hero", ...]` and a `"hero"` block.
             "strength": 22, "agility": 13, "intelligence": 17
         },
         "movement": { "speed": 320, "turn_rate": 0.8, "type": "ground" },
-        "combat": { "damage": 26, "range": 1.0, "cooldown": 1.8 },
+        "weapon": { "damage": 26, "range": 1.0, "cooldown": 1.8 },
         "vision": { "day": 1800, "night": 800 },
         "abilities": ["attack", "move", "holy_light", "divine_shield", "devotion_aura", "resurrection"],
         "hero": {

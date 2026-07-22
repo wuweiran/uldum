@@ -1095,7 +1095,7 @@ void ScriptEngine::bind_api() {
         }
         if (auto* info = w.handle_infos.get(u.id); info && w.types) {
             if (auto* def = w.types->get_unit_type(info->type_id)) {
-                if (name == "damage")     return def->damage;
+                if (name == "damage")     return def->weapon ? def->weapon->damage : 0.0f;
                 if (name == "move_speed") return def->move_speed;
             }
         }

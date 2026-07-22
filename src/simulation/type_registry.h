@@ -42,20 +42,27 @@ struct UnitTypeDef {
     u32 pathing_footprint_w = 0;
     u32 pathing_footprint_h = 0;
 
-    // Combat
-    f32 damage = 10;
-    f32 attack_range = 1.0f;
-    f32 attack_cooldown = 1.0f;
-    f32 dmg_time = 0.3f;           // seconds: fore-swing before damage (JSON: combat.dmg_time)
-    f32 backsw_time = 0.3f;       // seconds: backswing after damage (JSON: combat.backsw_time)
+    // Weapon — the design-time attack spec. "weapon" is the def-side
+    // vocabulary; at instantiation it becomes the runtime `Combat`
+    struct WeaponDef {
+        f32 damage = 10;
+        f32 attack_range = 1.0f;
+        f32 attack_cooldown = 1.0f;
+        f32 dmg_time = 0.3f;         // seconds: fore-swing before damage (JSON: weapon.dmg_time)
+        f32 backsw_time = 0.3f;      // seconds: backswing after damage (JSON: weapon.backsw_time)
+        std::optional<ProjectileSpec> projectile;  // set → ranged auto-attack; unset → melee
+        u8  target_mask = TARGET_MASK_SURFACE;      // which MoveType layers this attack can hit (JSON: weapon.targets)
+    };
+    std::optional<WeaponDef> weapon;
+
+    // Acquisition range is unit-level, not per-weapon (mirrors WC3's
+    // Acquisition Range): how far the unit scans for enemies to auto-engage.
+    f32 acquire_range = 10.0f;
 
     // Animation (JSON: animation section)
     f32 dmg_pt = 0.5f;            // fraction of attack animation at damage point
     f32 cast_pt = 0.5f;           // fraction of spell animation at cast point
     f32 walk_speed = 0;            // movement speed at which walk anim plays at 1x (0 = use move_speed)
-    std::optional<ProjectileSpec> projectile;  // set → ranged auto-attack; unset → melee
-    f32 acquire_range = 10.0f;
-    u8  target_mask = TARGET_MASK_SURFACE;  // which MoveType layers this attack can hit (JSON: combat.targets)
 
     // Vision
     f32 sight_range = 1400;
