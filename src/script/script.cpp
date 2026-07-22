@@ -1650,8 +1650,14 @@ void ScriptEngine::bind_api() {
                           t2->position.x - t1->position.x);
     };
 
-    lua["RandomInt"] = [](i32 min, i32 max) -> i32 { return min + (std::rand() % (max - min + 1)); };
-    lua["RandomFloat"] = [](f32 min, f32 max) -> f32 { return min + static_cast<f32>(std::rand()) / static_cast<f32>(RAND_MAX) * (max - min); };
+    lua["RandomInt"] = [this](i32 min, i32 max) -> i32 {
+        if (min > max) std::swap(min, max);
+        return std::uniform_int_distribution<i32>(min, max)(m_rng);
+    };
+    lua["RandomFloat"] = [this](f32 min, f32 max) -> f32 {
+        if (min > max) std::swap(min, max);
+        return std::uniform_real_distribution<f32>(min, max)(m_rng);
+    };
 
     // ── I18n API ──────────────────────────────────────────────────────
     //

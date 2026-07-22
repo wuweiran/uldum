@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <memory>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -244,6 +245,13 @@ private:
     EffectDestroyFn          m_effect_destroy_fn;
     SetSunDirectionFn        m_set_sun_direction_fn;
     u32                      m_player_count = 1;
+
+    // Script-facing RNG for RandomInt / RandomFloat. A dedicated
+    // Mersenne Twister — not std::rand — so small-range rolls are
+    // unbiased (std::uniform_int_distribution, no modulo skew) and the
+    // stream isn't shared with unrelated std::rand callers (particles,
+    // camera shake). Seeded once from random_device.
+    std::mt19937             m_rng{std::random_device{}()};
 
     // Server-side tracker for active effects. Every effect — burst or
     // continuous — lives in the same list and follows the same Create
