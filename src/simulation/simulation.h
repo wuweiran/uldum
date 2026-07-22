@@ -99,8 +99,12 @@ public:
     // `target` is a valid candidate for an ability authored with this
     // `filter` cast by `caster`. Used by the HUD's drag-cast snap to
     // pick candidate units, and as the canonical commit-time check.
+    // When `out_specifier` is non-null and the result is false, it is
+    // set to the first failing gate's specifier ("enemy" / "dead" /
+    // a target classification / "") for local-input reject feedback.
     bool target_filter_passes(const TargetFilter& filter,
-                              Unit caster, Unit target) const;
+                              Unit caster, Unit target,
+                              std::string* out_specifier = nullptr) const;
 
     // Per-player names. Indexed by Player.id; empty string for unknown ids.
     // Populated by App::start_session from the finalized lobby, surfaced to

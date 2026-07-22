@@ -119,22 +119,28 @@ bool Simulation::has_shared_vision(Player a, Player b) const {
 }
 
 bool Simulation::target_filter_passes(const TargetFilter& filter,
-                                      Unit caster, Unit target) const {
+                                      Unit caster, Unit target,
+                                      std::string* out_specifier) const {
+    auto reject = [out_specifier](std::string spec) {
+        if (out_specifier) *out_specifier = std::move(spec);
+        return false;
+    };
+
     // Read world through the accessor so the client's m_world_override
     // is honored — without this, MP clients query the empty server
     // simulation's world and every target is rejected.
     const World& w = world();
-    if (!w.contains(target)) return false;
+    if (!w.contains(target)) return reject("");
 
     // Liveness gate. `alive` defaults true in JSON (parser-side), so
     // most filters only accept living targets. `dead` lets resurrect-
     // style abilities target corpses; both can be true for either.
     bool dead = w.dead_states.has(target.id);
-    if (!filter.alive && !filter.dead) return false;
+    if (!filter.alive && !filter.dead) return reject("");
     if (dead) {
-        if (!filter.dead) return false;
+        if (!filter.dead) return reject("dead");
     } else {
-        if (!filter.alive) return false;
+        if (!filter.alive) return reject("alive");
     }
 
     // Self / ally / enemy gate. At least one of these must be set for
@@ -143,16 +149,16 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // be targeted.
     bool is_self = caster == target;
     if (is_self) {
-        if (!filter.self_) return false;
+        if (!filter.self_) return reject("self");
     } else {
         const auto* caster_owner = w.owners.get(caster.id);
         const auto* target_owner = w.owners.get(target.id);
-        if (!caster_owner || !target_owner) return false;
+        if (!caster_owner || !target_owner) return reject("");
         bool allied = is_allied(*caster_owner, *target_owner);
         if (allied) {
-            if (!filter.ally) return false;
+            if (!filter.ally) return reject("ally");
         } else {
-            if (!filter.enemy) return false;
+            if (!filter.enemy) return reject("enemy");
         }
     }
 
@@ -160,7 +166,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // classification set must contain at least one of the listed tags.
     if (!filter.classifications.empty()) {
         const auto* cls = w.classifications.get(target.id);
-        if (!cls) return false;
+        if (!cls) return reject("");
         bool any = false;
         for (const auto& want : filter.classifications) {
             for (const auto& have : cls->flags) {
@@ -168,7 +174,9 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
             }
             if (any) break;
         }
-        if (!any) return false;
+        // Report the target's own first flag as the specifier — the
+        // simplest path and what ui.error.target.<flag> expects.
+        if (!any) return reject(cls->flags.empty() ? std::string{} : cls->flags[0]);
     }
 
     return true;

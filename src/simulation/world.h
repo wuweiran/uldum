@@ -10,6 +10,7 @@
 #include <glm/vec3.hpp>
 #include <functional>
 #include <map>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -312,10 +313,13 @@ bool     set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
 // "health" key). `cost` maps state-name → amount. ability_can_afford
 // returns true when every cost is satisfiable; health cost never
 // reduces the caster below 1 HP (it is hard-capped, no suicide casts).
+// When it returns false and `out_lacking` is non-null, `*out_lacking`
+// is set to the first unpayable state's name (for reject messages).
 // ability_pay_cost deducts; call it only after ability_can_afford
 // returned true. Both no-op on an empty cost map.
 bool     ability_can_afford(const World& world, u32 unit_id,
-                            const std::map<std::string, f32>& cost);
+                            const std::map<std::string, f32>& cost,
+                            std::string* out_lacking = nullptr);
 void     ability_pay_cost(World& world, u32 unit_id,
                           const std::map<std::string, f32>& cost);
 

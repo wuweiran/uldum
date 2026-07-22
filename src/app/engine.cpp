@@ -177,6 +177,11 @@ bool Engine::init(const LaunchArgs& args) {
         return false;
     }
     m_hud.set_locale_manager(&m_i18n);
+    // The HUD emits cast-reject sounds through this — it can't reach audio
+    // directly. play_sfx_2d silently no-ops on an empty / missing path.
+    m_hud.set_play_sound_fn([this](std::string_view path) {
+        m_audio.play_sfx_2d(path);
+    });
     // Authored HUD units are dp (1 dp = 1/160 inch). Platform reports
     // physical-pixels-per-dp — on Windows derived from the monitor
     // DPI, on Android from AConfiguration density. Setting once at

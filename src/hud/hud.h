@@ -571,6 +571,29 @@ public:
     // the app loop after `update_text_tags`.
     void update_display_messages(f32 dt);
 
+    // Show a cast-reject line to the LOCAL player (client-local — masked
+    // to the local slot so it never replicates). Resolves the
+    // `ui.error.<base>[.<specifier>]` fallback chain through text.json,
+    // then the engine built-in wording; throttles identical reasons; plays
+    // the authored error sound (if any) via the sound callback. Called from
+    // the HUD's own cast gates and by the input preset (through the HUD
+    // pointer) on a rejected desktop target-click. No-op if the
+    // display_message composite isn't authored. `base` is
+    // "cooldown"/"cost"/"target"; `specifier` refines it (may be empty);
+    // `args` supplies `{name}` substitutions (e.g. cooldown_remaining).
+    void emit_order_error(std::string_view base, std::string_view specifier,
+                          const i18n::ArgsMap& args = {});
+
+    // Optional SFX path played on any cast-reject line (the `sound` key in
+    // hud.json's `error` block). Empty = silent. Set by the loader.
+    void set_error_sound(std::string path);
+
+    // Play a UI (2D) sound by asset path. The engine wires this to the
+    // audio system (the HUD can't reach audio directly). Empty/unset =
+    // silent. Used by emit_order_error for the reject sound.
+    using PlaySoundFn = std::function<void(std::string_view path)>;
+    void set_play_sound_fn(PlaySoundFn fn);
+
     // Fired when a click on an active item slot resolves. Args:
     //   item_unit_id   — entity id of the item handle in the slot
     //   ability_id     — the item's `abilities[0]` (the "use" ability)

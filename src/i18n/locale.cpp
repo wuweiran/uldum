@@ -188,8 +188,8 @@ bool LocaleManager::route(Pool pool, std::string_view key,
     return false;
 }
 
-std::string LocaleManager::resolve(Pool pool, std::string_view key,
-                                     const ArgsMap& args) const {
+std::optional<std::string> LocaleManager::try_resolve(Pool pool, std::string_view key,
+                                                      const ArgsMap& args) const {
     std::string file, inner;
     bool is_entity = route(pool, key, file, inner);
 
@@ -208,17 +208,22 @@ std::string LocaleManager::resolve(Pool pool, std::string_view key,
         }
     }
     // Step 3: raw fallback to the entity registry. Entity keys carry
-    // their own schema defaults — the callback may return Some("")
-    // for a schema-known property that wasn't authored. We treat that
-    // as a valid hit and stop here; the empty string is the property's
-    // value. Distinguishing "empty" from "absent" is the caller's job.
+    // their own schema defaults — the callback may return Some("") for a
+    // schema-known property that wasn't authored. We treat that as a hit.
     if (pool == Pool::Map && is_entity && m_raw_fallback) {
         if (auto v = m_raw_fallback(key)) {
             return apply_args(*v, args);
         }
     }
-    // Step 4: literal key. Reached only for non-entity keys or unknown
-    // entity fields — surfaces the key in the UI so authors spot it.
+    // Total miss — no literal-key substitute here (that's resolve()'s job).
+    return std::nullopt;
+}
+
+std::string LocaleManager::resolve(Pool pool, std::string_view key,
+                                     const ArgsMap& args) const {
+    if (auto v = try_resolve(pool, key, args)) return *v;
+    // Literal key. Reached only for non-entity keys or unknown entity
+    // fields — surfaces the key in the UI so authors spot it.
     return std::string(key);
 }
 

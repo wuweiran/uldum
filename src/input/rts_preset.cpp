@@ -1,6 +1,7 @@
 #include "input/rts_preset.h"
 #include "simulation/order.h"
 #include "simulation/ability_def.h"
+#include "hud/hud.h"
 #include "core/log.h"
 
 #include <cmath>
@@ -243,12 +244,15 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (def && def->form == simulation::AbilityForm::Target) {
                 simulation::Unit target{};
                 bool target_ok = false;
+                bool target_picked = false;
+                std::string reject_specifier;
                 if (def->widget_kinds != 0) {
                     target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
                     if (simulation::is_non_null_handle(target)) {
+                        target_picked = true;
                         auto caster = sel.selected().front();
                         target_ok = ctx.simulation.target_filter_passes(
-                            def->target_filter, caster, target);
+                            def->target_filter, caster, target, &reject_specifier);
                     }
                 }
                 if (target_ok) {
@@ -275,7 +279,11 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                     }
                 }
                 // Widget-only with no valid target → stay in targeting mode.
+                // If a widget WAS picked but failed the filter, explain why.
                 if (def->widget_kinds != 0 && !def->accept_point) {
+                    if (target_picked && ctx.hud) {
+                        ctx.hud->emit_order_error("target", reject_specifier);
+                    }
                     return;
                 }
             }

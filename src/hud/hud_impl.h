@@ -193,6 +193,14 @@ struct Hud::Impl {
     // Display-message composite.
     DisplayMessageConfig  display_message_cfg{};
     DisplayMessageRuntime display_message_rt{};
+    // Cast-reject (error) state: the optional reject SFX path, the UI
+    // sound callback, and throttle bookkeeping so a spam-click on a dark
+    // ability doesn't flood the line stack. The strings live in
+    // text.json (`ui.error.*`), not here.
+    std::string      error_sound;
+    Hud::PlaySoundFn play_sound_fn;
+    std::string      last_order_error_key;
+    f32              order_error_since = 1e9f;   // seconds since last emit
     i32 inventory_hover_slot   = -1;
     i32 inventory_pressed_slot = -1;
     Hud::InventoryUseFn          inventory_use_fn;

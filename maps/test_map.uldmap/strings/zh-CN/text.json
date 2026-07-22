@@ -23,6 +23,14 @@
         "command.attack_move.name":   "强攻",
         "command.attack_move.tooltip": "前往目标地点,主动攻击沿途遇到的所有敌人。",
         "command.patrol.name":        "巡逻",
-        "command.patrol.tooltip":     "命令单位在当前位置与目标地点之间往返巡逻。"
+        "command.patrol.tooltip":     "命令单位在当前位置与目标地点之间往返巡逻。",
+
+        "error.cooldown":     "尚未冷却（还需 {cooldown_remaining} 秒）",
+        "error.cost":         "{resource}不足",
+        "error.cost.mana":    "法力不足",
+        "error.target":       "无效的目标",
+        "error.target.enemy": "不能以敌方单位为目标",
+        "error.target.ally":  "不能以友方单位为目标",
+        "error.target.dead":  "目标必须存活"
     }
 }

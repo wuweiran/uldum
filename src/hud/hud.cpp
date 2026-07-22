@@ -49,9 +49,24 @@ resolve_slot_ability(u32 slot_index,
                      const WorldContext& ctx,
                      const simulation::AbilityDef*& out_def);
 
+// Why a slot can't be cast right now — the return of slot_cast_reject,
+// destructured straight into emit_order_error. HUD-local: the sim no
+// longer has a reason type (target_filter_passes returns a bare
+// specifier; ability_can_afford names the lacking state).
+struct OrderReject {
+    std::string   base;        // "cooldown" | "cost"
+    std::string   specifier;   // resource name, or empty
+    i18n::ArgsMap args;
+};
+
 // Same-file forward decl for the affordability + cooldown gate, used by
 // both click and keyboard dispatch. `is_castable_form` is `inline` in
-// hud_impl.h — no forward decl needed for it.
+// hud_impl.h — no forward decl needed for it. slot_cast_reject returns
+// the reason (for emit_order_error); slot_castable_now is the bool wrapper.
+static std::optional<OrderReject> slot_cast_reject(
+        const WorldContext& ctx, u32 unit_id,
+        const simulation::AbilityInstance& inst,
+        const simulation::AbilityDef& def);
 static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
                               const simulation::AbilityInstance& inst,
                               const simulation::AbilityDef& def);
@@ -1133,8 +1148,71 @@ void Hud::display_message(i18n::LocalizedString text, f32 duration, u32 players_
     }
 }
 
+void Hud::set_error_sound(std::string path) {
+    if (m_impl) m_impl->error_sound = std::move(path);
+}
+
+void Hud::set_play_sound_fn(PlaySoundFn fn) {
+    if (m_impl) m_impl->play_sound_fn = std::move(fn);
+}
+
+void Hud::emit_order_error(std::string_view base, std::string_view specifier,
+                           const i18n::ArgsMap& args) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+    if (!s.display_message_cfg.enabled) return;   // no overlay authored → silent
+
+    // Throttle: same reason within 1.5s is dropped so a spam-click on a
+    // dark ability doesn't flood the line stack.
+    std::string throttle_key = std::string(base) + "." + std::string(specifier);
+    if (throttle_key == s.last_order_error_key && s.order_error_since < 1.5f) return;
+    s.last_order_error_key = throttle_key;
+    s.order_error_since    = 0.0f;
+
+    // Resolve chain: text.json `ui.error.<base>.<specifier>` → `ui.error.
+    // <base>` → engine built-in. First hit wins. The reject is client-
+    // local, so we resolve to a final string here and store it literally
+    // (no per-client re-resolve needed).
+    auto builtin = [&]() -> std::string {
+        if (base == "cooldown") return "Not ready yet";
+        if (base == "cost")     return "Not enough resources";
+        if (base == "target")   return "Invalid target";
+        return std::string(base);
+    };
+
+    std::string text;
+    bool found = false;
+    const std::string base_field = std::string(base);
+    const std::string spec_field = specifier.empty()
+                                     ? std::string{} : base_field + "." + std::string(specifier);
+    if (s.locale_manager) {
+        if (!spec_field.empty()) {
+            if (auto v = s.locale_manager->try_resolve(
+                    i18n::Pool::Map, "ui.error." + spec_field, args)) {
+                text = std::move(*v); found = true;
+            }
+        }
+        if (!found) {
+            if (auto v = s.locale_manager->try_resolve(
+                    i18n::Pool::Map, "ui.error." + base_field, args)) {
+                text = std::move(*v); found = true;
+            }
+        }
+    }
+    if (!found) text = builtin();
+
+    i18n::LocalizedString loc;
+    loc.key = std::move(text);   // literal — resolve() round-trips an unknown key
+    display_message(std::move(loc), 0.0f, 1u << local_player());
+
+    if (s.play_sound_fn && !s.error_sound.empty()) {
+        s.play_sound_fn(s.error_sound);
+    }
+}
+
 void Hud::update_display_messages(f32 dt) {
     if (!m_impl) return;
+    m_impl->order_error_since += dt;
     auto& rt = m_impl->display_message_rt;
     if (rt.lines.empty()) return;
     for (auto& l : rt.lines) l.age += dt;
@@ -1960,6 +2038,9 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         s.drag_cast.widget_kinds != 0 && !s.drag_cast.accept_point &&
         simulation::is_null_handle(s.drag_cast.snapped_target)) {
         commit = false;
+        // Released a widget-only cast with no valid target under the
+        // finger — explain it (bare `target`; no single offending unit).
+        emit_order_error("target", "");
     }
     if (commit) {
         u32 target_uid = simulation::is_non_null_handle(s.drag_cast.snapped_target)
@@ -2321,7 +2402,10 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
                                 ? s.world_ctx->selection->selected().front().id
                                 : UINT32_MAX;
                 if (unit_id == UINT32_MAX) continue;
-                if (!slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) continue;
+                if (auto rej = slot_cast_reject(*s.world_ctx, unit_id, *inst, *def)) {
+                    emit_order_error(rej->base, rej->specifier, rej->args);
+                    continue;
+                }
 
                 claimed.insert(*trigger_key);
                 s.action_bar_cast_fn(inst->ability_id);
@@ -2357,7 +2441,10 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
                     prev = down;
                     if (!rising) continue;
                     if (claimed.count(def->hotkey)) continue;
-                    if (!slot_castable_now(*s.world_ctx, unit_id, inst, *def)) continue;
+                    if (auto rej = slot_cast_reject(*s.world_ctx, unit_id, inst, *def)) {
+                        emit_order_error(rej->base, rej->specifier, rej->args);
+                        continue;
+                    }
 
                     claimed.insert(def->hotkey);
                     s.action_bar_cast_fn(inst.ability_id);
@@ -2457,35 +2544,41 @@ resolve_slot_ability(u32 slot_index,
 // the nearest axis-aligned edge. Used to build a cooldown pie whose
 // outer boundary matches the slot's square outline instead of a circle
 // that would bulge past or fall short of the corners.
-static bool can_afford(const simulation::World& world, u32 unit_id,
-                       const simulation::AbilityLevelDef& lvl) {
-    if (lvl.cost.empty()) return true;
-    for (const auto& [state_name, amount] : lvl.cost) {
-        if (amount <= 0.0f) continue;
-        if (state_name == "health") {
-            const auto* hp = world.healths.get(unit_id);
-            if (!hp || hp->current < amount) return false;
-            continue;
-        }
-        const auto* sb = world.state_blocks.get(unit_id);
-        if (!sb) return false;
-        auto it = sb->states.find(state_name);
-        if (it == sb->states.end() || it->second.current < amount) return false;
+// Why the selected unit can't trigger this slot's ability right now, or
+// nullopt when it can. A non-castable form (passive/aura) is never
+// "rejected" — it returns nullopt so those icons aren't suppressed.
+// Cooldown is checked before cost, matching issue_order's order. The
+// cost walk reuses the canonical ability_can_afford (no HUD-local copy)
+// so the dim state and the reject reason agree with the sim.
+static std::optional<OrderReject> slot_cast_reject(
+        const WorldContext& ctx, u32 unit_id,
+        const simulation::AbilityInstance& inst,
+        const simulation::AbilityDef& def) {
+    if (!is_castable_form(def.form)) return std::nullopt;
+    if (inst.cooldown_remaining > 0.0f) {
+        OrderReject r{"cooldown", "", {}};
+        r.args.emplace("cooldown_remaining",
+            std::to_string(static_cast<i32>(std::ceil(inst.cooldown_remaining))));
+        return r;
     }
-    return true;
+    if (!ctx.world) return std::nullopt;
+    std::string lacking;
+    if (!simulation::ability_can_afford(*ctx.world, unit_id,
+                                        def.level_data(inst.level).cost, &lacking)) {
+        OrderReject r{"cost", lacking, {}};
+        r.args.emplace("resource", lacking);
+        return r;
+    }
+    return std::nullopt;
 }
 
-// Can the selected unit trigger this slot's ability right now? Combines
-// the cooldown-remaining check with the affordability check. A slot
-// whose ability isn't a castable form always returns true here — we
-// don't want to suppress passive/aura icons.
+// Can the selected unit trigger this slot's ability right now? Thin bool
+// wrapper over slot_cast_reject for the icon-dim / hotkey-gate call sites
+// that don't need the reason.
 static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
                               const simulation::AbilityInstance& inst,
                               const simulation::AbilityDef& def) {
-    if (!is_castable_form(def.form)) return true;
-    if (inst.cooldown_remaining > 0.0f) return false;
-    if (!ctx.world) return false;
-    return can_afford(*ctx.world, unit_id, def.level_data(inst.level));
+    return !slot_cast_reject(ctx, unit_id, inst, def).has_value();
 }
 
 // ── Inventory hit-testing ───────────────────────────────────────────────
@@ -3049,9 +3142,12 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         u32 unit_id = s.world_ctx->selection
                                         ? s.world_ctx->selection->selected().front().id
                                         : UINT32_MAX;
-                        if (unit_id != UINT32_MAX &&
-                            slot_castable_now(*s.world_ctx, unit_id, *inst, *def)) {
-                            s.action_bar_cast_fn(inst->ability_id);
+                        if (unit_id != UINT32_MAX) {
+                            if (auto rej = slot_cast_reject(*s.world_ctx, unit_id, *inst, *def)) {
+                                emit_order_error(rej->base, rej->specifier, rej->args);
+                            } else {
+                                s.action_bar_cast_fn(inst->ability_id);
+                            }
                         }
                     }
                 }

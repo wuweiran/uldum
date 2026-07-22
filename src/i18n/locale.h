@@ -125,6 +125,13 @@ public:
     // verbatim.
     std::string resolve(Pool pool, std::string_view key, const ArgsMap& args = {}) const;
 
+    // Like `resolve`, but returns nullopt on a total miss (where `resolve`
+    // would fall back to the literal key). Lets a caller walk a chain of
+    // candidate keys and take the first that actually resolves — used by
+    // the HUD's cast-reject `ui.error.<base>.<specifier>` → `.<base>` walk.
+    std::optional<std::string> try_resolve(Pool pool, std::string_view key,
+                                           const ArgsMap& args = {}) const;
+
     // Convenience overload — resolves a LocalizedString payload (as
     // delivered by the network). Flattens args to the ArgsMap shape.
     std::string resolve(Pool pool, const LocalizedString& loc) const;

@@ -23,6 +23,14 @@
         "command.attack_move.name":   "Attack-Move",
         "command.attack_move.tooltip": "Move toward a point, attacking any enemies encountered along the way.",
         "command.patrol.name":        "Patrol",
-        "command.patrol.tooltip":     "Order the unit to patrol between its current location and a target point."
+        "command.patrol.tooltip":     "Order the unit to patrol between its current location and a target point.",
+
+        "error.cooldown":     "Not ready yet ({cooldown_remaining}s)",
+        "error.cost":         "Not enough {resource}",
+        "error.cost.mana":    "Not enough mana",
+        "error.target":       "Invalid target",
+        "error.target.enemy": "Can't target enemies",
+        "error.target.ally":  "Can't target allies",
+        "error.target.dead":  "Target must be alive"
     }
 }
