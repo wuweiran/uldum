@@ -226,7 +226,6 @@ static bool read_map_info(std::string_view pkg_path, DevConsole::MapInfo& out) {
     out.author            = j.value("author",            std::string{});
     out.description       = j.value("description",       std::string{});
     out.game_mode         = j.value("game_mode",         std::string{});
-    out.suggested_players = j.value("suggested_players", std::string{});
     out.version           = j.value("version",           std::string{});
     out.fog_of_war        = j.value("fog_of_war",        std::string{});
     if (j.contains("players") && j["players"].is_array())
@@ -463,7 +462,6 @@ void DevConsole::draw_menu_screen() {
             ImGui::Dummy(ImVec2(0, 4 * s));
             kv("Author:",  selected->author);
             kv("Mode:",    selected->game_mode);
-            kv("Players:", selected->suggested_players);
             kv("Slots:",   std::to_string(selected->player_count));
             kv("Teams:",   std::to_string(selected->team_count));
             kv("Fog:",     selected->fog_of_war);

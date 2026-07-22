@@ -5,7 +5,6 @@
     "author": "Uldum Sample",
     "description": "Minimal map shipped with sample_game. 32x32 flat grass.",
     "version": "0.1.0",
-    "suggested_players": "1",
     "fog_of_war": "none",
 
     "players": [

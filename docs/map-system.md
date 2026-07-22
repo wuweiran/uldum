@@ -112,7 +112,6 @@ A simple melee map has one scene. Complex maps (RPGs, campaigns) use multiple sc
     "description": "A 4-player melee map with varied terrain.",
     "version": "1.0.0",
     "game_mode": "melee",
-    "suggested_players": "2-4",
     "tileset": "tileset.json",
     "start_scene": "scene_01",
     "fog_of_war": "unexplored",
@@ -164,7 +163,6 @@ Every key the loader reads:
 | `name`, `author`, `description` | string | Display metadata. |
 | `version` | string | Author's content version (informational). |
 | `game_mode` | string | Free-form mode tag (default `custom`). |
-| `suggested_players` | string | Lobby hint, e.g. `"2-4"` (default `"1"`). |
 | `tileset` | string | Path to the tileset file, relative to map root. |
 | `start_scene` | string | Scene loaded first (default `scene_01`). |
 | `fog_of_war` | string | `none`, `explored`, or `unexplored` (default `none`). |

@@ -6,7 +6,6 @@
     "description": "A test map for engine development and verification.",
     "version": "1.0.0",
     "game_mode": "test",
-    "suggested_players": "1",
     "fog_of_war": "explored",
 
     "environment": {

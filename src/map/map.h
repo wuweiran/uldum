@@ -113,7 +113,6 @@ struct MapManifest {
     std::string description;
     std::string version;
     std::string game_mode;
-    std::string suggested_players;
     std::string tileset_path;
     std::string start_scene;
 

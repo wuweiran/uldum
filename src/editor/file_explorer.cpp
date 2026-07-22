@@ -470,7 +470,6 @@ void FileExplorer::inspect_json(const FileExplorerContext& ctx, const std::strin
         if (auto s = str_field("name");   !s.empty()) m_json_info.push_back("name: " + s);
         if (auto s = str_field("author"); !s.empty()) m_json_info.push_back("author: " + s);
         if (auto s = str_field("game_mode"); !s.empty()) m_json_info.push_back("mode: " + s);
-        if (auto s = str_field("suggested_players"); !s.empty()) m_json_info.push_back("players: " + s);
     } else if (label == "Tileset") {
         auto it = doc.find("layers");
         if (it != doc.end() && it->is_array()) m_json_info.push_back(std::format("{} layers", it->size()));

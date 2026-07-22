@@ -92,7 +92,6 @@ public:
         std::string author;
         std::string description;
         std::string game_mode;
-        std::string suggested_players;
         std::string version;
         std::string fog_of_war;
         u32         player_count = 0;

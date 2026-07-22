@@ -191,7 +191,6 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
         manifest.description      = j.value("description", "");
         manifest.version          = j.value("version", "1.0.0");
         manifest.game_mode        = j.value("game_mode", "custom");
-        manifest.suggested_players = j.value("suggested_players", "1");
         manifest.tileset_path     = j.value("tileset", "");
         manifest.start_scene      = j.value("start_scene", "scene_01");
 
