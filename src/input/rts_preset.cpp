@@ -128,18 +128,31 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
     if (input.mouse_left_released) {
         if (m_press_intent == PressIntent::Selection) {
             if (m_box_dragging) {
-                auto units = ctx.picker.pick_units_in_box(
+                auto boxed = ctx.picker.pick_units_in_box(
                     m_box_start_x, m_box_start_y,
-                    input.mouse_x, input.mouse_y,
-                    sel.player());
+                    input.mouse_x, input.mouse_y);
+
+                // WC3 policy: own units win the box; a box with no own
+                // units selects a single foreign unit as a view.
+                std::vector<simulation::Unit> own;
+                simulation::Unit foreign{};
+                for (auto& u : boxed) {
+                    auto* o = ctx.simulation.world().owners.get(u.id);
+                    if (o && o->id == sel.player().id) own.push_back(u);
+                    else if (simulation::is_null_handle(foreign)) foreign = u;
+                }
+
                 if (input.key_shift) {
-                    for (auto& u : units) {
+                    // Shift-drag stacks own units only.
+                    for (auto& u : own) {
                         if (!sel.is_selected(u) && sel.count() < simulation::MAX_SELECTION) {
                             sel.toggle(u);
                         }
                     }
-                } else if (!units.empty()) {
-                    sel.select_multiple(std::move(units));
+                } else if (!own.empty()) {
+                    sel.select_multiple(std::move(own));
+                } else if (simulation::is_non_null_handle(foreign)) {
+                    sel.select(foreign);
                 }
                 // Empty box drag: don't change selection
             } else {

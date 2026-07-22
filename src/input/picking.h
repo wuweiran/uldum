@@ -73,9 +73,10 @@ public:
     // Returns invalid Item if no item is hit.
     simulation::Item pick_item(f32 screen_x, f32 screen_y) const;
 
-    // Collect all own units within a screen-space rectangle.
-    std::vector<simulation::Unit> pick_units_in_box(f32 x0, f32 y0, f32 x1, f32 y1,
-                                                     simulation::Player player) const;
+    // Collect all selectable units within a screen-space rectangle,
+    // priority-sorted, regardless of ownership. Caller applies the
+    // own-vs-foreign policy.
+    std::vector<simulation::Unit> pick_units_in_box(f32 x0, f32 y0, f32 x1, f32 y1) const;
 
 private:
     glm::vec3 screen_to_ray(f32 sx, f32 sy) const;

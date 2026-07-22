@@ -296,8 +296,7 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
     return best;
 }
 
-std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, f32 y1,
-                                                         simulation::Player player) const {
+std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, f32 y1) const {
     std::vector<simulation::Unit> result;
     if (!m_camera || !m_world) return result;
 
@@ -307,7 +306,6 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
 
     auto& transforms = m_world->transforms;
     auto& selectables = m_world->selectables;
-    auto& owners = m_world->owners;
     auto& handle_infos = m_world->handle_infos;
 
     glm::mat4 vp = m_camera->view_projection();
@@ -323,8 +321,8 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
         if (auto* sf = m_world->status_flags.get(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
 
-        auto* own = owners.get(id);
-        if (!own || own->id != player.id) continue;
+        // Ownership is not filtered here — the caller partitions
+        // own-vs-foreign and applies the selection policy.
 
         auto* transform = transforms.get(id);
         if (!transform) continue;
