@@ -1,15 +1,12 @@
 #version 450
 
-// Procedural volumetric light shaft (Tyndall / god-ray look). No texture and
-// no motion — static math. The life envelope arrives two ways:
-//   • frag_color.a — baked brightness (fade·intensity·color.a)
-//   • frag_fade    — the raw 0→1→0 envelope, used to RETRACT the scattering
-//                    halo toward the bright core as the glow dies. Real
-//                    scattered light loses its faint outer haze first and
-//                    pulls in to the core, rather than dimming uniformly —
-//                    that's what reads as "Tyndall weakening" vs. a flat fade.
-// Output is emissive; the pipeline blends it additively so overlapping shafts
-// bloom. UV: u across the shaft width (0..1, core at 0.5), v up (0 base, 1 top).
+// Procedural volumetric light shaft (Tyndall / god-ray). No texture, no motion.
+// A scattering-density field (radial gaussian × base→top falloff) raised to a
+// growing EXPONENT as `frag_fade` drops: low density is punished harder, so the
+// outer haze and far tip erode first while the core lingers — the lit volume
+// retracts toward the source with no hard rim (a threshold would read as a
+// shrinking blob). frag_color.a is the static brightness cap; additive blend.
+// UV: u across width (0..1, core at 0.5), v up (0 base, 1 top).
 
 layout(location = 0) in vec4  frag_color;
 layout(location = 1) in vec2  frag_uv;
@@ -19,8 +16,7 @@ layout(location = 3) in float frag_fade;
 layout(location = 0) out vec4 out_color;
 
 // Static vertical striations — fixed-phase sines give dusty "god-ray" banding
-// without animating. `amount` scales the banding so it can flatten out as the
-// glow dies.
+// without animating. `amount` scales the banding so it flattens as the glow dies.
 float striations(float v, float amount) {
     float a = sin(v * 22.0);
     float b = sin(v * 9.0 + 1.7);
@@ -31,24 +27,26 @@ float striations(float v, float amount) {
 void main() {
     float f = clamp(frag_fade, 0.0, 1.0);
 
-    // Halo width tracks fade: at full glow the gaussian is wide (soft outer
-    // scatter); as it dies the exponent grows so the lobe tightens onto the
-    // core — the haze retracts inward instead of dimming in place.
-    float dx    = (frag_uv.x - 0.5) * 2.0;          // -1..1
-    float sharp = mix(9.0, 4.0, f);                  // f→0 = tight, f→1 = wide
-    float core  = exp(-dx * dx * sharp);
+    // Scattering density, normalized to 1 at the base core.
+    float dx      = (frag_uv.x - 0.5) * 2.0;         // -1..1
+    float core    = exp(-dx * dx * 5.0);             // radial gaussian
+    float v       = frag_uv.y;
+    float vprof   = (1.0 - v) * (1.0 - v);           // dense at base, thin at top
+    float density = core * vprof;
 
-    // Vertical profile: bright at the base, fading toward the top, soft caps.
-    float v        = frag_uv.y;
-    float vfade    = 1.0 - v;
-    float top_cap  = smoothstep(1.0, 0.85, v);
-    float base_cap = smoothstep(0.0, 0.06, v);
+    // Erosion by exponent: f=1 → k=1 (full soft beam); f→0 → k large, so
+    // density^k collapses toward the core with a continuous gradient (no rim).
+    float k     = mix(7.0, 1.0, f);
+    float shape = pow(density, k);
 
-    // Striation depth also fades out — scattering loses structure as it dies.
+    // Terminal wink-out so the retracted core doesn't pop when it clears.
+    float tail  = smoothstep(0.0, 0.25, f);
+
+    float base_cap = smoothstep(0.0, 0.05, v);       // soft foot at the ground
     float s = striations(v, frag_tyndall * 0.4 * f);
 
-    float intensity = core * vfade * top_cap * base_cap * s;
-    intensity *= frag_color.a;                       // baked brightness (fade·intensity)
+    float intensity = shape * tail * base_cap * s;
+    intensity *= frag_color.a;                        // static brightness cap
 
     if (intensity < 0.003) discard;
 

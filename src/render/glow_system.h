@@ -16,16 +16,22 @@ namespace uldum::rhi { class Rhi; }
 
 namespace uldum::render {
 
+// Life envelope for a glow: 0→1→0 over `age`. Unset fade_in/fade_out default
+// to a quick rise (10% of life) + long tail (20%) with a full-brightness hold;
+// smoothstep-eased. Shared by the shaft (erosion factor) and the point light
+// (brightness) so both ride the same curve.
+f32 glow_envelope(f32 age, const GlowParams& params);
+
 // GPU vertex for a glow shaft quad. No texture/shape id — the glow shader is
-// single-purpose (procedural static Tyndall), driven by UV + color + per-shaft
-// tyndall strength + the fade envelope (which the shader uses to retract the
-// scattering halo toward the core as the glow dies — not a flat alpha fade).
+// single-purpose (procedural Tyndall), driven by UV + color + per-shaft
+// tyndall strength + the fade envelope (drives volumetric erosion in the
+// shader, not a flat alpha fade).
 struct GlowVertex {
     glm::vec3 position;
-    glm::vec4 color;      // rgb = tint; a = baked brightness (fade·intensity·color.a)
+    glm::vec4 color;      // rgb = tint; a = static brightness cap (intensity·color.a)
     glm::vec2 texcoord;   // U across width (0..1), V up the shaft (0 base, 1 top)
     f32       tyndall;    // striation strength for this shaft
-    f32       fade;       // 0→1→0 envelope (raw), drives halo retraction
+    f32       fade;       // 0→1→0 envelope (raw), drives volumetric erosion
 };
 
 // A live glow effect. The engine's general light renderer — today it draws a

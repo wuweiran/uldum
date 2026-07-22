@@ -3505,8 +3505,8 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
     {
         auto glows = m_glow.glow_data();
         for (auto& g : glows) {
-            f32 t    = (g.params.life > 0) ? (g.age / g.params.life) : 1.0f;
-            f32 fade = std::sin(std::clamp(t, 0.0f, 1.0f) * 3.14159265f);  // 0→1→0
+            // Same envelope the shaft rides, so light and beam stay in lockstep.
+            f32 fade = glow_envelope(g.age, g.params);
             glm::vec3 color{g.color.r, g.color.g, g.color.b};
             // Light reach derives from the beam width; brightness from intensity.
             // (The shaft is thin; the light it throws spans several beam-widths.)

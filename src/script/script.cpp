@@ -1714,14 +1714,16 @@ void ScriptEngine::bind_api() {
     // PlayEffectOnUnit are kept as convenience wrappers around that
     // pattern so map code stays terse.
     // `opts` (table, optional): { players = Player | {Player, ...} } for
-    // per-player targeting. Omit for broadcast (default).
-    lua["CreateEffect"] = [this](const std::string& name,
+    // per-player targeting. Omit for broadcast (default). Ground effects (no
+    // attached entity) snap Z up to the terrain surface — a spell target's Z is
+    // 0 — while max() leaves callers passing a real world-Z (rune bursts) alone.
+    lua["CreateEffect"] = [this, &terrain_ref](const std::string& name,
                                   f32 x, f32 y, f32 z,
                                   sol::optional<sol::table> opts) -> u32 {
         ActiveEffect e;
         e.server_id = m_next_effect_id++;
         e.name      = name;
-        e.position  = {x, y, z};
+        e.position  = {x, y, std::max(z, ::uldum::map::sample_height(terrain_ref, x, y))};
         e.entity    = {};
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         m_active_effects.push_back(std::move(e));
@@ -1776,13 +1778,13 @@ void ScriptEngine::bind_api() {
 
     // Convenience: one-shot semantics via Create + immediate Destroy.
     // Functionally identical to `DestroyEffect(CreateEffect(...))`.
-    lua["PlayEffect"] = [this, destroy_effect_impl](
+    lua["PlayEffect"] = [this, destroy_effect_impl, &terrain_ref](
             const std::string& name, f32 x, f32 y, f32 z,
             sol::optional<sol::table> opts) {
         ActiveEffect e;
         e.server_id = m_next_effect_id++;
         e.name      = name;
-        e.position  = {x, y, z};
+        e.position  = {x, y, std::max(z, ::uldum::map::sample_height(terrain_ref, x, y))};
         e.entity    = {};
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         u32 id = e.server_id;

@@ -1,9 +1,9 @@
 #version 310 es
 precision highp float;
 
-// Procedural volumetric light shaft (Tyndall / god-ray). No texture, no
-// motion. `frag_fade` (raw 0→1→0 envelope) retracts the scattering halo
-// toward the core as the glow dies — not a flat alpha dim. See vulkan/glow.frag.
+// Procedural volumetric light shaft (Tyndall / god-ray). No texture, no motion.
+// Scattering-density field raised to a growing EXPONENT as `frag_fade` drops,
+// so the lit volume erodes toward the source (no hard rim). See vulkan/glow.frag.
 
 layout(location = 0) in vec4  frag_color;
 layout(location = 1) in vec2  frag_uv;
@@ -22,18 +22,20 @@ float striations(float v, float amount) {
 void main() {
     float f = clamp(frag_fade, 0.0, 1.0);
 
-    float dx    = (frag_uv.x - 0.5) * 2.0;
-    float sharp = mix(9.0, 4.0, f);          // f→0 tight, f→1 wide
-    float core  = exp(-dx * dx * sharp);
+    float dx      = (frag_uv.x - 0.5) * 2.0;
+    float core    = exp(-dx * dx * 5.0);
+    float v       = frag_uv.y;
+    float vprof   = (1.0 - v) * (1.0 - v);
+    float density = core * vprof;
 
-    float v        = frag_uv.y;
-    float vfade    = 1.0 - v;
-    float top_cap  = smoothstep(1.0, 0.85, v);
-    float base_cap = smoothstep(0.0, 0.06, v);
+    float k     = mix(7.0, 1.0, f);
+    float shape = pow(density, k);
+    float tail  = smoothstep(0.0, 0.25, f);
 
+    float base_cap = smoothstep(0.0, 0.05, v);
     float s = striations(v, frag_tyndall * 0.4 * f);
 
-    float intensity = core * vfade * top_cap * base_cap * s;
+    float intensity = shape * tail * base_cap * s;
     intensity *= frag_color.a;
 
     if (intensity < 0.003) discard;

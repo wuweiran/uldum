@@ -11,6 +11,29 @@ namespace uldum::render {
 
 static constexpr const char* TAG = "Glow";
 
+f32 glow_envelope(f32 age, const GlowParams& params) {
+    f32 life = params.life;
+    if (life <= 0.0f) return 0.0f;
+    f32 fade_in  = (params.fade_in  > 0) ? params.fade_in  : life * 0.10f;
+    f32 fade_out = (params.fade_out > 0) ? params.fade_out : life * 0.20f;
+    // Scale overlapping ramps to fit so the peak lands where they meet.
+    if (fade_in + fade_out > life) {
+        f32 s = life / (fade_in + fade_out);
+        fade_in *= s;
+        fade_out *= s;
+    }
+    f32 e;
+    if (age < fade_in) {
+        e = (fade_in > 0) ? (age / fade_in) : 1.0f;
+    } else if (age > life - fade_out) {
+        e = (fade_out > 0) ? ((life - age) / fade_out) : 0.0f;
+    } else {
+        e = 1.0f;
+    }
+    e = std::clamp(e, 0.0f, 1.0f);
+    return e * e * (3.0f - 2.0f * e);   // smoothstep ease
+}
+
 bool GlowSystem::init(rhi::Rhi& rhi) {
     m_rhi = &rhi;
     rhi::BufferDesc d{};
@@ -70,32 +93,10 @@ void GlowSystem::upload(glm::vec3 camera_pos) {
     for (const auto& g : m_glows) {
         if (q >= MAX_GLOWS) break;
 
-        // Brightness envelope: linear ramp up over fade_in, hold, then linear
-        // ramp down over fade_out (both in seconds). Unset (0) defaults to half
-        // of life each — the old symmetric triangle. The shader reads `fade` to
-        // retract the Tyndall halo toward the core as it dies, so a low value
-        // reads as light weakening, not just a flat alpha dim.
-        f32 life     = g.params.life;
-        f32 fade_in  = (g.params.fade_in  > 0) ? g.params.fade_in  : life * 0.5f;
-        f32 fade_out = (g.params.fade_out > 0) ? g.params.fade_out : life * 0.5f;
-        // If the two ramps overlap (sum > life), scale them to fit so the peak
-        // lands where they meet instead of clipping.
-        if (fade_in + fade_out > life && fade_in + fade_out > 0) {
-            f32 s = life / (fade_in + fade_out);
-            fade_in *= s;
-            fade_out *= s;
-        }
-        f32 fade;
-        if (g.age < fade_in) {
-            fade = (fade_in > 0) ? (g.age / fade_in) : 1.0f;
-        } else if (g.age > life - fade_out) {
-            fade = (fade_out > 0) ? ((life - g.age) / fade_out) : 1.0f;
-        } else {
-            fade = 1.0f;
-        }
-        fade = std::clamp(fade, 0.0f, 1.0f);
+        f32 fade = glow_envelope(g.age, g.params);
         glm::vec4 color = g.color;
-        color.a *= fade * g.params.intensity;          // baked brightness
+        // Bake the static brightness cap; the envelope rides separately as `fade`.
+        color.a *= g.params.intensity;
 
         f32 height  = g.params.height;
         f32 width   = g.params.radius;                 // beam width
