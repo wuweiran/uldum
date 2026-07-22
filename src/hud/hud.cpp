@@ -2601,13 +2601,15 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     }
 
     // Composites sit on top of the node tree (drawn last in draw_tree);
-    // hit-test them first so clicks beat anything underneath. Priority
-    // order: action_bar > command_bar > minimap > joystick > tree.
-    // Joystick is LAST of the composites so explicit UI (buttons, bar
-    // slots, minimap dots) inside an otherwise-blank activation region
-    // still wins. `on_joystick` also fires when slot 0 (the primary
-    // finger) has already captured the stick — that suppresses tree /
-    // drag-select from the same finger while dragging the knob.
+    // hit-test them first so clicks beat anything underneath. Priority is the
+    // reverse of draw order (pickup_bar > inventory > command_bar > action_bar
+    // > minimap > joystick > tree) so the topmost-drawn slot wins where two
+    // composites overlap — what you see on top is what you tap. Joystick is
+    // LAST of the composites so explicit UI (buttons, bar slots, minimap dots)
+    // inside an otherwise-blank activation region still wins. `on_joystick`
+    // also fires when slot 0 (the primary finger) has already captured the
+    // stick — that suppresses tree / drag-select from the same finger while
+    // dragging the knob.
     //
     // Touch hover gate: on mobile, "no finger on screen" means "no
     // hover" — but the platform layer keeps the last touch coords in
@@ -2620,15 +2622,15 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // the release frame itself so the lift-fixup above can still
     // resolve "released over this slot" for click-firing.
     const bool allow_hit_test = !s.is_mobile || button_down || s.pointer_down_prev;
-    i32  bar_slot    = allow_hit_test ? action_bar_hit_test(s, x, y) : -1;
-    i32  cmd_slot    = (allow_hit_test && bar_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
-    i32  inv_slot    = (allow_hit_test && bar_slot < 0 && cmd_slot < 0) ? inventory_hit_test(s, x, y) : -1;
-    i32  pickup_slot = (allow_hit_test && bar_slot < 0 && cmd_slot < 0 && inv_slot < 0)
-                         ? pickup_bar_hit_test(s, x, y) : -1;
-    bool on_minimap  = allow_hit_test && bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 &&
-                        pickup_slot < 0 && minimap_hit_test(s, x, y);
-    bool on_joystick = allow_hit_test && bar_slot < 0 && cmd_slot < 0 && inv_slot < 0 &&
-                       pickup_slot < 0 && !on_minimap &&
+    i32  pickup_slot = allow_hit_test ? pickup_bar_hit_test(s, x, y) : -1;
+    i32  inv_slot    = (allow_hit_test && pickup_slot < 0) ? inventory_hit_test(s, x, y) : -1;
+    i32  cmd_slot    = (allow_hit_test && pickup_slot < 0 && inv_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
+    i32  bar_slot    = (allow_hit_test && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0)
+                         ? action_bar_hit_test(s, x, y) : -1;
+    bool on_minimap  = allow_hit_test && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
+                        bar_slot < 0 && minimap_hit_test(s, x, y);
+    bool on_joystick = allow_hit_test && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
+                       bar_slot < 0 && !on_minimap &&
                        (s.joystick_rt.captured_slot == 0
                         || joystick_hit_test_point(s.joystick_cfg, x, y));
 
