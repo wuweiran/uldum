@@ -1802,20 +1802,27 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                 // follow, Attack-on-corpse can't attack. Abilities run the
                 // full filter (alive/dead flags handled inside).
                 if (is_command && world.dead_states.has(id)) continue;
-                // Command attackability for destructables: match desktop —
-                // only snap a destructable some selected unit can actually hit
-                // (crate=debris yes, tree no), so mobile Attack can't target a
-                // tree any more than a right-click can.
-                if (is_command && hinfo->category == simulation::Category::Destructable) {
-                    const auto* dc = world.destructables.get(id);
-                    bool any_can_hit = false;
-                    if (dc && s.world_ctx->selection) {
+                // Command attackability: match desktop — only snap a target
+                // some selected unit can actually hit. Destructables always
+                // gate on their widget bit (crate=debris yes, tree no).
+                // Units gate on their MoveType layer (a ground-only force
+                // can't snap a flyer) ONLY for attack commands — Move/Follow
+                // must still snap any unit, including allies it can't attack.
+                if (is_command) {
+                    bool is_attack = (s.drag_cast.command_id == "attack" ||
+                                      s.drag_cast.command_id == "attack_move");
+                    bool gate = (hinfo->category == simulation::Category::Destructable)
+                                || is_attack;
+                    if (gate && s.world_ctx->selection) {
+                        bool any_can_hit = false;
                         for (auto u : s.world_ctx->selection->selected()) {
                             const auto* cb = world.combats.get(u.id);
-                            if (cb && (cb->target_mask & dc->target_bit)) { any_can_hit = true; break; }
+                            if (cb && simulation::can_attack_target(world, cb->target_mask, cand)) {
+                                any_can_hit = true; break;
+                            }
                         }
+                        if (!any_can_hit) continue;
                     }
-                    if (!any_can_hit) continue;
                 }
                 if (!is_command &&
                     !s.world_ctx->simulation->target_filter_passes(

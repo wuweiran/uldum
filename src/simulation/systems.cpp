@@ -766,13 +766,18 @@ static Unit spawn_attack_projectile(World& world, Unit source, Unit target,
 // Everything else is matched by its movement layer; units with no Movement
 // (buildings) count as Ground/surface. Ground attacks can't hit flyers unless
 // the type opts in with combat.targets including "air".
-static bool can_attack_target(const World& world, u8 target_mask, Unit target) {
+bool can_attack_target(const World& world, u8 target_mask, Unit target,
+                       std::string* out_specifier) {
     if (const auto* d = world.destructables.get(target.id)) {
-        return (target_mask & d->target_bit) != 0;
+        bool ok = (target_mask & d->target_bit) != 0;
+        if (!ok && out_specifier) out_specifier->clear();   // no move layer
+        return ok;
     }
     const auto* mov = world.movements.get(target.id);
     MoveType t = mov ? mov->type : MoveType::Ground;
-    return (target_mask & move_type_bit(t)) != 0;
+    bool ok = (target_mask & move_type_bit(t)) != 0;
+    if (!ok && out_specifier) *out_specifier = move_type_name(t);
+    return ok;
 }
 
 void system_combat(World& world, float dt, const SpatialGrid& grid) {

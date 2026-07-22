@@ -31,6 +31,8 @@
         "error.target":       "Invalid target",
         "error.target.enemy": "Can't target enemies",
         "error.target.ally":  "Can't target allies",
-        "error.target.dead":  "Target must be alive"
+        "error.target.dead":  "Target must be alive",
+        "error.attack":       "Can't attack that",
+        "error.attack.air":   "Can't attack air units"
     }
 }

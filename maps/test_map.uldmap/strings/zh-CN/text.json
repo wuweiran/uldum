@@ -31,6 +31,8 @@
         "error.target":       "无效的目标",
         "error.target.enemy": "不能以敌方单位为目标",
         "error.target.ally":  "不能以友方单位为目标",
-        "error.target.dead":  "目标必须存活"
+        "error.target.dead":  "目标必须存活",
+        "error.attack":       "无法攻击该目标",
+        "error.attack.air":   "无法攻击空中单位"
     }
 }

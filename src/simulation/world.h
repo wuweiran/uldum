@@ -323,7 +323,15 @@ bool     ability_can_afford(const World& world, u32 unit_id,
 void     ability_pay_cost(World& world, u32 unit_id,
                           const std::map<std::string, f32>& cost);
 
-// Recalculate effective attributes from base + all active modifiers.
+// Attack targeting handshake: can an attack with `target_mask` hit
+// `target`? Destructables match on their widget bit; units match on
+// their MoveType layer bit (a ground-only attack can't hit a flyer).
+// Shared by combat acquisition and the input layer's reject feedback.
+// When it returns false and `out_specifier` is non-null, `*out_specifier`
+// is set to the target's MoveType name ("air"/…) for a reject message,
+// or "" for a destructable (no move layer).
+bool     can_attack_target(const World& world, u8 target_mask, Unit target,
+                           std::string* out_specifier = nullptr);
 void     recalculate_modifiers(World& world, u32 id);
 
 // Increment / decrement per-flag refcounts on a unit's StatusFlags by

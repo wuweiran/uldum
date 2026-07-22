@@ -1,6 +1,7 @@
 #include "input/rts_preset.h"
 #include "simulation/order.h"
 #include "simulation/ability_def.h"
+#include "simulation/world.h"
 #include "hud/hud.h"
 #include "core/log.h"
 
@@ -337,7 +338,24 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         if (!sel.empty()) {
             auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
             if (simulation::is_non_null_handle(target)) {
-                // A-click on unit: force Attack
+                // A-click on unit: force Attack — but only if some selected
+                // unit can actually hit it (a ground-only force can't attack
+                // a flyer). Like the ability widget path / WC3: an invalid
+                // target shows an error and keeps targeting armed (the click
+                // "goes ping"), rather than issuing a doomed walk-up.
+                const auto& world = ctx.simulation.world();
+                bool any_can_hit = false;
+                std::string spec;
+                for (auto u : sel.selected()) {
+                    const auto* cb = world.combats.get(u.id);
+                    if (cb && simulation::can_attack_target(world, cb->target_mask, target, &spec)) {
+                        any_can_hit = true; break;
+                    }
+                }
+                if (!any_can_hit) {
+                    if (ctx.hud) ctx.hud->emit_order_error("attack", spec);
+                    return;   // stay armed — WC3: an invalid target keeps targeting mode
+                }
                 GameCommand cmd;
                 cmd.player = sel.player();
                 cmd.units  = sel.selected();
