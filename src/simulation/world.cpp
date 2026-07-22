@@ -596,6 +596,21 @@ void issue_order(World& world, Unit unit, Order order) {
     // Move/Attack on one of the selected units (or a Lua-issued Cast
     // on an enemy-only ability targeting self) must not slip in.
     if (auto* cast = std::get_if<orders::Cast>(&order.payload)) {
+        // The unit must actually have the ability. A Cast for an ability
+        // the unit doesn't own is rejected here — WITHOUT it, the order
+        // would fall through and replace oq->current, cancelling whatever
+        // the unit was doing (move/attack) for a cast that can never run.
+        // This bit anyone: a mis-fanned selection item-use, a Lua
+        // IssueOrder(u,"cast",X) on a unit lacking X, etc.
+        auto* aset = world.ability_sets.get(unit.id);
+        const AbilityInstance* inst = nullptr;
+        if (aset) {
+            for (auto& a : aset->abilities) {
+                if (a.ability_id == cast->ability_id) { inst = &a; break; }
+            }
+        }
+        if (!inst) return;
+
         // Cooldown + affordability — keep the existing activity untouched.
         // WC3: an order the unit can't act on (on cooldown, or not enough
         // mana) is rejected at issue time and does NOT interrupt what the unit
@@ -603,21 +618,14 @@ void issue_order(World& world, Unit unit, Order order) {
         // an auto-cast trigger) can't cancel the caster's current attack/move
         // when it could never proceed. (Mana is still only *spent* at the
         // effect point — this is a start gate, not the deduction.)
-        auto* aset = world.ability_sets.get(unit.id);
-        if (aset) {
-            for (auto& a : aset->abilities) {
-                if (a.ability_id != cast->ability_id) continue;
-                if (a.cooldown_remaining > 0) return;
-                const auto* def = world.abilities ? world.abilities->get(cast->ability_id) : nullptr;
-                if (def && !ability_can_afford(world, unit.id, def->level_data(a.level).cost)) {
-                    return;
-                }
-                break;
-            }
+        if (inst->cooldown_remaining > 0) return;
+        const auto* def = world.abilities ? world.abilities->get(cast->ability_id) : nullptr;
+        if (def && !ability_can_afford(world, unit.id, def->level_data(inst->level).cost)) {
+            return;
         }
+
         // Self-target rejection for casts whose filter forbids it.
         if (is_non_null_handle(cast->target_unit) && cast->target_unit.id == unit.id) {
-            const auto* def = world.abilities ? world.abilities->get(cast->ability_id) : nullptr;
             if (def && !def->target_filter.self_) return;
         }
     } else if (auto* mv = std::get_if<orders::Move>(&order.payload)) {

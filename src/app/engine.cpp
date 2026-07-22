@@ -710,9 +710,17 @@ bool Engine::start_session() {
         if (!world.handle_infos.has(item_id)) return;
         simulation::Item item{item_id};
 
+        // An item is held by exactly one unit — order only that unit to
+        // cast, NOT the whole selection. Fanning out to the selection made
+        // every co-selected unit take a fresh Cast order (clearing its
+        // queue → stopping its move) even though only the holder has the
+        // ability, which then fizzled.
+        simulation::Unit holder = simulation::get_item_owner(world, item);
+        if (!world.contains(holder)) return;
+
         simulation::GameCommand cmd;
         cmd.player = m_selection.player();
-        cmd.units  = m_selection.selected();
+        cmd.units  = { holder };
         simulation::orders::Cast c;
         c.ability_id  = ability_id;
         c.source_item = item;
@@ -732,9 +740,14 @@ bool Engine::start_session() {
             if (!world.handle_infos.has(item_id)) return;
             simulation::Item item{item_id};
 
+            // Item cast targets its holder only, never the full selection
+            // (see set_inventory_use_fn).
+            simulation::Unit holder = simulation::get_item_owner(world, item);
+            if (!world.contains(holder)) return;
+
             simulation::GameCommand cmd;
             cmd.player = m_selection.player();
-            cmd.units  = m_selection.selected();
+            cmd.units  = { holder };
             simulation::orders::Cast c;
             c.ability_id  = ability_id;
             c.source_item = item;
