@@ -2856,10 +2856,12 @@ void Renderer::viewer_set_model(std::string_view path) {
 
     // Auto-frame: distance from the model's bounding radius, target at center-ish.
     f32 r = lm->mesh.bounding_radius > 0.0f ? lm->mesh.bounding_radius : 64.0f;
-    m_mv_distance    = r * 3.0f;
-    m_mv_target      = glm::vec3{0.0f, 0.0f, r * 0.4f};   // lift target toward model mid-height
-    m_mv_orbit_yaw   = 0.6f;
-    m_mv_orbit_pitch = -0.35f;
+    m_mv_distance     = r * 3.0f;
+    m_mv_dist_min     = r * 1.2f;                    // ~model surface — don't clip inside
+    m_mv_dist_max     = r * 12.0f;                   // far enough to see it shrink
+    m_mv_target       = glm::vec3{0.0f, 0.0f, r * 0.4f};   // lift target toward model mid-height
+    m_mv_orbit_yaw    = 0.6f;
+    m_mv_orbit_pitch  = -0.35f;
 
     m_mv_anim = AnimationInstance{};
     m_mv_anim.model = &lm->data;
@@ -2891,7 +2893,7 @@ void Renderer::viewer_orbit(f32 dx, f32 dy) {
 
 void Renderer::viewer_zoom(f32 delta) {
     m_mv_distance *= (delta > 0.0f) ? 0.9f : 1.1f;
-    m_mv_distance = std::max(m_mv_distance, 8.0f);
+    m_mv_distance = std::clamp(m_mv_distance, m_mv_dist_min, m_mv_dist_max);
 }
 
 void Renderer::viewer_set_clip(i32 index) {

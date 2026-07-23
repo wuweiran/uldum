@@ -239,7 +239,8 @@ void FileExplorer::draw_inspector(const FileExplorerContext& ctx) {
                 }
                 if (ImGui::IsItemHovered() && ImGui::GetIO().MouseWheel != 0.0f)
                     ctx.renderer->viewer_zoom(ImGui::GetIO().MouseWheel);
-                ImGui::TextDisabled("drag = orbit,  wheel = zoom");
+                ImGui::TextDisabled("drag = orbit,  wheel = zoom  (dist %.2f)",
+                                    ctx.renderer->viewer_distance());
 
                 // Animation clip switcher (WC3-style: prev / name / next). The
                 // name sits in a fixed-width centered slot so the right arrow

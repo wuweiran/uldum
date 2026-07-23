@@ -163,6 +163,9 @@ public:
     void viewer_set_model(std::string_view path);
     void viewer_orbit(f32 dx, f32 dy);
     void viewer_zoom(f32 delta);
+    // Absolute camera distance from the model target, in world units. For
+    // the editor's readout (model-independent, unlike a relative factor).
+    f32  viewer_distance() const { return m_mv_distance; }
     void render_model_viewer(rhi::CommandList& cmd, f32 dt);
     rhi::TextureHandle viewer_color_texture() const { return m_mv_color; }
     rhi::SamplerHandle viewer_sampler() const { return m_mv_sampler; }
@@ -461,6 +464,11 @@ private:
     f32                       m_mv_orbit_yaw   = 0.0f;
     f32                       m_mv_orbit_pitch = -0.35f;
     f32                       m_mv_distance    = 300.0f;
+    // Zoom clamp, seeded from the model's bounding radius in
+    // viewer_set_model so the wheel range brackets the auto-framed distance
+    // (no first-scroll snap).
+    f32                       m_mv_dist_min     = 30.0f;
+    f32                       m_mv_dist_max     = 3000.0f;
     glm::vec3                 m_mv_target{0.0f};
 
     // Particle system + glow system + effect system
