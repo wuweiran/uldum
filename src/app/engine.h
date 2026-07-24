@@ -182,6 +182,15 @@ private:
     // the VM and clears prior callbacks).
     void register_script_camera_callbacks();
 
+    // Chain the host's inventory network-sync onto the script's item-pickup /
+    // -drop trigger dispatch. Both the script (trigger events) and the engine
+    // (S_UPDATE Inventory to clients) need world.on_item_picked_up/_dropped,
+    // which are single std::functions — so the engine wraps the script's
+    // handler instead of overwriting it. Call AFTER the script installs its
+    // handlers (init_game / scene re-init), from both start_session and
+    // scene_switch_run_main, or a LoadScene silently drops one side.
+    void install_item_sync_hooks();
+
     // Fire the WC3-style target ping for a locally-committed order, if it
     // landed on a unit/item (input::derive_target_ping decides). Used by the
     // mobile HUD commit callbacks, which build orders here in the App rather

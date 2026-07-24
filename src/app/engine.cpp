@@ -1047,28 +1047,9 @@ bool Engine::start_session() {
                 m_network.host_broadcast_update(item.id, pkt);
             };
         // Inventory pickup / drop → tell clients so the item shows in the
-        // carrier's bag (and off the ground) / returns to the ground. Keyed on
-        // the CARRIER id so it rides the carrier's per-peer visibility (a peer
-        // that can see the hero gets its inventory changes). Without this the
-        // client only saw the ground item vanish (its visible=false rides
-        // S_STATE) and never learned it entered a slot.
-        m_server.simulation().world().on_item_picked_up =
-            [this](simulation::Unit unit, simulation::Item item, i32 slot) {
-                // slot < 0 = powerup (consumed on contact, never slotted) — no
-                // inventory change to sync; its removal rides kill_item→S_DESTROY.
-                if (slot < 0) return;
-                auto pkt = network::build_update_inventory(
-                    unit.id, static_cast<u32>(slot), item.id);
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
-        m_server.simulation().world().on_item_dropped =
-            [this](simulation::Unit unit, simulation::Item item) {
-                // slot = UINT32_MAX → client scans the carrier's slots for
-                // item.id and clears it (on_item_dropped carries no slot).
-                auto pkt = network::build_update_inventory(
-                    unit.id, UINT32_MAX, item.id);
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
+        // carrier's bag (and off the ground) / returns to the ground. Chains
+        // onto the script's trigger dispatch (see install_item_sync_hooks).
+        install_item_sync_hooks();
         // Renderer-owned hook so the simulation can match projectile
         // death timers to the actual animation clip duration.
         m_server.simulation().world().get_clip_duration =
@@ -1414,6 +1395,45 @@ void Engine::route_camera_set_target_controller(u32 players_mask, simulation::Un
     }
 }
 
+void Engine::install_item_sync_hooks() {
+    // CHAIN, don't clobber. The script (init_game / scene re-init) installs
+    // world.on_item_picked_up/_dropped to dispatch the EVENT_*_ITEM_PICKED_UP /
+    // _DROPPED triggers. Those are single std::functions, so overwriting them
+    // here would silently kill the map's item triggers (e.g. rune-pickup VFX).
+    // Instead capture the script's handler and call it first, then add the
+    // host→client inventory sync. Keyed on the CARRIER id so the S_UPDATE rides
+    // the carrier's per-peer visibility (a peer that can see the hero gets its
+    // inventory changes). Must run AFTER the script installs its handlers.
+    auto& world = m_server.simulation().world();
+    {
+        auto script_picked_up = std::move(world.on_item_picked_up);
+        world.on_item_picked_up =
+            [this, script_picked_up = std::move(script_picked_up)](
+                simulation::Unit unit, simulation::Item item, i32 slot) {
+                if (script_picked_up) script_picked_up(unit, item, slot);
+                // slot < 0 = powerup (consumed on contact, never slotted) — no
+                // inventory change to sync; its removal rides kill_item→S_DESTROY.
+                if (slot < 0) return;
+                auto pkt = network::build_update_inventory(
+                    unit.id, static_cast<u32>(slot), item.id);
+                m_network.host_broadcast_update(unit.id, pkt);
+            };
+    }
+    {
+        auto script_dropped = std::move(world.on_item_dropped);
+        world.on_item_dropped =
+            [this, script_dropped = std::move(script_dropped)](
+                simulation::Unit unit, simulation::Item item) {
+                if (script_dropped) script_dropped(unit, item);
+                // slot = UINT32_MAX → client scans the carrier's slots for
+                // item.id and clears it (on_item_dropped carries no slot).
+                auto pkt = network::build_update_inventory(
+                    unit.id, UINT32_MAX, item.id);
+                m_network.host_broadcast_update(unit.id, pkt);
+            };
+    }
+}
+
 void Engine::register_script_camera_callbacks() {
     auto& script = m_server.script();
     script.set_camera_apply_setup_fn([this](u32 mask, f32 tx, f32 ty, f32 tz,
@@ -1587,6 +1607,7 @@ void Engine::scene_switch_run_main(const std::string& scene_name) {
         m_renderer.set_environment(env);
     });
     register_script_camera_callbacks();
+    install_item_sync_hooks();  // chain host inventory sync onto the script's item triggers
     script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
     script.set_end_game_fn([this](u32 winning_team, std::string_view stats) {
         log::info(TAG, "Game ended — winning team {}", winning_team);
@@ -1855,6 +1876,26 @@ void Engine::run() {
             }
 
             if (ready_to_play) {
+                // WC3-style: compute initial vision + build the local view ONCE
+                // before the first Playing frame, so the fog grid and the
+                // LocalView projection are already populated when frame 1's
+                // selection prune (and the renderer/HUD) read them. Without
+                // this, project_local_view first runs inside the tick loop
+                // (host/offline) or per-frame after fog (client) — i.e. AFTER
+                // the frame-1 prune — so the view is empty for one frame and an
+                // owned unit main() selected gets pruned out. Priming here
+                // covers both paths: host/offline stamps auth vision, the
+                // client recomputes its mirror fog; both then project.
+                if (m_args.net_mode == network::Mode::Client) {
+                    m_network.update_client_fog(0.0f);
+                } else {
+                    auto& sim = m_server.simulation();
+                    sim.vision().update(sim.world(), sim);
+                }
+                m_network.project_local_view(m_server.simulation(),
+                                             simulation::Player{m_args.local_slot},
+                                             m_network.placement_count());
+
                 set_state(AppState::Playing);
                 accumulator = 0; tick_counter = 0;
                 log::info(TAG, "Loading complete → Playing");
