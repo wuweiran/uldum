@@ -1,7 +1,9 @@
 #include "input/picking.h"
+#include "simulation/world_view.h"
 
 #include "map/terrain_data.h"
 #include "simulation/vision.h"
+#include "simulation/simulation.h"   // is_static_remembered_entity
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/geometric.hpp>
@@ -19,7 +21,8 @@ namespace uldum::input {
 static bool fog_visible(const simulation::Vision* vision,
                         simulation::Player local,
                         const map::TerrainData* terrain,
-                        const glm::vec3& world_pos) {
+                        const glm::vec3& world_pos,
+                        bool explored_ok = false) {
     if (!vision || !terrain || !terrain->is_valid()) return true;
     f32 ts = terrain->tile_size;
     if (ts <= 0.0f) return true;
@@ -28,11 +31,17 @@ static bool fog_visible(const simulation::Vision* vision,
     if (tx < 0 || ty < 0 ||
         static_cast<u32>(tx) >= terrain->tiles_x ||
         static_cast<u32>(ty) >= terrain->tiles_y) return true;
-    return vision->is_visible(local, static_cast<u32>(tx), static_cast<u32>(ty));
+    // `explored_ok`: an Explored (previously-scouted) tile is enough — only
+    // TARGETING a remembered static (right-click a discovered crate) passes
+    // this. SELECTION always requires live vision, so a dimmed fog-memory
+    // static is not left-click-selectable.
+    return explored_ok
+        ? vision->is_explored(local, static_cast<u32>(tx), static_cast<u32>(ty))
+        : vision->is_visible(local, static_cast<u32>(tx), static_cast<u32>(ty));
 }
 
 void Picker::init(const render::Camera* camera, const map::TerrainData* terrain,
-                  const simulation::World* world, u32 screen_w, u32 screen_h) {
+                  const simulation::IWorldView* world, u32 screen_w, u32 screen_h) {
     m_camera   = camera;
     m_terrain  = terrain;
     m_world    = world;
@@ -182,42 +191,45 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
     simulation::Unit best{};
     f32 best_ray_t = 1e9f;
 
-    auto& transforms = m_world->transforms;
-    auto& selectables = m_world->selectables;
-    auto& owners = m_world->owners;
-    auto& handle_infos = m_world->handle_infos;
+    for (u32 id : m_world->selectable_ids()) {
+        const auto* sel = m_world->selectable(id);
+        if (!sel) continue;
 
-    for (u32 i = 0; i < selectables.count(); ++i) {
-        u32 id = selectables.ids()[i];
-        auto& sel = selectables.data()[i];
-
-        auto* transform = transforms.get(id);
+        auto* transform = m_world->transform(id);
         if (!transform) continue;
 
-        auto* info = handle_infos.get(id);
+        auto* info = m_world->handle_info(id);
         if (!info || (info->category != simulation::Category::Unit &&
                       info->category != simulation::Category::Destructable)) continue;
         // Selection excludes non-selectable destructables (trees). Attack/cast
         // targeting passes selectable_only=false so it can still hit them.
         if (selectable_only) {
-            if (auto* d = m_world->destructables.get(id); d && !d->selectable) continue;
+            if (auto* d = m_world->destructable(id); d && !d->selectable) continue;
         }
-        if (m_world->dead_states.has(id)) continue;
-        if (auto* sf = m_world->status_flags.get(id);
+        if (m_world->dead_state(id)) continue;
+        if (auto* sf = m_world->status(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
 
         if (player.is_valid()) {
-            auto* own = owners.get(id);
+            auto* own = m_world->owner(id);
             if (!own || own->id != player.id) continue;
         }
 
         // Fog filter — entities under the fog of war can't be clicked
         // on. player's own units pass through (fog hides what the
         // player hasn't scouted, not their own troops).
+        //   • Selection (selectable_only) needs LIVE vision — a dimmed
+        //     fog-memory static is not selectable.
+        //   • Targeting (!selectable_only) may reach a remembered static on
+        //     an Explored tile — right-click-attack a discovered crate.
         if (m_local_player.is_valid()) {
-            auto* own = owners.get(id);
+            auto* own = m_world->owner(id);
             bool is_own = own && own->id == m_local_player.id;
-            if (!is_own && !fog_visible(m_vision, m_local_player, m_terrain, transform->position)) continue;
+            bool explored_ok = !selectable_only &&
+                               simulation::is_static_remembered_entity(*m_world, id);
+            if (!is_own &&
+                !fog_visible(m_vision, m_local_player, m_terrain, transform->position, explored_ok))
+                continue;
         }
 
         f32 ray_t;
@@ -226,12 +238,12 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
         // position is at ground Z but the mesh + ring are up at hull height.
         glm::vec3 base = transform->position;
         base.z += simulation::unit_fly_height(*m_world, id);
-        f32 dist = ray_cylinder_dist(origin, dir, base, sel.selection_height, ray_t);
+        f32 dist = ray_cylinder_dist(origin, dir, base, sel->selection_height, ray_t);
 
 
         // Pick radius covers both the ground circle and the visual model body.
         // transform->scale approximates the model's visual width.
-        f32 pick_radius = std::max(sel.selection_radius, transform->scale);
+        f32 pick_radius = std::max(sel->selection_radius, transform->scale);
         if (dist > pick_radius) continue;
 
         // Depth-only: the frontmost unit under the cursor wins (smallest ray_t
@@ -260,23 +272,18 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
     simulation::Item best{};
     f32 best_ray_t = 1e9f;
 
-    auto& transforms = m_world->transforms;
-    auto& selectables = m_world->selectables;
-    auto& handle_infos = m_world->handle_infos;
-    auto& carriables = m_world->carriables;
+    for (u32 id : m_world->selectable_ids()) {
+        const auto* sel = m_world->selectable(id);
+        if (!sel) continue;
 
-    for (u32 i = 0; i < selectables.count(); ++i) {
-        u32 id = selectables.ids()[i];
-        auto& sel = selectables.data()[i];
-
-        auto* info = handle_infos.get(id);
+        auto* info = m_world->handle_info(id);
         if (!info || info->category != simulation::Category::Item) continue;
-        if (m_world->dead_states.has(id)) continue;
+        if (m_world->dead_state(id)) continue;
         // Skip items currently being carried (they're "inside" a unit).
-        auto* car = carriables.get(id);
+        auto* car = m_world->carriable(id);
         if (car && simulation::is_non_null_handle(car->carried_by)) continue;
 
-        auto* transform = transforms.get(id);
+        auto* transform = m_world->transform(id);
         if (!transform) continue;
 
         // Fog filter — items in unscouted tiles aren't clickable.
@@ -284,8 +291,8 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
 
         f32 ray_t;
         f32 dist = ray_cylinder_dist(origin, dir, transform->position,
-                                     sel.selection_height, ray_t);
-        f32 pick_radius = std::max(sel.selection_radius, transform->scale);
+                                     sel->selection_height, ray_t);
+        f32 pick_radius = std::max(sel->selection_radius, transform->scale);
         if (dist > pick_radius) continue;
 
         if (ray_t < best_ray_t) {
@@ -304,27 +311,21 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
     if (x0 > x1) std::swap(x0, x1);
     if (y0 > y1) std::swap(y0, y1);
 
-    auto& transforms = m_world->transforms;
-    auto& selectables = m_world->selectables;
-    auto& handle_infos = m_world->handle_infos;
-
     glm::mat4 vp = m_camera->view_projection();
     f32 hw = static_cast<f32>(m_screen_w) * 0.5f;
     f32 hh = static_cast<f32>(m_screen_h) * 0.5f;
 
-    for (u32 i = 0; i < selectables.count(); ++i) {
-        u32 id = selectables.ids()[i];
-
-        auto* info = handle_infos.get(id);
+    for (u32 id : m_world->selectable_ids()) {
+        auto* info = m_world->handle_info(id);
         if (!info || info->category != simulation::Category::Unit) continue;
-        if (m_world->dead_states.has(id)) continue;
-        if (auto* sf = m_world->status_flags.get(id);
+        if (m_world->dead_state(id)) continue;
+        if (auto* sf = m_world->status(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
 
         // Ownership is not filtered here — the caller partitions
         // own-vs-foreign and applies the selection policy.
 
-        auto* transform = transforms.get(id);
+        auto* transform = m_world->transform(id);
         if (!transform) continue;
 
         // Project world position to screen.
@@ -352,8 +353,8 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
 
     // Sort by priority (descending)
     std::sort(result.begin(), result.end(), [&](const simulation::Unit& a, const simulation::Unit& b) {
-        auto* sa = selectables.get(a.id);
-        auto* sb = selectables.get(b.id);
+        auto* sa = m_world->selectable(a.id);
+        auto* sb = m_world->selectable(b.id);
         i32 pa = sa ? sa->priority : 0;
         i32 pb = sb ? sb->priority : 0;
         return pa > pb;

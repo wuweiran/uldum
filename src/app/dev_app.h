@@ -41,6 +41,12 @@ public:
 private:
     Engine*                      m_engine = nullptr;
     std::unique_ptr<DevConsole>  m_console;
+
+    // Dev convenience: a joining client auto-claims the first open slot so
+    // you don't have to click Claim every time. Throttled by the last slot
+    // we attempted, so a lost race (someone else grabbed it) just retries
+    // the next open slot on the following snapshot instead of spamming.
+    u32 m_auto_claim_attempted = 0xFFFFFFFFu;  // UINT32_MAX = none attempted
 };
 
 } // namespace uldum

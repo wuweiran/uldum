@@ -1387,6 +1387,10 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 // cost here (effect point), not at cast start.
                                 simulation::ability_pay_cost(world, id, lvl.cost);
                                 inst->cooldown_remaining = lvl.cooldown;
+                                if (world.on_ability_cooldown_started && lvl.cooldown > 0.0f) {
+                                    world.on_ability_cooldown_started(
+                                        Unit{id}, aset->casting_id, lvl.cooldown);
+                                }
                                 aset->cast_state = CastState::Backswing;
                                 aset->cast_timer = lvl.backsw_time;
                                 {
@@ -1429,6 +1433,10 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         if (aset->cast_timer <= 0) {
                             simulation::ability_pay_cost(world, id, lvl.cost);
                             inst->cooldown_remaining = lvl.cooldown;
+                            if (world.on_ability_cooldown_started && lvl.cooldown > 0.0f) {
+                                world.on_ability_cooldown_started(
+                                    Unit{id}, aset->casting_id, lvl.cooldown);
+                            }
                             aset->cast_state = CastState::Backswing;
                             aset->cast_timer = lvl.backsw_time;
 

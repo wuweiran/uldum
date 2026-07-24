@@ -676,6 +676,11 @@ function SetHealAmount(amount) end
 ---@param killer unit?
 function KillUnit(unit, killer) end
 
+--- Set a destructable's health to zero, running the normal death pipeline
+--- (EVENT_DESTRUCTABLE_DEATH, corpse, cleanup) as if a unit had smashed it.
+---@param dest destructable
+function KillDestructable(dest) end
+
 --------------------------------------------------------------------------------
 -- Player
 --------------------------------------------------------------------------------

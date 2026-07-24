@@ -25,6 +25,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 #endif
 
 #include <algorithm>
+#include <string>
+#include <utility>
 
 namespace uldum {
 
@@ -347,6 +349,25 @@ void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::Networ
         draw_loading_screen(net.lobby_state());
     }
 
+    // Error modal — stacks over any screen. show_error() sets the message
+    // and arms m_error_open so we open the popup exactly once.
+    if (m_error_open) {
+        ImGui::OpenPopup("Error##dev");
+        m_error_open = false;
+    }
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Error##dev", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", m_error_message.c_str());
+        ImGui::Dummy(ImVec2(0, 6));
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            m_error_message.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::Render();
 }
 
@@ -624,7 +645,12 @@ void DevConsole::draw_lobby_screen(network::NetworkManager& net) {
 
                     ImGui::TableNextColumn();
                     bool is_mine = (a.occupant == network::SlotOccupant::Human && a.peer_id == my_peer_id);
-                    bool can_claim = !a.locked && !is_mine;
+                    // A slot already held by ANOTHER human isn't claimable —
+                    // the host silently drops such a claim, so greying the
+                    // button here avoids a dead click with no feedback.
+                    // Open / Computer slots stay claimable (take over an AI).
+                    bool taken_by_other = (a.occupant == network::SlotOccupant::Human && !is_mine);
+                    bool can_claim = !a.locked && !is_mine && !taken_by_other;
                     bool can_release = is_mine;
                     if (can_release) {
                         if (ImGui::Button("Release", btn)) {
@@ -654,12 +680,18 @@ void DevConsole::draw_lobby_screen(network::NetworkManager& net) {
 
     // Footer — single row: status text on the left, action buttons
     // right-aligned. host gets Start + Back; client gets Back only.
-    bool can_start = is_host_authority && (seatless_peer_count == 0);
+    // Every peer must hold a slot before Start: seatless_peer_count covers
+    // the connected clients, host_seated covers the host itself (LOCAL_PEER
+    // is never in m_peers). Releasing any peer's slot re-disables Start.
+    bool host_seated = network::lobby_slot_for_peer(lobby, my_peer_id) != UINT32_MAX;
+    bool can_start = is_host_authority && (seatless_peer_count == 0) && host_seated;
     char status[128] = "";
     if (is_host_authority) {
-        if (!can_start) {
+        if (seatless_peer_count > 0) {
             std::snprintf(status, sizeof(status),
                 "Waiting for %u peer(s) to claim a slot...", seatless_peer_count);
+        } else if (!host_seated) {
+            std::snprintf(status, sizeof(status), "Claim a slot to start.");
         }
     } else {
         u32 my_slot = network::lobby_slot_for_peer(lobby, net.client_peer_id());
@@ -931,6 +963,11 @@ DevConsole::Action DevConsole::poll_action() {
     Action a = m_pending;
     m_pending = Action{};
     return a;
+}
+
+void DevConsole::show_error(std::string message) {
+    m_error_message = std::move(message);
+    m_error_open    = true;
 }
 
 } // namespace uldum

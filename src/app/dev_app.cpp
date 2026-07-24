@@ -2,6 +2,8 @@
 
 #include "app/engine.h"
 #include "app/dev_console.h"
+#include "network/network.h"
+#include "network/lobby.h"
 #include "core/log.h"
 
 #include <utility>
@@ -34,6 +36,42 @@ void DevApp::on_update(f32 dt) {
 
     m_console->update(dt, m_engine->state(), m_engine->network());
 
+    // Dev convenience: a joining client auto-claims the first open slot so
+    // you never have to click Claim. Runs while in the Lobby with no slot
+    // yet held; sends C_CLAIM_SLOT for the first Open slot and remembers it
+    // so we don't re-send every frame. If the host rejects (someone beat us
+    // to it), the next S_LOBBY_STATE shows that slot taken → we pick the
+    // next Open one → race resolves itself. Reset once we hold a slot or
+    // leave the lobby.
+    if (m_engine->state() == AppState::Lobby &&
+        m_engine->launch_args().net_mode == network::Mode::Client) {
+        auto& net = m_engine->network();
+        const auto& lobby = net.lobby_state();
+        u32 my_peer = net.client_peer_id();
+        // Only once the host has assigned us a peer id and sent slots.
+        if (my_peer != UINT32_MAX && !lobby.slots.empty()) {
+            u32 mine = network::lobby_slot_for_peer(lobby, my_peer);
+            if (mine != UINT32_MAX) {
+                m_auto_claim_attempted = mine;  // seated — nothing to do
+            } else {
+                u32 open = UINT32_MAX;
+                for (u32 i = 0; i < lobby.slots.size(); ++i) {
+                    const auto& a = lobby.slots[i];
+                    if (a.occupant == network::SlotOccupant::Open && !a.locked) { open = i; break; }
+                }
+                // Send only when the target changed (new snapshot moved the
+                // first-open slot), so we don't spam the same claim each frame.
+                if (open != UINT32_MAX && open != m_auto_claim_attempted) {
+                    net.send_claim_slot(open);
+                    m_auto_claim_attempted = open;
+                    log::info(TAG, "Client auto-claiming slot {}", open);
+                }
+            }
+        }
+    } else {
+        m_auto_claim_attempted = 0xFFFFFFFFu;  // reset outside the client lobby
+    }
+
     // Translate dev-console actions into Engine state transitions
     // through Engine's public verbs — the same surface a future
     // SampleGameApp would use.
@@ -60,6 +98,11 @@ void DevApp::on_update(f32 dt) {
             log::info(TAG, "EnterLobby Host '{}' port {}", args.map_path, args.port);
         } else {
             m_engine->leave_lobby();
+            if (m_console) {
+                m_console->show_error(
+                    "Failed to host on port " + std::to_string(args.port) +
+                    " — the port may already be in use.");
+            }
         }
     } else if (action.type == A::EnterLobbyClient && m_engine->state() == AppState::Menu) {
         args.map_path        = action.map_path;
@@ -71,6 +114,11 @@ void DevApp::on_update(f32 dt) {
             log::info(TAG, "EnterLobby Client {}:{}", args.connect_address, args.port);
         } else {
             m_engine->leave_lobby();
+            if (m_console) {
+                m_console->show_error(
+                    "Failed to connect to " + args.connect_address + ":" +
+                    std::to_string(args.port) + ".");
+            }
         }
     } else if (action.type == A::ClaimSlot && m_engine->state() == AppState::Lobby) {
         m_engine->network().send_claim_slot(action.slot);

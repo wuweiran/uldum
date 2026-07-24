@@ -1548,6 +1548,11 @@ void ScriptEngine::bind_api() {
         }
     };
 
+    lua["KillDestructable"] = [&](simulation::Destructable dest) {
+        if (!sim.world().contains(dest)) return;
+        if (auto* hp = sim.world().healths.get(dest.id)) hp->current = 0;
+    };
+
     // ── Spatial Query API ─────────────────────────────────────────────
 
     // Shared filter parser for spatial queries. Mirrors the keys

@@ -134,8 +134,11 @@ private:
     // request via the AppState transition Lobby → Loading.
     bool start_session();
 
-    // The World to render — server's world in offline/host, client world in client mode.
-    simulation::World& active_world();
+    // The view-world the renderer / picker / HUD read — a fog-projected
+    // IWorldView in every mode (WorldView over the client mirror or the
+    // host/offline projection). Never the authoritative World: that's reached
+    // only through m_server.simulation().world() (systems + Lua).
+    simulation::IWorldView& active_world();
 
     // Poll safe-area insets from the platform and re-push to the HUD
     // only when they changed. Called per frame because Android's
@@ -265,7 +268,11 @@ private:
         simulation::Unit unit{};       // invalid → use `pos`
         glm::vec3        pos{0.0f};
         input::InputContext::TargetPingKind kind = input::InputContext::TargetPingKind::Ally;
-        f32              age      = 0.0f;
+        // Start ALREADY EXPIRED (age >= lifespan) so no ping draws until a real
+        // right-click sets age=0. Without this the default (age 0 < lifespan)
+        // painted a green Ally ring at the origin for the first ~0.45s of the
+        // very first session — the "one-frame green circle on first load".
+        f32              age      = 1.0f;
         f32              lifespan = 0.45f;
     };
     TargetPing m_target_ping;

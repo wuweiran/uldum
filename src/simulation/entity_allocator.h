@@ -26,6 +26,14 @@ public:
 
     u32 next_id() const { return m_next_id; }
 
+    // Restart the id counter at 0. Only safe when EVERY entity is being
+    // destroyed in the same breath (World::clear_entities) AND no handle
+    // survives the wipe — true at a scene boundary, where the world is
+    // fully cleared and Lua state doesn't persist. This lets each scene's
+    // placement entities occupy a deterministic [0, N) range on host and
+    // client alike (see NetworkManager::set_placement_count).
+    void reset() { m_next_id = 0; }
+
 private:
     u32 m_next_id = 0;
 };

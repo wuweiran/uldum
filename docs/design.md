@@ -760,6 +760,18 @@ A map maker building a real game has no way to see or vet the assets their map d
 
 Later candidates: thumbnail previews, richer read-only detail (texture resolution, sound length), browsing inherited engine assets, and whole-map unused-file / dangling-reference detection.
 
+### Phase 28 — View projection & client-owned fog memory
+
+The renderer, picker, and HUD used to read straight from the authoritative simulation world. That only works on the host — a remote client has no authoritative world, and even on the host it conflated "what the simulation knows" with "what this player may see." Phase 28 separates the two: every viewer, host or remote, draws through a per-player **view** — a projection of the world filtered by that player's fog of war — while simulation, scripting, and the send gate keep reading authoritative truth directly. The two surfaces are distinct types, so a consumer's choice of which to read is settled by the code that binds it, not by convention. On the host the view is a zero-copy overlay on the authoritative world; on the client it is the local mirror of what the host has sent. The guiding principle is that a local game and a networked game run the same view code — the only difference is where the data behind the view comes from.
+
+This also moves fog **memory** to where it belongs. A player remembers the last-seen state of static things (buildings, destructables) after they leave sight, but forgets mobile units. Previously the host decided what each remote client should remember and shipped it; now the host only ever tells a client what is currently visible, and the client alone decides what to keep when something leaves its sight. That keeps the remembering rule in one place and makes the client's memory independent of the host.
+
+- Introduce the view as an explicit read surface with two backings — a zero-copy host/offline projection and the client mirror — and route the renderer, picker, and HUD through it while leaving authoritative consumers on the world.
+- Split the shared cross-layer helpers into an authoritative form and a view form so each caller resolves to the right one by the type it holds.
+- Give the wire protocol distinct verbs for a true spawn, entering vision, a state change, leaving vision, and removal from the world — so "left my sight" and "destroyed" are never conflated, and a killed unit is just a state change the client already knows how to show.
+- Have the host ship only currently-visible entities; the client snapshots a static on the frame it leaves sight and drops it again on re-sighting, so out-of-sight memory is entirely client-side.
+- Fold item pickup / drop, ability and item cooldowns, and charges into the same per-player sync so a client's HUD reflects them without running the simulation.
+
 ## 16. Deferred / Future Work
 
 Two tiers by whether they block shipping a real production game; grouped by domain inside each tier.

@@ -1,4 +1,5 @@
 #include "hud/hud.h"
+#include "simulation/world_view.h"
 #include "hud/hud_impl.h"
 #include "hud/text_tag.h"
 #include "hud/hud_loader.h"
@@ -610,23 +611,23 @@ void Hud::update_focus(f32 /*dt*/) {
         return;
     }
     auto hero = sel.selected().front();
-    if (!world.contains(hero)) {
+    if (!world.contains(hero.id)) {
         s.focus_target_unit = simulation::Unit{};
         s.focus_manual = false;
         return;
     }
-    auto* hero_tf = world.transforms.get(hero.id);
-    auto* hero_owner = world.owners.get(hero.id);
+    auto* hero_tf = world.transform(hero.id);
+    auto* hero_owner = world.owner(hero.id);
     if (!hero_tf || !hero_owner) return;
     glm::vec3 hp = hero_tf->position;
 
     // Validate the current focus first. Both auto and manual share the
     // alive + visible checks; they differ only on the range condition.
     auto focus_alive_and_visible = [&](simulation::Unit u, glm::vec3& out_pos) -> bool {
-        if (simulation::is_null_handle(u) || !world.contains(u)) return false;
-        auto* hp = world.healths.get(u.id);
+        if (simulation::is_null_handle(u) || !world.contains(u.id)) return false;
+        auto* hp = world.health(u.id);
         if (hp && hp->current <= 0) return false;
-        auto* tf = world.transforms.get(u.id);
+        auto* tf = world.transform(u.id);
         if (!tf) return false;
         if (!focus_visible(*s.world_ctx, tf->position)) return false;
         out_pos = tf->position;
@@ -673,12 +674,11 @@ void Hud::update_focus(f32 /*dt*/) {
     simulation::Unit best;
     f32 best_d2 = FOCUS_AUTO_RANGE * FOCUS_AUTO_RANGE;
 
-    for (u32 i = 0; i < world.transforms.count(); ++i) {
-        u32 id = world.transforms.ids()[i];
+    for (u32 id : world.transform_ids()) {
         if (id == hero.id) continue;
-        auto* h = world.healths.get(id);
+        auto* h = world.health(id);
         if (!h || h->current <= 0) continue;
-        auto* o = world.owners.get(id);
+        auto* o = world.owner(id);
         if (!o) continue;
         // Enemy filter — same alliance check the spatial grid uses.
         if (s.world_ctx->simulation
@@ -686,7 +686,7 @@ void Hud::update_focus(f32 /*dt*/) {
             : (*o == *hero_owner)) {
             continue;
         }
-        const auto& etf = world.transforms.data()[i];
+        const auto& etf = *world.transform(id);
         glm::vec3 dv = etf.position - hp;
         f32 d2 = dv.x * dv.x + dv.y * dv.y;
         if (d2 > best_d2) continue;
@@ -1038,11 +1038,11 @@ void Hud::pickup_bar_update() {
     }
 
     simulation::Unit unit = selected.front();
-    const auto* owner = world.owners.get(unit.id);
-    const auto* unit_tf = world.transforms.get(unit.id);
-    const auto* inventory = world.inventories.get(unit.id);
+    const auto* owner = world.owner(unit.id);
+    const auto* unit_tf = world.transform(unit.id);
+    const auto* inventory = world.inventory(unit.id);
     bool owned = owner && owner->id == s.world_ctx->local_player.id;
-    if (!world.contains(unit) || !owned || !unit_tf || !inventory) {
+    if (!world.contains(unit.id) || !owned || !unit_tf || !inventory) {
         if (!s.pickup_bar_rt.entries.empty()) clear_interaction();
         s.pickup_bar_rt.entries.clear();
         return;
@@ -1067,13 +1067,13 @@ void Hud::pickup_bar_update() {
     };
     std::vector<Candidate> candidates;
     const f32 radius_sq = cfg.discovery_radius * cfg.discovery_radius;
-    for (u32 item_id : world.item_infos.ids()) {
+    for (u32 item_id : world.item_info_ids()) {
         simulation::Item item{item_id};
-        if (!world.contains(item)) continue;
-        if (world.dead_states.has(item_id)) continue;
-        const auto* carriable = world.carriables.get(item_id);
+        if (!world.contains(item.id)) continue;
+        if (world.dead_state(item_id)) continue;
+        const auto* carriable = world.carriable(item_id);
         if (!carriable || simulation::is_non_null_handle(carriable->carried_by)) continue;
-        const auto* item_tf = world.transforms.get(item_id);
+        const auto* item_tf = world.transform(item_id);
         if (!item_tf || !focus_visible(*s.world_ctx, item_tf->position)) continue;
 
         f32 dx = item_tf->position.x - unit_tf->position.x;
@@ -1295,17 +1295,17 @@ bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
     if (!s.world_ctx || !s.world_ctx->world || !s.world_ctx->selection) return false;
     const auto& sel = s.world_ctx->selection->selected();
     if (sel.empty()) return false;
-    const simulation::World& world = *s.world_ctx->world;
+    const simulation::IWorldView& world = *s.world_ctx->world;
     simulation::Unit lead = sel.front();
-    const auto* own = world.owners.get(lead.id);
+    const auto* own = world.owner(lead.id);
     if (!own || own->id != s.world_ctx->local_player.id) return false;
 
-    const auto* mv  = world.movements.get(lead.id);
+    const auto* mv  = world.movement(lead.id);
     bool can_move   = mv && mv->speed > 0.0f;
     // Combat is opt-in (create_unit only adds the component when the type
     // declares a `combat` block), so presence IS the capability — a
     // barracks has no Combat component and thus no attack command.
-    bool can_attack = world.combats.get(lead.id) != nullptr;
+    bool can_attack = world.combat(lead.id) != nullptr;
 
     if (command == "attack")        return can_attack;
     if (command == "attack_move")   return can_attack && can_move;
@@ -1358,7 +1358,7 @@ Hud::TargetingIntent Hud::cursor_intent() const {
         return TargetingIntent::Item;
     }
     if (auto unit = ctx.pick_target(sx, sy); simulation::is_non_null_handle(unit)) {
-        const auto* owner = ctx.world->owners.get(unit.id);
+        const auto* owner = ctx.world->owner(unit.id);
         if (!owner) return TargetingIntent::Neutral;
         if (owner->id == ctx.local_player.id) return TargetingIntent::Ally;
         if (ctx.simulation && ctx.simulation->is_allied(ctx.local_player, *owner)) {
@@ -1648,7 +1648,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // mid-drag we want the range ring + drag arrow origin to follow
     // along, not stay anchored where the press happened. Cancel if the
     // caster no longer exists.
-    if (!s.world_ctx->world->contains(s.drag_cast.caster)) {
+    if (!s.world_ctx->world->contains(s.drag_cast.caster.id)) {
         if (s.drag_cast.inventory_slot >= 0) {
             if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
                 s.inventory_cfg.slots[s.drag_cast.inventory_slot].pressed = false;
@@ -1665,7 +1665,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         s.drag_cast = Impl::DragCastState{};
         return;
     }
-    if (auto* tf = s.world_ctx->world->transforms.get(s.drag_cast.caster.id)) {
+    if (auto* tf = s.world_ctx->world->transform(s.drag_cast.caster.id)) {
         s.drag_cast.caster_x = tf->position.x;
         s.drag_cast.caster_y = tf->position.y;
         s.drag_cast.caster_z = tf->position.z;
@@ -1781,9 +1781,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             f32 snap_r = std::max(64.0f, s.drag_cast.range * 0.15f);
             f32 best_d2 = snap_r * snap_r;
             simulation::Unit best{};
-            for (u32 i = 0; i < world.transforms.count(); ++i) {
-                u32 id = world.transforms.ids()[i];
-                const auto* hinfo = world.handle_infos.get(id);
+            for (u32 id : world.transform_ids()) {
+                const auto* hinfo = world.handle_info(id);
                 if (!hinfo) continue;
                 // Honor the drag's widget_kinds mask (WC3-style): a candidate's
                 // category must be an accepted widget kind — not hard-coded to
@@ -1805,7 +1804,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                 // Commands always reject dead units — Move-on-corpse can't
                 // follow, Attack-on-corpse can't attack. Abilities run the
                 // full filter (alive/dead flags handled inside).
-                if (is_command && world.dead_states.has(id)) continue;
+                if (is_command && world.dead_state(id)) continue;
                 // Command attackability: match desktop — only snap a target
                 // some selected unit can actually hit. Destructables always
                 // gate on their widget bit (crate=debris yes, tree no).
@@ -1820,7 +1819,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                     if (gate && s.world_ctx->selection) {
                         bool any_can_hit = false;
                         for (auto u : s.world_ctx->selection->selected()) {
-                            const auto* cb = world.combats.get(u.id);
+                            const auto* cb = world.combat(u.id);
                             if (cb && simulation::can_attack_target(world, cb->target_mask, cand)) {
                                 any_can_hit = true; break;
                             }
@@ -1842,7 +1841,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                     }
                     if (!any_can_cast) continue;
                 }
-                const auto* tf = world.transforms.get(id);
+                const auto* tf = world.transform(id);
                 if (!tf) continue;
                 f32 dx2 = tf->position.x - drag.x;
                 f32 dy2 = tf->position.y - drag.y;
@@ -1989,9 +1988,9 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             s.drag_cast.command_id == "attack_move") {
             if (simulation::is_non_null_handle(s.focus_target_unit) && s.world_ctx &&
                 s.world_ctx->world &&
-                s.world_ctx->world->contains(s.focus_target_unit)) {
+                s.world_ctx->world->contains(s.focus_target_unit.id)) {
                 s.drag_cast.snapped_target = s.focus_target_unit;
-                if (auto* tf = s.world_ctx->world->transforms.get(
+                if (auto* tf = s.world_ctx->world->transform(
                                    s.focus_target_unit.id)) {
                     s.drag_cast.drag_world_x = tf->position.x;
                     s.drag_cast.drag_world_y = tf->position.y;
@@ -2013,7 +2012,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         // of casting on something the spell can't touch.
         bool focus_usable = false;
         if (simulation::is_non_null_handle(s.focus_target_unit) && s.world_ctx && s.world_ctx->world &&
-            s.world_ctx->world->contains(s.focus_target_unit)) {
+            s.world_ctx->world->contains(s.focus_target_unit.id)) {
             const auto* def = s.world_ctx->abilities
                                 ? s.world_ctx->abilities->get(s.drag_cast.ability_id)
                                 : nullptr;
@@ -2037,7 +2036,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             // position so a tap-and-fire feels like "this enemy gets
             // hit" rather than always landing under the caster.
             if (focus_usable) {
-                if (auto* tf = s.world_ctx->world->transforms.get(
+                if (auto* tf = s.world_ctx->world->transform(
                                    s.focus_target_unit.id)) {
                     s.drag_cast.drag_world_x = tf->position.x;
                     s.drag_cast.drag_world_y = tf->position.y;
@@ -2145,14 +2144,14 @@ Hud::AbilityAimState Hud::aim_state() const {
 
         if (simulation::is_non_null_handle(dc.snapped_target) && m_impl->world_ctx &&
             m_impl->world_ctx->world) {
-            const auto* tf = m_impl->world_ctx->world->transforms.get(
+            const auto* tf = m_impl->world_ctx->world->transform(
                                  dc.snapped_target.id);
             if (tf) {
                 out.snapped_id = dc.snapped_target.id;
                 out.snapped_x  = tf->position.x;
                 out.snapped_y  = tf->position.y;
                 out.snapped_z  = tf->position.z;
-                const auto* sel = m_impl->world_ctx->world->selectables.get(
+                const auto* sel = m_impl->world_ctx->world->selectable(
                                       dc.snapped_target.id);
                 out.snapped_radius = sel ? sel->selection_radius : 48.0f;
             }
@@ -2197,7 +2196,7 @@ Hud::AbilityAimState Hud::aim_state() const {
         if (m_impl->world_ctx && m_impl->world_ctx->selection) {
             const auto& sel = m_impl->world_ctx->selection->selected();
             if (!sel.empty() && m_impl->world_ctx->world) {
-                if (auto* tf = m_impl->world_ctx->world->transforms.get(sel.front().id)) {
+                if (auto* tf = m_impl->world_ctx->world->transform(sel.front().id)) {
                     out.caster_x = tf->position.x;
                     out.caster_y = tf->position.y;
                     out.caster_z = tf->position.z;
@@ -2229,7 +2228,7 @@ Hud::AbilityAimState Hud::aim_state() const {
 
     if (ctx.selection->selected().empty()) return out;
     simulation::Unit caster_unit = ctx.selection->selected().front();
-    const auto* caster_tf = ctx.world->transforms.get(caster_unit.id);
+    const auto* caster_tf = ctx.world->transform(caster_unit.id);
     if (!caster_tf) return out;
 
     out.active   = true;
@@ -2244,7 +2243,7 @@ Hud::AbilityAimState Hud::aim_state() const {
     // the unit doesn't actually own the ability — the preset's
     // targeting-mode logic accepts any armed id, so be defensive.
     u32 level = 1;
-    if (const auto* aset = ctx.world->ability_sets.get(caster_unit.id)) {
+    if (const auto* aset = ctx.world->ability_set(caster_unit.id)) {
         for (const auto& a : aset->abilities) {
             if (a.ability_id == m_impl->action_bar_targeting_ability) {
                 level = a.level; break;
@@ -2296,9 +2295,8 @@ Hud::AbilityAimState Hud::aim_state() const {
         f32 snap_r = std::max(64.0f, out.range * 0.15f);
         f32 best_d2 = snap_r * snap_r;
         simulation::Unit best{};
-        for (u32 i = 0; i < ctx.world->transforms.count(); ++i) {
-            u32 id = ctx.world->transforms.ids()[i];
-            const auto* hi = ctx.world->handle_infos.get(id);
+        for (u32 id : ctx.world->transform_ids()) {
+            const auto* hi = ctx.world->handle_info(id);
             if (!hi || hi->category != simulation::Category::Unit) continue;
             simulation::Unit cand{id};
             // Batch cast: snap if ANY selected unit can target the candidate.
@@ -2309,7 +2307,7 @@ Hud::AbilityAimState Hud::aim_state() const {
                 }
             }
             if (!any_can_cast) continue;
-            const auto* tf = ctx.world->transforms.get(id);
+            const auto* tf = ctx.world->transform(id);
             if (!tf) continue;
             f32 dx2 = tf->position.x - out.drag_x;
             f32 dy2 = tf->position.y - out.drag_y;
@@ -2317,13 +2315,13 @@ Hud::AbilityAimState Hud::aim_state() const {
             if (d2 < best_d2) { best_d2 = d2; best = cand; }
         }
         if (simulation::is_non_null_handle(best)) {
-            const auto* tf = ctx.world->transforms.get(best.id);
+            const auto* tf = ctx.world->transform(best.id);
             if (tf) {
                 out.snapped_id = best.id;
                 out.snapped_x  = tf->position.x;
                 out.snapped_y  = tf->position.y;
                 out.snapped_z  = tf->position.z;
-                const auto* sel = ctx.world->selectables.get(best.id);
+                const auto* sel = ctx.world->selectable(best.id);
                 out.snapped_radius = sel ? sel->selection_radius : 48.0f;
             }
         }
@@ -2448,7 +2446,7 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
         && s.world_ctx->selection && s.action_bar_cast_fn) {
         const auto& sel = s.world_ctx->selection->selected();
         if (!sel.empty()) {
-            const auto* aset = s.world_ctx->world->ability_sets.get(sel.front().id);
+            const auto* aset = s.world_ctx->world->ability_set(sel.front().id);
             if (aset) {
                 u32 unit_id = sel.front().id;
                 for (const auto& inst : aset->abilities) {
@@ -2525,7 +2523,7 @@ resolve_slot_ability(u32 slot_index,
     if (!ctx.selection || !ctx.world || !ctx.abilities) return nullptr;
     const auto& sel = ctx.selection->selected();
     if (sel.empty()) return nullptr;
-    const auto* aset = ctx.world->ability_sets.get(sel.front().id);
+    const auto* aset = ctx.world->ability_set(sel.front().id);
     if (!aset) return nullptr;
 
     const auto& slot = cfg.slots[slot_index];
@@ -2647,7 +2645,7 @@ inventory_resolve_selected(const Hud::Impl& s, u32* out_carrier_id) {
     const auto& sel = s.world_ctx->selection->selected();
     if (sel.empty()) return nullptr;
     u32 id = sel.front().id;
-    const auto* inv = s.world_ctx->world->inventories.get(id);
+    const auto* inv = s.world_ctx->world->inventory(id);
     if (inv && out_carrier_id) *out_carrier_id = id;
     return inv;
 }
@@ -2666,7 +2664,7 @@ static bool inventory_resolve_slot(const Hud::Impl& s,
     if (!inv || slot_index >= inv->slots.size()) return false;
     simulation::Item item = inv->slots[slot_index];
     if (simulation::is_null_handle(item) || !s.world_ctx || !s.world_ctx->world) return false;
-    const auto* info = s.world_ctx->world->item_infos.get(item.id);
+    const auto* info = s.world_ctx->world->item_info(item.id);
     if (!info) return false;
     out_item = item;
     out_info = info;
@@ -2884,8 +2882,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                                   : UINT32_MAX;
                 if (targetable && inst && caster_id != UINT32_MAX &&
                     slot_castable_now(*s.world_ctx, caster_id, *inst, *def)) {
-                    auto* tf = s.world_ctx->world->transforms.get(caster_id);
-                    auto* hi = s.world_ctx->world->handle_infos.get(caster_id);
+                    auto* tf = s.world_ctx->world->transform(caster_id);
+                    auto* hi = s.world_ctx->world->handle_info(caster_id);
                     if (tf && hi) {
                         s.drag_cast.phase       = Hud::Impl::DragCastPhase::Pressed;
                         s.drag_cast.slot_index  = bar_slot;
@@ -2942,8 +2940,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                                   ? s.world_ctx->selection->selected().front().id
                                   : UINT32_MAX;
                 if (targetable && caster_id != UINT32_MAX) {
-                    auto* tf = s.world_ctx->world->transforms.get(caster_id);
-                    auto* hi = s.world_ctx->world->handle_infos.get(caster_id);
+                    auto* tf = s.world_ctx->world->transform(caster_id);
+                    auto* hi = s.world_ctx->world->handle_info(caster_id);
                     if (tf && hi) {
                         s.drag_cast.phase       = Hud::Impl::DragCastPhase::Pressed;
                         s.drag_cast.slot_index  = cmd_slot;
@@ -3037,7 +3035,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         const auto* abil_def =
                             s.world_ctx->abilities->get(first_ability);
                         const auto* aset =
-                            s.world_ctx->world->ability_sets.get(carrier_id);
+                            s.world_ctx->world->ability_set(carrier_id);
                         const simulation::AbilityInstance* inst = nullptr;
                         if (aset) {
                             for (const auto& a : aset->abilities) {
@@ -3060,8 +3058,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         }
                     }
                     bool targetable = castable_now && form == simulation::AbilityForm::Target;
-                    auto* tf = s.world_ctx->world->transforms.get(carrier_id);
-                    auto* hi = s.world_ctx->world->handle_infos.get(carrier_id);
+                    auto* tf = s.world_ctx->world->transform(carrier_id);
+                    auto* hi = s.world_ctx->world->handle_info(carrier_id);
                     if (tf && hi) {
                         s.drag_cast.phase       = Hud::Impl::DragCastPhase::Pressed;
                         s.drag_cast.slot_index  = -1;
@@ -3218,7 +3216,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         const std::string& fa = def->abilities[0];
                         const auto* abil_def = s.world_ctx->abilities->get(fa);
                         if (abil_def && is_castable_form(abil_def->form)) {
-                            const auto* aset = s.world_ctx->world->ability_sets.get(carrier_id);
+                            const auto* aset = s.world_ctx->world->ability_set(carrier_id);
                             const simulation::AbilityInstance* inst = nullptr;
                             if (aset) {
                                 for (const auto& a : aset->abilities) {
@@ -3242,8 +3240,8 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             if (over && s.pickup_fn && idx < s.pickup_bar_rt.entries.size()) {
                 const auto entry = s.pickup_bar_rt.entries[idx];
                 if (s.world_ctx && s.world_ctx->world &&
-                    s.world_ctx->world->contains(entry.unit) &&
-                    s.world_ctx->world->contains(entry.item)) {
+                    s.world_ctx->world->contains(entry.unit.id) &&
+                    s.world_ctx->world->contains(entry.item.id)) {
                     s.pickup_fn(entry.unit, entry.item);
                 }
             }

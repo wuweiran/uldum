@@ -1,4 +1,5 @@
 #include "render/renderer.h"
+#include "simulation/world_view.h"
 #include "rhi/rhi.h"
 #include "map/terrain_data.h"
 #include "map/map.h"
@@ -45,10 +46,10 @@ static constexpr f32 kInvisibleGhostAlpha = 0.5f;
 // live vision. Reads as "scouted but no longer lit."
 static constexpr f32 kFoggedMemoryAlpha = 0.6f;
 
-static f32 effective_visual_alpha(const simulation::World& world, u32 id,
+static f32 effective_visual_alpha(const simulation::IWorldView& world, u32 id,
                                   const simulation::Renderable& renderable) {
     f32 a = renderable.visual_alpha;
-    auto* sf = world.status_flags.get(id);
+    auto* sf = world.status(id);
     if (sf && (sf->flags & simulation::status::Invisible)) {
         a *= kInvisibleGhostAlpha;
     }
@@ -133,12 +134,12 @@ static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal) {
 // Applied OUTSIDE the yaw so the already-aimed nose tilts up/down, robust
 // to the model's own forward-axis convention. Use is_projectile() to also
 // gate OFF the ground slope-tilt for the same entities.
-static bool is_projectile(const simulation::World& world, u32 id) {
-    return world.projectiles.has(id);
+static bool is_projectile(const simulation::IWorldView& world, u32 id) {
+    return world.projectile(id) != nullptr;
 }
-static glm::mat4 projectile_pitch_matrix(const simulation::World& world, u32 id,
+static glm::mat4 projectile_pitch_matrix(const simulation::IWorldView& world, u32 id,
                                          const simulation::Transform& t, f32 vis_facing) {
-    if (!world.projectiles.has(id)) return glm::mat4{1.0f};
+    if (!world.projectile(id)) return glm::mat4{1.0f};
     glm::vec3 m = t.position - t.prev_position;
     f32 dh = std::sqrt(m.x * m.x + m.y * m.y);
     if (dh < 1e-4f) return glm::mat4{1.0f};
@@ -156,7 +157,7 @@ static glm::mat4 projectile_pitch_matrix(const simulation::World& world, u32 id,
 // authored Z-up needs neither the +90° yaw offset nor the axis flip; glTF
 // Y-up models (all skinned) need both, so skinned callers pass false.
 static glm::mat4 build_entity_model_matrix(const map::TerrainData* terrain,
-                                           const simulation::World& world, u32 id,
+                                           const simulation::IWorldView& world, u32 id,
                                            const simulation::Transform& transform,
                                            f32 alpha, bool native_z_up) {
     glm::vec3 vis_pos = lerp_position(transform, alpha);
@@ -505,9 +506,14 @@ static i32 find_clip_by_name(const asset::ModelData& model, std::string_view nam
     return -1;
 }
 
-AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& model, bool play_birth) {
+AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& model,
+                                                bool play_birth, bool* out_created) {
     auto it = m_anim_instances.find(entity_id);
-    if (it != m_anim_instances.end()) return it->second;
+    if (it != m_anim_instances.end()) {
+        if (out_created) *out_created = false;
+        return it->second;
+    }
+    if (out_created) *out_created = true;
 
     AnimationInstance inst;
     inst.model = &model.data;
@@ -580,20 +586,21 @@ struct AnimStateInfo {
 // equivalent to the explicit "Birth when not busy" gate, and lets
 // the lower-priority arms own the early-return path that already
 // consults their own components.
-static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
+static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 id,
                                        AnimationInstance& anim) {
     using simulation::CastState;
     using simulation::AttackState;
 
-    if (world.dead_states.has(id)) return {AnimState::Death, 0.8f, false};
+    if (world.dead_state(id)) return {AnimState::Death, 0.8f, false};
 
     auto get_type_def = [&]() -> const simulation::UnitTypeDef* {
-        auto* hi = world.handle_infos.get(id);
-        return (hi && world.types) ? world.types->get_unit_type(hi->type_id) : nullptr;
+        auto* hi = world.handle_info(id);
+        const auto* types = world.type_registry();
+        return (hi && types) ? types->get_unit_type(hi->type_id) : nullptr;
     };
 
     // Spell — cast pump in Foreswing / Channeling / Backswing.
-    if (auto* aset = world.ability_sets.get(id);
+    if (auto* aset = world.ability_set(id);
         aset && (aset->cast_state == CastState::Foreswing  ||
                  aset->cast_state == CastState::Channeling ||
                  aset->cast_state == CastState::Backswing)) {
@@ -611,7 +618,7 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 
     // Attack — combat in WindUp/Backswing/Cooldown. Holds the last
     // frame during Cooldown so the silhouette reads as "follow-through".
-    auto* combat = world.combats.get(id);
+    auto* combat = world.combat(id);
     if (combat && (combat->attack_state == AttackState::WindUp     ||
                    combat->attack_state == AttackState::Backswing  ||
                    combat->attack_state == AttackState::Cooldown)) {
@@ -637,7 +644,7 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
 
     // Walk — either driven by an active Move (`mov->moving`) or by
     // the combat-approach phase before WindUp.
-    auto* mov = world.movements.get(id);
+    auto* mov = world.movement(id);
     bool approach = combat && combat->attack_state == AttackState::MovingToTarget;
     if ((mov && mov->moving) || approach) {
         auto* type_def = get_type_def();
@@ -662,7 +669,7 @@ static AnimStateInfo derive_anim_state(const simulation::World& world, u32 id,
     // edge and hold the state until the clip finishes — its length is the
     // timing, then derive falls through to Idle.
     if (anim.state_to_clip[static_cast<u8>(AnimState::Hit)] >= 0) {
-        if (auto* hp = world.healths.get(id)) {
+        if (auto* hp = world.health(id)) {
             bool new_hit = hp->hit_count != anim.last_hit_count;
             anim.last_hit_count = hp->hit_count;
             if (new_hit) return {AnimState::Hit, 0, true};
@@ -918,29 +925,21 @@ void Renderer::upload_fog(rhi::CommandList& cmd) {
     m_fog_dirty = false;
 }
 
-bool Renderer::is_in_fog_memory(const simulation::World& world, u32 id) const {
-    if (!m_simulation) return false;
-    if (!simulation::is_static_remembered_entity(world, id)) return false;
-    // Remembered entity is in fog memory iff its tile is Explored
-    // (which the renderer reaches because is_fog_hidden returned false)
-    // but NOT currently visible.
-    return !m_simulation->vision().is_unit_visible_to(
-        world, *m_simulation, id, simulation::Player{m_local_player_id},
-        /*remembered_ok=*/false);
+simulation::FogVis Renderer::fog_visibility(const simulation::IWorldView& world, u32 id) const {
+    // Pure membership read off the view — NO vision query. project_local_view
+    // already classified this id (LocalView.visible → Live, .snapshot → Memory,
+    // neither → Hidden); we just read it. This is the single place the draw
+    // paths decide dim / freeze / cull. Do NOT reintroduce a vision query here.
+    return world.fog_mode(id);
 }
 
-bool Renderer::is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const {
-    // Client-side cull is *defense in depth*. The server-side network
-    // snapshot path is the primary line against cheating — the client
-    // shouldn't even receive data for units it can't see (network.cpp
-    // uses the same is_unit_visible_to). Single source of truth keeps
-    // the two paths in lockstep.
-    (void)t;  // Vision::is_unit_visible_to reads transform itself
-    if (!m_simulation) return false;
-    const bool remembered_ok = simulation::is_static_remembered_entity(world, id);
-    return !m_simulation->vision().is_unit_visible_to(
-        world, *m_simulation, id, simulation::Player{m_local_player_id},
-        remembered_ok);
+bool Renderer::is_in_fog_memory(const simulation::IWorldView& world, u32 id) const {
+    return fog_visibility(world, id) == simulation::FogVis::Memory;
+}
+
+bool Renderer::is_fog_hidden(const simulation::IWorldView& world, u32 id, const simulation::Transform& t) const {
+    (void)t;
+    return fog_visibility(world, id) == simulation::FogVis::Hidden;
 }
 
 // ── Descriptor set layouts + pool ─────────────────────────────────────────
@@ -3025,7 +3024,7 @@ void Renderer::destroy_model_viewer() {
 
 // ── Shadow depth pass ─────────────────────────────────────────────────────
 
-void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world, f32 alpha) {
+void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::IWorldView& world, f32 alpha) {
     if (!m_shadow_pipeline.is_valid()) return;
 
     glm::vec3 light_dir = m_sun_direction;
@@ -3084,9 +3083,6 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
     }
 
     // Entities — skinned units use skinned shadow pipeline, others use regular
-    auto& transforms = world.transforms;
-    auto& renderables = world.renderables;
-
     bool has_skinned_shadow = m_skinned_shadow_pipeline.is_valid();
 
     // Pass A: skinned units
@@ -3097,15 +3093,14 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
 
         const u32 fi = m_rhi->frame_index();
 
-        for (u32 i = 0; i < renderables.count(); ++i) {
-            u32 id = renderables.ids()[i];
-            const auto& renderable = renderables.data()[i];
+        for (u32 id : world.renderable_ids()) {
+            const auto& renderable = *world.renderable(id);
             if (!renderable.visible) continue;
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
 
-            const auto* transform = transforms.get(id);
+            const auto* transform = world.transform(id);
             if (!transform) continue;
             if (is_fog_hidden(world, id, *transform)) continue;
 
@@ -3198,18 +3193,15 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world,
 
 // ── Draw ───────────────────────────────────────────────────────────────────
 
-void Renderer::draw_shadows(rhi::CommandList& cmd, simulation::World& world, f32 alpha) {
+void Renderer::draw_shadows(rhi::CommandList& cmd, simulation::IWorldView& world, f32 alpha) {
     draw_shadow_pass(cmd, world, alpha);
 }
 
 // ── Instance batching for static meshes (Phase 14a) ──────────────────────
 
-void Renderer::build_static_draw_batches(const simulation::World& world, f32 alpha) {
+void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f32 alpha) {
     m_draw_groups.clear();
     m_static_instance_count = 0;
-
-    auto& renderables = world.renderables;
-    auto& transforms = world.transforms;
 
 
     auto frustum = m_camera.frustum();
@@ -3250,9 +3242,8 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     std::vector<std::vector<InstanceData>> buckets;
     buckets.reserve(8);
 
-    for (u32 i = 0; i < renderables.count(); ++i) {
-        u32 id = renderables.ids()[i];
-        const auto& renderable = renderables.data()[i];
+    for (u32 id : world.renderable_ids()) {
+        const auto& renderable = *world.renderable(id);
         if (!renderable.visible) continue;
 
         // Skip skinned entities (drawn separately via skinned pipeline).
@@ -3260,7 +3251,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         // submeshes, so falling through would draw it as the placeholder box.
         if (auto* lm = get_or_load_model(renderable.model_path); lm && lm->is_skinned) continue;
 
-        const auto* transform = transforms.get(id);
+        const auto* transform = world.transform(id);
         if (!transform) continue;
         if (is_fog_hidden(world, id, *transform)) continue;
 
@@ -3322,7 +3313,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
         // Compute the per-entity model matrix once.
         glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, lm->mesh.native_z_up);
 
-        bool is_corpse = world.dead_states.has(id);
+        bool is_corpse = world.dead_state(id);
         f32  entity_alpha = effective_visual_alpha(world, id, renderable);
         if (is_in_fog_memory(world, id)) entity_alpha *= kFoggedMemoryAlpha;
 
@@ -3465,7 +3456,7 @@ void Renderer::build_static_draw_batches(const simulation::World& world, f32 alp
     }
 }
 
-void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::World& world, f32 alpha,
+void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWorldView& world, f32 alpha,
                     const std::function<void()>& on_after_entities) {
     if (extent.width == 0 || extent.height == 0) return;
 
@@ -3475,13 +3466,11 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
     // (filled values are > 0). Lazy: models load on first draw, and a unit is
     // never clickable before it's drawn, so the timing is always fine.
     {
-        auto& sel = world.selectables;
-        for (u32 i = 0; i < sel.count(); ++i) {
-            auto& s = sel.data()[i];
-            if (s.selection_radius > 0.0f && s.selection_height > 0.0f) continue;
-            u32 id = sel.ids()[i];
-            const auto* r = world.renderables.get(id);
-            const auto* t = world.transforms.get(id);
+        for (u32 id : world.selectable_ids()) {
+            const auto* s = world.selectable(id);
+            if (!s || (s->selection_radius > 0.0f && s->selection_height > 0.0f)) continue;
+            const auto* r = world.renderable(id);
+            const auto* t = world.transform(id);
             if (!r || !t) continue;
             auto* lm = get_or_load_model(r->model_path);
             if (!lm) continue;
@@ -3494,10 +3483,11 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             // the floor, so model size wins for them.
             constexpr f32 MIN_SELECT_R = 32.0f;
             constexpr f32 MIN_SELECT_H = 48.0f;
-            if (s.selection_radius <= 0.0f)
-                s.selection_radius = std::max(lm->mesh.footprint_radius * sc, MIN_SELECT_R);
-            if (s.selection_height <= 0.0f)
-                s.selection_height = std::max(lm->mesh.pick_height * sc, MIN_SELECT_H);
+            f32 radius = s->selection_radius > 0.0f ? s->selection_radius
+                       : std::max(lm->mesh.footprint_radius * sc, MIN_SELECT_R);
+            f32 height = s->selection_height > 0.0f ? s->selection_height
+                       : std::max(lm->mesh.pick_height * sc, MIN_SELECT_H);
+            world.size_selectable(id, radius, height);
         }
     }
 
@@ -3631,9 +3621,6 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
     // ── Draw entities ────────────────────────────────────────────────────
     if (!m_mesh_pipeline.is_valid()) return;
 
-    auto& transforms = world.transforms;
-    auto& renderables = world.renderables;
-
 
     // Determine frame dt for animation (approximate from last frame)
     static auto last_time = std::chrono::steady_clock::now();
@@ -3651,7 +3638,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
     {
         std::vector<u32> stale;
         for (auto& [eid, anim] : m_anim_instances) {
-            if (!world.handle_infos.has(eid)) {
+            if (!world.contains(eid)) {
                 stale.push_back(eid);
             }
         }
@@ -3680,16 +3667,16 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
     // a single-frame "freeze" the player won't notice.
     if (has_skinned_pipeline) {
         auto cull_frustum = m_camera.frustum();
-        for (u32 i = 0; i < renderables.count(); ++i) {
-            u32 id = renderables.ids()[i];
-            const auto& renderable = renderables.data()[i];
+        for (u32 id : world.renderable_ids()) {
+            const auto& renderable = *world.renderable(id);
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
 
-            const auto* transform = transforms.get(id);
+            const auto* transform = world.transform(id);
             if (!transform) continue;
-            if (is_fog_hidden(world, id, *transform)) continue;
+            const simulation::FogVis fog = fog_visibility(world, id);
+            if (fog == simulation::FogVis::Hidden) continue;
             f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
             if (!cull_frustum.is_sphere_visible(transform->interp_position(alpha),
                                                 cull_radius)) continue;
@@ -3702,15 +3689,27 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             // Either way the decision is made at spawn; here we just honor
             // it. (The Birth→Idle decay still lives in derive_anim_state.)
             const bool play_birth = !renderable.skip_birth;
-            auto& anim = get_or_create_anim(id, *lm, play_birth);
+            bool created = false;
+            auto& anim = get_or_create_anim(id, *lm, play_birth, &created);
+
+            // Fog-memory freeze (WC3): a static shown from memory is NOT being
+            // simulated in the view — hold its skeleton on the last-seen frame
+            // instead of advancing it (a burning building freezes mid-burn, a
+            // unit caught mid-swing holds that pose, a death-collapse holds its
+            // last frame). The AnimationInstance persists across live→memory
+            // (same id, never culled), so its bones already carry the last live
+            // pose; we simply skip derive/update/evaluate and let Pass 1 re-upload
+            // them. This is why the snapshot store needs no DeadState — "dead" is
+            // just "the last frame," same as every other state.
+            if (fog == simulation::FogVis::Memory) continue;
 
             // Script-driven animation override (SetUnitAnimation /
             // QueueUnitAnimation). Death always wins — if the unit is
             // dying we drop the queue so the death clip plays cleanly.
-            auto* aq = world.anim_queues.get(id);
-            const bool is_dying = world.dead_states.has(id);
+            auto* aq = world.anim_queue_mut(id);
+            const bool is_dying = world.dead_state(id);
             if (aq && is_dying) {
-                world.anim_queues.remove(id);
+                world.clear_anim_queue(id);
                 aq = nullptr;
                 anim.script_controlled = false;
                 anim.script_clip_name.clear();
@@ -3733,7 +3732,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                     } else {
                         log::warn(TAG, "SetUnitAnimation: clip '{}' not found on model '{}'",
                                   aq->clips.front(), anim.model->name);
-                        world.anim_queues.remove(id);
+                        world.clear_anim_queue(id);
                         aq = nullptr;
                     }
                 }
@@ -3750,6 +3749,26 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                 auto anim_info = derive_anim_state(world, id, anim);
                 set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
                                anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
+
+                // First-sight reveal rule (per-animation, by loop-ness). On the
+                // frame this instance was CREATED, the derived state started at
+                // time 0 — but if the state's clip is NON-looping (death, and
+                // any one-shot), that transition happened BEFORE we could see it
+                // (revealed from fog / re-materialized in the view-world), so we
+                // must show its RESULT, not replay it: snap to the last frame.
+                // Looping states (idle/walk) have no "start", so play from 0 as
+                // usual. A witnessed birth is seeded as the initial state in
+                // get_or_create_anim (Birth), so `created` here is already past
+                // it and Birth plays normally. This drops all death-specific
+                // special-casing — the `looping` flag IS the decision.
+                if (created && !anim.looping) {
+                    i32 ci = anim.state_to_clip[static_cast<u8>(anim.current_state)];
+                    if (ci >= 0 && ci < static_cast<i32>(anim.model->animations.size())) {
+                        anim.time         = anim.model->animations[ci].duration;
+                        anim.finished     = true;
+                        anim.blend_factor = 1.0f;   // no crossfade from a prior state
+                    }
+                }
             }
             update_animation(anim, frame_dt);
 
@@ -3757,7 +3776,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             if (anim.script_controlled && anim.finished && !anim.script_looping && aq) {
                 aq->clips.pop_front();
                 if (aq->clips.empty()) {
-                    world.anim_queues.remove(id);
+                    world.clear_anim_queue(id);
                     // script_controlled flips false on the next frame's
                     // pass, where derive_anim_state picks Idle/Walk and
                     // set_anim_state can crossfade out of Custom.
@@ -3771,7 +3790,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
                     } else {
                         log::warn(TAG, "QueueUnitAnimation: clip '{}' not found",
                                   aq->clips.front());
-                        world.anim_queues.remove(id);
+                        world.clear_anim_queue(id);
                     }
                 }
             }
@@ -3788,15 +3807,14 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
 
         const u32 fi = m_rhi->frame_index();
         auto draw_frustum = m_camera.frustum();
-        for (u32 i = 0; i < renderables.count(); ++i) {
-            u32 id = renderables.ids()[i];
-            const auto& renderable = renderables.data()[i];
+        for (u32 id : world.renderable_ids()) {
+            const auto& renderable = *world.renderable(id);
             if (!renderable.visible) continue;
 
             auto* lm = get_or_load_model(renderable.model_path);
             if (!lm || !lm->is_skinned) continue;
 
-            const auto* transform = transforms.get(id);
+            const auto* transform = world.transform(id);
             if (!transform) continue;
 
             // Skip enemies hidden by fog of war
@@ -3828,7 +3846,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             // Corpse override: placeholder models (no real texture) use the
             // corpse material for every submesh. Models with real textures
             // bind per-submesh below.
-            bool is_corpse = world.dead_states.has(id);
+            bool is_corpse = world.dead_state(id);
             bool has_own_texture = lm->diffuse_texture.texture.is_valid();
             bool use_corpse = is_corpse && !has_own_texture;
             if (!m_shadow_desc_set.is_valid()) continue;
@@ -3939,14 +3957,11 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             if (fire_deep)    deep_timer    = 0.0f;
 
             if (fire_shallow || fire_deep) {
-                auto t_ids = transforms.ids();
-                auto t_data = transforms.data();
-                for (u32 i = 0; i < transforms.count(); ++i) {
-                    u32 id = t_ids[i];
-                    auto& tf = t_data[i];
+                for (u32 id : world.transform_ids()) {
+                    auto& tf = *world.transform(id);
                     if (is_fog_hidden(world, id, tf)) continue;
                     // Flying units skim above the surface — no splash/ripple.
-                    if (const auto* mov = world.movements.get(id);
+                    if (const auto* mov = world.movement(id);
                         mov && mov->type == simulation::MoveType::Air) continue;
 
                     auto tile = m_terrain_data->world_to_tile(tf.position.x, tf.position.y);
@@ -3998,13 +4013,13 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::Wor
             }
         }
 
-        struct EffectCtx { const simulation::World* w; const Renderer* r; };
+        struct EffectCtx { const simulation::IWorldView* w; const Renderer* r; };
         EffectCtx ec{&world, this};
         m_effect_manager.update(frame_dt,
             [](simulation::Unit u, std::string_view attach, void* ctx) -> glm::vec3 {
                 auto* c = static_cast<EffectCtx*>(ctx);
-                if (!c->w->contains(u)) return {0,0,0};
-                auto* t = c->w->transforms.get(u.id);
+                if (!c->w->contains(u.id)) return {0,0,0};
+                auto* t = c->w->transform(u.id);
                 if (!t) return {0,0,0};
                 glm::vec3 pos = t->position;
                 if (!attach.empty()) {

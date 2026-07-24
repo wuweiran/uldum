@@ -166,6 +166,14 @@ struct World {
     AbilityAddedCallback   on_ability_added;
     AbilityRemovedCallback on_ability_removed;
 
+    // Fired when an ability's cooldown STARTS (a cast resolved and began its
+    // cooldown). The host mirrors this to clients so the action-bar / item slot
+    // greys out for `seconds` — clients don't re-simulate ability cooldowns
+    // (only attack cadence), so without this the slot never shows the cooldown.
+    using AbilityCooldownCallback =
+        std::function<void(Unit unit, std::string_view ability_id, f32 seconds)>;
+    AbilityCooldownCallback on_ability_cooldown_started;
+
     // Projectile event callbacks. `on_projectile_hit` fires per unit
     // hit (homing: once; linear: once per unit along the path).
     // `on_projectile_destroyed` fires once on every destroy path
@@ -236,6 +244,7 @@ struct World {
         dead_states.clear(); renderables.clear();
         status_flags.clear(); true_sight_vis.clear(); forced_vis.clear(); anim_queues.clear();
         regions.clear(); next_region_id = 0;
+        entities.reset();
     }
 };
 
@@ -318,8 +327,7 @@ bool     set_ability_level(World& world, const AbilityRegistry& reg, Unit unit,
 // ability_pay_cost deducts; call it only after ability_can_afford
 // returned true. Both no-op on an empty cost map.
 bool     ability_can_afford(const World& world, u32 unit_id,
-                            const std::map<std::string, f32>& cost,
-                            std::string* out_lacking = nullptr);
+                            const std::map<std::string, f32>& cost);
 void     ability_pay_cost(World& world, u32 unit_id,
                           const std::map<std::string, f32>& cost);
 

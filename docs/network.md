@@ -88,10 +88,12 @@ Message IDs are organized by top-nibble category: client/server direction + phas
 | `S_LOBBY_COMMIT` | 0x43 | reliable | (empty) — host locked the lobby, enter Loading |
 | `S_WELCOME` | 0x44 | reliable | `u32 player_id, u32 player_count, u32 tick_rate` — sent at end of Loading with the peer's finalized slot |
 | **Playing — entity sync** | | | |
-| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, u32 type_hash, u8 owner, f32 x, f32 y, f32 facing` |
-| `S_DESTROY` | 0x51 | reliable | `u32 entity_id` |
-| `S_STATE` | 0x52 | unreliable | `u32 tick, u16 count, EntityState[]` — see below |
-| `S_UPDATE` | 0x53 | reliable | on-change attribute / state / ability delta |
+| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, u32 type_hash, u8 owner, f32 x, f32 y, f32 facing` — entity born in the player's sight (plays birth) |
+| `S_SHOW` | 0x55 | reliable | same payload as `S_SPAWN` — an existing entity entered the player's sight (no birth) |
+| `S_STATE` | 0x52 | unreliable | `u32 tick, u16 count, EntityState[]` — see below (dead is a state flag, not a separate message) |
+| `S_HIDE` | 0x56 | reliable | `u32 entity_id` — entity left the player's sight (client decides whether to remember it) |
+| `S_DESTROY` | 0x51 | reliable | `u32 entity_id` — entity removed from the world (not the same as "killed" or "left sight") |
+| `S_UPDATE` | 0x53 | reliable | on-change attribute / state / ability / inventory delta |
 | `S_SOUND` | 0x54 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
 | **Playing — session events** | | | |
 | `S_START` | 0x60 | reliable | (empty) — all players loaded, game begins |
@@ -141,9 +143,13 @@ When a client connects and sends `C_JOIN`:
 
 ### Ongoing
 
-- Server sends `S_STATE` every tick (32 Hz) containing all entities visible to that player
-- Server sends `S_SPAWN` / `S_DESTROY` when entities are created/removed
-- Server filters by fog of war — enemies outside the player's vision are not included in S_STATE
+- Server sends `S_STATE` every tick (32 Hz) containing all entities currently visible to that player
+- Server sends `S_SPAWN` (born in sight) / `S_SHOW` (entered sight) / `S_HIDE` (left sight) / `S_DESTROY` (removed from the world) as entities enter and leave each player's vision
+- Server filters by fog of war — it ships only what a player can currently see, and never tells a client what to remember. A killed unit is not a separate message: death is a flag in `S_STATE`, and the client shows the corpse like any other state.
+
+### Client-owned fog memory
+
+The server only ever sends a player what is **currently visible**. What to do when something leaves sight is the client's decision, not the server's: on `S_HIDE` the client remembers static things (buildings, destructables) by freezing their last-seen state, and forgets mobile units. When the tile is scouted again, the client drops the remembered copy and resumes live updates. This keeps a player's out-of-sight memory entirely local and identical whether the player is the host or a remote client.
 
 ### Client Interpolation
 
@@ -159,7 +165,7 @@ This means the client always renders one tick behind the server (~31ms at 32 Hz)
 
 ### Fog of War
 
-Each client computes its own fog of war locally from the entities the server sends it. Since the server only sends visible entities (fog-filtered), the client's fog naturally matches — tiles with no visible allied units stay dark.
+Each client computes its own fog of war locally from the entities the server sends it. Since the server only sends currently-visible entities (fog-filtered), the client's fog naturally matches — tiles with no visible allied units stay dark. Remembered statics (see [Client-owned fog memory](#client-owned-fog-memory)) are drawn dimmed from the client's own snapshot, not from anything the server keeps sending.
 
 The client still runs `Vision::update()` and `update_visual()` locally for smooth fog transitions.
 

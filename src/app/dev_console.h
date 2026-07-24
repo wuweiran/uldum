@@ -82,6 +82,10 @@ public:
     // nothing pending.
     Action poll_action();
 
+    // Queue a modal error dialog (e.g. "host failed: port in use"). Shown
+    // on the next frame over whatever screen is active; dismissed with OK.
+    void show_error(std::string message);
+
     // Cached display info for every discoverable map. Populated by
     // `rescan_map_list()` peeking at each .uldmap's manifest.json
     // (cheap — header + one file extract per package). Public because
@@ -131,6 +135,11 @@ private:
 
     // Pending action (drained by poll_action).
     Action m_pending;
+
+    // Error dialog: non-empty message = a modal is pending/open. Set via
+    // show_error(); a one-shot flag opens the ImGui popup once.
+    std::string m_error_message;
+    bool        m_error_open = false;
 
     AppState m_state = AppState::Menu;
 };

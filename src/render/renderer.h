@@ -22,7 +22,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-namespace uldum::simulation { struct World; struct Transform; class Simulation; }
+namespace uldum::simulation { struct World; struct IWorldView; struct Transform; class Simulation; enum class FogVis : uldum::u8; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentConfig; }
 
@@ -125,7 +125,7 @@ public:
     // alpha: interpolation factor between previous and current tick (0..1).
     // `world` is non-const because the renderer advances
     // World::anim_queues as script-driven clips finish.
-    void draw_shadows(rhi::CommandList& cmd, simulation::World& world, f32 alpha = 1.0f);
+    void draw_shadows(rhi::CommandList& cmd, simulation::IWorldView& world, f32 alpha = 1.0f);
 
     // Record main pass draw commands into the given command buffer.
     // Reads Transform + Renderable components from the world.
@@ -138,7 +138,7 @@ public:
     // ring occludes it, one behind does not. Trade: a translucent body
     // (Wind Walk) no longer shows the ring through its silhouette, which
     // is far less jarring than the ring floating over nearer ground units.
-    void draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::World& world,
+    void draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWorldView& world,
               f32 alpha = 1.0f,
               const std::function<void()>& on_after_entities = {});
 
@@ -198,14 +198,21 @@ private:
     bool ensure_model_viewer();
     void destroy_model_viewer();
 
-    void draw_shadow_pass(rhi::CommandList& cmd, simulation::World& world, f32 alpha);
+    void draw_shadow_pass(rhi::CommandList& cmd, simulation::IWorldView& world, f32 alpha);
+
+    // Fog classification for a view entity — now a pure membership read off the
+    // view (LocalView.visible / .snapshot), NOT a vision query. The view already
+    // carries the answer (project_local_view computed it); the renderer just
+    // reads it. See simulation::FogVis. Thin wrapper kept so the draw sites read
+    // `fog_visibility(...)`; is_fog_hidden / is_in_fog_memory delegate to it.
+    simulation::FogVis fog_visibility(const simulation::IWorldView& world, u32 id) const;
 
     // Returns true if an entity should be hidden by fog of war (enemy in non-visible tile).
-    bool is_fog_hidden(const simulation::World& world, u32 id, const simulation::Transform& t) const;
+    bool is_fog_hidden(const simulation::IWorldView& world, u32 id, const simulation::Transform& t) const;
     // Returns true if a static-remembered entity is being shown from
     // the player's *memory* (Explored tile) rather than live vision.
     // Draw paths use this to apply the kFoggedMemoryAlpha dim cue.
-    bool is_in_fog_memory(const simulation::World& world, u32 id) const;
+    bool is_in_fog_memory(const simulation::IWorldView& world, u32 id) const;
 
     rhi::Rhi* m_rhi = nullptr;
     const map::TerrainData* m_terrain_data = nullptr;
@@ -413,7 +420,7 @@ private:
         return static_cast<u8>((pipeline_class << 1) | double_sided);
     }
 
-    void build_static_draw_batches(const simulation::World& world, f32 alpha);
+    void build_static_draw_batches(const simulation::IWorldView& world, f32 alpha);
 
     // Particle pipeline (alpha-blended, depth test on, depth write off)
     rhi::PipelineLayoutHandle m_particle_pipeline_layout{};
@@ -481,8 +488,11 @@ private:
     // `play_birth` decides the INITIAL state on creation: a freshly-born
     // unit in the player's sight starts in Birth, anything else (revealed
     // out of fog, or flagged skip_birth) starts in Idle. Ignored once the
-    // instance exists.
-    AnimationInstance& get_or_create_anim(u32 entity_id, LoadedModel& model, bool play_birth);
+    // instance exists. `out_created` (if non-null) reports whether the
+    // instance was made THIS call — the caller applies the first-sight
+    // reveal rule (non-looping states snap to their last frame) exactly once.
+    AnimationInstance& get_or_create_anim(u32 entity_id, LoadedModel& model,
+                                          bool play_birth, bool* out_created = nullptr);
 };
 
 } // namespace uldum::render

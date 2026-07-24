@@ -647,6 +647,14 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
         auto unit = simulation::create_unit(world, pu.type, owner, pu.x, pu.y, pu.facing);
         if (simulation::is_null_handle(unit)) continue;
 
+        // Preplaced units are authored map state — they existed before any
+        // player was watching, so they never play birth (no "born in sight"
+        // moment). Set it explicitly here rather than leaning on
+        // spawn_visible_to_viewer, which is null on the client and only
+        // incidentally false on the host during load. Without this, a client
+        // reveals a preplaced enemy and it wrongly plays its birth clip.
+        if (auto* r = world.renderables.get(unit.id)) r->skip_birth = true;
+
         auto* t = world.transforms.get(unit.id);
         if (t) t->position.z = sample_height(pu.x, pu.y);
         auto* mov = world.movements.get(unit.id);

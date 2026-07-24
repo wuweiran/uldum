@@ -62,11 +62,13 @@ enum class MsgType : u8 {
     S_WELCOME       = 0x44,   // bridge: final player_id, sent at end of Loading
 
     // Playing — entity sync
-    S_SPAWN         = 0x50,
-    S_DESTROY       = 0x51,
+    S_SPAWN         = 0x50,   // entity BORN into the world → client materializes + plays birth
+    S_DESTROY       = 0x51,   // entity REMOVED from the world (decayed / expired / Lua) → client always removes
     S_STATE         = 0x52,
     S_UPDATE        = 0x53,   // on-change: attribute, state, or ability update
     S_SOUND         = 0x54,
+    S_SHOW          = 0x55,   // already-alive entity ENTERS the peer's live sight → materialize at state, NO birth
+    S_HIDE          = 0x56,   // entity LEAVES the peer's live sight (still exists) → client: static→snapshot, mobile→drop
     S_EFFECT_CREATE = 0x57,   // CreateEffect / CreateEffectOnUnit (with handle)
     S_EFFECT_DESTROY = 0x58,  // DestroyEffect (handle)
     S_PROJECTILE_DYING = 0x59, // projectile entered dying state — play death clip
@@ -281,6 +283,7 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
             w.write_string(payload.ability_id);
             w.write_u32(payload.target_unit.id);
             w.write_vec3(payload.target_pos);
+            w.write_u32(payload.source_item.id);   // item-slot cast → GetTriggerItem + charge spend
         } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
             w.write_string(payload.unit_type_id);
         } else if constexpr (std::is_same_v<T, simulation::orders::Research>) {
@@ -322,12 +325,14 @@ inline std::vector<u8> build_node_event(std::string_view node_id, NodeEventKind 
 
 // ── Server → Client ──────────────────────────────────────────────────────
 
-inline std::vector<u8> build_welcome(u32 player_id, u32 player_count, u32 tick_rate) {
+inline std::vector<u8> build_welcome(u32 player_id, u32 player_count, u32 tick_rate,
+                                     u32 placement_count) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_WELCOME));
     w.write_u32(player_id);
     w.write_u32(player_count);
     w.write_u32(tick_rate);
+    w.write_u32(placement_count);
     return std::move(w.data());
 }
 
@@ -367,13 +372,42 @@ inline std::vector<u8> build_destroy(u32 entity_id) {
     return std::move(w.data());
 }
 
+// S_SHOW — an already-alive entity entered the peer's live sight. Same payload
+// as S_SPAWN (full materialize data) so the client can build it if it doesn't
+// have it, but semantically "show, don't birth": the client comes up at the
+// current state, no birth clip. (Distinct opcode from S_SPAWN so the client
+// never confuses re-entry with birth.)
+inline std::vector<u8> build_show(u32 entity_id, std::string_view type_id,
+                                  u8 owner, f32 x, f32 y, f32 facing,
+                                  std::string_view model_path = {}) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_SHOW));
+    w.write_u32(entity_id);
+    w.write_string(type_id);
+    w.write_u8(owner);
+    w.write_f32(x);
+    w.write_f32(y);
+    w.write_f32(facing);
+    w.write_string(model_path);
+    return std::move(w.data());
+}
+
+// S_HIDE — entity left the peer's live sight (still exists in the world). The
+// client decides: static → snapshot & freeze; mobile → drop. Id-only.
+inline std::vector<u8> build_hide(u32 entity_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_HIDE));
+    w.write_u32(entity_id);
+    return std::move(w.data());
+}
+
 // Per-entity record in S_STATE
 struct EntityState {
     u32 entity_id;
     f32 x, y, z;
     f32 facing;
     f32 health_frac;
-    u8  flags;       // bit 0: moving, bit 1: attacking, bit 3: dead
+    u8  flags;       // bit 0: moving, bit 1: attacking, bit 3: dead, bit 4: corpse-hidden
     u32 target_id;
 };
 
@@ -569,7 +603,8 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
         std::string ability = r.read_string();
         simulation::Unit tu{r.read_u32()};
         glm::vec3 tp = r.read_vec3();
-        cmd.order = simulation::orders::Cast{std::move(ability), tu, tp};
+        simulation::Item src{r.read_u32()};   // source_item (0/INVALID for non-item casts)
+        cmd.order = simulation::orders::Cast{std::move(ability), tu, tp, src};
         break;
     }
     case 7: cmd.order = simulation::orders::Train{r.read_string()}; break;
@@ -617,6 +652,7 @@ struct WelcomeData {
     u32 player_id;
     u32 player_count;
     u32 tick_rate;
+    u32 placement_count;
 };
 
 inline WelcomeData parse_welcome(std::span<const u8> data) {
@@ -626,6 +662,7 @@ inline WelcomeData parse_welcome(std::span<const u8> data) {
     w.player_id = r.read_u32();
     w.player_count = r.read_u32();
     w.tick_rate = r.read_u32();
+    w.placement_count = r.read_u32();
     return w;
 }
 
@@ -654,6 +691,29 @@ inline SpawnData parse_spawn(std::span<const u8> data) {
 }
 
 inline u32 parse_destroy(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    return r.read_u32();
+}
+
+// S_SHOW reuses SpawnData (newly_created stays false → the client materializes
+// without a birth clip). Payload matches build_show (no newly_created field).
+inline SpawnData parse_show(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();  // skip MsgType
+    SpawnData s;
+    s.entity_id  = r.read_u32();
+    s.type_id    = r.read_string();
+    s.owner      = r.read_u8();
+    s.x          = r.read_f32();
+    s.y          = r.read_f32();
+    s.facing     = r.read_f32();
+    s.newly_created = false;   // show ≠ birth
+    s.model_path = r.read_string();
+    return s;
+}
+
+inline u32 parse_hide(std::span<const u8> data) {
     ByteReader r(data);
     r.read_u8();
     return r.read_u32();
@@ -935,6 +995,7 @@ enum class UpdateType : u8 {
     Cooldown       = 8,   // SetAbilityCooldown / ResetAbilityCooldown
     ItemCharges    = 9,   // SetItemCharges(item, n)
     ItemLevel      = 10,  // SetItemLevel(item, n)
+    Inventory      = 11,  // item entered/left a carrier's inventory slot (pickup/drop)
 };
 
 inline std::vector<u8> build_update_attr(u32 entity_id, std::string_view key, f32 value) {
@@ -1066,6 +1127,19 @@ inline std::vector<u8> build_update_item_level(u32 item_entity_id, i32 level) {
     return std::move(w.data());
 }
 
+// Inventory pickup/drop. entity_id = carrier (the unit). item_id = the item
+// entity, or UINT32_MAX to CLEAR the slot (drop). Keyed on the carrier so the
+// client can rebuild the carrier's Inventory slot + the item's Carriable.
+inline std::vector<u8> build_update_inventory(u32 carrier_id, u32 slot, u32 item_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
+    w.write_u32(carrier_id);
+    w.write_u8(static_cast<u8>(UpdateType::Inventory));
+    w.write_u32(slot);
+    w.write_u32(item_id);
+    return std::move(w.data());
+}
+
 struct UpdateData {
     u32 entity_id;
     UpdateType type;
@@ -1073,7 +1147,8 @@ struct UpdateData {
     f32 value = 0;
     f32 value2 = 0;    // max for State
     std::string str_value;
-    u32 uint_value = 0; // level for AbilityAdd, owner for Owner, flag bit for Status
+    u32 uint_value = 0; // level for AbilityAdd, owner for Owner, flag bit for Status, slot for Inventory
+    u32 uint_value2 = 0; // item_id for Inventory (UINT32_MAX = clear slot / drop)
     u8 byte_value = 0;  // AbilitySourceKind
     bool bool_value = false; // all-instances mode or on/off for Status
 };
@@ -1127,6 +1202,10 @@ inline UpdateData parse_update(std::span<const u8> data) {
     case UpdateType::ItemCharges:
     case UpdateType::ItemLevel:
         u.uint_value = r.read_u32();       // value (reinterpret cast on read)
+        break;
+    case UpdateType::Inventory:
+        u.uint_value  = r.read_u32();      // slot
+        u.uint_value2 = r.read_u32();      // item_id (UINT32_MAX = clear)
         break;
     }
     return u;

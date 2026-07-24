@@ -1129,7 +1129,7 @@ Each flag has a specific point where the sim has to honor it:
 - `Unattackable` — combat auto-acquisition skips; manual `Attack` orders rejected at issue; `Cast` and click-select still work.
 - `Paused` — movement / combat / cast systems skip every per-unit update; cooldowns and applied-passive durations still tick (Pause is an action freeze, not a time freeze). HUD still renders.
 - `Invisible` — per-player visibility cull. The vision subsystem (`Vision::is_unit_visible_to`) hides the unit from any player that is not its owner / ally AND does not have a true-sight detector covering it this tick. Touches three sites:
-  1. **Renderer** — the unit is culled for non-allied viewers.
+  1. **Renderer** — the unit is culled for non-allied viewers. On the host this falls out of the per-player view (an invisible enemy never enters the projection); on a client the server simply never sends it.
   2. **Server snapshot filter** — peers do not receive position / health / status data for invisible units (the cheat-prevention boundary).
   3. **Target side of combat auto-acquisition** — `UnitFilter.visible_to` rejects invisible enemies, so a guard doesn't latch onto someone wind-walking past it.
 
@@ -1140,7 +1140,7 @@ Each flag has a specific point where the sim has to honor it:
 Detection that pierces invisibility within a radius. Folded into the vision subsystem (`FogOfWar::update`) — not a standalone tick system, since visibility-of-X-to-player-Y is already what fog of war computes.
 
 - **Mechanism**: each tick, after stamping vision tiles, the vision pass scans every unit with numeric attribute `true_sight > 0`. For each detector, spatial-queries enemy units carrying `UNIT_STATUS_INVISIBLE` within `true_sight` radius and ORs the detector's player bit onto the target's transient `TrueSightVisibility` component.
-- **Query**: `is_unit_visible_to(world, sim, entity, player)` consults the mask. If the asking player's bit is set, invisibility no longer hides the unit (fog of war still applies). The **renderer cull and the server-side snapshot filter both call this same method**.
+- **Query**: `is_unit_visible_to(world, sim, entity, player)` consults the mask. If the asking player's bit is set, invisibility no longer hides the unit (fog of war still applies). The **server-side snapshot filter** is the authoritative caller; the renderer no longer queries vision directly — it draws through the per-player view, which already reflects this decision (see [design.md](design.md) Phase 28).
 - **Authoring**: give a detector unit type a base `true_sight` value (e.g. sentry ward → 700). Items, buffs, and passive abilities grant detection via the existing modifier system — `recalculate_modifiers` feeds the effective value back into `numeric["true_sight"]` automatically.
 - **AoE / temporary reveal**: spawn a short-lived detector unit at the cast location (Sentry Ward, Reveal). No new engine primitive needed.
 - **Scope**: reveals invisibility only — NOT fog of war. Sight radius via the `Sight` component is the only thing that lifts fog. Mixing them would surprise authors.

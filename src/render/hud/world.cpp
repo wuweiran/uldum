@@ -1,4 +1,5 @@
 #include "render/hud/world.h"
+#include "simulation/world_view.h"
 #include "render/hud/hud_renderer.h"
 #include "hud/hud.h"
 #include "hud/text_tag.h"
@@ -39,17 +40,17 @@ static bool passes_visibility(const std::vector<VisibilityPolicy>& policies,
 
 // Look up a state's (current, max) from World. Returns false if the entity
 // doesn't have this state (so the bar for it is skipped).
-static bool read_state(const simulation::World& world, u32 id,
+static bool read_state(const simulation::IWorldView& world, u32 id,
                        const std::string& state_id,
                        f32& current, f32& max) {
     if (state_id == "health") {
-        const auto* h = world.healths.get(id);
+        const auto* h = world.health(id);
         if (!h || h->max <= 0.0f) return false;
         current = h->current;
         max     = h->max;
         return true;
     }
-    const auto* block = world.state_blocks.get(id);
+    const auto* block = world.state_block(id);
     if (!block) return false;
     auto it = block->states.find(state_id);
     if (it == block->states.end() || it->second.max <= 0.0f) return false;
@@ -123,12 +124,8 @@ void draw_entity_bars_impl(HudRenderer& r,
     const simulation::SelectionState* selection = ctx.selection;
 
     // Walk all entities with a Transform.
-    auto ids  = world.transforms.ids();
-    auto data = world.transforms.data();
-    u32 count = world.transforms.count();
-    for (u32 i = 0; i < count; ++i) {
-        u32 id = ids[i];
-        const auto& tf = data[i];
+    for (u32 id : world.transform_ids()) {
+        const auto& tf = *world.transform(id);
 
         // Skip fogged entities. Skip entities that are not units (we only
         // draw bars for units with health/state blocks — the checks below
@@ -137,10 +134,10 @@ void draw_entity_bars_impl(HudRenderer& r,
                                                 tf.position.x, tf.position.y)) continue;
         // Skip dead units — their corpse is still in the world but shouldn't
         // advertise HP/mana bars.
-        if (world.dead_states.get(id)) continue;
+        if (world.dead_state(id)) continue;
         // Bars are for units only. Destructables carry Health (so combat can
         // damage them) but must not advertise an HP bar.
-        if (auto* hi = world.handle_infos.get(id);
+        if (auto* hi = world.handle_info(id);
             !hi || hi->category != simulation::Category::Unit) continue;
 
         // Interpolated world position for the bar anchor — matches how
@@ -226,10 +223,10 @@ void draw_unit_name_label_impl(HudRenderer& r,
     if (hovered.id == simulation::Unit{}.id) return;  // nothing under cursor
 
     const auto& world = *ctx.world;
-    const auto* tf    = world.transforms.get(hovered.id);
-    const auto* hinfo = world.handle_infos.get(hovered.id);
+    const auto* tf    = world.transform(hovered.id);
+    const auto* hinfo = world.handle_info(hovered.id);
     if (!tf || !hinfo) return;
-    if (world.dead_states.get(hovered.id)) return;
+    if (world.dead_state(hovered.id)) return;
     if (ctx.vision && ctx.terrain &&
         is_fogged(*ctx.vision, *ctx.terrain, ctx.local_player,
                   tf->position.x, tf->position.y)) {

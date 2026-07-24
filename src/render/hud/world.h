@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace uldum::simulation { struct World; class Vision; class TypeRegistry; class AbilityRegistry; class Simulation; }
+namespace uldum::simulation { struct World; struct IWorldView; class Vision; class TypeRegistry; class AbilityRegistry; class Simulation; }
 namespace uldum::render     { class Camera; }
 namespace uldum::simulation { class SelectionState; }
 namespace uldum::map        { struct TerrainData; }
@@ -85,7 +85,7 @@ struct WorldOverlayConfig {
 // still keep a Picker* if it needs direct access; today it uses the
 // same callbacks for consistency.
 struct WorldContext {
-    const simulation::World*        world     = nullptr;   // authoritative for host/offline, client mirror for client
+    const simulation::IWorldView*   world     = nullptr;   // view-world: client mirror, or host/offline projection
     const simulation::Vision*       vision    = nullptr;   // local-player vision subsystem (fog + true sight)
     const simulation::TypeRegistry*    types     = nullptr;   // for resolving `type_id` → display_name
     const simulation::AbilityRegistry* abilities = nullptr;   // for resolving ability_id → icon / cost / cooldown

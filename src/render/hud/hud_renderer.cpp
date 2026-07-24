@@ -1,4 +1,5 @@
 #include "render/hud/hud_renderer.h"
+#include "simulation/world_view.h"
 #include "render/hud/world.h"
 #include "render/hud/font.h"
 
@@ -626,7 +627,7 @@ resolve_slot_ability(u32 slot_index,
     if (!ctx.selection || !ctx.world || !ctx.abilities) return nullptr;
     const auto& sel = ctx.selection->selected();
     if (sel.empty()) return nullptr;
-    const auto* aset = ctx.world->ability_sets.get(sel.front().id);
+    const auto* aset = ctx.world->ability_set(sel.front().id);
     if (!aset) return nullptr;
 
     const auto& slot = cfg.slots[slot_index];
@@ -657,17 +658,17 @@ resolve_slot_ability(u32 slot_index,
     return nullptr;
 }
 
-static bool can_afford(const simulation::World& world, u32 unit_id,
+static bool can_afford(const simulation::IWorldView& world, u32 unit_id,
                        const simulation::AbilityLevelDef& lvl) {
     if (lvl.cost.empty()) return true;
     for (const auto& [state_name, amount] : lvl.cost) {
         if (amount <= 0.0f) continue;
         if (state_name == "health") {
-            const auto* hp = world.healths.get(unit_id);
+            const auto* hp = world.health(unit_id);
             if (!hp || hp->current < amount) return false;
             continue;
         }
-        const auto* sb = world.state_blocks.get(unit_id);
+        const auto* sb = world.state_block(unit_id);
         if (!sb) return false;
         auto it = sb->states.find(state_name);
         if (it == sb->states.end() || it->second.current < amount) return false;
@@ -686,7 +687,7 @@ inventory_resolve_selected(const Hud::Impl& s, u32* out_carrier_id = nullptr) {
     const auto& sel = s.world_ctx->selection->selected();
     if (sel.empty()) return nullptr;
     u32 id = sel.front().id;
-    const auto* inv = s.world_ctx->world->inventories.get(id);
+    const auto* inv = s.world_ctx->world->inventory(id);
     if (inv && out_carrier_id) *out_carrier_id = id;
     return inv;
 }
@@ -703,7 +704,7 @@ static bool inventory_resolve_slot(const Hud::Impl& s,
     if (!inv || slot_index >= inv->slots.size()) return false;
     simulation::Item item = inv->slots[slot_index];
     if (simulation::is_null_handle(item) || !s.world_ctx || !s.world_ctx->world) return false;
-    const auto* info = s.world_ctx->world->item_infos.get(item.id);
+    const auto* info = s.world_ctx->world->item_info(item.id);
     if (!info) return false;
     out_item = item;
     out_info = info;
@@ -1328,7 +1329,7 @@ static void draw_joystick(HudRenderer::Impl& r, Hud::Impl& s) {
 static Color minimap_dot_color(const WorldContext& ctx, u32 unit_id,
                                const MinimapStyle& style) {
     if (!ctx.world) return style.neutral_dot_color;
-    const auto* owner = ctx.world->owners.get(unit_id);
+    const auto* owner = ctx.world->owner(unit_id);
     if (!owner) return style.neutral_dot_color;
     simulation::Player p = *owner;
     if (p == ctx.local_player) return style.own_dot_color;
@@ -1397,13 +1398,12 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
     const auto& td    = *s.world_ctx->terrain;
     const auto* vision = s.world_ctx->vision;
 
-    for (u32 i = 0; i < world.transforms.count(); ++i) {
-        u32 id = world.transforms.ids()[i];
-        const auto& tf = world.transforms.data()[i];
+    for (u32 id : world.transform_ids()) {
+        const auto& tf = *world.transform(id);
 
-        const auto* info = world.handle_infos.get(id);
+        const auto* info = world.handle_info(id);
         if (!info || info->category != simulation::Category::Unit) continue;
-        if (const auto* hp = world.healths.get(id); hp && hp->current <= 0.0f) continue;
+        if (const auto* hp = world.health(id); hp && hp->current <= 0.0f) continue;
 
         if (vision) {
             i32 tx = static_cast<i32>((tf.position.x - td.origin_x()) / td.tile_size);
@@ -1528,7 +1528,7 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
         if (def && !def->abilities.empty() && carrier_id != UINT32_MAX
             && s.world_ctx && s.world_ctx->world && s.world_ctx->abilities) {
             const std::string& fa = def->abilities[0];
-            const auto* aset = s.world_ctx->world->ability_sets.get(carrier_id);
+            const auto* aset = s.world_ctx->world->ability_set(carrier_id);
             const simulation::AbilityInstance* inst = nullptr;
             if (aset) {
                 for (const auto& a : aset->abilities) {
@@ -1679,7 +1679,7 @@ static void draw_pickup_bar_slots(HudRenderer::Impl& r, Hud::Impl& s) {
                        slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f};
         if (s.world_ctx && s.world_ctx->world && s.world_ctx->types) {
             const auto entry = s.pickup_bar_rt.entries[i];
-            const auto* info = s.world_ctx->world->item_infos.get(entry.item.id);
+            const auto* info = s.world_ctx->world->item_info(entry.item.id);
             const auto* def = info ? s.world_ctx->types->get_item_type(info->type_id) : nullptr;
             if (def && !def->icon_path.empty()) {
                 emit_image(r, icon_rect, def->icon_path, rgba(255, 255, 255, 255));
@@ -1722,7 +1722,7 @@ static void draw_pickup_bar_list(HudRenderer::Impl& r, Hud::Impl& s) {
         const simulation::ItemInfo* info = nullptr;
         const simulation::ItemTypeDef* def = nullptr;
         if (s.world_ctx && s.world_ctx->world) {
-            info = s.world_ctx->world->item_infos.get(entry.item.id);
+            info = s.world_ctx->world->item_info(entry.item.id);
             if (info && s.world_ctx->types) def = s.world_ctx->types->get_item_type(info->type_id);
         }
         if (def && !def->icon_path.empty()) {
@@ -1861,7 +1861,7 @@ static void tooltip_keys(const Hud::Impl& s,
             if (!s.world_ctx || !s.world_ctx->world ||
                 idx >= s.pickup_bar_rt.entries.size()) return;
             const auto item = s.pickup_bar_rt.entries[idx].item;
-            const auto* info = s.world_ctx->world->item_infos.get(item.id);
+            const auto* info = s.world_ctx->world->item_info(item.id);
             if (!info) return;
             out_name.key = "item." + info->type_id + ".name";
             out_body.key = "item." + info->type_id + ".tooltip";
@@ -2055,8 +2055,8 @@ static void draw_text_tags(HudRenderer::Impl& r, Hud::Impl& s,
 
         glm::vec3 world_anchor{0.0f};
         if (simulation::is_non_null_handle(t.unit)) {
-            if (!world.contains(t.unit)) continue;
-            const auto* tf = world.transforms.get(t.unit.id);
+            if (!world.contains(t.unit.id)) continue;
+            const auto* tf = world.transform(t.unit.id);
             if (!tf) continue;
             world_anchor = tf->interp_position(alpha) + glm::vec3(0.0f, 0.0f, t.z_offset);
         } else {

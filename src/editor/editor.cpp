@@ -1,4 +1,5 @@
 #include "editor/editor.h"
+#include "simulation/world_view.h"
 #include "map/map.h"
 #include "map/terrain_data.h"
 #include "simulation/pathfinding.h"  // PATHING_SUBDIV
@@ -504,12 +505,16 @@ void Editor::run() {
         // next loop iteration doesn't assert on a stale frame.
         rhi::CommandList cmd = m_rhi.begin_frame();
         if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
-            m_renderer.draw_shadows(cmd, m_simulation.world());
+            // The editor has no fog/view split — it renders the world it edits
+            // directly. Wrap it in a WorldView so it satisfies the renderer's
+            // IWorldView draw surface.
+            simulation::WorldView view{m_simulation.world()};
+            m_renderer.draw_shadows(cmd, view);
             // Offscreen model-viewer pass (no-op unless a model is selected in
             // the Map Explorer). Same slot as shadows — before the swapchain pass.
             m_renderer.render_model_viewer(cmd, frame_dt);
             m_rhi.begin_rendering();
-            m_renderer.draw(cmd, m_rhi.extent(), m_simulation.world());
+            m_renderer.draw(cmd, m_rhi.extent(), view);
             m_overlays.draw(cmd, m_renderer.camera().view_projection());
             imgui_render(cmd);
             m_rhi.end_frame();

@@ -2,6 +2,7 @@
 
 #include "simulation/entity_types.h"
 #include "simulation/world.h"
+#include "simulation/world_view.h"
 #include "render/camera.h"
 #include "map/terrain_data.h"
 #include "core/types.h"
@@ -20,7 +21,7 @@ namespace uldum::input {
 class Picker {
 public:
     void init(const render::Camera* camera, const map::TerrainData* terrain,
-              const simulation::World* world, u32 screen_w, u32 screen_h);
+              const simulation::IWorldView* world, u32 screen_w, u32 screen_h);
 
     void set_screen_size(u32 w, u32 h) { m_screen_w = w; m_screen_h = h; }
 
@@ -84,7 +85,7 @@ private:
 
     const render::Camera*         m_camera  = nullptr;
     const map::TerrainData*       m_terrain = nullptr;
-    const simulation::World*      m_world   = nullptr;
+    const simulation::IWorldView* m_world   = nullptr;
     const simulation::Vision*     m_vision  = nullptr;
     simulation::Player            m_local_player{};
     u32 m_screen_w = 1;

@@ -29,6 +29,87 @@ static f64 wall_time() {
     return duration<f64>(steady_clock::now().time_since_epoch()).count();
 }
 
+// ── Entity-state snapshot: build (host) + apply-scalars (viewer) ────────────
+// Single source of truth for the S_STATE field/flag conventions, shared by the
+// host's per-tick build and the viewer's apply so the two can never drift.
+// `build_entity_state` samples an entity's transform/health/combat/dead/corpse
+// into an EntityState (caller guarantees a Transform).
+static EntityState build_entity_state(const simulation::World& world, u32 id) {
+    EntityState es{};
+    es.entity_id = id;
+
+    const auto* transform = world.transforms.get(id);
+    es.x = transform->position.x;
+    es.y = transform->position.y;
+    es.z = transform->position.z;
+    es.facing = transform->facing;
+
+    const auto* hp = world.healths.get(id);
+    es.health_frac = hp ? (hp->max > 0 ? hp->current / hp->max : 1.0f) : 1.0f;
+
+    u8 flags = 0;
+    const auto* mov = world.movements.get(id);
+    if (mov && mov->moving) flags |= 0x01;
+    const auto* combat = world.combats.get(id);
+    if (combat && combat->target.id != UINT32_MAX) {
+        es.target_id = combat->target.id;
+        // Only set attacking flag during actual attack (not while moving to target)
+        if (combat->attack_state == simulation::AttackState::WindUp ||
+            combat->attack_state == simulation::AttackState::Backswing ||
+            combat->attack_state == simulation::AttackState::Cooldown) {
+            flags |= 0x02;
+        }
+    }
+    if (world.dead_states.has(id)) flags |= 0x08;
+    // Corpse hidden (host past corpse_duration) — mirrored by the viewer
+    // instead of running its own corpse timer.
+    if (const auto* r = world.renderables.get(id); r && !r->visible) flags |= 0x10;
+    es.flags = flags;
+    return es;
+}
+
+// Apply the SCALAR half of an EntityState (health, moving/attacking/dead/
+// corpse flags, target) into `world`. Deliberately does NOT touch the
+// transform — the client interpolates it separately (and the host copies it).
+static void apply_entity_state_scalars(simulation::World& world, const EntityState& e) {
+    if (auto* hp = world.healths.get(e.entity_id)) hp->current = e.health_frac * hp->max;
+
+    if (auto* mov = world.movements.get(e.entity_id)) mov->moving = (e.flags & 0x01) != 0;
+
+    // Combat state: reproduce the server attack cycle from the single
+    // "attacking" flag. Server cycles WindUp (dmg_time) → Backswing → Cooldown
+    // → WindUp; the viewer kicks a cycle on the rising edge and lets its own
+    // per-frame advance carry the cadence.
+    if (auto* combat = world.combats.get(e.entity_id)) {
+        if (e.flags & 0x02) {
+            combat->target = simulation::Unit{e.target_id};
+            if (combat->attack_state == simulation::AttackState::Idle) {
+                combat->attack_state = simulation::AttackState::WindUp;
+                combat->attack_timer = combat->dmg_time;
+            }
+        } else {
+            combat->attack_state = simulation::AttackState::Idle;
+            combat->target = simulation::Unit{};
+            combat->attack_timer = 0;
+        }
+    }
+
+    // Dead state
+    if (e.flags & 0x08) {
+        if (!world.dead_states.has(e.entity_id)) {
+            world.dead_states.add(e.entity_id, simulation::DeadState{});
+        }
+    } else {
+        world.dead_states.remove(e.entity_id);
+    }
+
+    // Corpse-hidden bit — the host is the single clock for when a corpse stops
+    // drawing; mirror it onto the renderable.
+    if (auto* r = world.renderables.get(e.entity_id)) {
+        r->visible = !(e.flags & 0x10);
+    }
+}
+
 // ── Offline ──────────────────────────────────────────────────────────────
 
 bool NetworkManager::init_offline() {
@@ -106,7 +187,7 @@ void NetworkManager::host_on_disconnect(u32 peer_id) {
 
         DisconnectedPlayer dp;
         dp.player          = it->player;
-        dp.known_entities  = std::move(it->known_entities);
+        dp.known           = std::move(it->known);
         dp.timer           = m_disconnect_timeout;
         dp.auth_token      = std::move(it->auth_token);
         dp.player_name     = std::move(it->player_name);
@@ -172,7 +253,8 @@ void NetworkManager::host_finish_start() {
     for (auto& peer : m_peers) {
         if (!peer.player.is_valid()) continue;
         auto welcome = build_welcome(peer.player.id,
-            static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
+            static_cast<u32>(m_simulation->world().handle_infos.count()), 32,
+            m_placement_count);
         m_transport->send(peer.peer_id, welcome, true);
         host_send_spawn_burst(peer);
     }
@@ -283,7 +365,7 @@ void NetworkManager::host_finish_scene_switch() {
     // the previous scene, only new-scene entities are visible.
     for (auto& peer : m_peers) {
         if (!peer.player.is_valid()) continue;
-        peer.known_entities.clear();
+        peer.known.clear();
         host_send_spawn_burst(peer);
     }
 
@@ -383,8 +465,9 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
                 existing->auth_token  = client_token;
                 log::info(TAG, "Peer {} re-joined lobby (dedup)", peer_id);
             } else {
-                PeerInfo info{peer_id, simulation::Player{UINT32_MAX}, std::move(peer_name),
-                              false, {}, client_token};
+                PeerInfo info{.peer_id = peer_id, .player = simulation::Player{UINT32_MAX},
+                              .player_name = std::move(peer_name), .loaded = false,
+                              .auth_token = client_token};
                 m_peers.push_back(std::move(info));
                 log::info(TAG, "Peer {} joined lobby", peer_id);
             }
@@ -426,12 +509,15 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
             // re-sent — keeps the lobby UI stable across blips.
             std::string restored_name = it->player_name.empty() ? std::move(peer_name)
                                                                  : it->player_name;
-            PeerInfo info{peer_id, it->player, std::move(restored_name),
-                          false, std::move(it->known_entities), std::move(it->auth_token)};
+            PeerInfo info{.peer_id = peer_id, .player = it->player,
+                          .player_name = std::move(restored_name), .loaded = false,
+                          .known = std::move(it->known),
+                          .auth_token = std::move(it->auth_token)};
             m_disconnected.erase(it);
 
             auto welcome = build_welcome(slot,
-                static_cast<u32>(m_simulation->world().handle_infos.count()), 32);
+                static_cast<u32>(m_simulation->world().handle_infos.count()), 32,
+                m_placement_count);
             m_transport->send(peer_id, welcome, true);
 
             m_peers.push_back(std::move(info));
@@ -446,7 +532,7 @@ void NetworkManager::host_on_receive(u32 peer_id, std::span<const u8> data) {
                 // burst the new scene's entities to them along with
                 // every other peer.
                 auto& fresh = m_peers.back();
-                fresh.known_entities.clear();
+                fresh.known.clear();
                 fresh.loaded = false;
                 if (!m_in_flight_scene_name.empty()) {
                     auto msg = build_scene_switch(m_in_flight_scene_name);
@@ -592,8 +678,17 @@ void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
 
     const auto* owner = world.owners.get(entity_id);
     u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
+    // Ride the resolved render model inline for anything whose CLIENT-side model
+    // can't be derived from type_id alone: projectiles (not in the registry) AND
+    // destructables/doodads (which pick a VARIATION from models[] — the client
+    // would otherwise default to variation 0, so a re-shown tree/rock flips to a
+    // different mesh than the host's). Units resolve their single model from the
+    // registry, so they don't need it. (Pre-Step3 only dynamics reached here;
+    // now preplaced statics also do, via S_SHOW on re-entry after S_HIDE.)
     std::string_view model_path;
-    if (info.category == simulation::Category::Projectile) {
+    if (info.category == simulation::Category::Projectile ||
+        info.category == simulation::Category::Destructable ||
+        info.category == simulation::Category::Doodad) {
         if (auto* renderable = world.renderables.get(entity_id)) model_path = renderable->model_path;
     }
 
@@ -601,7 +696,35 @@ void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
                            transform->position.x, transform->position.y,
                            transform->facing, newly_created, model_path);
     m_transport->send(peer.peer_id, msg, true);
-    peer.known_entities.insert(entity_id);
+    peer.known.insert(entity_id);
+}
+
+void NetworkManager::host_send_show(PeerInfo& peer, u32 entity_id,
+                                    const simulation::HandleInfo& info) {
+    // An already-alive entity re-entered the peer's live sight. Same materialize
+    // payload as spawn, but the client comes up at current state with NO birth
+    // clip. Used instead of S_SPAWN when the entity was NOT born this tick.
+    auto& world = m_simulation->world();
+    const auto* transform = world.transforms.get(entity_id);
+    if (!transform) return;
+
+    const auto* owner = world.owners.get(entity_id);
+    u8 owner_id = owner ? static_cast<u8>(owner->id) : 0;
+    // Ride the resolved model inline for projectiles + destructables/doodads so a
+    // re-shown tree/rock keeps the host's VARIATION (else client → variation 0).
+    // This is the primary path the tree/rock regression takes: S_SHOW on re-entry.
+    std::string_view model_path;
+    if (info.category == simulation::Category::Projectile ||
+        info.category == simulation::Category::Destructable ||
+        info.category == simulation::Category::Doodad) {
+        if (auto* renderable = world.renderables.get(entity_id)) model_path = renderable->model_path;
+    }
+
+    auto msg = build_show(entity_id, info.type_id, owner_id,
+                          transform->position.x, transform->position.y,
+                          transform->facing, model_path);
+    m_transport->send(peer.peer_id, msg, true);
+    peer.known.insert(entity_id);
 }
 
 void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
@@ -610,11 +733,15 @@ void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
 
     for (u32 i = 0; i < infos.count(); ++i) {
         u32 id = infos.ids()[i];
+        // Placement entity (id < boundary): the client built it locally from
+        // its own placements.bin. Don't S_SPAWN it — just seed known so the
+        // per-tick loop still ships its S_STATE / real-death S_DESTROY.
+        if (id < m_placement_count) { peer.known.insert(id); continue; }
         if (!is_visible_to(id, peer.player)) continue;
         host_send_spawn(peer, id, infos.data()[i], false);
     }
 
-    log::info(TAG, "Sent {} entities to player {}", peer.known_entities.size(), peer.player.id);
+    log::info(TAG, "Sent {} entities to player {}", peer.known.size(), peer.player.id);
 }
 
 bool NetworkManager::is_visible_to(u32 entity_id, simulation::Player player) const {
@@ -626,13 +753,30 @@ bool NetworkManager::is_visible_to(u32 entity_id, simulation::Player player) con
         m_simulation->world(), *m_simulation, entity_id, player);
 }
 
-bool NetworkManager::is_visible_or_remembered_to(u32 entity_id, simulation::Player player) const {
-    // Variant used to decide whether a static-category entity (tree,
-    // doodad, building) should be shipped to / kept on the client.
-    // Explored tiles count as visible for these; the client keeps the
-    // last-seen state until the player re-scouts.
-    return m_simulation->vision().is_unit_visible_to(
-        m_simulation->world(), *m_simulation, entity_id, player, /*remembered_ok=*/true);
+NetworkManager::ViewGate NetworkManager::view_gate(
+        const simulation::World& world, const simulation::Simulation& sim,
+        u32 id, simulation::Player player, u32 placement_count,
+        std::unordered_set<u32>& discovered) const {
+    // Uniform fog rule (the single source of truth for host + client):
+    //   MOBILE  → kept only while live-visible; culled when it leaves vision.
+    //   STATIC  → frozen at last-seen once DISCOVERED (seen live at least once),
+    //             kept on any Explored tile thereafter.
+    // `preplaced` is NOT part of the keep decision — it's only a wire-spawn
+    // optimization handled by the caller's output loop. Preplaced statics are
+    // authored map decoration (visible from the start), so they're seeded
+    // discovered on first encounter; a *dynamic* static must be scouted first
+    // (H3) or a never-seen static on a pre-explored tile would show.
+    ViewGate g{};
+    g.remembered = simulation::is_static_remembered_entity(world, id);
+    g.live_vis   = sim.vision().is_unit_visible_to(world, sim, id, player);
+
+    const bool preplaced_static = g.remembered && id < placement_count;
+    if (g.live_vis || preplaced_static) discovered.insert(id);
+
+    const bool remembered_ok = g.remembered && discovered.contains(id) &&
+        sim.vision().is_unit_visible_to(world, sim, id, player, /*is_static_remembered=*/true);
+    g.keep = g.live_vis || remembered_ok;
+    return g;
 }
 
 void NetworkManager::host_broadcast_tick(u32 tick) {
@@ -656,67 +800,58 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             u32 id = infos.ids()[i];
             const auto& info = infos.data()[i];
 
-            const bool remembered  = simulation::is_static_remembered_entity(world, id);
-            const bool live_vis    = is_visible_to(id, peer.player);
-            const bool keep_in_view = live_vis ||
-                (remembered && is_visible_or_remembered_to(id, peer.player));
-            if (!keep_in_view) continue;
-            visible_now.insert(id);
-
-            if (!peer.known_entities.contains(id)) {
-                bool newly_created = !last_tick.contains(id);
-                host_send_spawn(peer, id, info, newly_created);
+            // A CARRIED item isn't world-present — it lives in a carrier's
+            // inventory slot; its ground Transform is stale. Skip the live gate:
+            // gating on that stale tile would S_HIDE/S_DESTROY it when the pickup
+            // tile fogs, killing the client's slot. Its sync is the S_UPDATE
+            // Inventory pickup + charge updates; drop re-materializes it.
+            if (const auto* car = world.carriables.get(id);
+                car && simulation::is_non_null_handle(car->carried_by)) {
+                continue;
             }
 
-            // Static-remembered entities frozen in fog don't ship S_STATE
-            // updates while the player can't see them live. Skipping the
-            // state record below preserves the last-seen snapshot on the
-            // client (and saves bandwidth).
-            if (remembered && !live_vis) continue;
+            // LIVE-ONLY gate: ship only what the peer can see now — no fog memory,
+            // no per-peer `discovered`. The client owns memory (decides snapshot
+            // vs drop on S_HIDE). Same predicate as the anti-cheat snapshot filter.
+            if (!is_visible_to(id, peer.player)) continue;
+            visible_now.insert(id);
 
-            // Build state record
+            // First knowledge: born this tick → S_SPAWN (plays birth); already
+            // existed → S_SHOW (no birth). Placement ids are seeded into `known`
+            // at burst (client built them locally) so they skip this. A dynamic
+            // entity that left sight was dropped from `known`, so re-entry
+            // re-materializes at its CURRENT position (the ghost-unit fix).
+            if (!peer.known.contains(id)) {
+                if (!last_tick.contains(id)) host_send_spawn(peer, id, info, /*newly_created=*/true);
+                else                         host_send_show(peer, id, info);
+            }
+
+            // S_STATE for everything visible (incl. the dead flag = kill's work).
             const auto* transform = world.transforms.get(id);
             if (!transform) continue;
 
-            EntityState es{};
-            es.entity_id = id;
-            es.x = transform->position.x;
-            es.y = transform->position.y;
-            es.z = transform->position.z;
-            es.facing = transform->facing;
-
-            const auto* hp = world.healths.get(id);
-            es.health_frac = hp ? (hp->max > 0 ? hp->current / hp->max : 1.0f) : 1.0f;
-
-            u8 flags = 0;
-            const auto* mov = world.movements.get(id);
-            if (mov && mov->moving) flags |= 0x01;
-            const auto* combat = world.combats.get(id);
-            if (combat && combat->target.id != UINT32_MAX) {
-                es.target_id = combat->target.id;
-                // Only set attacking flag during actual attack (not while moving to target)
-                if (combat->attack_state == simulation::AttackState::WindUp ||
-                    combat->attack_state == simulation::AttackState::Backswing ||
-                    combat->attack_state == simulation::AttackState::Cooldown) {
-                    flags |= 0x02;
-                }
-            }
-            if (world.dead_states.has(id)) flags |= 0x08;
-            es.flags = flags;
-
-            states.push_back(es);
+            states.push_back(build_entity_state(world, id));
         }
 
-        // Send S_DESTROY for entities that left visibility or were destroyed
+        // Peer knew it but can't see it now. Three cases:
+        //   CARRIED           → drop from `known` SILENTLY (the S_UPDATE Inventory
+        //                       already hid+carried it; S_HIDE/S_DESTROY here would
+        //                       kill the client's slot).
+        //   still in world    → S_HIDE  (client snapshots a static, drops a mobile).
+        //   gone from world   → S_DESTROY (decay / expiry / Lua).
         std::vector<u32> to_remove;
-        for (u32 known_id : peer.known_entities) {
-            if (!visible_now.contains(known_id)) {
-                auto msg = build_destroy(known_id);
+        for (u32 known_id : peer.known) {
+            if (visible_now.contains(known_id)) continue;
+            const auto* car = world.carriables.get(known_id);
+            const bool carried = car && simulation::is_non_null_handle(car->carried_by);
+            if (!carried) {
+                auto msg = infos.has(known_id) ? build_hide(known_id)
+                                               : build_destroy(known_id);
                 m_transport->send(peer.peer_id, msg, true);
-                to_remove.push_back(known_id);
             }
+            to_remove.push_back(known_id);   // leaves `known` either way
         }
-        for (u32 id : to_remove) peer.known_entities.erase(id);
+        for (u32 id : to_remove) peer.known.erase(id);
 
         // Send S_STATE
         if (!states.empty()) {
@@ -783,10 +918,19 @@ void NetworkManager::host_broadcast_pause_state() {
 
 void NetworkManager::host_broadcast_update(u32 entity_id, std::span<const u8> update_packet) {
     if (m_mode != Mode::Host || m_peers.empty() || !m_simulation) return;
-    const auto* info = m_simulation->world().handle_infos.get(entity_id);
+    const auto& world = m_simulation->world();
+    const auto* info = world.handle_infos.get(entity_id);
     if (!info) return;
+    // Visibility key: a CARRIED item isn't in any peer's `known` (it left the
+    // live gate on pickup), so its own updates (charges) would never send. Route
+    // through the CARRIER — a peer that can see the holder gets the item update.
+    u32 vis_key = entity_id;
+    if (const auto* car = world.carriables.get(entity_id);
+        car && simulation::is_non_null_handle(car->carried_by)) {
+        vis_key = car->carried_by.id;
+    }
     for (auto& peer : m_peers) {
-        if (peer.known_entities.contains(entity_id)) {
+        if (peer.known.contains(vis_key)) {
             m_transport->send(peer.peer_id, update_packet, true);
         }
     }
@@ -887,6 +1031,8 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         break;
     }
     case MsgType::S_SPAWN:   client_handle_spawn(data); break;
+    case MsgType::S_SHOW:    client_handle_show(data); break;
+    case MsgType::S_HIDE:    client_handle_hide(data); break;
     case MsgType::S_DESTROY: client_handle_destroy(data); break;
     case MsgType::S_STATE:   client_handle_state(data); break;
     case MsgType::S_SOUND:           client_handle_sound(data); break;
@@ -1090,16 +1236,58 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
     m_connected = true;
     log::info(TAG, "Welcome! Assigned player {}, {} players, {} tick/s",
               w.player_id, w.player_count, w.tick_rate);
+
+    // Determinism guard: the client built preplaced entities [0, N) locally
+    // from its own placements.bin, so its allocator should sit at exactly N.
+    // A mismatch means host/client disagree on the placement set (map skew,
+    // non-deterministic load) — every subsequent id-keyed message would land
+    // on the wrong entity, so surface it loudly.
+    u32 client_n = m_view_world.entities.next_id();
+    if (client_n != w.placement_count) {
+        log::error(TAG, "PLACEMENT DESYNC: host placement_count={} but client built {} "
+                        "placement entities — host/client worlds will diverge",
+                   w.placement_count, client_n);
+    }
 }
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
     auto s = parse_spawn(data);
-    spawn_client_entity(s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
+    spawn_client_entity(m_view_world, s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
                         s.newly_created, s.model_path);
+    // Born → drop any stale snapshot for this id (defensive; ids are fresh).
+    m_local_view_impl.drop_snapshot(s.entity_id);
+}
+
+void NetworkManager::client_handle_show(std::span<const u8> data) {
+    // Already-alive entity re-entered live sight. Materialize into the mirror if
+    // absent (newly_created=false → no birth clip), then DROP its snapshot — the
+    // host says it's live now, so it renders from the mirror, not memory. If it
+    // was killed while we watched it leave, the host will have S_HIDE'd it and
+    // this S_SHOW brings the current (possibly-dead) state.
+    auto s = parse_show(data);
+    spawn_client_entity(m_view_world, s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
+                        /*newly_created=*/false, s.model_path);
+    m_local_view_impl.drop_snapshot(s.entity_id);
+}
+
+void NetworkManager::client_handle_hide(std::span<const u8> data) {
+    // Entity left the peer's live sight (still exists in the world). The CLIENT
+    // owns the memory decision here (the host shipped a type-agnostic S_HIDE):
+    //   static-remembered → SNAPSHOT it (mirror → snapshot store), then remove
+    //       from the mirror so nothing can resurrect it live (snapshot ⊥ mirror).
+    //       It renders frozen/dimmed while out of sight; dropped on reveal.
+    //   mobile            → just remove from the mirror (forgotten; ghost-proof).
+    u32 id = parse_hide(data);
+    if (simulation::is_static_remembered_entity(m_view_world, id)) {
+        m_local_view_impl.snapshot_from(m_view_world, id);
+    }
+    destroy_client_entity(id);   // remove from mirror either way
 }
 
 void NetworkManager::client_handle_destroy(std::span<const u8> data) {
+    // Removed from the world (decay / expiry / Lua). Always gone — no memory.
     u32 id = parse_destroy(data);
+    m_local_view_impl.drop_snapshot(id);
     destroy_client_entity(id);
 }
 
@@ -1140,7 +1328,7 @@ void NetworkManager::client_handle_effect_destroy(std::span<const u8> data) {
 
 void NetworkManager::client_handle_projectile_dying(std::span<const u8> data) {
     u32 id = parse_projectile_dying(data);
-    auto& world = m_client_world;
+    auto& world = m_view_world;
     // Queue the model's "death" clip on the local entity so the
     // renderer plays it over the dying window. The server will follow
     // up with S_DESTROY when the entity is actually torn down.
@@ -1159,7 +1347,7 @@ void NetworkManager::client_apply_interpolation() {
         // Only one snapshot — snap to it directly
         auto& snap = m_snapshots[m_snap_idx];
         for (auto& e : snap.entities) {
-            auto* t = m_client_world.transforms.get(e.entity_id);
+            auto* t = m_view_world.transforms.get(e.entity_id);
             if (!t) continue;
             t->prev_position = t->position;
             t->prev_facing = t->facing;
@@ -1174,7 +1362,7 @@ void NetworkManager::client_apply_interpolation() {
     auto& snap_old = m_snapshots[older];
     auto& snap_new = m_snapshots[newer];
 
-    f64 tick_dur = 1.0 / 32.0;
+    f64 tick_dur = SIM_TICK_DT;
     f64 now = wall_time();
     f64 render_time = now - tick_dur;  // render one tick behind
 
@@ -1190,73 +1378,50 @@ void NetworkManager::client_apply_interpolation() {
     for (auto& e : snap_old.entities) old_lookup[e.entity_id] = &e;
 
     for (auto& e : snap_new.entities) {
-        auto* t = m_client_world.transforms.get(e.entity_id);
+        auto* t = m_view_world.transforms.get(e.entity_id);
         if (!t) continue;
 
         auto it = old_lookup.find(e.entity_id);
         if (it != old_lookup.end()) {
             auto* o = it->second;
-            // Interpolate position
-            t->prev_position = t->position;
-            t->position.x = o->x + (e.x - o->x) * alpha;
-            t->position.y = o->y + (e.y - o->y) * alpha;
-            t->position.z = o->z + (e.z - o->z) * alpha;
+            // Position: `position` is the smooth wall-clock lerp shown this
+            // frame. `prev_position` is NOT last frame's value — it's set so
+            // `position - prev_position` equals the STABLE full-tick delta
+            // (new snapshot − old). The renderer derives projectile pitch and
+            // motion-blur from that delta; using the frame-to-frame delta made
+            // it jitter with packet arrival (the "trembling" nose). The client
+            // renders at alpha=1, so `position` alone drives the drawn spot.
+            glm::vec3 disp{ o->x + (e.x - o->x) * alpha,
+                            o->y + (e.y - o->y) * alpha,
+                            o->z + (e.z - o->z) * alpha };
+            glm::vec3 tick_delta{ e.x - o->x, e.y - o->y, e.z - o->z };
+            t->position = disp;
+            t->prev_position = disp - tick_delta;
 
-            // Angular interpolation for facing
+            // Facing: same idea — shortest-arc per-tick delta, so the derived
+            // heading is stable while `facing` stays the smooth display value.
             f32 diff = e.facing - o->facing;
             while (diff > glm::pi<f32>()) diff -= glm::two_pi<f32>();
             while (diff < -glm::pi<f32>()) diff += glm::two_pi<f32>();
-            t->prev_facing = t->facing;
-            t->facing = o->facing + diff * alpha;
+            f32 disp_facing = o->facing + diff * alpha;
+            t->facing = disp_facing;
+            t->prev_facing = disp_facing - diff;
         } else {
             // New entity — snap
             t->prev_position = t->position = {e.x, e.y, e.z};
             t->prev_facing = t->facing = e.facing;
         }
 
-        // Update health
-        auto* hp = m_client_world.healths.get(e.entity_id);
-        if (hp) hp->current = e.health_frac * hp->max;
-
-        // Update components from server flags
-        auto* mov = m_client_world.movements.get(e.entity_id);
-        if (mov) mov->moving = (e.flags & 0x01) != 0;
-
-        // Combat state: simulate server attack cycle on client.
-        // Server cycles: WindUp (dmg_time) → Backswing (backsw_time) → Cooldown → WindUp.
-        // Client receives a single "attacking" flag. We cycle attack_timer to match.
-        auto* combat = m_client_world.combats.get(e.entity_id);
-        if (combat) {
-            if (e.flags & 0x02) {
-                combat->target = simulation::Unit{e.target_id};
-                if (combat->attack_state == simulation::AttackState::Idle) {
-                    // Start new attack cycle
-                    combat->attack_state = simulation::AttackState::WindUp;
-                    combat->attack_timer = combat->dmg_time;
-                }
-                // attack_timer is advanced per-frame below
-            } else {
-                combat->attack_state = simulation::AttackState::Idle;
-                combat->target = simulation::Unit{};
-                combat->attack_timer = 0;
-            }
-        }
-
-        // Dead state
-        if (e.flags & 0x08) {
-            if (!m_client_world.dead_states.has(e.entity_id)) {
-                m_client_world.dead_states.add(e.entity_id, simulation::DeadState{});
-            }
-        } else {
-            // Server says not dead — remove stale dead state if present
-            m_client_world.dead_states.remove(e.entity_id);
-        }
+        // Scalar half (health / moving / attacking / dead / corpse) — shared
+        // with the host's in-process apply. Transform interpolation above stays
+        // client-specific (wall-clock double-buffer lerp).
+        apply_entity_state_scalars(m_view_world, e);
     }
 }
 
 void NetworkManager::client_handle_update(std::span<const u8> data) {
     auto u = parse_update(data);
-    auto& world = m_client_world;
+    auto& world = m_view_world;
 
     switch (u.type) {
     case UpdateType::Attribute: {
@@ -1453,16 +1618,71 @@ void NetworkManager::client_handle_update(std::span<const u8> data) {
         simulation::set_level(
             world, simulation::Item{u.entity_id}, static_cast<i32>(u.uint_value));
         break;
+    case UpdateType::Inventory: {
+        // Item pickup / drop mirrored onto the client. entity_id = carrier.
+        //   item_id != INVALID → PICKUP into `slot`: put the item in the
+        //     carrier's Inventory slot, mark its Carriable, hide ground render.
+        //   item_id == INVALID → (shouldn't happen; kept for symmetry).
+        //   slot == UINT32_MAX  → DROP: find item_id in the carrier's slots,
+        //     clear it + Carriable, restore ground render.
+        u32 carrier_id = u.entity_id;
+        u32 slot       = u.uint_value;
+        u32 item_id    = u.uint_value2;
+
+        if (slot == UINT32_MAX) {
+            // Drop: locate the item in the carrier's slots and clear it.
+            if (auto* inv = world.inventories.get(carrier_id)) {
+                for (auto& s : inv->slots) {
+                    if (s.id == item_id) { s = simulation::Item{}; break; }
+                }
+            }
+            if (auto* car = world.carriables.get(item_id)) car->carried_by = simulation::Unit{};
+            // Ground render restored on the item's next S_STATE (visible bit) —
+            // the host un-hides it and S_STATE carries visible=true.
+            break;
+        }
+
+        // Pickup: ensure the carrier has a sized Inventory, then set the slot.
+        auto* inv = world.inventories.get(carrier_id);
+        if (!inv) {
+            simulation::Inventory fresh;
+            // Size from the unit type def's inventory_size (fallback: grow to fit).
+            if (m_client_types) {
+                if (const auto* hi = world.handle_infos.get(carrier_id)) {
+                    if (const auto* ud = m_client_types->get_unit_type(hi->type_id)) {
+                        fresh.max_slots = ud->inventory_size;
+                        fresh.slots.resize(ud->inventory_size);
+                    }
+                }
+            }
+            world.inventories.add(carrier_id, std::move(fresh));
+            inv = world.inventories.get(carrier_id);
+        }
+        if (inv) {
+            if (slot >= inv->slots.size()) inv->slots.resize(slot + 1);
+            inv->slots[slot] = simulation::Item{item_id};
+        }
+        // Mark the item carried (lazy-add Carriable if the ground item lacked it).
+        if (world.handle_infos.has(item_id)) {
+            if (auto* car = world.carriables.get(item_id)) {
+                car->carried_by = simulation::Unit{carrier_id};
+            } else {
+                world.carriables.add(item_id, simulation::Carriable{simulation::Unit{carrier_id}});
+            }
+            // Hide the ground render immediately (don't wait for S_STATE — the
+            // host stops shipping the item's state once it's carried).
+            if (auto* r = world.renderables.get(item_id)) r->visible = false;
+        }
+        break;
+    }
     }
 }
 
-void NetworkManager::spawn_client_entity(u32 entity_id,
+void NetworkManager::spawn_client_entity(simulation::World& world, u32 entity_id,
                                           std::string_view type_id,
                                           u8 owner, f32 x, f32 y, f32 facing,
                                           bool newly_created,
                                           std::string_view model_path_override) {
-    auto& world = m_client_world;
-
     // Skip if already exists
     if (world.handle_infos.has(entity_id)) return;
 
@@ -1492,6 +1712,66 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
         return;
     }
 
+    // Ground items — minimal path mirroring create_item (no Health,
+    // Movement, Combat, Owner). Their type lives in the item registry the
+    // generic unit/destructable path below never consults, which is why
+    // they used to fall back to the placeholder model at scale 1.
+    if (m_client_types) {
+        if (auto* item_def = m_client_types->get_item_type(type_id)) {
+            std::string model = model_path_override.empty()
+                                  ? (item_def->model_path.empty() ? "placeholder"
+                                                                  : item_def->model_path)
+                                  : std::string(model_path_override);
+            world.handle_infos.add(entity_id,
+                simulation::HandleInfo{std::string(type_id), simulation::Category::Item});
+            simulation::Transform t;
+            t.position = glm::vec3{x, y, 0};
+            t.prev_position = t.position;
+            t.facing = facing;
+            t.prev_facing = facing;
+            t.scale = item_def->model_scale;
+            world.transforms.add(entity_id, std::move(t));
+            world.renderables.add(entity_id,
+                simulation::Renderable{std::move(model), true, !newly_created});
+            world.selectables.add(entity_id, simulation::Selectable{});
+            // ItemInfo drives the HUD slot (type_id → icon/tooltip, charges,
+            // level). Without it, a picked-up item slots on the client but the
+            // bag can't resolve it → empty slot. Carriable lets pickup mark
+            // carried_by (matches create_item on the host).
+            world.item_infos.add(entity_id, simulation::ItemInfo{
+                std::string(type_id), item_def->initial_charges, item_def->initial_level});
+            world.carriables.add(entity_id, simulation::Carriable{});
+            return;
+        }
+    }
+
+    // Doodads — minimal, mirroring create_doodad: HandleInfo(Doodad),
+    // Transform, DoodadComp, Renderable. No owner / health / selectable. A
+    // doodad type isn't in the unit or destructable registry, so without this
+    // branch it would fall through to the generic Unit path below — which is
+    // exactly what made a preplaced rock show as a selectable Unit dot on the
+    // host's view-world minimap and cull like a mobile instead of freezing.
+    if (m_client_types) {
+        if (const auto* doodad_def = m_client_types->get_doodad_type(type_id)) {
+            std::string model = model_path_override.empty()
+                                  ? (doodad_def->models.empty() ? "placeholder"
+                                                                : doodad_def->models[0])
+                                  : std::string(model_path_override);
+            world.handle_infos.add(entity_id,
+                simulation::HandleInfo{std::string(type_id), simulation::Category::Doodad});
+            simulation::Transform t;
+            t.position = glm::vec3{x, y, 0};
+            t.prev_position = t.position;
+            t.facing = facing;
+            t.prev_facing = facing;
+            t.scale = doodad_def->model_scale;
+            world.transforms.add(entity_id, std::move(t));
+            world.doodads.add(entity_id, simulation::DoodadComp{});
+            world.renderables.add(entity_id, simulation::Renderable{std::move(model), true});
+            return;
+        }
+    }
+
     // Determine category from type
     simulation::Category cat = simulation::Category::Unit;
     std::string model_path = "placeholder";
@@ -1500,6 +1780,10 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
     f32 scale = 1.0f;
     f32 max_health = 100.0f;
     f32 collision_radius = 28.0f;
+    f32 move_speed = 0.0f;
+    f32 turn_rate = 0.6f;
+    simulation::MoveType move_type = simulation::MoveType::Ground;
+    const simulation::DestructableTypeDef* destr_def = nullptr;
 
     // Look up type def for model path and other render-relevant data
     if (m_client_types) {
@@ -1511,18 +1795,41 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
             scale = unit_def->model_scale;
             max_health = unit_def->max_health;
             collision_radius = unit_def->collision_radius;
+            move_speed = unit_def->move_speed;
+            turn_rate = unit_def->turn_rate;
+            move_type = unit_def->move_type;
+            // Mirror create_unit: classifications drive is_static_remembered_entity
+            // (a "structure"-classified unit is fog-memory static). Without this,
+            // a building would fail the static test in the view/client world and
+            // get hidden in fog instead of dimmed.
+            if (!unit_def->classifications.empty()) {
+                world.classifications.add(entity_id,
+                    simulation::UnitClassificationComp{unit_def->classifications});
+            }
         } else {
-            auto* destr_def = m_client_types->get_destructable_type(type_id);
+            destr_def = m_client_types->get_destructable_type(type_id);
             if (destr_def) {
                 cat = simulation::Category::Destructable;
                 if (!destr_def->models.empty()) model_path = destr_def->models[0];
                 max_health = destr_def->max_health;
+                scale = destr_def->model_scale;   // trees/crates: match host's create_destructable
             }
         }
     }
 
     world.handle_infos.add(entity_id,
         simulation::HandleInfo{std::string(type_id), cat});
+    // DestructableComp carries the widget target_bit the attack handshake
+    // needs — without it, can_attack_target treats a crate as a Ground unit
+    // and creep/right-click attack orders on it were silently dropped.
+    if (destr_def) {
+        world.destructables.add(entity_id, simulation::DestructableComp{
+            std::string(type_id), 0, destr_def->target_bit, destr_def->selectable});
+    }
+
+    // The host sends its resolved render model inline (correct destructable
+    // variation, etc.); prefer it over the client-derived default.
+    if (!model_path_override.empty()) model_path = std::string(model_path_override);
 
     simulation::Transform t;
     t.position = glm::vec3{x, y, 0};
@@ -1531,19 +1838,36 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
     t.prev_facing = facing;
     t.scale = scale;
     world.transforms.add(entity_id, std::move(t));
-    world.owners.add(entity_id, simulation::Player{owner});
+    // Owner is a UNIT concept. Destructables (crates/trees) are ownerless on the
+    // host (create_destructable adds no Owner), so a client-side Owner would make
+    // a neutral crate read as P0-owned → wrong ping / ring color, and enemy to
+    // other players. Only units get an owner. (The wire's owner byte is 0 for an
+    // ownerless entity, indistinguishable from real P0 — so gate on category.)
+    if (cat == simulation::Category::Unit) {
+        world.owners.add(entity_id, simulation::Player{owner});
+    }
     world.renderables.add(entity_id, simulation::Renderable{model_path, true, !newly_created});
     world.healths.add(entity_id, simulation::Health{max_health, max_health, 0});
-    world.movements.add(entity_id, simulation::Movement{});
-    world.movements.get(entity_id)->collision_radius = collision_radius;
+    world.movements.add(entity_id, simulation::Movement{
+        .speed = move_speed, .turn_rate = turn_rate,
+        .collision_radius = collision_radius, .type = move_type});
     if (m_client_types) {
         auto* ud = m_client_types->get_unit_type(type_id);
         if (ud && ud->weapon) {
+            // Mirror create_unit's Combat setup. target_mask especially: it
+            // drives can_attack_target — without it (default SURFACE, no DEBRIS
+            // bit) the client thinks its own creep can't hit a crate, so the
+            // attack order fell through to a ground move.
             simulation::Combat combat{};
-            combat.dmg_pt = ud->dmg_pt;
-            combat.dmg_time = ud->weapon->dmg_time;
-            combat.backsw_time = ud->weapon->backsw_time;
+            combat.damage          = ud->weapon->damage;
+            combat.range           = ud->weapon->attack_range;
             combat.attack_cooldown = ud->weapon->attack_cooldown;
+            combat.dmg_time        = ud->weapon->dmg_time;
+            combat.backsw_time     = ud->weapon->backsw_time;
+            combat.dmg_pt          = ud->dmg_pt;
+            combat.projectile      = ud->weapon->projectile;
+            combat.acquire_range   = ud->acquire_range;
+            combat.target_mask     = ud->weapon->target_mask;
             world.combats.add(entity_id, std::move(combat));
         }
     }
@@ -1552,11 +1876,138 @@ void NetworkManager::spawn_client_entity(u32 entity_id,
         world.sights.add(entity_id, simulation::Sight{sight_range});
     }
 
-    world.selectables.add(entity_id, simulation::Selectable{selection_radius, 5});
+    // Destructables auto-size their click cylinder from the model AABB
+    // (renderer back-fill), same as create_destructable — a nonzero seed
+    // would make the renderer skip the back-fill and leave a pinpoint
+    // cylinder that the picker can't hit. Units keep their def radius.
+    if (cat == simulation::Category::Destructable) {
+        world.selectables.add(entity_id, simulation::Selectable{});
+    } else {
+        world.selectables.add(entity_id, simulation::Selectable{selection_radius, 5});
+    }
 }
 
 void NetworkManager::destroy_client_entity(u32 entity_id) {
-    simulation::remove_all_components(m_client_world, entity_id);
+    simulation::remove_all_components(m_view_world, entity_id);
+}
+
+void NetworkManager::reset_local_view() {
+    m_view_world.clear_entities();          // client mirror
+    m_local_discovered.clear();
+    m_local_view_impl.clear();              // host/offline zero-copy projection
+}
+
+void NetworkManager::project_local_view(const simulation::Simulation& sim,
+                                        simulation::Player local, u32 placement_count) {
+    // `src` = what LocalView's live reads resolve to: the authoritative World on
+    // host/offline, or the network mirror on the client (sim.world() is routed to
+    // the mirror there via set_world_override). LocalView::source points at it.
+    auto& src = const_cast<simulation::World&>(sim.world());
+    const auto& vis = sim.vision();
+    auto& view = m_local_view_impl;
+    view.source = &src;
+    auto& infos = src.handle_infos;
+
+    // "Is this world position currently live-visible to the local player?" —
+    // the reveal check for the snapshot reconcile below.
+    const auto* terrain = sim.terrain();
+    auto tile_live_visible = [&](const glm::vec3& pos) -> bool {
+        if (!terrain) return true;
+        auto t = terrain->world_to_tile(pos.x, pos.y);
+        return vis.is_visible(local, static_cast<u32>(t.x), static_cast<u32>(t.y));
+    };
+
+    auto take_snapshot  = [&](u32 id) { view.snapshot_from(src, id); };
+    auto drop_snapshot  = [&](u32 id) { view.drop_snapshot(id); };
+
+    view.visible.clear();
+    view.visible.reserve(infos.count());
+
+    for (u32 i = 0; i < infos.count(); ++i) {
+        u32 id = infos.ids()[i];
+
+        // The local player's fog gate (the wire fork ships live-only instead).
+        auto g = view_gate(src, sim, id, local, placement_count, m_local_discovered);
+        if (!g.keep) continue;
+
+        // Seed the OWNED selectable once per vision-entry so the picker has a
+        // click volume that survives snapshotting (source may delete the entity).
+        // The renderer refines it in-place on first draw via size_selectable.
+        if (!view.own_selectables.has(id)) {
+            if (const auto* as = src.selectables.get(id)) {
+                view.own_selectables.add(id, simulation::Selectable{*as});
+            }
+        }
+
+        // Static out of live sight → freeze its last-seen snapshot (a crate holds
+        // its alive state even as it dies unseen). NOT in `visible`, so reads
+        // resolve to the snapshot store.
+        if (g.remembered && !g.live_vis) {
+            take_snapshot(id);
+            continue;
+        }
+
+        // Live: read straight from source. Re-scouted → drop the snapshot so
+        // reads resolve to live truth again.
+        if (view.snapshotted(id)) drop_snapshot(id);
+        view.visible.insert(id);
+
+        // Projectile death clip: source sets ProjectileComp::dying + queues
+        // "death"; mirror it ONCE onto the OWNED queue (source's is never
+        // consumed), latched on the owned queue's presence.
+        if (const auto* ap = src.projectiles.get(id); ap && ap->dying) {
+            if (!view.own_anim_queues.has(id)) {
+                if (const auto* aq = src.anim_queues.get(id)) {
+                    view.own_anim_queues.add(id, simulation::AnimQueue{*aq});
+                } else {
+                    simulation::AnimQueue q;
+                    q.clips.push_back("death");
+                    view.own_anim_queues.add(id, std::move(q));
+                }
+            }
+        }
+    }
+
+    // Remove-on-reveal, EDGE-triggered. Drop a snapshot when the player re-scouts
+    // its tile (host then S_SHOWs it live if still alive, or stays silent if it
+    // died unseen → it correctly vanishes). "Reveal" must be a HIDDEN→VISIBLE
+    // edge, not "tile visible now": the client's fog is computed from
+    // interpolated (one-tick-behind) positions, so right after S_HIDE the tile
+    // still reads live for ~1 tick — a level test would drop the snapshot the
+    // instant it's made. So require the tile seen HIDDEN once first.
+    std::vector<u32> thaw;
+    for (u32 id : view.snapshot.handle_infos.ids()) {
+        if (view.visible.count(id)) continue;
+        const auto* ft = view.snapshot.transforms.get(id);
+        bool tile_live = ft && tile_live_visible(ft->position);
+        if (!tile_live) view.snapshot_hidden_seen.insert(id);        // arm the edge
+        else if (view.snapshot_hidden_seen.count(id)) thaw.push_back(id);  // hidden→visible
+        // else: live but not-yet-hidden = the post-S_HIDE lag window; hold.
+    }
+    for (u32 id : thaw) drop_snapshot(id);
+
+    // Cull owned scratch for ids no longer visible or snapshotted.
+    auto still_present = [&](u32 id) { return view.visible.count(id) || view.snapshotted(id); };
+    std::vector<u32> drop_sel;
+    for (u32 id : view.own_selectables.ids())
+        if (!still_present(id)) drop_sel.push_back(id);
+    for (u32 id : drop_sel) view.own_selectables.remove(id);
+    std::vector<u32> drop_aq;
+    for (u32 id : view.own_anim_queues.ids())
+        if (!still_present(id)) drop_aq.push_back(id);
+    for (u32 id : drop_aq) view.own_anim_queues.remove(id);
+
+    // Rebuild per-tick iteration id-lists (visible ∪ snapshotted, per pool).
+    view.iter_renderables.clear();
+    view.iter_transforms.clear();
+    view.iter_item_infos.clear();
+    for (u32 id : view.visible) {
+        if (src.renderables.has(id)) view.iter_renderables.push_back(id);
+        if (src.transforms.has(id))  view.iter_transforms.push_back(id);
+        if (src.item_infos.has(id))  view.iter_item_infos.push_back(id);
+    }
+    for (u32 id : view.snapshot.renderables.ids()) view.iter_renderables.push_back(id);
+    for (u32 id : view.snapshot.transforms.ids())  view.iter_transforms.push_back(id);
 }
 
 // ── Client fog of war ───────────────────────────────────────────────────
@@ -1577,7 +2028,7 @@ void NetworkManager::init_client_fog(const map::TerrainData& terrain,
 const f32* NetworkManager::update_client_fog(f32 dt) {
     if (!m_client_vision.enabled() || !m_local_player.is_valid()) return nullptr;
     if (m_client_sim_ref) {
-        m_client_vision.update(m_client_world, *m_client_sim_ref);
+        m_client_vision.update(m_view_world, *m_client_sim_ref);
     }
     return m_client_vision.update_visual(m_local_player, dt);
 }
@@ -1606,14 +2057,26 @@ void NetworkManager::update(f32 dt) {
 
     // Client: advance attack cycle timers
     if (m_mode == Mode::Client && dt > 0) {
-        for (u32 i = 0; i < m_client_world.combats.count(); ++i) {
-            auto& combat = m_client_world.combats.data()[i];
+        for (u32 i = 0; i < m_view_world.combats.count(); ++i) {
+            auto& combat = m_view_world.combats.data()[i];
             if (combat.attack_state == simulation::AttackState::Idle) continue;
 
             combat.attack_timer -= dt;
             if (combat.attack_timer <= 0) {
                 if (combat.attack_state == simulation::AttackState::WindUp) {
-                    // WindUp finished → Backswing
+                    // WindUp finished → Backswing. This is the damage point of a
+                    // NORMAL attack — the exact "hit lands" moment. Bump the
+                    // target's local hit_count so its renderer plays the flinch
+                    // ("hit") clip, matching the host's system_health (which bumps
+                    // hit_count only on "attack"-type damage). Derived locally
+                    // from the attack cycle the client already re-simulates — no
+                    // network field. Spells/DoT go through cast_state, not this
+                    // cycle, so they correctly never flinch.
+                    if (combat.target.id != UINT32_MAX) {
+                        if (auto* thp = m_view_world.healths.get(combat.target.id)) {
+                            ++thp->hit_count;
+                        }
+                    }
                     combat.attack_state = simulation::AttackState::Backswing;
                     combat.attack_timer = combat.backsw_time;
                 } else if (combat.attack_state == simulation::AttackState::Backswing) {
@@ -1636,28 +2099,27 @@ void NetworkManager::update(f32 dt) {
         }
     }
 
-    // Client: tick corpse timers — hide then remove dead entities
+    // Client: tick ABILITY cooldowns locally. The host broadcasts the cooldown
+    // START (S_UPDATE Cooldown, keyed on the caster) but the client never runs
+    // system_abilities, so without this the cooldown_remaining the HUD reads
+    // would freeze at its start value → the slot greys FOREVER. Mirror the
+    // host's per-tick decrement (systems.cpp) so the pie/greyed slot counts down
+    // and clears. Same "client re-simulates its own timers" pattern as attacks.
     if (m_mode == Mode::Client && dt > 0) {
-        std::vector<u32> to_remove;
-        for (u32 i = 0; i < m_client_world.dead_states.count(); ++i) {
-            u32 id = m_client_world.dead_states.ids()[i];
-            auto& dead = m_client_world.dead_states.data()[i];
-            dead.corpse_timer += dt;
-
-            if (dead.corpse_visible && dead.corpse_timer >= dead.corpse_duration) {
-                dead.corpse_visible = false;
-                auto* r = m_client_world.renderables.get(id);
-                if (r) r->visible = false;
+        for (u32 i = 0; i < m_view_world.ability_sets.count(); ++i) {
+            auto& aset = m_view_world.ability_sets.data()[i];
+            for (auto& ability : aset.abilities) {
+                if (ability.cooldown_remaining > 0.0f) {
+                    ability.cooldown_remaining = std::max(0.0f, ability.cooldown_remaining - dt);
+                }
             }
-
-            if (dead.corpse_timer >= dead.cleanup_delay) {
-                to_remove.push_back(id);
-            }
-        }
-        for (u32 id : to_remove) {
-            destroy_client_entity(id);
         }
     }
+
+    // The client owns ZERO lifecycle timing. It never advances corpse
+    // timers, never hides a corpse, and never self-destroys an entity —
+    // the host is the single clock. The corpse's visibility comes from the
+    // synced `hidden` state bit, and teardown comes solely from S_DESTROY.
 }
 
 void NetworkManager::shutdown() {
@@ -1681,6 +2143,18 @@ void NetworkManager::shutdown() {
     m_pause_broadcast_timer = 0.0f;
     m_disconnected.clear();
     m_disconnected_view.clear();
+    reset_local_view();
+
+    // Session hygiene: wipe the client mirror + interpolation buffers +
+    // host per-tick set so a following session never inherits a stale entity
+    // (a dynamic id reused in the next scene/session would otherwise collide
+    // with a leftover here and be silently dropped by the has()-guard).
+    m_view_world.clear_entities();
+    m_snapshots[0] = Snapshot{};
+    m_snapshots[1] = Snapshot{};
+    m_snap_idx = 0;
+    m_has_two_snaps = false;
+    m_prev_tick_entities.clear();
 }
 
 } // namespace uldum::network

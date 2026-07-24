@@ -1286,8 +1286,7 @@ void flag_refcount_delta(World& world, u32 id,
 }
 
 bool ability_can_afford(const World& world, u32 unit_id,
-                        const std::map<std::string, f32>& cost,
-                        std::string* out_lacking) {
+                        const std::map<std::string, f32>& cost) {
     if (cost.empty()) return true;
     for (const auto& [state_name, amount] : cost) {
         if (amount <= 0.0f) continue;
@@ -1296,16 +1295,13 @@ bool ability_can_afford(const World& world, u32 unit_id,
             // cost so the caster stays at >= 1 HP. (No cost_can_kill /
             // suicide-cast opt-in — removed by design.)
             const auto* hp = world.healths.get(unit_id);
-            if (!hp || hp->current <= amount) { if (out_lacking) *out_lacking = state_name; return false; }
+            if (!hp || hp->current <= amount) return false;
             continue;
         }
         const auto* sb = world.state_blocks.get(unit_id);
-        if (!sb) { if (out_lacking) *out_lacking = state_name; return false; }
+        if (!sb) return false;
         auto it = sb->states.find(state_name);
-        if (it == sb->states.end() || it->second.current < amount) {
-            if (out_lacking) *out_lacking = state_name;
-            return false;
-        }
+        if (it == sb->states.end() || it->second.current < amount) return false;
     }
     return true;
 }

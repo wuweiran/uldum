@@ -2,6 +2,7 @@
 
 #include "network/protocol.h"
 #include "simulation/world.h"
+#include "simulation/world_view.h"
 #include "simulation/vision.h"
 #include "simulation/entity_types.h"
 #include "simulation/command.h"
@@ -24,6 +25,10 @@ namespace uldum::script { class ScriptEngine; }
 namespace uldum::network {
 
 class Transport;
+
+// Real-time simulation tick rate (Hz) and interval (seconds).
+inline constexpr f32 SIM_TICK_RATE = 32.0f;
+inline constexpr f32 SIM_TICK_DT   = 1.0f / SIM_TICK_RATE;
 
 enum class Mode {
     Offline,          // Single player — local in-process server
@@ -99,8 +104,30 @@ public:
     // Send a command to the server (called instead of local CommandSystem).
     void send_order(const simulation::GameCommand& cmd);
 
-    // The World populated from network snapshots (for rendering).
-    simulation::World& client_world() { return m_client_world; }
+    // Raw access to the client mirror World (see m_view_world). NOT what gets
+    // rendered — that's active_view() (a LocalView) in every mode. Exposed for
+    // the client's setup writes (types/abilities, set_world_override) and for
+    // spawn_client_entity to materialize network entities into it.
+    simulation::World& view_world() { return m_view_world; }
+
+    // The IWorldView the renderer / picker / HUD read: the LocalView projection
+    // in EVERY mode. Host/offline project over the auth world; the client
+    // projects over its network mirror (its sim overrides route world()->mirror,
+    // vision()->client_vision) — same project_local_view call, same Live/Memory
+    // membership. m_local_view_impl.source is wired on the first projection, so
+    // this is only read after a session is playing.
+    simulation::IWorldView& active_view() { return m_local_view_impl; }
+
+    // Project the authoritative world into the view-world for the local player,
+    // applying the fog-of-war gate. Runs once per sim tick on the host/offline
+    // (see App's tick loop). `sim` is passed explicitly so it works in Offline
+    // mode (where m_simulation isn't wired).
+    void project_local_view(const simulation::Simulation& sim,
+                            simulation::Player local, u32 placement_count);
+
+    // Wipe the local view-world + its membership sets. Called in lockstep with
+    // the authoritative world's clear_entities on scene switch / end_session.
+    void reset_local_view();
 
     // Assigned player ID (valid after S_WELCOME).
     simulation::Player local_player() const { return m_local_player; }
@@ -218,6 +245,17 @@ public:
     // calls `host_finish_start()` to send S_WELCOME + S_SPAWN burst + S_START.
     // Must be called after `lobby_ready_to_start(lobby_state())`.
     void host_commit_start();
+
+    // The allocator boundary between PREPLACED entities (ids [0, N), built
+    // locally on both host and client from placements.bin) and DYNAMIC ones
+    // (ids >= N, host-created via Lua/projectiles → shipped over S_SPAWN).
+    // The allocator is reset to 0 at every scene load, so `id < N ⟺ preplaced`
+    // for all live entities in the current scene. The app captures N right
+    // after load_placements (before Lua main); the host ships N to each peer
+    // in S_WELCOME as a determinism guard, and uses it to exempt preplaced
+    // entities from the fog-leave S_DESTROY (the client owns those).
+    void set_placement_count(u32 n) { m_placement_count = n; }
+    u32  placement_count() const { return m_placement_count; }
 
     // Host: every peer (self + remotes) has finished loading — broadcast
     // S_WELCOME + S_SPAWN burst per peer, then S_START. Phase → Playing.
@@ -361,7 +399,12 @@ private:
         simulation::Player player;
         std::string player_name;     // from C_JOIN, shown in lobby + surfaced to Lua
         bool loaded = false;         // Loading-phase: peer sent C_LOAD_DONE
-        std::unordered_set<u32> known_entities;
+        // This peer's wire-projection membership: the ids currently materialized
+        // in its world, so the host knows what it has already shipped and what to
+        // spawn/hide/destroy this tick. Rides reconnect. (The host's own local
+        // player uses m_local_discovered instead — it materializes in-process,
+        // not over the wire.)
+        std::unordered_set<u32> known;
         // Auth token presented at first C_JOIN. Stored so that a later
         // C_JOIN carrying the same token can be matched back to this
         // slot — that's what makes reconnect-after-blip work without
@@ -370,11 +413,16 @@ private:
     };
     std::vector<PeerInfo> m_peers;
     std::unordered_set<u32> m_prev_tick_entities;
+    // Count of entities created by load_placements for the current scene (see
+    // set_placement_count). They occupy ids [0, placement_count); the client
+    // builds them locally, so an id < placement_count is client-built and an
+    // id >= it is a runtime spawn shipped over the wire.
+    u32 m_placement_count = 0;
 
     // Disconnected players awaiting reconnect
     struct DisconnectedPlayer {
         simulation::Player player;
-        std::unordered_set<u32> known_entities;
+        std::unordered_set<u32> known;           // preserved known set across the blip
         f32 timer = 0;                           // seconds remaining
         std::vector<u8> auth_token;              // preserved from PeerInfo for reconnect matching
         std::string player_name;                 // preserved so the new peer keeps the lobby display
@@ -418,14 +466,40 @@ private:
     void host_send_spawn(PeerInfo& peer, u32 entity_id,
                          const simulation::HandleInfo& info,
                          bool newly_created);
+    void host_send_show(PeerInfo& peer, u32 entity_id,
+                        const simulation::HandleInfo& info);
     void host_send_spawn_burst(PeerInfo& peer);
     void host_update_disconnected(f32 dt);
     void host_broadcast_pause_state();
     bool is_visible_to(u32 entity_id, simulation::Player player) const;
-    bool is_visible_or_remembered_to(u32 entity_id, simulation::Player player) const;
 
-    // ── Client-side ─────────────────────────────────────────────────────
-    simulation::World m_client_world;
+    // The fog-projection gate for the LOCAL player (project_local_view). Defines
+    // "does the local player keep this entity in view this tick" and, if so,
+    // whether it's live or remembered — so its snapshot/live decision routes
+    // through the same static/mobile fog rule the client applies to what the host
+    // ships (they can't drift). Updates `discovered` (the per-view sighting set,
+    // H3) as a side effect. The wire path does NOT call this — the host ships
+    // live-only (is_visible_to) and the client owns its own memory.
+    struct ViewGate { bool keep; bool live_vis; bool remembered; };
+    ViewGate view_gate(const simulation::World& world, const simulation::Simulation& sim,
+                       u32 id, simulation::Player player, u32 placement_count,
+                       std::unordered_set<u32>& discovered) const;
+
+    // ── This process's view-world ───────────────────────────────────────
+    // Filled from network snapshots (remote client) or by project_local_view()
+    // The network CLIENT's mirror world — filled from S_SPAWN/S_SHOW/S_STATE/
+    // S_HIDE/S_DESTROY. On host/offline it's unused (the projection reads the
+    // authoritative world directly). active_view() never returns this raw World;
+    // it always returns m_local_view_impl (a LocalView), which on the client
+    // points its .source at this mirror. Kept as a plain World so the setup writes
+    // (types/abilities, set_world_override) and spawn_client_entity can target it.
+    simulation::World m_view_world;
+    // The one IWorldView the renderer / picker / HUD read, in EVERY mode. On
+    // host/offline project_local_view() drives it over the authoritative world;
+    // on the client it drives it over m_view_world (the network mirror) — same
+    // LocalView, same snapshot/visible membership. Its .source is wired on the
+    // first project_local_view() call.
+    simulation::LocalView m_local_view_impl;
     simulation::Player m_local_player{UINT32_MAX};
     const simulation::TypeRegistry* m_client_types = nullptr;
     const simulation::AbilityRegistry* m_client_abilities = nullptr;
@@ -456,6 +530,8 @@ private:
     void client_on_receive(u32 peer_id, std::span<const u8> data);
     void client_handle_welcome(std::span<const u8> data);
     void client_handle_spawn(std::span<const u8> data);
+    void client_handle_show(std::span<const u8> data);
+    void client_handle_hide(std::span<const u8> data);
     void client_handle_destroy(std::span<const u8> data);
     void client_handle_state(std::span<const u8> data);
     void client_handle_sound(std::span<const u8> data);
@@ -465,11 +541,22 @@ private:
     void client_handle_update(std::span<const u8> data);
     void client_apply_interpolation();
 
-    void spawn_client_entity(u32 entity_id, std::string_view type_id,
+    void spawn_client_entity(simulation::World& world, u32 entity_id,
+                             std::string_view type_id,
                              u8 owner, f32 x, f32 y, f32 facing,
                              bool newly_created,
                              std::string_view model_path_override = {});
     void destroy_client_entity(u32 entity_id);
+
+    // The host/offline local player's fog-projection scratch. project_local_view
+    // runs view_gate for the local player and materializes the result in-process
+    // (into m_local_view_impl) instead of over the wire: "local game =
+    // server↔client with the network calls replaced by function calls". Only the
+    // `discovered` sighting set survives across ticks (view_gate's H3 gate: static
+    // ids seen LIVE at least once this scene, so a pre-explored-but-never-scouted
+    // static doesn't surface from memory). A remote client has no counterpart —
+    // it's a pure consumer of what the host ships.
+    std::unordered_set<u32> m_local_discovered;
 };
 
 } // namespace uldum::network

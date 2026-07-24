@@ -21,6 +21,17 @@ static bool key_pressed(bool current, bool& prev) {
 }
 
 void RtsPreset::commit(const InputContext& ctx, const GameCommand& cmd) {
+    // Guard: the local player must actually CONTROL the selected units. You can
+    // view-select foreign units (an enemy's, a neutral crate), but issuing an
+    // order through them is doomed — the server's order pipeline drops it on
+    // ownership. Firing the local ping anyway is misleading feedback (a white/red
+    // flash for an order that never happens). Selection can't mix players, so the
+    // first unit's owner decides for the whole batch.
+    if (!cmd.units.empty()) {
+        const auto* o = ctx.simulation.world().owners.get(cmd.units.front().id);
+        if (!o || o->id != cmd.player.id) return;   // don't submit or ping
+    }
+
     ctx.commands.submit(cmd);
     // Local-input feedback: flash the target ping if this order landed on a
     // unit/item. Derived from the command so every gesture gets it for free.
