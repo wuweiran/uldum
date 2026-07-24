@@ -2077,12 +2077,12 @@ void ScriptEngine::bind_api() {
 
     // ── Session API ───────────────────────────────────────────────────────
 
-    lua["EndGame"] = [this](u32 winner_id, sol::optional<std::string> stats_json) {
+    lua["EndGame"] = [this](u32 winning_team, sol::optional<std::string> stats_json) {
         std::string stats = stats_json.value_or("{}");
-        log::info("Script", "EndGame called — winner: {}", winner_id);
+        log::info("Script", "EndGame called — winning team: {}", winning_team);
         EventFrame frame;
         dispatch(frame, "global_game_end");
-        if (m_end_game_fn) m_end_game_fn(winner_id, stats);
+        if (m_end_game_fn) m_end_game_fn(winning_team, stats);
     };
 
     // ── Item API ─────────────────────────────────────────────────────────

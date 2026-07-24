@@ -249,6 +249,27 @@ int main(int argc, char* argv[]) {
     float accumulator = 0;
     bool running = true;
 
+    // WC3-style lobby start countdown. Once every connected peer is seated
+    // (and at least one is present), count down, then auto-commit — the worker
+    // has no Start button. Open slots are allowed at start (they go unused), so
+    // a 2-slot map starts with a single player. Any lobby change that unseats a
+    // peer or empties the lobby cancels the countdown; it restarts when the
+    // seated condition holds again.
+    constexpr float kLobbyStartCountdown = 5.0f;
+    bool  lobby_counting = false;
+    float lobby_countdown = 0.0f;
+
+    // Lobby startup timeout — backstop against a worker that spawns but whose
+    // game never starts: a join that's rejected (wrong map hash, bad token)
+    // leaves the peer unregistered, and a dev that opens a session then closes
+    // without seating leaves nobody. Neither trips the abandoned-session end
+    // (that needs the game to have STARTED), so without this the worker would
+    // sit in Lobby forever holding its port. If no game has committed within
+    // this window of spawn, the worker exits so the orchestrator reaper frees
+    // the port. This is also the only reaper once the orchestrator is down
+    // (it leaves workers orphaned on shutdown, by design).
+    constexpr float kLobbyStartupTimeout = 120.0f;
+
     while (running) {
         auto now = std::chrono::steady_clock::now();
         float frame_dt = std::chrono::duration<float>(now - last_time).count();
@@ -260,18 +281,45 @@ int main(int argc, char* argv[]) {
         // Network receive
         network.update(frame_dt);
 
-        // Auto-commit the lobby when it's fully claimed and every connected
-        // peer has seated themselves. Worker has no UI to press Start, so
-        // these two conditions together are the trigger.
-        if (network.phase() == uldum::network::Phase::Lobby &&
-            uldum::network::lobby_all_slots_claimed(network.lobby_state()) &&
-            network.all_connected_peers_seated()) {
-            uldum::log::info(TAG, "Lobby full — auto-committing start");
-            network.host_commit_start();
-            // Worker is headless and pre-loaded — it's always "loaded" for
-            // handshake purposes. Mark self immediately; once all clients
-            // send C_LOAD_DONE, host_finish_start wraps things up below.
-            network.mark_self_loaded();
+        // Lobby start countdown. Ready = still in the lobby, at least one
+        // connected peer, and every connected peer seated. The condition is
+        // recomputed from live state each loop, so a join-seatless / leave /
+        // slot-release flips it false and cancels the countdown automatically.
+        if (network.phase() == uldum::network::Phase::Lobby) {
+            bool ready = network.connected_peer_count() > 0 &&
+                         network.all_connected_peers_seated();
+            if (ready) {
+                if (!lobby_counting) {
+                    lobby_counting  = true;
+                    lobby_countdown = kLobbyStartCountdown;
+                    uldum::log::info(TAG, "All players seated — starting in {:.0f}s",
+                                     kLobbyStartCountdown);
+                }
+                lobby_countdown -= frame_dt;
+                if (lobby_countdown <= 0.0f) {
+                    lobby_counting = false;
+                    uldum::log::info(TAG, "Countdown complete — committing start");
+                    network.host_commit_start();
+                    // Worker is headless and pre-loaded — it's always "loaded"
+                    // for handshake purposes. Mark self immediately; once all
+                    // clients send C_LOAD_DONE, host_finish_start wraps up below.
+                    network.mark_self_loaded();
+                }
+            } else if (lobby_counting) {
+                lobby_counting = false;
+                uldum::log::info(TAG, "Lobby changed — start countdown cancelled");
+            }
+
+            // Startup-timeout backstop (see kLobbyStartupTimeout). Only checked
+            // while still in Lobby — once the game starts, the abandoned-session
+            // end (network side) takes over.
+            float lobby_elapsed = std::chrono::duration<float>(now - start_time).count();
+            if (lobby_elapsed >= kLobbyStartupTimeout) {
+                uldum::log::info(TAG, "No game started within {:.0f}s of spawn — exiting",
+                                 kLobbyStartupTimeout);
+                running = false;
+                break;
+            }
         }
 
         // Transition Loading → Playing once every peer has sent C_LOAD_DONE.
@@ -320,8 +368,8 @@ int main(int argc, char* argv[]) {
         const auto& ed = network.end_data();
 
         nlohmann::json result;
-        result["duration_s"] = duration_s;
-        result["winner_id"]  = ed.winner_id;
+        result["duration_s"]   = duration_s;
+        result["winning_team"] = ed.winning_team;
         // stats_json is whatever the Lua side passed to EndGame — a raw
         // string. We forward it as-is; if it parses as JSON, include
         // the parsed form; otherwise pass the string through.

@@ -46,6 +46,7 @@ public:
     enum class ActionType {
         None,
         EnterLobbyOffline, EnterLobbyHost, EnterLobbyClient,
+        HostViaServer,
         ClaimSlot, ReleaseSlot,
         StartGame, LeaveLobby,
         EndSession, Quit,
@@ -55,6 +56,11 @@ public:
         std::string map_path;
         std::string connect_address;
         u16         port = 7777;
+        // Direct-connect bearer token (Connect box) — presented in C_JOIN so an
+        // orchestrator-spawned worker's auth check passes. Empty on the LAN path.
+        std::string token;
+        // Orchestrator base URL for HostViaServer (e.g. "http://127.0.0.1:8080").
+        std::string server_url;
         // Lobby-edit payload (used by Claim/Release).
         u32         slot = 0;
     };
@@ -85,6 +91,13 @@ public:
     // Queue a modal error dialog (e.g. "host failed: port in use"). Shown
     // on the next frame over whatever screen is active; dismissed with OK.
     void show_error(std::string message);
+
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+    // Show the "share with other players" blob after a successful Host via
+    // Server: the worker addr:port + the spare slot tokens. Rendered in the
+    // menu with a Copy button until the next create. Desktop-only.
+    void show_session_info(std::string share_text);
+#endif
 
     // Cached display info for every discoverable map. Populated by
     // `rescan_map_list()` peeking at each .uldmap's manifest.json
@@ -126,6 +139,16 @@ private:
     // Multiplayer input fields.
     std::string m_connect_address = "127.0.0.1";
     i32         m_port = 7777;
+    std::string m_token_input;  // Connect box bearer token (orchestrator workers)
+
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+    // Orchestrator ("Host via Server") input + result display. Desktop-only:
+    // the Android dev build shares this TU but is offline, so the whole flow
+    // compiles out. m_session_share is the "give this to other players" blob
+    // (addr:port + spare tokens) shown after a successful create.
+    std::string m_server_url = "http://127.0.0.1:8080";
+    std::string m_session_share;      // non-empty → info panel visible
+#endif
 
     // Locale text-input buffer. Seeded by set_active_locale(); the user
     // types any BCP 47 code (`en`, `zh-CN`, `ja`, ...) and presses Enter

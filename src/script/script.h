@@ -88,8 +88,8 @@ public:
     // L() returns a handle that resolves to the literal key string.
     void set_locale_manager(i18n::LocaleManager* mgr) { m_i18n = mgr; }
 
-    // Callback fired when Lua calls EndGame(winner, stats_json).
-    using EndGameFn = std::function<void(u32 winner_id, std::string_view stats_json)>;
+    // Callback fired when Lua calls EndGame(winning_team, stats_json).
+    using EndGameFn = std::function<void(u32 winning_team, std::string_view stats_json)>;
     void set_end_game_fn(EndGameFn fn) { m_end_game_fn = std::move(fn); }
 
     // Callback fired when a unit's attribute/state/ability changes (for network sync).

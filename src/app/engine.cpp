@@ -1076,11 +1076,11 @@ bool Engine::start_session() {
                 return m_renderer.clip_duration(model_path, clip_name);
             };
         register_script_camera_callbacks();
-        m_server.script().set_end_game_fn([this](u32 winner_id, std::string_view stats) {
+        m_server.script().set_end_game_fn([this](u32 winning_team, std::string_view stats) {
             if (m_args.net_mode == network::Mode::Host) {
-                m_network.host_end_game(winner_id, stats);
+                m_network.host_end_game(winning_team, stats);
             }
-            log::info(TAG, "Game ended — winner: player {}", winner_id);
+            log::info(TAG, "Game ended — winning team {}", winning_team);
 
 #ifdef ULDUM_SHELL_UI
             // Parse whatever the Lua script shipped in the stats JSON. The
@@ -1588,8 +1588,8 @@ void Engine::scene_switch_run_main(const std::string& scene_name) {
     });
     register_script_camera_callbacks();
     script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
-    script.set_end_game_fn([this](u32 winner_id, std::string_view stats) {
-        log::info(TAG, "Game ended — winner: player {}", winner_id);
+    script.set_end_game_fn([this](u32 winning_team, std::string_view stats) {
+        log::info(TAG, "Game ended — winning team {}", winning_team);
 #ifdef ULDUM_SHELL_UI
         f32 elapsed = 0.0f;
         try {
@@ -1727,6 +1727,9 @@ void Engine::run() {
         }
         if (native_win != m_rhi.native_window_handle()) {
             m_rhi.recreate_surface(*m_platform);
+            // The new surface is fresh state: re-push everything bound to it
+            // that the RHI doesn't itself restore.
+            m_rhi.set_vsync(m_settings.get_bool("graphics.vsync", true));
             // Re-push HUD viewport + insets — dims / ui_scale / insets
             // may have shifted across the background span.
             m_hud.set_ui_scale(m_platform->ui_scale());

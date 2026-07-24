@@ -958,17 +958,20 @@ inline PauseState parse_pause_state(std::span<const u8> data) {
     return s;
 }
 
-// S_END carries a winner player ID and a Lua-defined stats table serialized as JSON string.
-inline std::vector<u8> build_end(u32 winner_id, std::string_view stats_json) {
+// S_END carries the winning team and a Lua-defined stats table serialized as JSON string.
+inline std::vector<u8> build_end(u32 winning_team, std::string_view stats_json) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_END));
-    w.write_u32(winner_id);
+    w.write_u32(winning_team);
     w.write_string(stats_json);
     return std::move(w.data());
 }
 
 struct EndData {
-    u32 winner_id;
+    // Winning team (manifest team index). UINT32_MAX = no winner — a draw, or a
+    // session that ended without a result (abandoned / never-started). In a FFA
+    // map each player is their own team, so this doubles as the winning player.
+    u32 winning_team = UINT32_MAX;
     std::string stats_json;
 };
 
@@ -976,7 +979,7 @@ inline EndData parse_end(std::span<const u8> data) {
     ByteReader r(data);
     r.read_u8();
     EndData e;
-    e.winner_id = r.read_u32();
+    e.winning_team = r.read_u32();
     e.stats_json = r.read_string();
     return e;
 }

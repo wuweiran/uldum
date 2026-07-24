@@ -1066,9 +1066,9 @@ bool remove_item_ability(World& world, Unit unit,
             recalculate_modifiers(world, unit.id);
         }
         if (world.on_ability_removed) {
-            AbilitySource source;
-            source.value = ItemAbilitySource{granting_item};
-            world.on_ability_removed(unit, ability_id, source, false);
+            AbilitySource removed_source;
+            removed_source.value = ItemAbilitySource{granting_item};
+            world.on_ability_removed(unit, ability_id, removed_source, false);
         }
         return true;
     }

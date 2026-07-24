@@ -97,7 +97,7 @@ Message IDs are organized by top-nibble category: client/server direction + phas
 | `S_SOUND` | 0x54 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
 | **Playing — session events** | | | |
 | `S_START` | 0x60 | reliable | (empty) — all players loaded, game begins |
-| `S_END` | 0x61 | reliable | `u32 winner_id, u16 stats_len, char[] stats_json` |
+| `S_END` | 0x61 | reliable | `u32 winning_team, u16 stats_len, char[] stats_json` (winning_team = UINT32_MAX → no winner) |
 | `S_PAUSE_STATE` | 0x62 | reliable | mid-game disconnect snapshot — see below |
 
 ### LobbyState snapshot (S_LOBBY_STATE payload)
@@ -217,7 +217,39 @@ Lua calls EndGame    → S_END broadcast → session over
 
 A `NetworkManager::Phase` flag (`None / Lobby / Playing`) gates which incoming messages are honored. Offline mode skips all of this — simulation starts immediately.
 
-The dedicated `uldum_worker` auto-commits Start the moment all slots are filled (no UI to press a button). Multi-session orchestration lives in `uldum_server` on top of multiple worker processes — see [Production Deployment Topology](#production-deployment-topology).
+### Worker auto-start + auto-exit (headless)
+
+The dedicated `uldum_worker` has no UI to press Start, so it manages the lobby → playing → over transitions itself:
+
+- **Start (countdown).** Once every *connected* peer has claimed a slot (and at least one peer is present), the worker begins a **5-second countdown**, then `host_commit_start`. Open slots are allowed at start — they go unused — so a 2-player map starts with a single player. Any lobby change that unseats a peer or empties the lobby (a join, a leave, a slot release) cancels the countdown; it restarts when the seated condition holds again. (A dev `--host` uses its lobby **Start** button instead; only the headless worker counts down.)
+- **Exit on abandonment.** A started session with no connected peers and an empty reconnect list is unplayable — nobody can rejoin. The worker ends it via the normal EndGame path (no winner), writes its result to stdout, and exits; the orchestrator's reaper then frees the port. This is what lets a spawned worker clean itself up after the last player leaves (see [Reconnect](#reconnect) for the timeout that drains the reconnect list first).
+
+Multi-session orchestration lives in `uldum_server` on top of multiple worker processes — see [Production Deployment Topology](#production-deployment-topology).
+
+### Running a server-client session in dev
+
+`uldum_server` is the **orchestrator** (an HTTP control plane, default port **8080**), not a game server. It never runs a game — it spawns one `uldum_worker` per session on a UDP port from **9000–9999**. Three distinct listeners are in play, and it's easy to conflate them:
+
+| Port | Who | Protocol | Role |
+|---|---|---|---|
+| 7777 | `uldum_dev --host` / `--connect` | UDP | Direct-LAN **game** port (the dev host *is* the game server) |
+| 8080 | `uldum_server` | HTTP | Orchestrator control-plane API (`POST /sessions`) — runs no game |
+| 9000–9999 | each `uldum_worker` | UDP | The **game** port for one spawned session |
+
+So `7777` is a game port, never the orchestrator's. To run the orchestrator loop (run both from `build/bin/` — the map allowlist scans `build/bin/maps/` for packed `.uldmap` **files**; repo-root `maps/*.uldmap` are source dirs and get a 403):
+
+```
+# once:
+./uldum_server.exe                 # HTTP :8080, spawns workers on 9000-9999
+
+# each session — CLI:
+./uldum_dev.exe --server http://127.0.0.1:8080 --map maps/test_map.uldmap
+
+# ...or GUI (desktop dev console): launch ./uldum_dev.exe, pick a map, click
+# "Host via Server" (URL prefilled http://127.0.0.1:8080).
+```
+
+`uldum_dev` acts as its own game-backend: it `POST`s `/sessions`, the orchestrator forks a worker and returns `{ addr, port, tokens }`, and the dev connects to that worker as a client with `tokens[0]` — you never type the 9000-9999 port. The orchestrator mints **one token per player slot** and the worker accepts **any** of them (set membership, not slot-pinned), so a second dev can join the same session: the first dev's console shows the worker `addr:port` + the spare token(s) (with a **Copy** button), and the second dev pastes those into the console's **Connect** address + **Token** fields. (The `--server` / "Host via Server" orchestrator flow is desktop-only; the Android dev build is offline-only.)
 
 ## Reconnect
 
@@ -227,7 +259,7 @@ When a client disconnects, the server keeps their player state (units, buildings
 2. If `manifest.reconnect.pause` is true, simulation pauses for all players
 3. Timer counts down (`manifest.reconnect.timeout`, default 60s)
 4. If client reconnects (sends C_JOIN again) → gets S_WELCOME + full S_SPAWN burst + S_START, game resumes
-5. If timeout expires → `on_player_dropped` Lua event fires, game resumes, map script decides what happens to the player's units
+5. If timeout expires → `on_player_dropped` Lua event fires, game resumes, map script decides what happens to the player's units. On a headless `uldum_worker`, if that drop leaves *no* connected players and an empty reconnect list, the session is abandoned and the worker exits (see [Worker auto-start + auto-exit](#worker-auto-start--auto-exit-headless)).
 
 Manifest config:
 ```json
@@ -240,11 +272,13 @@ Manifest config:
 ### EndGame
 
 ```lua
--- Map script calls this when a win condition is met
+-- Map script calls this when a win condition is met.
+-- First arg is the winning TEAM (manifest team index; each player is
+-- their own team in a FFA map). Use 0xFFFFFFFF for a draw / no winner.
 EndGame(0, '{"kills": 15, "time": 302}')
 ```
 
-The engine fires `on_game_end` event (for triggers), then broadcasts `S_END` with the winner ID and a JSON stats string. The stats format is entirely map-defined — the engine just passes it through.
+The engine fires `on_game_end` event (for triggers), then broadcasts `S_END` with the winning team and a JSON stats string. The stats format is entirely map-defined — the engine just passes it through. The worker forwards `{ winning_team, stats, duration_s }` to the game backend's webhook on exit.
 
 - Server can serve one game at a time (multi-game deferred)
 

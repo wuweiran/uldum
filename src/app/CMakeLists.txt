@@ -278,6 +278,12 @@ else()
         target_sources(uldum_dev PRIVATE dev_console.cpp dev_app.cpp)
         target_link_libraries(uldum_dev PRIVATE imgui)
         target_compile_definitions(uldum_dev PRIVATE ULDUM_DEV_UI)
+        # Orchestrator client (POST /sessions → connect to a spawned worker).
+        # Desktop dev-console only: the Android dev build shares dev_console.cpp
+        # / dev_app.cpp but is offline-only and never links httplib, so the
+        # "Host via Server" UI + code compile out there (guarded by this macro).
+        target_sources(uldum_dev PRIVATE session_request.cpp)
+        target_compile_definitions(uldum_dev PRIVATE ULDUM_ORCHESTRATOR_CLIENT)
         target_compile_definitions(uldum_dev PRIVATE
             ULDUM_APP_HEADER="app/dev_app.h"
             ULDUM_APP_CLASS=DevApp)

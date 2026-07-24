@@ -1,8 +1,6 @@
 #include "app/engine.h"
+#include "app/session_request.h"
 #include "core/log.h"
-
-#include <httplib.h>
-#include <nlohmann/json.hpp>
 
 #include <cstring>
 #include <cstdio>
@@ -10,8 +8,6 @@
 #include <vector>
 
 namespace {
-
-constexpr const char* TAG = "Dev";
 
 struct DevArgs {
     std::string map_path;           // --map
@@ -72,57 +68,23 @@ bool split_host_port(const std::string& s, std::string& host, uldum::u16& port) 
 // are printed to stderr so the dev can paste them to friends.
 bool request_session_from_orchestrator(const DevArgs& dev,
                                        uldum::LaunchArgs& out_args) {
-    httplib::Client cli(dev.server_url);
-    cli.set_connection_timeout(5, 0);
-
-    nlohmann::json body;
-    body["map"] = dev.map_path;
-
-    auto res = cli.Post("/sessions", body.dump(), "application/json");
-    if (!res) {
-        uldum::log::error(TAG, "Orchestrator request failed: {}",
-                          httplib::to_string(res.error()));
-        return false;
-    }
-    if (res->status != 201) {
-        uldum::log::error(TAG, "Orchestrator rejected request (HTTP {}): {}",
-                          res->status, res->body);
-        return false;
-    }
-
-    nlohmann::json resp;
-    try {
-        resp = nlohmann::json::parse(res->body);
-    } catch (const std::exception& e) {
-        uldum::log::error(TAG, "Orchestrator response parse failed: {}", e.what());
-        return false;
-    }
-
-    std::string addr = resp.value("addr", "");
-    uldum::u16 port  = static_cast<uldum::u16>(resp.value("port", 0));
-    auto tokens_it   = resp.find("tokens");
-    if (addr.empty() || port == 0 || tokens_it == resp.end() ||
-        !tokens_it->is_array() || tokens_it->empty()) {
-        uldum::log::error(TAG, "Orchestrator response missing required fields");
-        return false;
-    }
-    std::string my_token = (*tokens_it)[0].get<std::string>();
+    auto info = uldum::app::request_session(dev.server_url, dev.map_path);
+    if (!info) return false;  // details already logged
 
     out_args.net_mode        = uldum::network::Mode::Client;
-    out_args.connect_address = addr;
-    out_args.port            = port;
+    out_args.connect_address = info->addr;
+    out_args.port            = info->port;
+    const std::string& my_token = info->tokens[0];
     out_args.auth_token.assign(my_token.begin(), my_token.end());
 
-    uldum::log::info(TAG, "Got session {} → connecting to {}:{}",
-                     resp.value("session_id", ""), addr, port);
-    if (tokens_it->size() > 1) {
+    if (info->tokens.size() > 1) {
         std::fprintf(stderr, "\nAdditional slot tokens (share with other players):\n");
-        for (size_t i = 1; i < tokens_it->size(); ++i) {
-            std::fprintf(stderr, "  slot %zu: %s\n", i, (*tokens_it)[i].get<std::string>().c_str());
+        for (size_t i = 1; i < info->tokens.size(); ++i) {
+            std::fprintf(stderr, "  slot %zu: %s\n", i, info->tokens[i].c_str());
         }
         std::fprintf(stderr, "\nEach other player runs:\n"
                              "  uldum_dev --connect %s:%u --token <their-token>\n\n",
-                     addr.c_str(), port);
+                     info->addr.c_str(), info->port);
     }
     return true;
 }

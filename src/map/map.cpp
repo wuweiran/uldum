@@ -1,6 +1,7 @@
 #include "map/map.h"
 #include "map/placements_bin.h"
 #include "asset/asset.h"
+#include "asset/upk.h"  // upk_normalize_path (mount-prefix strip in compute_script_hash)
 #include "simulation/simulation.h"
 #include "simulation/world.h"
 #include "simulation/entity_types.h"
@@ -26,12 +27,23 @@ bool MapManager::init() {
 std::array<u8, 32> MapManager::compute_script_hash(asset::AssetManager& assets) const {
     if (m_map_root.empty()) return {};
     auto paths = assets.list_files(m_map_root, ".lua");
+    // Strip the mount prefix so the digest is over MAP-RELATIVE paths only.
+    // list_files returns `<mount-prefix> + <entry-path>`, and the prefix is
+    // whatever string the map was mounted under — which differs between the
+    // worker (absolute path from the orchestrator) and the client (the
+    // relative path the user selected). Hashing the full path would make the
+    // two disagree ("wrong map hash") for byte-identical maps. The prefix
+    // normalization mirrors AssetManager::normalize_prefix.
+    std::string prefix = asset::upk_normalize_path(m_map_root);
+    if (!prefix.empty() && prefix.back() != '/') prefix += '/';
     Sha256 h;
     for (const auto& p : paths) {
-        // Hash path + NUL + contents so reordering or renaming changes
-        // the digest. list_files returns sorted, so the iteration order
-        // is deterministic across machines.
-        h.update(p);
+        std::string_view rel = p;
+        if (rel.starts_with(prefix)) rel.remove_prefix(prefix.size());
+        // Hash relative-path + NUL + contents so reordering or renaming
+        // changes the digest. list_files returns sorted, so the iteration
+        // order is deterministic across machines.
+        h.update(rel);
         u8 sep = 0;
         h.update({&sep, 1});
         auto bytes = assets.read_file_bytes(p);

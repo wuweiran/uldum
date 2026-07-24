@@ -884,6 +884,19 @@ void NetworkManager::host_update_disconnected(f32 dt) {
         log::info(TAG, "All disconnected players dropped — game resumed");
     }
 
+    // Abandoned-session auto-end. A headless worker (no seated local player)
+    // whose game has started but now has no connected peers AND no one left
+    // in the reconnect window is unplayable — nobody can rejoin. End the
+    // session so the worker's is_game_ended() exit fires and the orchestrator
+    // reaps it (frees the port). Reuses the EndGame path with no winner.
+    // Guarded so it never touches a dev host / offline (valid m_local_player)
+    // and only fires once.
+    if (!m_game_ended && m_game_started && !m_local_player.is_valid() &&
+        m_peers.empty() && m_disconnected.empty()) {
+        log::info(TAG, "Session abandoned (no players, no reconnect pending) — ending");
+        host_end_game();  // no winner
+    }
+
     // Rebuild local view + broadcast. Events (disconnect / drop / unpause)
     // broadcast immediately; otherwise re-broadcast once a second so clients
     // see the countdown tick.
@@ -953,13 +966,16 @@ void NetworkManager::host_send_to_player(u32 player_id, std::span<const u8> pack
     }
 }
 
-void NetworkManager::host_end_game(u32 winner_id, std::string_view stats_json) {
+void NetworkManager::host_end_game(u32 winning_team, std::string_view stats_json) {
     if (m_mode != Mode::Host) return;
     m_game_ended = true;
-    m_end_data = EndData{winner_id, std::string(stats_json)};
-    auto msg = build_end(winner_id, stats_json);
+    m_end_data = EndData{winning_team, std::string(stats_json)};
+    auto msg = build_end(winning_team, stats_json);
     m_transport->broadcast(msg, true);
-    log::info(TAG, "Game ended — winner: player {}", winner_id);
+    if (winning_team == UINT32_MAX)
+        log::info(TAG, "Game ended — no winner");
+    else
+        log::info(TAG, "Game ended — winning team {}", winning_team);
 }
 
 // ── Client ───────────────────────────────────────────────────────────────
@@ -1092,7 +1108,10 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_END: {
         m_end_data = parse_end(data);
         m_game_ended = true;
-        log::info(TAG, "Game ended — winner: player {}", m_end_data.winner_id);
+        if (m_end_data.winning_team == UINT32_MAX)
+            log::info(TAG, "Game ended — no winner");
+        else
+            log::info(TAG, "Game ended — winning team {}", m_end_data.winning_team);
         break;
     }
     case MsgType::S_PAUSE_STATE: {

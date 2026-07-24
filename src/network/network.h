@@ -78,8 +78,11 @@ public:
     // Host: has the game started? (all expected players connected)
     bool is_game_started() const { return m_game_started; }
 
-    // Host: signal game over. Broadcasts S_END to all clients.
-    void host_end_game(u32 winner_id, std::string_view stats_json);
+    // Host: signal game over. Broadcasts S_END to all clients. A game need
+    // not have a winner (draw, or an abandoned session that ended because
+    // everyone left) — omit winning_team for that. The no-winner value is the
+    // invalid sentinel (UINT32_MAX) on the wire.
+    void host_end_game(u32 winning_team = UINT32_MAX, std::string_view stats_json = "");
 
     // This process's player name. Carried in C_JOIN so the host can label
     // the peer's lobby row, and surfaced to Lua via GetPlayerName(). Set
@@ -341,6 +344,10 @@ public:
     bool all_connected_peers_seated() const;
     // Number of connected peers that haven't claimed a slot yet. For UI.
     u32  seatless_peer_count() const;
+    // Number of connected remote peers (never counts the host/worker itself,
+    // which is not in m_peers). The worker's start countdown needs >0 so an
+    // empty lobby doesn't count down the instant it boots.
+    u32  connected_peer_count() const { return static_cast<u32>(m_peers.size()); }
 
     // ── Callbacks ───────────────────────────────────────────────────────
     std::function<void(std::string_view path, glm::vec3 pos)> on_sound;

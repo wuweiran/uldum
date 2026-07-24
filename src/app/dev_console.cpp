@@ -535,14 +535,53 @@ void DevConsole::draw_menu_screen() {
         ImGui::SetNextItemWidth(120 * s);
         ImGui::InputInt("Port", &m_port, 0, 0);
 
+        // Bearer token (optional): required to join an orchestrator-spawned
+        // worker, left empty for a plain LAN host.
+        char token_buf[80];
+        std::snprintf(token_buf, sizeof(token_buf), "%s", m_token_input.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputTextWithHint("##token", "token (optional)", token_buf, sizeof(token_buf))) {
+            m_token_input = token_buf;
+        }
+
         ImGui::BeginDisabled(selected_path == nullptr);
         if (ImGui::Button("Connect", btn)) {
             m_pending.type            = ActionType::EnterLobbyClient;
             m_pending.map_path        = selected_path ? selected_path : "";
             m_pending.connect_address = m_connect_address;
             m_pending.port            = static_cast<u16>(m_port);
+            m_pending.token           = m_token_input;
         }
         ImGui::EndDisabled();
+
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+        ImGui::Dummy(ImVec2(0, 4 * s));
+        ImGui::Separator();
+        ImGui::TextUnformatted("Orchestrator");
+
+        char url_buf[96];
+        std::snprintf(url_buf, sizeof(url_buf), "%s", m_server_url.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputTextWithHint("##server", "http://host:8080", url_buf, sizeof(url_buf))) {
+            m_server_url = url_buf;
+        }
+        ImGui::BeginDisabled(selected_path == nullptr);
+        if (ImGui::Button("Host via Server", btn)) {
+            m_pending.type       = ActionType::HostViaServer;
+            m_pending.map_path   = selected_path ? selected_path : "";
+            m_pending.server_url = m_server_url;
+        }
+        ImGui::EndDisabled();
+
+        // After a successful create, show the addr:port + spare tokens so a
+        // second dev can join, with a Copy button.
+        if (!m_session_share.empty()) {
+            ImGui::Dummy(ImVec2(0, 2 * s));
+            ImGui::TextWrapped("Share to join:");
+            ImGui::TextWrapped("%s", m_session_share.c_str());
+            if (ImGui::Button("Copy", btn)) ImGui::SetClipboardText(m_session_share.c_str());
+        }
+#endif
     }
     ImGui::EndChild();
 
@@ -969,5 +1008,11 @@ void DevConsole::show_error(std::string message) {
     m_error_message = std::move(message);
     m_error_open    = true;
 }
+
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+void DevConsole::show_session_info(std::string share_text) {
+    m_session_share = std::move(share_text);
+}
+#endif
 
 } // namespace uldum

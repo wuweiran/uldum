@@ -1456,11 +1456,13 @@ function PickupBarSetVisible(visible) end
 ---@param scene_name string
 function LoadScene(scene_name) end
 
---- End the current game and report a winner + optional stats payload
---- (JSON string). Fires `global_game_end` before exiting.
----@param winner_id number
+--- End the current game and report the winning team + optional stats payload
+--- (JSON string). Fires `global_game_end` before exiting. `winning_team` is a
+--- manifest team index; in a FFA map each player is their own team. Pass a
+--- value of 0xFFFFFFFF (or omit meaning) for a draw / no winner.
+---@param winning_team number
 ---@param stats_json string?   JSON string (default "{}")
-function EndGame(winner_id, stats_json) end
+function EndGame(winning_team, stats_json) end
 
 --- Pause / unpause the simulation. Independent of the network's
 --- reconnect-pause; safe during dialogs / cutscenes. Single-player

@@ -6,6 +6,11 @@
 #include "network/lobby.h"
 #include "core/log.h"
 
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+#include "app/session_request.h"
+#include <string>
+#endif
+
 #include <utility>
 
 namespace uldum {
@@ -109,6 +114,9 @@ void DevApp::on_update(f32 dt) {
         args.net_mode        = network::Mode::Client;
         args.connect_address = action.connect_address;
         args.port            = action.port;
+        // Bearer token (empty for plain LAN). Engine forwards it to the
+        // client's C_JOIN, which an orchestrator-spawned worker requires.
+        args.auth_token.assign(action.token.begin(), action.token.end());
         if (m_engine->enter_lobby()) {
             m_engine->set_state(AppState::Lobby);
             log::info(TAG, "EnterLobby Client {}:{}", args.connect_address, args.port);
@@ -120,6 +128,41 @@ void DevApp::on_update(f32 dt) {
                     std::to_string(args.port) + ".");
             }
         }
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+    } else if (action.type == A::HostViaServer && m_engine->state() == AppState::Menu) {
+        // Ask the orchestrator for a fresh worker, then join it as a client.
+        // Blocking HTTP (5s timeout) — fine for the dev console.
+        auto info = app::request_session(action.server_url, action.map_path);
+        if (!info) {
+            if (m_console)
+                m_console->show_error("Host via Server failed — is uldum_server running at " +
+                                      action.server_url + "?");
+        } else {
+            args.map_path        = action.map_path;
+            args.net_mode        = network::Mode::Client;
+            args.connect_address = info->addr;
+            args.port            = info->port;
+            const std::string& my_token = info->tokens[0];
+            args.auth_token.assign(my_token.begin(), my_token.end());
+            if (m_engine->enter_lobby()) {
+                m_engine->set_state(AppState::Lobby);
+                log::info(TAG, "Host via Server → worker {}:{}", info->addr, info->port);
+                // Surface addr:port + spare tokens so a 2nd dev can join.
+                std::string share = info->addr + ":" + std::to_string(info->port);
+                if (info->tokens.size() > 1) {
+                    share += "  token: " + info->tokens[1];
+                    for (size_t i = 2; i < info->tokens.size(); ++i)
+                        share += " / " + info->tokens[i];
+                }
+                if (m_console) m_console->show_session_info(share);
+            } else {
+                m_engine->leave_lobby();
+                if (m_console)
+                    m_console->show_error("Failed to connect to the spawned worker at " +
+                                          info->addr + ":" + std::to_string(info->port) + ".");
+            }
+        }
+#endif
     } else if (action.type == A::ClaimSlot && m_engine->state() == AppState::Lobby) {
         m_engine->network().send_claim_slot(action.slot);
     } else if (action.type == A::ReleaseSlot && m_engine->state() == AppState::Lobby) {
