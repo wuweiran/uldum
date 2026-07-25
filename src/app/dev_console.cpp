@@ -398,6 +398,13 @@ void DevConsole::draw_menu_screen() {
         ? &m_maps[m_map_selected] : nullptr;
     const char* selected_path = selected ? selected->path.c_str() : nullptr;
 
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+    // Back at the menu: drop any prior session's share blob so a later plain
+    // Host/Offline lobby doesn't inherit stale tokens. Create re-sets it after
+    // this draw, so the fresh lobby still shows the current one.
+    m_session_share.clear();
+#endif
+
     // Layout: list on the left, two stacked panes on the right (info on
     // top, session on bottom), Quit at the bottom of the screen.
     const float row_h        = ImGui::GetFrameHeightWithSpacing();
@@ -502,30 +509,32 @@ void DevConsole::draw_menu_screen() {
         ImGui::TextUnformatted("Session");
         ImGui::Separator();
 
-        // Settings panel toggle — volumes, hotkey mode, locale, graphics.
-        // (The locale picker used to live inline here; it now lives in the
-        // settings panel alongside the rest.)
-        if (ImGui::Button("Settings...", btn)) {
-            m_show_settings = !m_show_settings;
-        }
-        ImGui::Dummy(ImVec2(0, 4 * s));
-        ImGui::Separator();
-
+        // ── Offline ──────────────────────────────────────────────────
         ImGui::BeginDisabled(selected_path == nullptr);
         if (ImGui::Button("Offline", btn)) {
             m_pending.type     = ActionType::EnterLobbyOffline;
             m_pending.map_path = selected_path ? selected_path : "";
-        }
-        if (ImGui::Button("Host", btn)) {
-            m_pending.type     = ActionType::EnterLobbyHost;
-            m_pending.map_path = selected_path ? selected_path : "";
-            m_pending.port     = static_cast<u16>(m_port);
         }
         ImGui::EndDisabled();
 
         ImGui::Dummy(ImVec2(0, 4 * s));
         ImGui::Separator();
 
+        // ── Host (own listen port) ───────────────────────────────────
+        ImGui::SetNextItemWidth(120 * s);
+        ImGui::InputInt("Host port", &m_host_port, 0, 0);
+        ImGui::BeginDisabled(selected_path == nullptr);
+        if (ImGui::Button("Host", btn)) {
+            m_pending.type     = ActionType::EnterLobbyHost;
+            m_pending.map_path = selected_path ? selected_path : "";
+            m_pending.port     = static_cast<u16>(m_host_port);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Dummy(ImVec2(0, 4 * s));
+        ImGui::Separator();
+
+        // ── Connect (address + port + token) ─────────────────────────
         char addr_buf[64];
         std::snprintf(addr_buf, sizeof(addr_buf), "%s", m_connect_address.c_str());
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -557,7 +566,7 @@ void DevConsole::draw_menu_screen() {
 #ifdef ULDUM_ORCHESTRATOR_CLIENT
         ImGui::Dummy(ImVec2(0, 4 * s));
         ImGui::Separator();
-        ImGui::TextUnformatted("Orchestrator");
+        ImGui::TextUnformatted("Server");
 
         char url_buf[96];
         std::snprintf(url_buf, sizeof(url_buf), "%s", m_server_url.c_str());
@@ -566,21 +575,12 @@ void DevConsole::draw_menu_screen() {
             m_server_url = url_buf;
         }
         ImGui::BeginDisabled(selected_path == nullptr);
-        if (ImGui::Button("Host via Server", btn)) {
+        if (ImGui::Button("Create", btn)) {
             m_pending.type       = ActionType::HostViaServer;
             m_pending.map_path   = selected_path ? selected_path : "";
             m_pending.server_url = m_server_url;
         }
         ImGui::EndDisabled();
-
-        // After a successful create, show the addr:port + spare tokens so a
-        // second dev can join, with a Copy button.
-        if (!m_session_share.empty()) {
-            ImGui::Dummy(ImVec2(0, 2 * s));
-            ImGui::TextWrapped("Share to join:");
-            ImGui::TextWrapped("%s", m_session_share.c_str());
-            if (ImGui::Button("Copy", btn)) ImGui::SetClipboardText(m_session_share.c_str());
-        }
 #endif
     }
     ImGui::EndChild();
@@ -592,6 +592,10 @@ void DevConsole::draw_menu_screen() {
     ImGui::Separator();
     if (ImGui::Button("Quit", btn)) {
         m_pending.type = ActionType::Quit;
+    }    
+    ImGui::SameLine();
+    if (ImGui::Button("Settings...", btn)) {
+        m_show_settings = !m_show_settings;
     }
 
     ImGui::End();
@@ -629,6 +633,19 @@ void DevConsole::draw_lobby_screen(network::NetworkManager& net) {
     ImGui::Text("Map: %s", lobby.map_name.c_str());
     ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.70f, 1), "%s", lobby.map_path.c_str());
     ImGui::Separator();
+
+#ifdef ULDUM_ORCHESTRATOR_CLIENT
+    // Server-created session: show addr:port + spare tokens here (in the
+    // lobby the creator lands on) so a second dev can join, with a Copy
+    // button. Set by show_session_info() after a successful Create.
+    if (!m_session_share.empty()) {
+        ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.70f, 1), "Share to join:");
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", m_session_share.c_str());
+        if (ImGui::Button("Copy", btn)) ImGui::SetClipboardText(m_session_share.c_str());
+        ImGui::Separator();
+    }
+#endif
 
     // Client-pre-sync: no slots yet, just status + Back.
     if (lobby.slots.empty()) {

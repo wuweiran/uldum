@@ -138,7 +138,8 @@ private:
 
     // Multiplayer input fields.
     std::string m_connect_address = "127.0.0.1";
-    i32         m_port = 7777;
+    i32         m_host_port = 7777;  // listen port for the Host button
+    i32         m_port = 7777;       // target port for the Connect button
     std::string m_token_input;  // Connect box bearer token (orchestrator workers)
 
 #ifdef ULDUM_ORCHESTRATOR_CLIENT
