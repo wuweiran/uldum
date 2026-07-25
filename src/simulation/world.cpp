@@ -1,6 +1,7 @@
 #include "simulation/world.h"
 #include "simulation/type_registry.h"
 #include "simulation/ability_def.h"
+#include "map/terrain_data.h"
 #include "core/log.h"
 
 #include <algorithm>
@@ -9,6 +10,15 @@
 namespace uldum::simulation {
 
 static constexpr const char* TAG = "World";
+
+// Ground height at (x,y) from the world's terrain, or 0 if no terrain is set
+// (pre-terrain spawns / headless). Creation seeds Transform.z from this so every
+// caller — host create_* and client spawn_*_with_id alike — gets the right
+// height in one place. WC3-style: Z is local, derived from terrain, never synced.
+static f32 ground_height(const World& world, f32 x, f32 y) {
+    return (world.terrain && world.terrain->is_valid())
+        ? map::sample_height(*world.terrain, x, y) : 0.0f;
+}
 
 // Upper bound on shift-queued orders behind the in-progress one. Legitimate
 // WC3-style waypoint/patrol chains are a handful deep; this ceiling only
@@ -30,6 +40,7 @@ void remove_all_components(World& world, u32 id) {
     world.selectables.remove(id);
     world.owners.remove(id);
     world.movements.remove(id);
+    world.pathings.remove(id);
     world.combats.remove(id);
     world.sights.remove(id);
     world.order_queues.remove(id);
@@ -44,7 +55,7 @@ void remove_all_components(World& world, u32 id) {
     world.item_infos.remove(id);
     world.carriables.remove(id);
     world.projectiles.remove(id);
-    world.dead_states.remove(id);
+    world.corpses.remove(id);
     world.renderables.remove(id);
     world.anim_queues.remove(id);
     world.status_flags.remove(id);
@@ -54,42 +65,41 @@ void remove_all_components(World& world, u32 id) {
 
 // ── Creation ───────────────────────────────────────────────────────────────
 
-Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f32 y, f32 facing) {
-    assert(world.types);
-    const auto* def = world.types->get_unit_type(type_id);
-    if (!def) {
-        log::error(TAG, "Unknown unit type '{}'", type_id);
-        return {};
-    }
-
-    Handle h = world.entities.allocate();
-    u32 id = h.id;
+// Shared unit builder: constructs every component on an ALREADY-DECIDED id.
+// create_unit (host) and spawn_unit_with_id (client) both call this — one code
+// path, so the client can never drift from the host. Z is sampled from
+// world.terrain here. `opts.skip_birth` OR the spawn_visible_to_viewer predicate
+// suppresses the birth clip. Units have a single model (from the type).
+static Unit build_unit(World& world, u32 id, std::string_view type_id,
+                       const UnitTypeDef& def, Player owner,
+                       f32 x, f32 y, f32 facing, const SpawnOpts& opts) {
+    const f32 z = ground_height(world, x, y);
 
     // All game objects
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
+    world.transforms.add(id, Transform{{x, y, z}, facing, def.model_scale, {x, y, z}, facing});
     world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Unit});
 
     // Widget — HP is engine built-in
-    world.healths.add(id, Health{def->max_health, def->max_health, def->health_regen});
+    world.healths.add(id, Health{def.max_health, def.max_health, def.health_regen});
     // Selection cylinder. radius/height carry the type's values, or 0 = AUTO —
     // the renderer back-fills auto entries from the model AABB once it loads.
-    world.selectables.add(id, Selectable{def->selection_radius, def->selection_height, def->selection_priority});
+    world.selectables.add(id, Selectable{def.selection_radius, def.selection_height, def.selection_priority});
 
     // Map-defined states (mana, energy, etc.)
-    if (!def->states.empty()) {
+    if (!def.states.empty()) {
         StateBlock sb;
-        for (auto& [sid, sd] : def->states) {
+        for (auto& [sid, sd] : def.states) {
             sb.states[sid] = StateValue{sd.max, sd.max, sd.regen};
         }
         world.state_blocks.add(id, std::move(sb));
     }
 
     // Map-defined attributes (armor, attack_type, strength, etc.)
-    if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
+    if (!def.attributes_numeric.empty() || !def.attributes_string.empty()) {
         AttributeBlock ab;
-        ab.base         = def->attributes_numeric;
-        ab.numeric      = def->attributes_numeric;  // effective starts equal to base
-        ab.string_attrs = def->attributes_string;
+        ab.base         = def.attributes_numeric;
+        ab.numeric      = def.attributes_numeric;  // effective starts equal to base
+        ab.string_attrs = def.attributes_string;
         world.attribute_blocks.add(id, std::move(ab));
     }
 
@@ -97,44 +107,44 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     world.owners.add(id, Player{owner});
     {
         Movement m;
-        m.speed = def->move_speed;
-        m.turn_rate = def->turn_rate;
-        m.collision_radius = def->collision_radius;
-        m.type = def->move_type;
+        m.speed = def.move_speed;
+        m.turn_rate = def.turn_rate;
+        m.collision_radius = def.collision_radius;
+        m.type = def.move_type;
         world.movements.add(id, std::move(m));
     }
+    // Pathfinder scratch. On the host the movement/pathfinding systems use it;
+    // on the client it stays inert (the client never ticks movement). Kept in
+    // the shared builder — one empty struct is cheaper than a forked code path.
+    world.pathings.add(id, Pathing{});
     // Combat is opt-in: only units whose type declares a `weapon` get the
     // component. system_combat iterates world.combats.ids(), so a unit
     // without it is invisible to the entire combat loop — no auto-acquire,
     // no attack orders resolving, no fight-back. Buildings and other
     // non-combatants leave the weapon absent.
-    if (def->weapon) {
-        const auto& w = *def->weapon;
+    if (def.weapon) {
+        const auto& w = *def.weapon;
         Combat combat;
         combat.damage           = w.damage;
         combat.range            = w.attack_range;
         combat.attack_cooldown  = w.attack_cooldown;
         combat.dmg_time         = w.dmg_time;
         combat.backsw_time      = w.backsw_time;
-        combat.dmg_pt           = def->dmg_pt;
+        combat.dmg_pt           = def.dmg_pt;
         combat.projectile       = w.projectile;
-        combat.acquire_range    = def->acquire_range;
+        combat.acquire_range    = def.acquire_range;
         combat.target_mask      = w.target_mask;
         world.combats.add(id, std::move(combat));
     }
-    world.sights.add(id, Sight{def->sight_range});
+    world.sights.add(id, Sight{def.sight_range});
     world.order_queues.add(id, OrderQueue{});
     world.ability_sets.add(id, AbilitySet{});
-    world.classifications.add(id, UnitClassificationComp{def->classifications});
+    world.classifications.add(id, UnitClassificationComp{def.classifications});
 
-    // Seed ability_set from the unit type's `abilities` list. Each id
-    // is looked up in the AbilityRegistry; unknowns are logged once
-    // and skipped so a typo'd ability id doesn't take a slot. Lua can
-    // still add more via `AddAbility` for runtime / script-driven
-    // abilities (e.g. ones whose mechanics live entirely in script).
-    if (world.abilities && !def->abilities.empty()) {
+    // Seed ability_set from the unit type's `abilities` list.
+    if (world.abilities && !def.abilities.empty()) {
         Unit u{id};
-        for (const auto& ability_id : def->abilities) {
+        for (const auto& ability_id : def.abilities) {
             if (!world.abilities->get(ability_id)) {
                 log::warn(TAG, "Unit '{}' references unknown ability '{}'",
                           type_id, ability_id);
@@ -146,39 +156,92 @@ Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f3
     }
 
     // Renderable
-    if (!def->model_path.empty()) {
-        Renderable r{def->model_path, true};
-        // Birth clip plays only for a unit spawned in the local viewer's
-        // sight. A unit born outside sight (or on a host with no viewer
-        // predicate set) comes up Idle — matching the network client,
-        // which derives the same from the S_SPAWN newly_created flag.
-        if (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y)) {
+    const std::string_view model{def.model_path};
+    if (!model.empty()) {
+        Renderable r{std::string(model), true};
+        // Birth clip plays only for a unit spawned in the local viewer's sight.
+        // Suppress it when the caller says so (client: !newly_created) OR when a
+        // viewer predicate reports the spawn is out of sight.
+        if (opts.skip_birth ||
+            (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y))) {
             r.skip_birth = true;
         }
         world.renderables.add(id, std::move(r));
     }
 
     // Inventory (if type has inventory_size > 0)
-    if (def->inventory_size > 0) {
+    if (def.inventory_size > 0) {
         Inventory inv;
-        inv.max_slots = def->inventory_size;
-        inv.slots.resize(def->inventory_size);
+        inv.max_slots = def.inventory_size;
+        inv.slots.resize(def.inventory_size);
         world.inventories.add(id, std::move(inv));
     }
 
     // Building (if type has "structure" classification)
-    if (has_classification(def->classifications, "structure")) {
+    if (has_classification(def.classifications, "structure")) {
         world.buildings.add(id, BuildingComp{});
     }
 
     // Play birth sound
-    if (world.on_sound && !def->sound_birth.empty()) {
+    if (world.on_sound && !def.sound_birth.empty()) {
         auto* t = world.transforms.get(id);
-        if (t) world.on_sound(def->sound_birth, t->position);
+        if (t) world.on_sound(def.sound_birth, t->position);
     }
 
-    Unit unit{h.id};
-    return unit;
+    return Unit{id};
+}
+
+Unit create_unit(World& world, std::string_view type_id, Player owner, f32 x, f32 y, f32 facing) {
+    assert(world.types);
+    const auto* def = world.types->get_unit_type(type_id);
+    if (!def) {
+        log::error(TAG, "Unknown unit type '{}'", type_id);
+        return {};
+    }
+    Handle h = world.entities.allocate();
+    return build_unit(world, h.id, type_id, *def, owner, x, y, facing, SpawnOpts{});
+}
+
+Unit spawn_unit_with_id(World& world, u32 id, std::string_view type_id, Player owner,
+                        f32 x, f32 y, f32 facing, const SpawnOpts& opts) {
+    if (world.handle_infos.has(id)) return {};
+    if (!world.types) return {};
+    const auto* def = world.types->get_unit_type(type_id);
+    if (!def) return {};
+    world.entities.reserve(id);
+    return build_unit(world, id, type_id, *def, owner, x, y, facing, opts);
+}
+
+
+static Destructable build_destructable(World& world, u32 id, std::string_view type_id,
+                                       const DestructableTypeDef& def,
+                                       f32 x, f32 y, f32 facing, u8 variation) {
+    const f32 z = ground_height(world, x, y);
+    world.transforms.add(id, Transform{{x, y, z}, facing, def.model_scale, {x, y, z}, facing});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable});
+    world.healths.add(id, Health{def.max_health, def.max_health, 0});
+    // Selection auto-sizes from the model AABB (renderer back-fill), same as
+    // units. 0/0 = auto; the crate/tree mesh drives the click cylinder.
+    world.selectables.add(id, Selectable{0.0f, 0.0f, 1});
+    world.destructables.add(id, DestructableComp{std::string(type_id), variation, def.target_bit, def.selectable});
+
+    if (!def.attributes_numeric.empty() || !def.attributes_string.empty()) {
+        AttributeBlock ab;
+        ab.base         = def.attributes_numeric;
+        ab.numeric      = def.attributes_numeric;
+        ab.string_attrs = def.attributes_string;
+        world.attribute_blocks.add(id, std::move(ab));
+    }
+
+    std::string_view model;
+    if (!def.models.empty()) {
+        model = def.models[variation % static_cast<u32>(def.models.size())];
+    }
+    if (!model.empty()) world.renderables.add(id, Renderable{std::string(model), true});
+
+    // No Movement component: a destructable is not a unit and takes no part
+    // in unit collision. Its pathing_footprint keeps units clear of it.
+    return Destructable{id};
 }
 
 Destructable create_destructable(World& world, std::string_view type_id, f32 x, f32 y, f32 facing, u8 variation) {
@@ -188,40 +251,48 @@ Destructable create_destructable(World& world, std::string_view type_id, f32 x, 
         log::error(TAG, "Unknown destructable type '{}'", type_id);
         return {};
     }
-
     Handle h = world.entities.allocate();
-    u32 id = h.id;
+    return build_destructable(world, h.id, type_id, *def, x, y, facing, variation);
+}
 
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Destructable});
-    world.healths.add(id, Health{def->max_health, def->max_health, 0});
-    // Selection auto-sizes from the model AABB (renderer back-fill), same as
-    // units. 0/0 = auto; the crate/tree mesh drives the click cylinder.
-    world.selectables.add(id, Selectable{0.0f, 0.0f, 1});
-    world.destructables.add(id, DestructableComp{std::string(type_id), variation, def->target_bit, def->selectable});
+Destructable spawn_destructable_with_id(World& world, u32 id, std::string_view type_id,
+                                        f32 x, f32 y, f32 facing, u8 variation) {
+    if (world.handle_infos.has(id)) return {};
+    if (!world.types) return {};
+    const auto* def = world.types->get_destructable_type(type_id);
+    if (!def) return {};
+    world.entities.reserve(id);
+    return build_destructable(world, id, type_id, *def, x, y, facing, variation);
+}
 
-    if (!def->attributes_numeric.empty() || !def->attributes_string.empty()) {
-        AttributeBlock ab;
-        ab.base         = def->attributes_numeric;
-        ab.numeric      = def->attributes_numeric;
-        ab.string_attrs = def->attributes_string;
-        world.attribute_blocks.add(id, std::move(ab));
+static Item build_item(World& world, u32 id, std::string_view type_id,
+                       const ItemTypeDef& def, f32 x, f32 y, const SpawnOpts& opts) {
+    const f32 z = ground_height(world, x, y);
+    world.transforms.add(id, Transform{{x, y, z}, 0, def.model_scale, {x, y, z}, 0});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item});
+    // Defaults (radius/height = 0) = AUTO: renderer fits the click cylinder to
+    // the model AABB × scale, same as units. priority is unused for items.
+    world.selectables.add(id, Selectable{});
+    world.item_infos.add(id, ItemInfo{std::string(type_id), def.initial_charges, def.initial_level});
+    world.carriables.add(id, Carriable{});
+    // Sentinel Health so death is health-derived like every other entity: kill_item
+    // drives current→0, is_dead() (health_is_dead) turns true, and the renderer
+    // plays the item's "death" clip. system_death skips items by category, so this
+    // never enters the unit kill path.
+    world.healths.add(id, Health{1.0f, 1.0f, 0.0f});
+    const std::string_view model{def.model_path};
+    if (!model.empty()) {
+        Renderable r{std::string(model), true};
+        // Birth ("materialize") plays only for an item dropped/created in the
+        // local viewer's sight. Suppress when the caller says so (client:
+        // !newly_created) or a viewer predicate reports out-of-sight.
+        if (opts.skip_birth ||
+            (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y))) {
+            r.skip_birth = true;
+        }
+        world.renderables.add(id, std::move(r));
     }
-
-    if (!def->models.empty()) {
-        u32 idx = (def->models.size() > 0) ? (variation % static_cast<u32>(def->models.size())) : 0;
-        world.renderables.add(id, Renderable{def->models[idx], true});
-    }
-
-    // No Movement component: a destructable is not a unit and takes no part
-    // in unit collision. Its pathing_footprint (stamped as a PathingBlocker
-    // by the caller) is what keeps units clear of it — collision_radius would
-    // be redundant with that footprint and only made the crate a spurious
-    // push participant. Combat range/targeting against a destructable reads
-    // a missing Movement gracefully (target_radius 0, layer defaults Ground).
-
-    Destructable d{h.id};
-    return d;
+    return Item{id};
 }
 
 Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
@@ -231,33 +302,33 @@ Item create_item(World& world, std::string_view type_id, f32 x, f32 y) {
         log::error(TAG, "Unknown item type '{}'", type_id);
         return {};
     }
-
     Handle h = world.entities.allocate();
-    u32 id = h.id;
-
-    world.transforms.add(id, Transform{{x, y, 0.0f}, 0, def->model_scale, {x, y, 0.0f}, 0});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Item});
-    // Defaults (radius/height = 0) = AUTO: renderer fits the click cylinder to
-    // the model AABB × scale, same as units. priority is unused for items.
-    world.selectables.add(id, Selectable{});
-    world.item_infos.add(id, ItemInfo{std::string(type_id), def->initial_charges, def->initial_level});
-    world.carriables.add(id, Carriable{});
-    if (!def->model_path.empty()) {
-        Renderable r{def->model_path, true};
-        // Birth ("materialize") plays only for an item dropped/created in the
-        // local viewer's sight — same rule units use. A preplaced item, or one
-        // created out of view (or on a host with no viewer predicate), comes up
-        // already Idle so it doesn't replay birth on map load / reveal.
-        if (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y)) {
-            r.skip_birth = true;
-        }
-        world.renderables.add(id, std::move(r));
-    }
-
-    Item item{h.id};
-
-    log::trace(TAG, "Created item '{}' (id={})", type_id, id);
+    Item item = build_item(world, h.id, type_id, *def, x, y, SpawnOpts{});
+    log::trace(TAG, "Created item '{}' (id={})", type_id, h.id);
     return item;
+}
+
+Item spawn_item_with_id(World& world, u32 id, std::string_view type_id, f32 x, f32 y, const SpawnOpts& opts) {
+    if (world.handle_infos.has(id)) return {};
+    if (!world.types) return {};
+    const auto* def = world.types->get_item_type(type_id);
+    if (!def) return {};
+    world.entities.reserve(id);
+    return build_item(world, id, type_id, *def, x, y, opts);
+}
+
+static Doodad build_doodad(World& world, u32 id, std::string_view type_id,
+                           const DoodadTypeDef& def, f32 x, f32 y, f32 facing, u8 variation) {
+    const f32 z = ground_height(world, x, y);
+    world.transforms.add(id, Transform{{x, y, z}, facing, def.model_scale, {x, y, z}, facing});
+    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Doodad});
+    world.doodads.add(id, DoodadComp{variation});
+    std::string_view model;
+    if (!def.models.empty()) {
+        model = def.models[variation % static_cast<u32>(def.models.size())];
+    }
+    if (!model.empty()) world.renderables.add(id, Renderable{std::string(model), true});
+    return Doodad{id};
 }
 
 Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 facing, u8 variation) {
@@ -267,21 +338,43 @@ Doodad create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 f
         log::error(TAG, "Unknown doodad type '{}'", type_id);
         return {};
     }
-
     Entity e = world.entities.allocate();
-    u32 id = e.id;
-
-    world.transforms.add(id, Transform{{x, y, 0.0f}, facing, def->model_scale, {x, y, 0.0f}, facing});
-    world.handle_infos.add(id, HandleInfo{std::string(type_id), Category::Doodad});
-    world.doodads.add(id, DoodadComp{variation});
-    if (!def->models.empty()) {
-        u32 idx = variation % static_cast<u32>(def->models.size());
-        world.renderables.add(id, Renderable{def->models[idx], true});
-    }
-
-    Doodad d{e.id};
-    return d;
+    return build_doodad(world, e.id, type_id, *def, x, y, facing, variation);
 }
+
+Doodad spawn_doodad_with_id(World& world, u32 id, std::string_view type_id,
+                            f32 x, f32 y, f32 facing, u8 variation) {
+    if (world.handle_infos.has(id)) return {};
+    if (!world.types) return {};
+    const auto* def = world.types->get_doodad_type(type_id);
+    if (!def) return {};
+    world.entities.reserve(id);
+    return build_doodad(world, id, type_id, *def, x, y, facing, variation);
+}
+
+// Client projectile materialization — projectiles aren't type-registry entities,
+// so the client builds a minimal render-only entity from the inline wire model.
+// (The host uses create_projectile, driven by combat.) Z stays as given (0);
+// projectiles fly and their real position rides the per-tick ProjectileState.
+Projectile spawn_projectile_with_id(World& world, u32 id, std::string_view model,
+                              f32 x, f32 y, f32 facing) {
+    if (world.handle_infos.has(id)) return {};
+    world.entities.reserve(id);
+    world.handle_infos.add(id, HandleInfo{"projectile", Category::Projectile});
+    Transform t;
+    t.position = glm::vec3{x, y, 0};
+    t.prev_position = t.position;
+    t.facing = facing;
+    t.prev_facing = facing;
+    // Mirror create_projectile's scale rule: placeholder mesh is a tiny stub;
+    // glTF projectiles render at authored size.
+    t.scale = model.empty() ? 0.3f : 1.0f;
+    world.transforms.add(id, std::move(t));
+    world.renderables.add(id, Renderable{std::string(model.empty() ? "projectile" : model), true});
+    world.projectiles.add(id, ProjectileComp{});
+    return Projectile{id};
+}
+
 
 // ── Destruction ────────────────────────────────────────────────────────────
 
@@ -309,6 +402,8 @@ void destroy(World& world, Item item)         { destroy_handle(world, item); }
 void destroy(World& world, Doodad d)          { destroy_handle(world, d); }
 
 bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
+    // NETWORK NOTE: the type_id change isn't replicated — a client keeps the old
+    // type/model. Deferred: no current map calls MorphUnit.
     if (!world.contains(unit) || !world.types) return false;
     auto* hi = world.handle_infos.get(unit.id);
     if (!hi) return false;
@@ -381,20 +476,23 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
         world.attribute_blocks.add(id, std::move(ab));
     }
 
-    // Movement: swap fields in place to preserve the component slot
-    // (so other systems holding pointers aren't invalidated). Clears
-    // in-flight path / approach state.
+    // Movement: swap the unit-property fields in place to preserve the component
+    // slot (so other systems holding pointers aren't invalidated).
     if (auto* m = world.movements.get(id)) {
         m->speed            = new_def->move_speed;
         m->turn_rate        = new_def->turn_rate;
         m->collision_radius = new_def->collision_radius;
         m->type             = new_def->move_type;
         m->moving           = false;
-        m->waypoint         = {0.0f, 0.0f};
-        m->corridor.clear();
-        m->approach_target  = Unit{};
-        m->approach_goal    = {0.0f, 0.0f};
-        m->approach_range   = 0.0f;
+    }
+    // Pathing: clear in-flight path / approach scratch.
+    if (auto* p = world.pathings.get(id)) {
+        p->waypoint         = {0.0f, 0.0f};
+        p->has_waypoint     = false;
+        p->corridor.clear();
+        p->approach_target  = Unit{};
+        p->approach_goal    = {0.0f, 0.0f};
+        p->approach_range   = 0.0f;
     }
 
     // Combat: presence tracks the new type. Morphing into a unit with a
@@ -664,13 +762,13 @@ void issue_order(World& world, Unit unit, Order order) {
         // player spam-clicking the same spot) wouldn't trigger A* and
         // the unit would stand still until the previous 1.5s timer
         // expired.
-        auto* mov = world.movements.get(unit.id);
-        if (mov) {
-            mov->corridor.clear();
-            mov->has_waypoint = false;
-            mov->approach_target = Unit{};
-            mov->approach_range = 0;
-            mov->repath_timer = 0;
+        auto* pth = world.pathings.get(unit.id);
+        if (pth) {
+            pth->corridor.clear();
+            pth->has_waypoint = false;
+            pth->approach_target = Unit{};
+            pth->approach_range = 0;
+            pth->repath_timer = 0;
         }
 
         // Clear combat target so the unit stops fighting and obeys the new order
@@ -747,7 +845,7 @@ bool is_alive(const World& world, Unit unit) {
 }
 
 bool is_dead(const World& world, Unit unit) {
-    return world.contains(unit) && world.dead_states.has(unit.id);
+    return world.contains(unit) && health_is_dead(world.healths.get(unit.id));
 }
 
 bool is_building(const World& world, Unit unit) {
@@ -811,7 +909,7 @@ Unit get_item_owner(const World& world, Item item) {
 i32 give_item_to_unit(World& world, Unit unit, Item item) {
     if (!world.contains(unit) || !world.contains(item)) return -1;
     // A dying item (playing its death clip on the ground) can't be grabbed.
-    if (world.dead_states.has(item.id)) return -1;
+    if (world.corpses.has(item.id)) return -1;
     // Powerups are consumed on pickup and never occupy a slot — the
     // walk-over path handles them directly. Refuse here so nothing can
     // slot one accidentally (also covers Lua's GiveItem).
@@ -913,7 +1011,7 @@ void kill_item(World& world, Item item) {
     // outright.
     auto* r = world.renderables.get(item.id);
     bool on_ground = r && r->visible;
-    if (!on_ground || world.dead_states.has(item.id)) {
+    if (!on_ground || world.corpses.has(item.id)) {
         destroy(world, item);
         return;
     }
@@ -930,14 +1028,16 @@ void kill_item(World& world, Item item) {
         return;
     }
 
-    // Reuse the unit corpse pipeline: derive_anim_state plays Death while a
-    // DeadState is present, and system_death Phase 2 hides then frees the item
-    // at cleanup_delay. Per-instance durations, so the fixed unit defaults are
-    // untouched. Clients learn the death via the S_STATE 0x08 flag.
-    DeadState d{};
+    // Reuse the unit corpse pipeline: the renderer plays Death while is_dead
+    // (health < threshold), and system_death Phase 2 hides then frees the item
+    // at cleanup_delay. Drive health to 0 so death is derived uniformly (an item
+    // dies by charges, not damage, so nothing else zeroed it) — this is what the
+    // client sees (health, not the host-only Corpse). Per-instance corpse window.
+    if (auto* h = world.healths.get(item.id)) h->current = 0;
+    Corpse d{};
     d.corpse_duration = clip;
     d.cleanup_delay   = clip;
-    world.dead_states.add(item.id, std::move(d));
+    world.corpses.add(item.id, std::move(d));
 }
 
 // ── Ability API ───────────────────────────────────────────────────────────

@@ -3,6 +3,9 @@
 #include "network/game_server.h"
 #include "network/network.h"
 #include "network/lobby.h"
+#include "script/script.h"
+#include "hud/hud.h"
+#include "hud/hud_loader.h"
 #include "simulation/command_system.h"
 #include "core/log.h"
 
@@ -180,6 +183,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Preplaced/dynamic id boundary — mirror of Engine::start_session (engine.cpp).
+    // load_map → load_content → load_placements just built the initial scene's
+    // preplaced entities (ids [0,N) from placements.bin); init_game's main() (run
+    // below) then creates DYNAMIC entities starting at N. The worker MUST ship N
+    // in S_WELCOME so the client — which builds the same preplaced set locally —
+    // agrees on the boundary. Without this m_placement_count stayed 0, the client
+    // logged PLACEMENT DESYNC (host=0 vs client=N) and every id-keyed message was
+    // mis-routed. Captured here BEFORE init_game; published after init_host below.
+    const uldum::u32 initial_placement_count =
+        server.simulation().world().entities.next_id();
+
     // Set water layers
     {
         std::vector<uldum::u8> shallow, deep;
@@ -196,20 +210,73 @@ int main(int argc, char* argv[]) {
             uldum::log::info(TAG, "GAME_SESSION global installed from stdin config");
         }
     };
-    if (!server.init_game(map, nullptr, pre_main)) {
-        uldum::log::error(TAG, "Failed to init game");
-        return 1;
+
+    // Headless HUD MODEL. uldum_hud is a pure data layer (no RHI / renderer),
+    // so the worker owns one to be the authoritative source of text tags +
+    // in-game UI nodes. The map's main() calls CreateNode / CreateTextTag on
+    // it; without a HUD those bindings early-return and clients see nothing.
+    // Rendering happens only on clients, which receive the sync packets.
+    uldum::hud::Hud hud;
+    hud.init();
+    // Load the map's hud.json into the headless HUD so CreateNode("id", …) can
+    // resolve its template. Templates come ONLY from hud.json (add_node_template);
+    // without this the worker's CreateNode finds no template, creates nothing,
+    // and clients see no nodes/dialogs (text tags still work — they're inline,
+    // template-free). Viewport 0×0 is fine: the 'nodes' block is pure JSON
+    // storage; only composites resolve rects (unused headless).
+    {
+        std::string hud_path = map.map_root() + "/hud.json";
+        uldum::hud::load_from_asset(hud, hud_path, 0, 0);
     }
 
-    // Set terrain for pathfinding
-    server.simulation().set_terrain(&map.terrain());
+    // Server→client + inbound wiring, factored into one lambda so it runs at
+    // boot AND again after every scene switch (GameServer::switch_scene resets
+    // the Lua VM, clearing all script callbacks — the pre_main hook must
+    // re-install them before the new scene's main() runs). Mirror of the host's
+    // wire_host_broadcasts / start_session wiring, minus the renderer/HUD-render
+    // halves the headless worker doesn't have.
+    std::string pending_scene;   // set by set_scene_switch_fn; drained in the loop
+    auto wire_server = [&](uldum::script::ScriptEngine& /*s*/) {
+        // HUD sync at set_hud time — before main() creates nodes/tags.
+        hud.set_sync_fn([&network](const std::vector<uldum::u8>& pkt, uldum::u32 mask) {
+            network.host_hud_sync(pkt, mask);
+        });
+        server.script().set_hud(&hud);
+        network.set_script(&server.script());       // inbound C_NODE_EVENT → Lua
+        network.set_hud_replay_source(&hud);         // join-replay of persistent HUD
+        server.wire_to_network(network);             // effects/items/abilities/EndGame → clients
+        // Next LoadScene: capture the target; the main loop drives the barrier.
+        server.script().set_scene_switch_fn([&pending_scene](std::string_view scene) {
+            pending_scene.assign(scene);
+        });
+    };
 
-    // Init networking as host
+    // Init networking as host FIRST — before init_game runs main(). The HUD
+    // sync and the map's main()-time CreateNode / CreateTextTag both need a live
+    // host_hud_sync target, so the network must exist before main() runs.
+    // init_host only needs the simulation + commands (ready now), not init_game.
     uldum::simulation::CommandSystem commands;
     commands.init(&server.simulation().world());
     uldum::u32 max_players = static_cast<uldum::u32>(map.manifest().players.size());
     if (!network.init_host(args.port, max_players, server.simulation(), commands)) {
         uldum::log::error(TAG, "Failed to init network on port {}", args.port);
+        return 1;
+    }
+    // Publish the initial preplaced/dynamic boundary captured after load_map
+    // (before init_game's main() created any dynamics). Shipped in S_WELCOME so
+    // the client's boundary matches — fixes the PLACEMENT DESYNC (host=0).
+    network.set_placement_count(initial_placement_count);
+
+    // init_game runs the initial scene's main(); wire_server as its pre_main so
+    // callbacks are live when main() creates HUD nodes / fires effects. pre_main
+    // runs after script.init (bindings) but before main, so wire_to_network's
+    // chain onto on_item_picked_up etc. captures the real bindings.
+    if (!server.init_game(map, nullptr,
+                          [&](uldum::script::ScriptEngine& s) {
+                              pre_main(s);   // GAME_SESSION global (stdin config)
+                              wire_server(s);
+                          })) {
+        uldum::log::error(TAG, "Failed to init game");
         return 1;
     }
 
@@ -329,8 +396,49 @@ int main(int argc, char* argv[]) {
             network.host_finish_start();
         }
 
-        // Tick simulation
-        if (network.is_game_started() && !network.is_paused()) {
+        // Scene switch (Lua LoadScene). Two-phase barrier mirroring the host:
+        //   Phase 1: a pending switch → tell clients (reliable-ordered, they
+        //            react first), wipe our terrain/entities locally, mark self
+        //            loaded, and stash the target for phase 2.
+        //   Phase 2: once every peer acked C_LOAD_DONE → reload the scene +
+        //            re-run main (GameServer::switch_scene, re-wiring via
+        //            wire_server as pre_main), refresh the placement boundary,
+        //            then burst spawns + resume ticks (host_finish_scene_switch).
+        static std::string finalize_scene;
+        if (!pending_scene.empty() && !network.is_scene_switching()) {
+            std::string scene = std::move(pending_scene);
+            pending_scene.clear();
+            network.host_broadcast_scene_switch(scene);
+            // Local server teardown: wipe entities + swap terrain so the world
+            // is empty across the barrier. switch_scene re-wipes idempotently in
+            // phase 2, so this just gets us to the empty state now.
+            map.switch_scene_terrain_only(scene, assets, server.simulation());
+            network.reset_local_view();
+            // Reset the headless HUD model too — mirror of the host's
+            // scene_switch_local_teardown (m_hud.reset_scene_state()). Without
+            // this the previous scene's Lua-created nodes (e.g. the "N waves"
+            // composite) and text tags linger in the worker's Hud and get
+            // resurrected on clients by the phase-2 spawn-burst emit_state_to
+            // replay — even though each client cleared them in its own teardown.
+            hud.reset_scene_state();
+            finalize_scene = std::move(scene);
+            network.mark_self_loaded();
+        }
+        if (network.is_scene_switching() && !finalize_scene.empty() &&
+            network.all_peers_loaded()) {
+            std::string scene = std::move(finalize_scene);
+            finalize_scene.clear();
+            uldum::u32 boundary = server.switch_scene(map, assets, scene, wire_server);
+            if (boundary != UINT32_MAX) {
+                network.set_placement_count(boundary);
+            }
+            network.host_finish_scene_switch();
+            uldum::log::info(TAG, "Scene switch '{}' complete — sim resuming", scene);
+        }
+
+        // Tick simulation (paused while a scene switch is in flight).
+        if (network.is_game_started() && !network.is_paused() &&
+            !network.is_scene_switching()) {
             accumulator += frame_dt;
             static uldum::u32 tick_counter = 0;
             while (accumulator >= TICK_DT) {

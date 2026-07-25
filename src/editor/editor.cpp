@@ -1254,10 +1254,10 @@ void Editor::place_unit_at(f32 wx, f32 wy) {
     if (auto* t = sim.world().transforms.get(unit.id)) {
         t->position.z = map::sample_height(td, wx, wy);
     }
-    if (auto* mov = sim.world().movements.get(unit.id)) {
+    if (auto* pth = sim.world().pathings.get(unit.id)) {
         u32 vx = std::min(static_cast<u32>(std::round((wx - td.origin_x()) / td.tile_size)), td.tiles_x);
         u32 vy = std::min(static_cast<u32>(std::round((wy - td.origin_y()) / td.tile_size)), td.tiles_y);
-        mov->cliff_level = td.cliff_at(vx, vy);
+        pth->cliff_level = td.cliff_at(vx, vy);
     }
 
     // Buildings author footprints in TILES. We block tile-aligned but

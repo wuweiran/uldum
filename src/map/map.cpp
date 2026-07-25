@@ -410,6 +410,12 @@ bool MapManager::load_scene_terrain(std::string_view scene_name, asset::AssetMan
 
 bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
     if (!load_scene_terrain(scene_name, assets)) return false;
+    // Wire the sim's world terrain BEFORE placements so create_* can sample ground
+    // height for preplaced entities. sim.world() is the client's view_world when a
+    // world-override is active, or the host's authoritative world otherwise — both
+    // need world.terrain set. (Also refreshes the pathfinder/grid via set_terrain.)
+    // load_scene_terrain already guaranteed terrain is valid (returns false else).
+    sim.set_terrain(&m_scene.terrain);
     if (!load_scene_metadata(scene_name, assets)) {
         log::warn(TAG, "Scene '{}': no metadata loaded", scene_name);
     }
@@ -669,12 +675,12 @@ bool MapManager::load_placements(std::string_view scene_name, asset::AssetManage
 
         auto* t = world.transforms.get(unit.id);
         if (t) t->position.z = sample_height(pu.x, pu.y);
-        auto* mov = world.movements.get(unit.id);
-        if (mov) {
+        auto* pth = world.pathings.get(unit.id);
+        if (pth) {
             auto& td = m_scene.terrain;
             u32 vx = std::min(static_cast<u32>(std::round((pu.x - td.origin_x()) / td.tile_size)), td.tiles_x);
             u32 vy = std::min(static_cast<u32>(std::round((pu.y - td.origin_y()) / td.tile_size)), td.tiles_y);
-            mov->cliff_level = td.cliff_at(vx, vy);
+            pth->cliff_level = td.cliff_at(vx, vy);
         }
 
         // PathingBlocker from the type's footprint. Buildings author

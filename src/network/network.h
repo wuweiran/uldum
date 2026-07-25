@@ -21,6 +21,7 @@
 namespace uldum::simulation { class Simulation; class TypeRegistry; class AbilityRegistry; class CommandSystem; }
 namespace uldum::map    { class MapManager; }
 namespace uldum::script { class ScriptEngine; }
+namespace uldum::hud    { class Hud; }
 
 namespace uldum::network {
 
@@ -68,7 +69,7 @@ public:
     // dt = frame delta time (used for disconnect timeout countdown).
     void update(f32 dt = 0);
 
-    // Host: broadcast S_STATE for all connected clients. Call once per sim tick.
+    // Host: broadcast S_UNIT_STATE for all connected clients. Call once per sim tick.
     void host_broadcast_tick(u32 tick);
 
     Mode mode() const { return m_mode; }
@@ -135,17 +136,6 @@ public:
     // Assigned player ID (valid after S_WELCOME).
     simulation::Player local_player() const { return m_local_player; }
 
-    // Set the type registry for spawning entities on the client.
-    void set_type_registry(const simulation::TypeRegistry* types) { m_client_types = types; }
-
-    // Set the ability registry so the client's S_UPDATE handlers for
-    // AbilityAdd / AbilityRemove can populate modifiers + flags and
-    // run recalculate_modifiers — exactly what the server-side
-    // simulation::add_ability path does.
-    void set_ability_registry(const simulation::AbilityRegistry* abilities) {
-        m_client_abilities = abilities;
-    }
-
     // HUD sync plumbing (16c-v).
     // - On host: set_hud() + set_script() install handlers so client-side
     //   C_NODE_EVENT can fire server-side triggers, and host_hud_sync can
@@ -157,6 +147,11 @@ public:
     using HudMessageFn = std::function<void(std::span<const u8>)>;
     void set_hud_message_fn(HudMessageFn fn) { m_hud_message_fn = std::move(fn); }
     void set_script(script::ScriptEngine* scr)  { m_script = scr; }
+    // Host-side: the authoritative HUD model to replay to a joining/reconnecting
+    // peer (persistent nodes + permanent text tags it missed). Set on host
+    // (Engine's m_hud) and worker (its headless Hud); host_send_spawn_burst calls
+    // its emit_state_to per peer, filtered by each node/tag's players_mask.
+    void set_hud_replay_source(hud::Hud* h) { m_hud_replay = h; }
 
     // Host: route a packet built by Hud's sync_fn to the matching peer(s).
     // `players_mask` is a bitmask of player ids that should receive the
@@ -207,7 +202,7 @@ public:
     const std::vector<DisconnectedView>& disconnected_view() const { return m_disconnected_view; }
     bool pause_view_active() const { return m_pause_view_active; }
 
-    // Host: broadcast an S_UPDATE to all clients that can see this entity.
+    // Host: broadcast an on-change S_COLD to all clients that can see this entity.
     void host_broadcast_update(u32 entity_id, std::span<const u8> update_packet);
 
     // Host: broadcast an arbitrary packet to every connected peer.
@@ -310,6 +305,13 @@ public:
     bool host_send_camera_shake(u32 player_id, f32 intensity, f32 duration);
     bool host_send_camera_set_target_controller(u32 player_id, u32 entity_id);
 
+    // Host: set the Action-preset controlled unit for a player. Stores the id
+    // per player (for the join / scene-switch spawn-burst replay) and sends
+    // S_SET_CONTROLLED_UNIT to that player's peer now. No-op for the host's own
+    // slot (no peer) and when not in Host mode; the host applies locally via the
+    // wire_host_broadcasts chain. entity_id UINT32_MAX clears.
+    bool host_send_set_controlled_unit(u32 player_id, u32 entity_id);
+
     // Client: registered by App to apply incoming camera commands to
     // the local CameraController.
     using CameraApplySetupRecvFn         = std::function<void(f32 tx, f32 ty, f32 tz,
@@ -325,6 +327,11 @@ public:
     void set_camera_set_source_distance_recv_fn(CameraSetSourceDistanceRecvFn fn) { m_camera_set_source_distance_recv_fn = std::move(fn); }
     void set_camera_shake_recv_fn              (CameraShakeRecvFn fn)             { m_camera_shake_recv_fn               = std::move(fn); }
     void set_camera_set_target_controller_recv_fn(CameraSetTargetControllerRecvFn fn) { m_camera_set_target_controller_recv_fn = std::move(fn); }
+
+    // Client: registered by App to apply an incoming controlled-unit lock to the
+    // local SelectionState (the Action-preset hero). entity_id UINT32_MAX clears.
+    using SetControlledUnitRecvFn = std::function<void(u32 entity_id)>;
+    void set_set_controlled_unit_recv_fn(SetControlledUnitRecvFn fn) { m_set_controlled_unit_recv_fn = std::move(fn); }
 
     // Client: this client has finished loading — tell the host. No-op on
     // the host (host tracks self-loaded via mark_self_loaded).
@@ -465,6 +472,14 @@ private:
     CameraShakeRecvFn               m_camera_shake_recv_fn;
     CameraSetTargetControllerRecvFn m_camera_set_target_controller_recv_fn;
 
+    // Client: apply an incoming controlled-unit lock to the local selection.
+    SetControlledUnitRecvFn         m_set_controlled_unit_recv_fn;
+
+    // Host: current Action-preset controlled unit per player id, so a client
+    // that joins (or reloads on a scene switch) after main() ran gets the hero
+    // lock replayed in its spawn burst. Cleared on scene switch (ids reset).
+    std::unordered_map<u32, u32>    m_controlled_unit_by_player;
+
     void host_on_connect(u32 peer_id);
     void host_on_disconnect(u32 peer_id);
     void host_on_receive(u32 peer_id, std::span<const u8> data);
@@ -475,6 +490,9 @@ private:
                          bool newly_created);
     void host_send_show(PeerInfo& peer, u32 entity_id,
                         const simulation::HandleInfo& info);
+    // MATERIALIZE cold-state batch (S_COLD, N records) — sent right after
+    // S_SPAWN/S_SHOW for any stateful entity. No-op if the entity has no records.
+    void host_send_cold_batch(PeerInfo& peer, u32 entity_id);
     void host_send_spawn_burst(PeerInfo& peer);
     void host_update_disconnected(f32 dt);
     void host_broadcast_pause_state();
@@ -494,7 +512,7 @@ private:
 
     // ── This process's view-world ───────────────────────────────────────
     // Filled from network snapshots (remote client) or by project_local_view()
-    // The network CLIENT's mirror world — filled from S_SPAWN/S_SHOW/S_STATE/
+    // The network CLIENT's mirror world — filled from S_SPAWN/S_SHOW/S_UNIT_STATE/
     // S_HIDE/S_DESTROY. On host/offline it's unused (the projection reads the
     // authoritative world directly). active_view() never returns this raw World;
     // it always returns m_local_view_impl (a LocalView), which on the client
@@ -508,25 +526,29 @@ private:
     // first project_local_view() call.
     simulation::LocalView m_local_view_impl;
     simulation::Player m_local_player{UINT32_MAX};
-    const simulation::TypeRegistry* m_client_types = nullptr;
-    const simulation::AbilityRegistry* m_client_abilities = nullptr;
 
     // HUD sync plumbing — set by App during start_session. Host uses
     // m_script to dispatch C_NODE_EVENT; client uses m_hud_message_fn
     // to forward S_HUD_* messages to hud::apply_network_message.
     HudMessageFn            m_hud_message_fn;
     script::ScriptEngine*   m_script = nullptr;
+    hud::Hud*               m_hud_replay = nullptr;  // host-side join-replay source
 
     // Vision (client computes fog locally from received entities; the
     // server already filtered out anything this client can't see)
     simulation::Vision m_client_vision;
     const simulation::Simulation* m_client_sim_ref = nullptr;  // for shared vision queries
 
-    // Snapshot buffer for interpolation (two most recent)
+    // Snapshot buffer for interpolation (two most recent). Units and projectiles
+    // ride separate HOT packets (S_UNIT_STATE / S_PROJECTILE_STATE) and land in
+    // separate arrays; both interpolate position/facing, only units carry the
+    // scalar half (health/flags/states). A projectile snapshot may arrive on a
+    // different tick than the unit one — each array tracks its own newest.
     struct Snapshot {
         u32 tick = 0;
         f64 receive_time = 0;
-        std::vector<EntityState> entities;
+        std::vector<UnitState> units;
+        std::vector<ProjectileState> projectiles;
     };
     Snapshot m_snapshots[2];
     u32 m_snap_idx = 0;      // write index (flips between 0 and 1)
@@ -540,19 +562,24 @@ private:
     void client_handle_show(std::span<const u8> data);
     void client_handle_hide(std::span<const u8> data);
     void client_handle_destroy(std::span<const u8> data);
-    void client_handle_state(std::span<const u8> data);
+    void client_handle_unit_state(std::span<const u8> data);
+    void client_handle_projectile_state(std::span<const u8> data);
+    // Advance the double-buffer to `tick`; returns the snapshot index to fill.
+    // Shared by the unit + projectile HOT handlers (same-tick packets fill one
+    // snapshot; a new tick opens a fresh one).
+    u32 client_begin_snapshot_tick(u32 tick);
     void client_handle_sound(std::span<const u8> data);
     void client_handle_effect_create(std::span<const u8> data);
     void client_handle_effect_destroy(std::span<const u8> data);
     void client_handle_projectile_dying(std::span<const u8> data);
-    void client_handle_update(std::span<const u8> data);
+    void client_handle_cold(std::span<const u8> data);         // S_COLD: 1 record (on-change) or N (materialize)
     void client_apply_interpolation();
 
     void spawn_client_entity(simulation::World& world, u32 entity_id,
                              std::string_view type_id,
                              u8 owner, f32 x, f32 y, f32 facing,
                              bool newly_created,
-                             std::string_view model_path_override = {});
+                             u8 variation = 0);
     void destroy_client_entity(u32 entity_id);
 
     // The host/offline local player's fog-projection scratch. project_local_view

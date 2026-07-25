@@ -442,7 +442,7 @@ Visual feedback for gameplay systems. Validates that rendering, simulation, and 
   - Procedural test skeleton for validation without real models
 - **Animation state machine**:
   - CPU-side, runs at render framerate (reads simulation state, drives playback)
-  - States: Idle, Walk, Attack, Death — derived from Combat, Movement, DeadState components
+  - States: Idle, Walk, Attack, Death — derived from Combat, Movement, and health (Death when health hits zero)
   - Crossfade blending between states
   - Per-bone local TRS interpolation → hierarchy walk → final skinning matrices
 - **Particle system** (CPU-driven):
@@ -771,6 +771,17 @@ This also moves fog **memory** to where it belongs. A player remembers the last-
 - Give the wire protocol distinct verbs for a true spawn, entering vision, a state change, leaving vision, and removal from the world — so "left my sight" and "destroyed" are never conflated, and a killed unit is just a state change the client already knows how to show.
 - Have the host ship only currently-visible entities; the client snapshots a static on the frame it leaves sight and drops it again on re-sighting, so out-of-sight memory is entirely client-side.
 - Fold item pickup / drop, ability and item cooldowns, and charges into the same per-player sync so a client's HUD reflects them without running the simulation.
+
+### Phase 29 — Message-layer redesign
+
+Phase 28's view-projection landed the architecture but left server-client half-working — the wire protocol had been reshaped in flight, and features that worked in single-player misbehaved for a remote client. Phase 29 makes server-client whole again, and rather than patch each symptom it settles the message layer as a whole: on-change updates were one overloaded message, sticky state (a corpse, an animation) rode one-off channels, and anything that changed in fog was lost on re-sight. The layer is now sorted into tiers by *when* a message fires (entering knowledge / per-tick / on-change / event / removal), and the "entering knowledge" tier carries only the state that differs from what the client rebuilds from the type — so cold state survives a fog round-trip. Death also stops being a shipped flag: it's derived from health on both sides, and the corpse timer becomes host-only cleanup.
+
+- Restore the single-player features that regressed for a remote client, sharing one code path between the in-process host and the headless worker so they can't drift again.
+- Reorganize the entity-sync opcodes into explicit tiers and collapse the overloaded on-change envelope into one grouped, batchable message.
+- Make the materialize batch carry only what diverges from the type default, so an untouched tree costs nothing beyond its reveal.
+- Derive "dead" from health on both sides; retire the dead flag, reframe the corpse timer as host-only cleanup, and signal removal the moment the corpse decays.
+- Promote projectiles to a first-class script-addressable handle, distinct from units.
+- Fix the carried-item view gate so an item held across a fog or cliff transition stays in the owner's inventory.
 
 ## 16. Deferred / Future Work
 

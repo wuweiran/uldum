@@ -87,14 +87,16 @@ Message IDs are organized by top-nibble category: client/server direction + phas
 | `S_LOBBY_STATE` | 0x42 | reliable | full snapshot of the lobby (map + slot table) |
 | `S_LOBBY_COMMIT` | 0x43 | reliable | (empty) — host locked the lobby, enter Loading |
 | `S_WELCOME` | 0x44 | reliable | `u32 player_id, u32 player_count, u32 tick_rate` — sent at end of Loading with the peer's finalized slot |
-| **Playing — entity sync** | | | |
-| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, u32 type_hash, u8 owner, f32 x, f32 y, f32 facing` — entity born in the player's sight (plays birth) |
-| `S_SHOW` | 0x55 | reliable | same payload as `S_SPAWN` — an existing entity entered the player's sight (no birth) |
-| `S_STATE` | 0x52 | unreliable | `u32 tick, u16 count, EntityState[]` — see below (dead is a state flag, not a separate message) |
-| `S_HIDE` | 0x56 | reliable | `u32 entity_id` — entity left the player's sight (client decides whether to remember it) |
-| `S_DESTROY` | 0x51 | reliable | `u32 entity_id` — entity removed from the world (not the same as "killed" or "left sight") |
-| `S_UPDATE` | 0x53 | reliable | on-change attribute / state / ability / inventory delta |
-| `S_SOUND` | 0x54 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
+| **Playing — entity sync** (tiers: materialize / hot / cold / event / dematerialize) | | | |
+| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, string type_id, u8 owner, f32 x, f32 y, f32 facing, …` — entity born in the player's sight (plays birth). Slim identity; cold state follows in an `S_COLD` batch |
+| `S_SHOW` | 0x51 | reliable | same slim payload as `S_SPAWN` (no birth) — an existing entity entered the player's sight |
+| `S_UNIT_STATE` | 0x52 | unreliable | `u32 tick, u16 count, UnitState[]` — per-tick HOT snapshot for **units** (see below). Death is derived from the health field, not a separate flag |
+| `S_PROJECTILE_STATE` | 0x53 | unreliable | `u32 tick, u16 count, ProjectileState[]` — per-tick HOT snapshot for projectiles (position + facing only) |
+| `S_COLD` | 0x54 | reliable | `u32 entity_id, u16 count, ColdRecord[]` — on-change cold state (1 record) **and** the materialize batch (N records). One grouped envelope; a record is health, a state, an ability, a cooldown, an attribute, ownership, status, inventory, a transform, or a scripted animation |
+| `S_PROJECTILE_DYING` | 0x55 | reliable | `u32 entity_id` — projectile entered its dying window; client plays the death clip once |
+| `S_SOUND` | 0x56 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
+| `S_HIDE` | 0x59 | reliable | `u32 entity_id` — entity left the player's sight (client decides whether to remember it) |
+| `S_DESTROY` | 0x5A | reliable | `u32 entity_id` — entity gone (removed from the world, or a corpse decayed). Client always removes |
 | **Playing — session events** | | | |
 | `S_START` | 0x60 | reliable | (empty) — all players loaded, game begins |
 | `S_END` | 0x61 | reliable | `u32 winning_team, u16 stats_len, char[] stats_json` (winning_team = UINT32_MAX → no winner) |
@@ -117,18 +119,22 @@ for each slot (array index = player id):
 
 Host is authoritative: on every mutation (claim / release / peer join or leave) host broadcasts a fresh `S_LOBBY_STATE`. Clients mirror.
 
-### EntityState (per-entity in S_STATE)
+### UnitState (per-unit in S_UNIT_STATE)
 
 ```
 u32  entity_id
 f32  x, y, z          // position
 f32  facing            // radians
-f32  health_frac       // 0.0–1.0 (current / max)
-u8   flags             // bit 0: moving, bit 1: attacking, bit 2: casting, bit 3: dead
-u32  target_id         // combat/cast target (0 = none)
+u8   flags             // bit 0: moving, bit 1: attacking, bit 2: casting,
+                       //   bit 4: corpse-hidden, bit 5: has_health
+f32  health_current    // present iff has_health — authentic current HP (not a fraction)
+u32  target_id         // present iff attacking
+f32  state_current[]   // map-defined states (mana/energy/…) in the unit's frozen key order
 ```
 
-28 bytes per entity. At 100 entities, S_STATE is ~2.8 KB per tick, ~90 KB/s at 32 Hz. Manageable for LAN; delta compression can reduce this later.
+The client owns `max` (from the type def, plus cold updates), so the hot packet ships only the authentic current values. **Death is not a flag** — the client derives it from `health_current` crossing the death threshold, the same rule the host uses, so a killed unit needs no separate message. Statics (destructables / doodads / items) are not in this packet at all; they don't move, and their state changes ride `S_COLD`.
+
+Projectiles ride the leaner `S_PROJECTILE_STATE` (position + facing only).
 
 ## State Sync
 
@@ -137,15 +143,16 @@ u32  target_id         // combat/cast target (0 = none)
 When a client connects and sends `C_JOIN`:
 1. Server verifies map hash matches
 2. Server sends `S_WELCOME` with assigned player ID
-3. Server sends a burst of `S_SPAWN` for every existing entity
-4. Client starts receiving `S_STATE` snapshots
+3. Server sends a burst of `S_SPAWN` for every visible entity, each followed by its `S_COLD` materialize batch
+4. Client starts receiving `S_UNIT_STATE` snapshots
 5. Client begins rendering after receiving two consecutive snapshots (for interpolation)
 
 ### Ongoing
 
-- Server sends `S_STATE` every tick (32 Hz) containing all entities currently visible to that player
-- Server sends `S_SPAWN` (born in sight) / `S_SHOW` (entered sight) / `S_HIDE` (left sight) / `S_DESTROY` (removed from the world) as entities enter and leave each player's vision
-- Server filters by fog of war — it ships only what a player can currently see, and never tells a client what to remember. A killed unit is not a separate message: death is a flag in `S_STATE`, and the client shows the corpse like any other state.
+- Server sends `S_UNIT_STATE` every tick (32 Hz) containing all units currently visible to that player (projectiles ride `S_PROJECTILE_STATE`)
+- On materialize (born in sight / entered sight / join), the server sends the slim reveal (`S_SPAWN` / `S_SHOW`) followed by an `S_COLD` batch of only the cold state that differs from the type default — so mana, cooldowns, and runtime abilities survive a fog round-trip
+- Server sends `S_HIDE` (left sight) / `S_DESTROY` (gone from the world, or corpse decayed) as entities leave each player's vision
+- Server filters by fog of war — it ships only what a player can currently see, and never tells a client what to remember. A killed unit is not a separate message: death is derived from the health field in `S_UNIT_STATE`, and the client shows the corpse like any other state.
 
 ### Client-owned fog memory
 
@@ -153,7 +160,7 @@ The server only ever sends a player what is **currently visible**. What to do wh
 
 ### Client Interpolation
 
-The client does not run `Simulation.tick()`. It buffers the two most recent `S_STATE` snapshots and interpolates between them based on wall-clock time:
+The client does not run `Simulation.tick()`. It buffers the two most recent `S_UNIT_STATE` snapshots and interpolates between them based on wall-clock time:
 
 ```
 render_time = current_time - one_tick_duration
@@ -195,7 +202,7 @@ Input → serialize C_ORDER → send to server
                                     ↓
 Server receives → validate → issue_order() → World
                                     ↓
-S_STATE broadcast → client receives → interpolate → render
+S_UNIT_STATE broadcast → client receives → interpolate → render
 ```
 
 The remote client sees the result of its command after one round trip (~2 ticks on LAN).
@@ -211,7 +218,7 @@ Host presses Start   → host_commit_start:
                           S_WELCOME + S_SPAWN burst per peer
                           S_START broadcast
                           m_phase=Playing
-Simulation ticks     → S_STATE broadcast per tick
+Simulation ticks     → S_UNIT_STATE broadcast per tick
 Lua calls EndGame    → S_END broadcast → session over
 ```
 

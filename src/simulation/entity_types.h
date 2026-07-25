@@ -47,6 +47,10 @@ inline bool is_non_null_handle(Handle h) {
 struct Unit         : Handle {};
 struct Destructable : Handle {};
 struct Item         : Handle {};
+// Projectile is a transient agent (missile / bolt): unlike WC3 — where missile
+// art has no script identity — ours is script-addressable (CreateProjectile,
+// GetProjectile*, projectile_hit/destroyed events), so it's a real handle.
+struct Projectile   : Handle {};
 // Doodad is pure decoration with no script binding: an Entity, not a handle.
 struct Doodad       : Entity {};
 

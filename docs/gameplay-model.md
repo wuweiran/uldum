@@ -953,7 +953,7 @@ struct World {
     SparseSet<Construction>           constructions;
     SparseSet<DestructableComp>       destructables;
     SparseSet<ProjectileComp>         projectiles;
-    SparseSet<DeadState>              dead_states;
+    SparseSet<Corpse>                 corpses;
     SparseSet<Renderable>             renderables;
 
     EntityAllocator entities;

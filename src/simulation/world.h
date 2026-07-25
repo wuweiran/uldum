@@ -16,6 +16,8 @@
 #include <unordered_set>
 #include <vector>
 
+namespace uldum::map { struct TerrainData; }
+
 namespace uldum::simulation {
 
 class AbilityRegistry;
@@ -30,6 +32,7 @@ struct World {
     SparseSet<Selectable>           selectables;
     SparseSet<Player>               owners;   // unit id -> owning player id
     SparseSet<Movement>             movements;
+    SparseSet<Pathing>              pathings; // host-only pathfinder scratch (see Pathing)
     SparseSet<Combat>               combats;
     SparseSet<Sight>                sights;
     SparseSet<OrderQueue>           order_queues;
@@ -39,17 +42,17 @@ struct World {
     SparseSet<TrueSightVisibility>  true_sight_vis;  // transient, rebuilt every tick by system_true_sight
     SparseSet<ForcedVisibility>     forced_vis;      // persistent, set by UnitReveal
     SparseSet<Inventory>            inventories;
-    SparseSet<BuildingComp>        buildings;
+    SparseSet<BuildingComp>         buildings;
     SparseSet<Construction>         constructions;
-    SparseSet<DestructableComp>    destructables;
+    SparseSet<DestructableComp>     destructables;
     SparseSet<DoodadComp>           doodads;
     SparseSet<PathingBlocker>       pathing_blockers;
     SparseSet<ItemInfo>             item_infos;
     SparseSet<Carriable>            carriables;
-    SparseSet<ProjectileComp>      projectiles;
-    SparseSet<DeadState>           dead_states;
+    SparseSet<ProjectileComp>       projectiles;
+    SparseSet<Corpse>               corpses;
     SparseSet<Renderable>           renderables;
-    SparseSet<AnimQueue>           anim_queues;  // script-driven animation override (Lua writes, renderer advances)
+    SparseSet<AnimQueue>            anim_queues;  // script-driven animation override (Lua writes, renderer advances)
 
     // Regions — Lua-authored zones used to fire enter/leave triggers.
     // Defined out of band (not per-unit), so it lives flat on World
@@ -93,6 +96,12 @@ struct World {
     // simulation without taking it as an argument.
     const AbilityRegistry* abilities = nullptr;
 
+    // Terrain (not owned — set during init, on host AND client). Lets creation
+    // (create_*/spawn_*_with_id) sample ground height so an entity's Z is set at
+    // build time, one place, for every caller. WC3-style: Z is derived locally
+    // from terrain, never synced. Null → Z defaults to 0 (pre-terrain spawns).
+    const map::TerrainData* terrain = nullptr;
+
     // Damage callback — set by script engine to intercept damage events.
     // Parameters: source, target, amount (mutable), damage_type.
     // The callback may modify amount (e.g. to reduce or amplify damage).
@@ -103,6 +112,18 @@ struct World {
     // Parameters: dying unit, killer (may be invalid if no killer).
     using DeathCallback = std::function<void(Unit dying, Unit killer)>;
     DeathCallback on_death;
+
+    // Engine death-transition callback — fired the moment an entity enters
+    // dead-state (health < threshold), for the NETWORK to signal death to clients.
+    // Distinct from on_death (which is the SCRIPT trigger hook, and may
+    // cancel/mutate). Needed because destructables no longer ride the per-tick
+    // snapshot (only units/projectiles do), so their health→0 can't reach the
+    // client that way — an on-change S_COLD{Health(0)} lets the client derive death
+    // and play the death clip during the corpse window before S_DESTROY removes the
+    // entity. Fires for the categories that left the per-tick path (destructables);
+    // units still sync health (→ death) via the per-tick snapshot.
+    using EntityDiedCallback = std::function<void(u32 entity_id)>;
+    EntityDiedCallback on_entity_died;
 
     // Order callback — fired by issue_order whenever an order survives
     // admission checks and is added to the unit's queue (or replaces
@@ -180,8 +201,8 @@ struct World {
     // (auto-destroy on homing hit, max_distance expiry, manual
     // DestroyProjectile, lifetime cap). The hit is always reported
     // BEFORE the destroyed event when both fire in the same tick.
-    using ProjectileHitCallback       = std::function<void(Unit projectile, Unit hit_unit)>;
-    using ProjectileDestroyedCallback = std::function<void(Unit projectile)>;
+    using ProjectileHitCallback       = std::function<void(Projectile projectile, Unit hit_unit)>;
+    using ProjectileDestroyedCallback = std::function<void(Projectile projectile)>;
     ProjectileHitCallback       on_projectile_hit;
     ProjectileDestroyedCallback on_projectile_destroyed;
 
@@ -229,6 +250,8 @@ struct World {
 
     // Build a Unit handle from an id owned by current world state.
     Unit unit(u32 id) const { return Unit{id}; }
+    // Build a Projectile handle from an id (projectiles are script-addressable).
+    Projectile projectile(u32 id) const { return Projectile{id}; }
 
     // Clear all entities (keeps type registry, callbacks, and the monotonic
     // entity-id counter). If you add a component pool, add it both here and
@@ -236,12 +259,12 @@ struct World {
     void clear_entities() {
         transforms.clear(); handle_infos.clear(); healths.clear();
         state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
-        owners.clear(); movements.clear(); combats.clear(); sights.clear();
+        owners.clear(); movements.clear(); pathings.clear(); combats.clear(); sights.clear();
         order_queues.clear(); ability_sets.clear(); classifications.clear();
         inventories.clear(); buildings.clear();
         constructions.clear(); destructables.clear(); doodads.clear(); pathing_blockers.clear();
         item_infos.clear(); carriables.clear(); projectiles.clear();
-        dead_states.clear(); renderables.clear();
+        corpses.clear(); renderables.clear();
         status_flags.clear(); true_sight_vis.clear(); forced_vis.clear(); anim_queues.clear();
         regions.clear(); next_region_id = 0;
         entities.reset();
@@ -256,6 +279,33 @@ Unit          create_unit(World& world, std::string_view type_id, Player owner, 
 Destructable  create_destructable(World& world, std::string_view type_id, f32 x, f32 y, f32 facing = 0, u8 variation = 0);
 Item          create_item(World& world, std::string_view type_id, f32 x, f32 y);
 Doodad        create_doodad(World& world, std::string_view type_id, f32 x, f32 y, f32 facing = 0, u8 variation = 0);
+
+// ── Network-client entity materialization ────────────────────────────────────
+// The client builds entities from S_SPAWN/S_SHOW wire messages using the SAME
+// construction code as the host — these entry points reserve the server-assigned
+// id, then run the identical builder create_* uses. This replaces the old
+// hand-copied NetworkManager::spawn_client_entity (which drifted repeatedly).
+//
+// SpawnOpts carries the only real host↔client deltas as DATA:
+//   skip_birth — true → materialize without the birth clip (client passes
+//                !newly_created; host derives from spawn_visible_to_viewer).
+// (Model selection is by `variation` on the spawn_*_with_id calls, not here —
+// the client resolves the model from type + variation just like the host.)
+struct SpawnOpts {
+    bool skip_birth = false;
+};
+
+// spawn_*_with_id: reserve `id`, then build via the shared create_* body. No-op
+// (returns invalid) if `id` already exists. Type is resolved from world.types.
+Unit          spawn_unit_with_id(World& world, u32 id, std::string_view type_id, Player owner, f32 x, f32 y, f32 facing, const SpawnOpts& opts);
+Item          spawn_item_with_id(World& world, u32 id, std::string_view type_id, f32 x, f32 y, const SpawnOpts& opts);
+// Destructables/doodads have no birth clip, so no SpawnOpts — just the variation
+// that selects their model from the type's models[] list.
+Doodad        spawn_doodad_with_id(World& world, u32 id, std::string_view type_id, f32 x, f32 y, f32 facing, u8 variation);
+Destructable  spawn_destructable_with_id(World& world, u32 id, std::string_view type_id, f32 x, f32 y, f32 facing, u8 variation);
+// Projectiles aren't type-registry entities; the client materializes one from
+// the inline wire model. Minimal render-only entity (no health/combat/owner).
+Projectile    spawn_projectile_with_id(World& world, u32 id, std::string_view model, f32 x, f32 y, f32 facing);
 
 void          destroy(World& world, Unit unit);
 void          destroy(World& world, Destructable d);
@@ -355,11 +405,11 @@ void     flag_refcount_delta(World& world, u32 id,
 // path + speed + target and starts the flight. Between create and emit
 // the projectile sits at the source point — Lua uses this window to
 // attach triggers and side-table state.
-Unit create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local = glm::vec3{0.0f});
-void emit_projectile_target(World& world, Unit projectile, Unit target, f32 speed, f32 arc_height);
-void emit_projectile_loc(World& world, Unit projectile, glm::vec3 loc, f32 speed,
+Projectile create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local = glm::vec3{0.0f});
+void emit_projectile_target(World& world, Projectile projectile, Unit target, f32 speed, f32 arc_height);
+void emit_projectile_loc(World& world, Projectile projectile, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance);
-void destroy_projectile(World& world, Unit projectile);
+void destroy_projectile(World& world, Projectile projectile);
 
 // Status flag helpers. Read returns false for an invalid handle or
 // when the unit has no StatusFlags component (treated as "no flags").
@@ -409,7 +459,7 @@ i32      give_item_to_unit(World& world, Unit unit, Item item);
 bool     drop_item_from_unit(World& world, Unit unit, i32 slot, glm::vec3 pos);
 
 // Destroy an item, playing its "death" clip first if it's a visible ground
-// item with a death clip (deferred via DeadState, sized to the clip; the
+// item with a death clip (deferred via Corpse, sized to the clip; the
 // corpse pipeline in system_death hides + frees it at clip end). A carried
 // or already-hidden item (visible == false) is destroyed instantly — there's
 // nothing on screen to animate. Use this instead of `destroy()` at any

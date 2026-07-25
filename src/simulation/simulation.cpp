@@ -61,6 +61,12 @@ void Simulation::shutdown() {
 
 void Simulation::set_terrain(const map::TerrainData* terrain) {
     m_terrain = terrain;
+    // Set it on the ACTIVE world (the client's override world when set, else the
+    // authoritative m_world) so creation — which builds into world() — can sample
+    // ground height. Also set the base m_world so it's correct if the override is
+    // later cleared.
+    m_world.terrain = terrain;
+    world().terrain = terrain;
     m_pathfinder.set_terrain(terrain);
     if (terrain && terrain->is_valid()) {
         m_spatial_grid.init(terrain->world_width(), terrain->world_height(), 512.0f, this);
@@ -135,7 +141,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // Liveness gate. `alive` defaults true in JSON (parser-side), so
     // most filters only accept living targets. `dead` lets resurrect-
     // style abilities target corpses; both can be true for either.
-    bool dead = w.dead_states.has(target.id);
+    bool dead = w.corpses.has(target.id);
     if (!filter.alive && !filter.dead) return reject("");
     if (dead) {
         if (!filter.dead) return reject("dead");

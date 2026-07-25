@@ -882,20 +882,23 @@ bool Engine::start_session() {
         m_server.script().set_hud(&m_hud);
         m_server.script().set_locale_manager(&m_i18n);
         m_network.set_script(&m_server.script());
+        m_network.set_hud_replay_source(&m_hud);  // join-replay of persistent HUD
 
-        // Surface the launch mode to Lua before main() runs so scripts
-        // can branch on IsSinglePlayer() at scene-init time (e.g.
-        // build SP-only HUD nodes, register pause-aware triggers).
-        m_server.script().set_singleplayer(m_args.net_mode == network::Mode::Offline);
-
-        // Host mode: every local HUD mutation also emits a protocol packet
-        // via NetworkManager::host_hud_sync. The network layer routes it
-        // to the owning peer (or broadcasts). Offline skips sync entirely.
+        // HUD → client sync, wired at set_hud time so nodes/tags the map
+        // creates in main() (during init_game below) are already syncing. Host
+        // mode only; offline host_hud_sync no-ops (no peers). NOT part of
+        // wire_to_network (which runs after init_game — too late for the
+        // main()-time node/tag creates).
         if (m_args.net_mode == network::Mode::Host) {
             m_hud.set_sync_fn([this](const std::vector<u8>& pkt, u32 owner) {
                 m_network.host_hud_sync(pkt, owner);
             });
         }
+
+        // Surface the launch mode to Lua before main() runs so scripts
+        // can branch on IsSinglePlayer() at scene-init time (e.g.
+        // build SP-only HUD nodes, register pause-aware triggers).
+        m_server.script().set_singleplayer(m_args.net_mode == network::Mode::Offline);
 
         // SetSunDirection (Lua) updates the host's own renderer here;
         // the network broadcast to peers happens inside the binding
@@ -905,19 +908,38 @@ bool Engine::start_session() {
             env.sun_direction = glm::vec3{x, y, z};  // normalized + guarded in set_environment
             m_renderer.set_environment(env);
         });
-        if (!m_server.init_game(m_map, &m_audio)) {
+        // pre_main runs the host's script-facing wiring AFTER the Lua VM is
+        // inited (so item-sync can chain onto the script's freshly-installed
+        // triggers) but BEFORE main() runs — the worker does the same via
+        // wire_server. Without this, any callback main() invokes at scene start
+        // (notably SetControlledUnit, scripted camera) fired into an empty slot
+        // and was silently dropped on the host — the reason a host-client
+        // client never got its controlled hero. (set_input/set_hud/set_script/
+        // sun_direction/singleplayer are already installed above, before here.)
+        auto pre_main = [this](script::ScriptEngine& script) {
+            script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+                return m_renderer.get_attachment_point(entity_id, bone);
+            });
+            wire_host_broadcasts();
+            script.set_scene_switch_fn([this](std::string_view scene) {
+                m_pending_scene_switch.assign(scene);
+            });
+        };
+        if (!m_server.init_game(m_map, &m_audio, pre_main)) {
             log::error(TAG, "GameServer game init failed");
             return false;
         }
     }
 
-    // Type/ability registries feed spawn_client_entity — used by the client's
-    // network spawn path AND the host/offline local view-world projection.
-    // Wire them for all modes (harmless pointers on host/offline).
-    m_network.set_type_registry(&m_server.simulation().types());
-    m_network.set_ability_registry(&m_server.simulation().abilities());
+    // Type/ability registries + terrain feed the client's spawn path (which now
+    // builds entities through the SAME create_* code as the host) AND the
+    // host/offline local view-world projection. Wire them on the view_world for
+    // all modes (harmless pointers on host/offline). The host's authoritative sim
+    // world gets terrain via Simulation::set_terrain; the client's view_world is a
+    // separate override world, so it needs terrain set here for ground-Z sampling.
     m_network.view_world().types     = &m_server.simulation().types();
     m_network.view_world().abilities = &m_server.simulation().abilities();
+    m_network.view_world().terrain   = m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
 
     if (m_args.net_mode == network::Mode::Host) {
         m_network.set_disconnect_timeout(m_map.manifest().disconnect_timeout);
@@ -952,140 +974,15 @@ bool Engine::start_session() {
                 return sim.vision().is_visible(simulation::Player{m_args.local_slot},
                                                static_cast<u32>(t.x), static_cast<u32>(t.y));
             };
-        m_server.script().set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
-            return m_renderer.get_attachment_point(entity_id, bone);
-        });
-        m_network.on_player_disconnected = [this](u32 player_id) {
-            m_server.script().fire_player_event("global_disconnect", player_id);
-            m_server.script().fire_player_event("player_disconnect", player_id);
-        };
-        m_network.on_player_dropped = [this](u32 player_id) {
-            m_server.script().fire_player_event("global_leave", player_id);
-            m_server.script().fire_player_event("player_leave", player_id);
-        };
-        m_server.script().set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
-            m_network.host_broadcast_update(entity_id, pkt);
-        });
-        m_server.script().set_broadcast_fn([this](const std::vector<u8>& pkt) {
-            m_network.host_broadcast(pkt);
-        });
-        m_server.script().set_player_count(
-            static_cast<u32>(m_map.manifest().players.size()));
-        // Fog-aware effect delivery. ScriptEngine::update calls these
-        // per (player, effect) once that player's vision covers the
-        // effect's position. For the host's local player we drive the
-        // renderer directly; for peers we send the appropriate packet.
-        // Deliver and destroy go through the same Create/Destroy code
-        // path on the client — no burst-vs-persistent split. Particles
-        // already in flight fade out on their own; the EffectInstance
-        // is what the destroy actually removes.
-        m_server.script().set_effect_deliver_fn(
-            [this](u32 player_id, u32 server_id, std::string_view name,
-                   simulation::Unit entity, glm::vec3 pos,
-                   std::string_view attach_point) {
-                if (player_id == m_args.local_slot) {
-                    auto& mgr = m_renderer.effect_manager();
-                    u32 local_id = simulation::is_non_null_handle(entity)
-                        ? mgr.create_on_unit(std::string(name), entity, pos,
-                                             std::string(attach_point))
-                        : mgr.create(std::string(name), pos);
-                    m_effect_id_map[server_id] = local_id;
-                } else {
-                    auto pkt = network::build_effect_create(server_id, name, entity,
-                                                            pos, attach_point);
-                    m_network.host_send_to_player(player_id, pkt);
-                }
-            });
-        m_server.script().set_effect_destroy_fn(
-            [this](u32 player_id, u32 server_id) {
-                if (player_id == m_args.local_slot) {
-                    auto it = m_effect_id_map.find(server_id);
-                    if (it != m_effect_id_map.end()) {
-                        m_renderer.effect_manager().destroy(it->second);
-                        m_effect_id_map.erase(it);
-                    }
-                } else {
-                    auto pkt = network::build_effect_destroy(server_id);
-                    m_network.host_send_to_player(player_id, pkt);
-                }
-            });
-        // Ability lifecycle broadcasts — fire from every add / remove
-        // path (Lua, engine aura ticks, natural duration expiry) and
-        // ride the same per-entity visibility filter as other
-        // S_UPDATE packets.
-        m_server.simulation().world().on_ability_added =
-            [this](simulation::Unit unit, std::string_view ability_id, u32 level,
-                   const simulation::AbilitySource& source) {
-                auto pkt = network::build_update_ability_add(
-                    unit.id, ability_id, level,
-                    static_cast<u8>(simulation::ability_source_kind(source)));
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
-        m_server.simulation().world().on_ability_removed =
-            [this](simulation::Unit unit, std::string_view ability_id,
-                   const simulation::AbilitySource& source, bool all_instances) {
-                auto pkt = network::build_update_ability_remove(
-                    unit.id, ability_id,
-                    static_cast<u8>(simulation::ability_source_kind(source)),
-                    all_instances);
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
-        // Ability cooldown start → tell clients so the action-bar / item slot
-        // greys out (clients re-simulate attack cadence but NOT ability
-        // cooldowns). Keyed on the caster (in known → reaches the owner).
-        m_server.simulation().world().on_ability_cooldown_started =
-            [this](simulation::Unit unit, std::string_view ability_id, f32 seconds) {
-                auto pkt = network::build_update_cooldown(unit.id, ability_id, seconds);
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
-        // Engine-owned charged-item spend: push the new charge count to
-        // clients (the per-tick entity delta doesn't carry charges; the
-        // destroy-at-0 case rides S_DESTROY instead).
-        m_server.simulation().world().on_item_charges_changed =
-            [this](simulation::Item item, i32 charges) {
-                auto pkt = network::build_update_item_charges(item.id, charges);
-                m_network.host_broadcast_update(item.id, pkt);
-            };
-        // Inventory pickup / drop → tell clients so the item shows in the
-        // carrier's bag (and off the ground) / returns to the ground. Chains
-        // onto the script's trigger dispatch (see install_item_sync_hooks).
-        install_item_sync_hooks();
         // Renderer-owned hook so the simulation can match projectile
-        // death timers to the actual animation clip duration.
+        // death timers to the actual animation clip duration. Not script-facing
+        // (sim reads it during ticks), so it stays here — the script-facing
+        // wiring (attach_point / wire_host_broadcasts / scene_switch_fn) moved
+        // into init_game's pre_main hook so it exists before main() runs.
         m_server.simulation().world().get_clip_duration =
             [this](std::string_view model_path, std::string_view clip_name) -> f32 {
                 return m_renderer.clip_duration(model_path, clip_name);
             };
-        register_script_camera_callbacks();
-        m_server.script().set_end_game_fn([this](u32 winning_team, std::string_view stats) {
-            if (m_args.net_mode == network::Mode::Host) {
-                m_network.host_end_game(winning_team, stats);
-            }
-            log::info(TAG, "Game ended — winning team {}", winning_team);
-
-#ifdef ULDUM_SHELL_UI
-            // Parse whatever the Lua script shipped in the stats JSON. The
-            // "elapsed" key is the sample_map convention; other maps can
-            // produce their own stats schema and Shell UIs their own
-            // results.rml to render it.
-            f32 elapsed = 0.0f;
-            try {
-                auto j = nlohmann::json::parse(stats);
-                elapsed = j.value("elapsed", 0.0f);
-            } catch (...) {
-                // Stats wasn't valid JSON; keep elapsed=0 and move on.
-            }
-            m_last_elapsed_seconds = elapsed;
-#endif
-            set_state(AppState::Results);
-        });
-        // Lua-driven scene swap. The actual heavy lift (entity reset,
-        // script reload, main() rerun) happens in perform_scene_switch
-        // off the main loop — this just defers the request.
-        m_server.script().set_scene_switch_fn(
-            [this](std::string_view scene) {
-                m_pending_scene_switch.assign(scene);
-            });
     } else {
         m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
@@ -1174,6 +1071,16 @@ bool Engine::start_session() {
                 m_camera_controller.lock_unit(simulation::Unit{entity_id});
             }
         });
+        // Action-preset hero lock from the server's SetControlledUnit. The
+        // Action preset reads m_selection (no separate controlled field), so a
+        // plain select is the whole apply; camera-follow keys off selection too.
+        m_network.set_set_controlled_unit_recv_fn([this](u32 entity_id) {
+            if (entity_id == UINT32_MAX) {
+                m_selection.clear();
+            } else {
+                m_selection.select(simulation::Unit{entity_id});
+            }
+        });
     }
 
     // Picking: needs camera + terrain, both ready after map content load.
@@ -1226,9 +1133,9 @@ bool Engine::start_session() {
         m_hud_world_ctx.world = &active_world();
         m_hud_world_ctx.vision = is_client ? &m_network.client_vision()
                                            : &m_server.simulation().vision();
-        // Type registry: server/host owns one; client also needs it (set via
-        // NetworkManager::set_type_registry earlier in start_session). Both
-        // paths resolve to the same pointer — the server's simulation types.
+        // Type registry: server/host owns one; the client's view_world also holds
+        // it (wired in start_session). Both resolve to the same pointer — the
+        // server's simulation types.
         m_hud_world_ctx.types        = &m_server.simulation().types();
         m_hud_world_ctx.abilities    = &m_server.simulation().abilities();
         m_hud_world_ctx.simulation   = &m_server.simulation();
@@ -1329,129 +1236,136 @@ void Engine::end_session() {
 // collapses to "apply locally for whatever bit is set" (typically the
 // host's own slot).
 
-void Engine::route_camera_apply_setup(u32 players_mask,
-                                    f32 tx, f32 ty, f32 tz, f32 distance,
-                                    f32 pitch_rad, f32 yaw_rad, f32 duration) {
-    if (players_mask & (1u << m_args.local_slot)) {
-        m_camera_controller.apply_setup({tx, ty, tz}, distance, pitch_rad, yaw_rad, duration);
-    }
-    if (m_args.net_mode != network::Mode::Host) return;
-    for (u32 p = 0; p < 32; ++p) {
-        if (p == m_args.local_slot) continue;
-        if (!(players_mask & (1u << p))) continue;
-        m_network.host_send_camera_apply_setup(p, tx, ty, tz, distance,
-                                                pitch_rad, yaw_rad, duration);
-    }
-}
+void Engine::wire_host_broadcasts() {
+    // Host wiring = the shared server→client sends + the host's OWN local-player
+    // apply chained on top. wire_to_network installs the sends (effects, item
+    // pickup/drop, ability/cooldown/charge updates, EndGame S_END, unit updates,
+    // player-leave); the worker installs exactly the same. Here the host, which
+    // is also a player, wraps the mixed ones (effect deliver/destroy, EndGame)
+    // to additionally drive its renderer / Results transition. Called from both
+    // start_session and scene_switch_run_main (a scene re-init reinstalls the
+    // script handlers, so this must re-run to re-chain onto them).
+    m_server.wire_to_network(m_network);
 
-void Engine::route_camera_set_target_position(u32 players_mask,
-                                            f32 x, f32 y, f32 z, f32 duration) {
-    if (players_mask & (1u << m_args.local_slot)) {
-        m_camera_controller.set_target_position(x, y, z, duration);
-    }
-    if (m_args.net_mode != network::Mode::Host) return;
-    for (u32 p = 0; p < 32; ++p) {
-        if (p == m_args.local_slot) continue;
-        if (!(players_mask & (1u << p))) continue;
-        m_network.host_send_camera_set_target_position(p, x, y, z, duration);
-    }
-}
-
-void Engine::route_camera_set_source_distance(u32 players_mask,
-                                            f32 distance, f32 duration) {
-    if (players_mask & (1u << m_args.local_slot)) {
-        m_camera_controller.set_source_distance(distance, duration);
-    }
-    if (m_args.net_mode != network::Mode::Host) return;
-    for (u32 p = 0; p < 32; ++p) {
-        if (p == m_args.local_slot) continue;
-        if (!(players_mask & (1u << p))) continue;
-        m_network.host_send_camera_set_source_distance(p, distance, duration);
-    }
-}
-
-void Engine::route_camera_shake(u32 players_mask, f32 intensity, f32 duration) {
-    if (players_mask & (1u << m_args.local_slot)) {
-        m_camera_controller.shake(intensity, duration);
-    }
-    if (m_args.net_mode != network::Mode::Host) return;
-    for (u32 p = 0; p < 32; ++p) {
-        if (p == m_args.local_slot) continue;
-        if (!(players_mask & (1u << p))) continue;
-        m_network.host_send_camera_shake(p, intensity, duration);
-    }
-}
-
-void Engine::route_camera_set_target_controller(u32 players_mask, simulation::Unit unit) {
-    if (players_mask & (1u << m_args.local_slot)) {
-        if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
-        else                       m_camera_controller.lock_unit(unit);
-    }
-    if (m_args.net_mode != network::Mode::Host) return;
-    for (u32 p = 0; p < 32; ++p) {
-        if (p == m_args.local_slot) continue;
-        if (!(players_mask & (1u << p))) continue;
-        m_network.host_send_camera_set_target_controller(p, unit.id);
-    }
-}
-
-void Engine::install_item_sync_hooks() {
-    // CHAIN, don't clobber. The script (init_game / scene re-init) installs
-    // world.on_item_picked_up/_dropped to dispatch the EVENT_*_ITEM_PICKED_UP /
-    // _DROPPED triggers. Those are single std::functions, so overwriting them
-    // here would silently kill the map's item triggers (e.g. rune-pickup VFX).
-    // Instead capture the script's handler and call it first, then add the
-    // host→client inventory sync. Keyed on the CARRIER id so the S_UPDATE rides
-    // the carrier's per-peer visibility (a peer that can see the hero gets its
-    // inventory changes). Must run AFTER the script installs its handlers.
-    auto& world = m_server.simulation().world();
+    // Effect deliver/destroy: wire_to_network already SENT to every player (a
+    // no-op for the host's own slot); add the host renderer apply for us.
     {
-        auto script_picked_up = std::move(world.on_item_picked_up);
-        world.on_item_picked_up =
-            [this, script_picked_up = std::move(script_picked_up)](
-                simulation::Unit unit, simulation::Item item, i32 slot) {
-                if (script_picked_up) script_picked_up(unit, item, slot);
-                // slot < 0 = powerup (consumed on contact, never slotted) — no
-                // inventory change to sync; its removal rides kill_item→S_DESTROY.
-                if (slot < 0) return;
-                auto pkt = network::build_update_inventory(
-                    unit.id, static_cast<u32>(slot), item.id);
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
+        auto send_deliver = std::move(m_server.script().effect_deliver_fn());
+        m_server.script().set_effect_deliver_fn(
+            [this, send_deliver = std::move(send_deliver)](
+                u32 player_id, u32 server_id, std::string_view name,
+                simulation::Unit entity, glm::vec3 pos, std::string_view attach_point) {
+                if (send_deliver) send_deliver(player_id, server_id, name, entity, pos, attach_point);
+                if (player_id != m_args.local_slot) return;
+                auto& mgr = m_renderer.effect_manager();
+                u32 local_id = simulation::is_non_null_handle(entity)
+                    ? mgr.create_on_unit(std::string(name), entity, pos, std::string(attach_point))
+                    : mgr.create(std::string(name), pos);
+                m_effect_id_map[server_id] = local_id;
+            });
     }
     {
-        auto script_dropped = std::move(world.on_item_dropped);
-        world.on_item_dropped =
-            [this, script_dropped = std::move(script_dropped)](
-                simulation::Unit unit, simulation::Item item) {
-                if (script_dropped) script_dropped(unit, item);
-                // slot = UINT32_MAX → client scans the carrier's slots for
-                // item.id and clears it (on_item_dropped carries no slot).
-                auto pkt = network::build_update_inventory(
-                    unit.id, UINT32_MAX, item.id);
-                m_network.host_broadcast_update(unit.id, pkt);
-            };
+        auto send_destroy = std::move(m_server.script().effect_destroy_fn());
+        m_server.script().set_effect_destroy_fn(
+            [this, send_destroy = std::move(send_destroy)](u32 player_id, u32 server_id) {
+                if (send_destroy) send_destroy(player_id, server_id);
+                if (player_id != m_args.local_slot) return;
+                auto it = m_effect_id_map.find(server_id);
+                if (it != m_effect_id_map.end()) {
+                    m_renderer.effect_manager().destroy(it->second);
+                    m_effect_id_map.erase(it);
+                }
+            });
     }
-}
+    // EndGame: send half already fired S_END; chain the host's Results screen.
+    {
+        auto send_end = std::move(m_server.script().end_game_fn());
+        m_server.script().set_end_game_fn(
+            [this, send_end = std::move(send_end)](u32 winning_team, std::string_view stats) {
+                if (send_end) send_end(winning_team, stats);
+                log::info(TAG, "Game ended — winning team {}", winning_team);
+#ifdef ULDUM_SHELL_UI
+                f32 elapsed = 0.0f;
+                try {
+                    auto j = nlohmann::json::parse(stats);
+                    elapsed = j.value("elapsed", 0.0f);
+                } catch (...) {}
+                m_last_elapsed_seconds = elapsed;
+#else
+                (void)stats;
+#endif
+                set_state(AppState::Results);
+            });
+    }
 
-void Engine::register_script_camera_callbacks() {
-    auto& script = m_server.script();
-    script.set_camera_apply_setup_fn([this](u32 mask, f32 tx, f32 ty, f32 tz,
-                                            f32 d, f32 pr, f32 yr, f32 dur) {
-        route_camera_apply_setup(mask, tx, ty, tz, d, pr, yr, dur);
-    });
-    script.set_camera_set_target_position_fn([this](u32 mask, f32 x, f32 y, f32 z, f32 dur) {
-        route_camera_set_target_position(mask, x, y, z, dur);
-    });
-    script.set_camera_set_source_distance_fn([this](u32 mask, f32 dist, f32 dur) {
-        route_camera_set_source_distance(mask, dist, dur);
-    });
-    script.set_camera_shake_fn([this](u32 mask, f32 i, f32 dur) {
-        route_camera_shake(mask, i, dur);
-    });
-    script.set_camera_set_target_controller_fn([this](u32 mask, simulation::Unit u) {
-        route_camera_set_target_controller(mask, u);
-    });
+    // Scripted-camera: wire_to_network installed the send-half (per-player
+    // host_send_camera_*, a no-op for the host's own slot). Chain the host's
+    // OWN camera-controller apply for the local slot on top — exactly the
+    // effect deliver/destroy pattern above. This replaces the old
+    // register_script_camera_callbacks/route_camera_* path so host + worker
+    // share one send half and there's no per-path wiring-order hazard.
+    {
+        auto send = std::move(m_server.script().camera_apply_setup_fn());
+        m_server.script().set_camera_apply_setup_fn(
+            [this, send = std::move(send)](u32 mask, f32 tx, f32 ty, f32 tz,
+                                           f32 dist, f32 pr, f32 yr, f32 dur) {
+                if (send) send(mask, tx, ty, tz, dist, pr, yr, dur);
+                if (mask & (1u << m_args.local_slot))
+                    m_camera_controller.apply_setup({tx, ty, tz}, dist, pr, yr, dur);
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_set_target_position_fn());
+        m_server.script().set_camera_set_target_position_fn(
+            [this, send = std::move(send)](u32 mask, f32 x, f32 y, f32 z, f32 dur) {
+                if (send) send(mask, x, y, z, dur);
+                if (mask & (1u << m_args.local_slot))
+                    m_camera_controller.set_target_position(x, y, z, dur);
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_set_source_distance_fn());
+        m_server.script().set_camera_set_source_distance_fn(
+            [this, send = std::move(send)](u32 mask, f32 dist, f32 dur) {
+                if (send) send(mask, dist, dur);
+                if (mask & (1u << m_args.local_slot))
+                    m_camera_controller.set_source_distance(dist, dur);
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_shake_fn());
+        m_server.script().set_camera_shake_fn(
+            [this, send = std::move(send)](u32 mask, f32 i, f32 dur) {
+                if (send) send(mask, i, dur);
+                if (mask & (1u << m_args.local_slot))
+                    m_camera_controller.shake(i, dur);
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_set_target_controller_fn());
+        m_server.script().set_camera_set_target_controller_fn(
+            [this, send = std::move(send)](u32 mask, simulation::Unit unit) {
+                if (send) send(mask, unit);
+                if (mask & (1u << m_args.local_slot)) {
+                    if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
+                    else                       m_camera_controller.lock_unit(unit);
+                }
+            });
+    }
+    // SetControlledUnit: wire_to_network stored+sent per owner; chain the host's
+    // OWN App-selection apply when the host owns the slot. Mask is 1<<owner, so
+    // this fires only when the host IS that owner — no extra ownership check.
+    {
+        auto send = std::move(m_server.script().set_controlled_unit_fn());
+        m_server.script().set_set_controlled_unit_fn(
+            [this, send = std::move(send)](u32 mask, simulation::Unit unit) {
+                if (send) send(mask, unit);
+                if (mask & (1u << m_args.local_slot)) {
+                    if (unit.id == UINT32_MAX) m_selection.clear();
+                    else                       m_selection.select(unit);
+                }
+            });
+    }
 }
 
 // Local teardown — runs on host AND clients when entering a new scene.
@@ -1561,110 +1475,47 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     }
 }
 
-// Host-only second half — instantiate the new scene's placements,
-// reset the Lua VM, re-wire callbacks, and run main(). Per the design
-// contract, Lua state does not survive a scene swap; maps carry data
-// across scenes via SaveData / LoadData.
+// Host second half — instantiate the new scene's placements, reset the Lua VM,
+// re-wire callbacks, and run main(). The server-authoritative work (terrain +
+// placements + VM reset + run main) now lives in GameServer::switch_scene,
+// shared with the headless worker; this wrapper supplies the host's App/render
+// re-wiring via the pre_main hook (the VM reset clears every callback, so it
+// must be re-installed before main() runs).
 void Engine::scene_switch_run_main(const std::string& scene_name) {
-    auto& sim    = m_server.simulation();
-    auto& script = m_server.script();
+    auto pre_main = [this](script::ScriptEngine& script) {
+        // App-owned wiring (mirrors start_session). Pre-init bindings (input +
+        // hud) first so the script's main() can use them at scene init time.
+        script.set_input(&m_selection, &m_commands);
+        script.set_hud(&m_hud);
+        m_network.set_script(&script);
+        m_network.set_hud_replay_source(&m_hud);
+        script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+            return m_renderer.get_attachment_point(entity_id, bone);
+        });
+        script.set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
+            map::EnvironmentConfig env;
+            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
+            m_renderer.set_environment(env);
+        });
+        script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
+        // Server→client sends + host local-apply (effects, item sync, ability /
+        // cooldown / charge, EndGame, unit updates, player-leave). Re-chains onto
+        // the freshly-inited script handlers — WITHOUT this, effects/items broke
+        // after a LoadScene even on the host.
+        wire_host_broadcasts();
+        script.set_scene_switch_fn([this](std::string_view scene) {
+            m_pending_scene_switch.assign(scene);
+        });
+    };
 
-    // Spawn placement entities for the new scene. host_send_spawn_burst
-    // (called later by host_finish_scene_switch in MP) iterates the
-    // current world, so the entities have to exist before the burst
-    // goes out.
-    if (!m_map.load_scene_placements(scene_name, m_asset, sim)) {
-        log::warn(TAG, "Scene '{}': no placements loaded", scene_name);
-    }
-    // New scene's preplaced/dynamic id boundary (allocator was reset to 0 by
-    // the scene wipe). Same role as the initial-load capture in start_session.
-    m_network.set_placement_count(sim.world().entities.next_id());
-    sim.sync_pathing_blockers();
-    sim.spatial_grid().update(sim.world());
-
-    // Lua VM full reset.
-    script.shutdown();
-    if (!script.init(sim, m_map, &m_audio)) {
-        log::error(TAG, "ScriptEngine re-init failed for scene '{}'", scene_name);
+    u32 boundary = m_server.switch_scene(m_map, m_asset, scene_name, pre_main);
+    if (boundary == UINT32_MAX) {
+        log::error(TAG, "scene_switch_run_main: switch_scene failed for '{}'", scene_name);
         return;
     }
-
-    // App-owned wiring (mirrors start_session). Pre-init bindings
-    // (input + hud) are set first so the script's main() can use
-    // them at scene init time.
-    script.set_input(&m_selection, &m_commands);
-    script.set_hud(&m_hud);
-    m_network.set_script(&script);
-    script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
-        return m_renderer.get_attachment_point(entity_id, bone);
-    });
-    script.set_unit_update_fn([this](u32 entity_id, const std::vector<u8>& pkt) {
-        m_network.host_broadcast_update(entity_id, pkt);
-    });
-    script.set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
-        map::EnvironmentConfig env;
-        env.sun_direction = glm::normalize(glm::vec3{x, y, z});
-        m_renderer.set_environment(env);
-    });
-    register_script_camera_callbacks();
-    install_item_sync_hooks();  // chain host inventory sync onto the script's item triggers
-    script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
-    script.set_end_game_fn([this](u32 winning_team, std::string_view stats) {
-        log::info(TAG, "Game ended — winning team {}", winning_team);
-#ifdef ULDUM_SHELL_UI
-        f32 elapsed = 0.0f;
-        try {
-            auto j = nlohmann::json::parse(stats);
-            elapsed = j.value("elapsed", 0.0f);
-        } catch (...) {}
-        m_last_elapsed_seconds = elapsed;
-#else
-        (void)stats;
-#endif
-        set_state(AppState::Results);
-    });
-    script.set_scene_switch_fn([this](std::string_view scene) {
-        m_pending_scene_switch.assign(scene);
-    });
-
-    // Save path + script paths + bootstrap scripts. Same shape as
-    // GameServer::init_game; per-scene data transfer goes through
-    // the save channel since the VM itself is fresh.
-    {
-        std::string map_id = m_map.manifest().id;
-        if (map_id.empty()) map_id = m_map.manifest().name;
-        std::string save_dir;
-#ifdef _WIN32
-        char* appdata = nullptr;
-        size_t appdata_len = 0;
-        if (_dupenv_s(&appdata, &appdata_len, "APPDATA") == 0 && appdata) {
-            save_dir = std::string(appdata) + "/saves/" + map_id;
-            free(appdata);
-        } else {
-            save_dir = "saves/" + map_id;
-        }
-#else
-        save_dir = "saves/" + map_id;
-#endif
-        script.set_save_path(save_dir);
-    }
-    std::string scene_scripts  = m_map.map_root() + "/scenes/" + scene_name + "/scripts";
-    std::string shared_scripts = m_map.map_root() + "/scripts";
-    std::string engine_scripts = "engine/scripts";
-    script.set_script_paths(scene_scripts, shared_scripts, engine_scripts);
-    script.load_script("engine/scripts/constants.lua");
-
-    std::string main_script = scene_scripts + "/main.lua";
-    bool loaded = script.load_script(main_script);
-    if (!loaded) {
-        std::string fallback = m_map.map_root() + "/scripts/main.lua";
-        loaded = script.load_script(fallback);
-    }
-    if (!loaded) {
-        log::error(TAG, "Scene '{}' has no main.lua", scene_name);
-        return;
-    }
-    script.call_function("main");
+    // New scene's preplaced/dynamic id boundary (allocator was reset to 0 by the
+    // scene wipe). Same role as the initial-load capture in start_session.
+    m_network.set_placement_count(boundary);
 }
 
 // Orchestrator. Offline: teardown + run_main back-to-back. Host MP:

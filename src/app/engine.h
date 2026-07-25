@@ -176,20 +176,12 @@ private:
     void scene_switch_run_main(const std::string& scene_name);
     void finalize_scene_switch();
 
-    // Wire ScriptEngine's per-player camera callbacks to App's
-    // CameraController + network. Called by start_session and the
-    // scene-switch run_main path (after script.init re-instantiates
-    // the VM and clears prior callbacks).
-    void register_script_camera_callbacks();
-
-    // Chain the host's inventory network-sync onto the script's item-pickup /
-    // -drop trigger dispatch. Both the script (trigger events) and the engine
-    // (S_UPDATE Inventory to clients) need world.on_item_picked_up/_dropped,
-    // which are single std::functions — so the engine wraps the script's
-    // handler instead of overwriting it. Call AFTER the script installs its
-    // handlers (init_game / scene re-init), from both start_session and
-    // scene_switch_run_main, or a LoadScene silently drops one side.
-    void install_item_sync_hooks();
+    // Host-side server→client wiring: calls GameServer::wire_to_network (the
+    // shared sends the worker also installs) then chains the host's own
+    // local-player apply (renderer effects, Results screen) on top. Call AFTER
+    // the script installs its handlers (init_game / scene re-init), from both
+    // start_session and scene_switch_run_main.
+    void wire_host_broadcasts();
 
     // Fire the WC3-style target ping for a locally-committed order, if it
     // landed on a unit/item (input::derive_target_ping decides). Used by the
@@ -197,18 +189,6 @@ private:
     // than in the RTS preset — so they'd otherwise miss the ping the preset
     // emits on desktop. Lua/AI orders never reach this, so they never ping.
     void fire_local_ping(const simulation::GameCommand& cmd);
-
-    // Route a camera command to every player in `players_mask`. For
-    // each set bit: apply locally if it's the host's own slot, else
-    // send the corresponding S_CAMERA_* packet to that peer.
-    void route_camera_apply_setup(u32 players_mask,
-                                   f32 tx, f32 ty, f32 tz, f32 distance,
-                                   f32 pitch_rad, f32 yaw_rad, f32 duration);
-    void route_camera_set_target_position(u32 players_mask,
-                                           f32 x, f32 y, f32 z, f32 duration);
-    void route_camera_set_source_distance(u32 players_mask, f32 distance, f32 duration);
-    void route_camera_shake(u32 players_mask, f32 intensity, f32 duration);
-    void route_camera_set_target_controller(u32 players_mask, simulation::Unit unit);
 
 #ifdef ULDUM_SHELL_UI
     // Most recent end-of-session elapsed time (seconds) pulled out of

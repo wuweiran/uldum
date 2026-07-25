@@ -134,7 +134,7 @@ void draw_entity_bars_impl(HudRenderer& r,
                                                 tf.position.x, tf.position.y)) continue;
         // Skip dead units — their corpse is still in the world but shouldn't
         // advertise HP/mana bars.
-        if (world.dead_state(id)) continue;
+        if (world.is_dead(id)) continue;
         // Bars are for units only. Destructables carry Health (so combat can
         // damage them) but must not advertise an HP bar.
         if (auto* hi = world.handle_info(id);
@@ -226,7 +226,7 @@ void draw_unit_name_label_impl(HudRenderer& r,
     const auto* tf    = world.transform(hovered.id);
     const auto* hinfo = world.handle_info(hovered.id);
     if (!tf || !hinfo) return;
-    if (world.dead_state(hovered.id)) return;
+    if (world.is_dead(hovered.id)) return;
     if (ctx.vision && ctx.terrain &&
         is_fogged(*ctx.vision, *ctx.terrain, ctx.local_player,
                   tf->position.x, tf->position.y)) {

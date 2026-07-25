@@ -43,7 +43,10 @@ struct IWorldView {
     virtual const Movement*               movement(u32 id)       const = 0;
     virtual const Combat*                 combat(u32 id)         const = 0;
     virtual const Selectable*             selectable(u32 id)     const = 0;
-    virtual const DeadState*              dead_state(u32 id)     const = 0;
+    // Death is a derived view of health (see health_is_dead) — NOT a component.
+    // The client only ever receives health, so this is the one predicate that
+    // agrees on host and client. Renderer/HUD read it for corpse pose + material.
+    virtual bool                          is_dead(u32 id)        const = 0;
     virtual const StatusFlags*            status(u32 id)         const = 0;
     virtual const UnitClassificationComp* classification(u32 id) const = 0;
     virtual const AbilitySet*             ability_set(u32 id)    const = 0;
@@ -104,7 +107,7 @@ struct WorldView final : IWorldView {
     const Movement*               movement(u32 id)       const override;
     const Combat*                 combat(u32 id)         const override;
     const Selectable*             selectable(u32 id)     const override;
-    const DeadState*              dead_state(u32 id)     const override;
+    bool                          is_dead(u32 id)        const override;
     const StatusFlags*            status(u32 id)         const override;
     const UnitClassificationComp* classification(u32 id) const override;
     const AbilitySet*             ability_set(u32 id)    const override;
@@ -156,7 +159,7 @@ struct LocalView final : IWorldView {
 
     // Frozen last-seen copies for statics out of live sight. Only the pools a
     // snapshotted static is read through on a view path (others resolve to null
-    // when snapshotted). owner/health/dead_state/doodad are intentionally absent:
+    // when snapshotted). owner/health/is_dead/doodad are intentionally absent:
     // every path that reads them first skips non-live entities, and the renderer
     // FREEZES a fog-memory static's animation (so "dead" needs no snapshot — the
     // last-seen frame holds the pose).
@@ -205,7 +208,7 @@ struct LocalView final : IWorldView {
     const Movement*               movement(u32 id)       const override;
     const Combat*                 combat(u32 id)         const override;
     const Selectable*             selectable(u32 id)     const override;
-    const DeadState*              dead_state(u32 id)     const override;
+    bool                          is_dead(u32 id)        const override;
     const StatusFlags*            status(u32 id)         const override;
     const UnitClassificationComp* classification(u32 id) const override;
     const AbilitySet*             ability_set(u32 id)    const override;

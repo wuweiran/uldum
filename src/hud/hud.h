@@ -233,7 +233,19 @@ public:
     // from the loader after a successful CreateNode; deregistered
     // automatically on remove_node_by_id.
     void register_instantiated_tree(std::string id, std::string_view anchor,
-                                    f32 x, f32 y, f32 w, f32 h);
+                                    f32 x, f32 y, f32 w, f32 h,
+                                    u32 players_mask = UINT32_MAX);
+
+    // Serialize the current PERSISTENT HUD state as S_HUD_* packets for a
+    // joining/reconnecting peer that missed the live syncs (nodes + permanent
+    // text tags created before it connected). `send(pkt, players_mask)` is
+    // invoked per packet; the caller routes it to the peer only if the peer's
+    // bit is in players_mask (same filter host_hud_sync applies live). Emits:
+    // per instantiated tree — create_node + current label/fill/image/visible/
+    // enabled read back from the live node; per text tag with lifespan==0
+    // (permanent) — create_text_tag. Transient (lifespan>0) tags are skipped.
+    using ReplaySend = std::function<void(const std::vector<u8>& pkt, u32 players_mask)>;
+    void emit_state_to(const ReplaySend& send);
 
     // ── World UI ─────────────────────────────────────────────────────────
     // Configuration is set once at map load (from hud.json's

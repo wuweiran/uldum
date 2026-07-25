@@ -25,7 +25,7 @@ namespace {
 //
 // Simple offset-bumping cursor over a byte span. Each `read_*` returns
 // false on short read; callers check `ok` once at the end (saves a
-// branch on every field, matches how `parse_state` does it in protocol.h).
+// branch on every field, matches how `parse_unit_state` does it in protocol.h).
 
 struct Reader {
     const u8* p   = nullptr;

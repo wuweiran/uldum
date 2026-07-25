@@ -91,6 +91,7 @@ public:
     // Callback fired when Lua calls EndGame(winning_team, stats_json).
     using EndGameFn = std::function<void(u32 winning_team, std::string_view stats_json)>;
     void set_end_game_fn(EndGameFn fn) { m_end_game_fn = std::move(fn); }
+    EndGameFn& end_game_fn() { return m_end_game_fn; }
 
     // Callback fired when a unit's attribute/state/ability changes (for network sync).
     using UnitUpdateFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
@@ -118,6 +119,10 @@ public:
     using EffectDestroyFn = std::function<void(u32 player_id, u32 server_id)>;
     void set_effect_deliver_fn(EffectDeliverFn fn) { m_effect_deliver_fn = std::move(fn); }
     void set_effect_destroy_fn(EffectDestroyFn fn) { m_effect_destroy_fn = std::move(fn); }
+    // Getters so a host can CHAIN its local-player apply on top of the
+    // send-half GameServer::wire_to_network installed (capture + wrap).
+    EffectDeliverFn& effect_deliver_fn() { return m_effect_deliver_fn; }
+    EffectDestroyFn& effect_destroy_fn() { return m_effect_destroy_fn; }
 
     // Player count for the per-tick visibility scan. Host populates
     // this after init_alliances; offline / dedicated builds set to 1.
@@ -129,6 +134,17 @@ public:
     // scope; this callback just forwards the request.
     using SceneSwitchFn = std::function<void(std::string_view scene_name)>;
     void set_scene_switch_fn(SceneSwitchFn fn) { m_scene_switch_fn = std::move(fn); }
+
+    // Fired when Lua calls SetControlledUnit(unit) — the Action-preset hero
+    // lock. `players_mask` is the unit's owner (single bit); the wiring sends
+    // S_SET_CONTROLLED_UNIT to that player's client (persisted for join-replay)
+    // and, on the host, applies the selection locally if it owns the slot. When
+    // unset (offline single-binary with an App selection) the binding falls back
+    // to selecting m_selection directly. UINT32_MAX unit = clear.
+    using SetControlledUnitFn = std::function<void(u32 players_mask, simulation::Unit unit)>;
+    void set_set_controlled_unit_fn(SetControlledUnitFn fn) { m_set_controlled_unit_fn = std::move(fn); }
+    SetControlledUnitFn& set_controlled_unit_fn() { return m_set_controlled_unit_fn; }
+
 
     // Per-player scripted-camera routing. App installs these and routes
     // the `players_mask` (parsed from Lua's `players` arg via
@@ -156,6 +172,14 @@ public:
     void set_camera_set_source_distance_fn(CameraSetSourceDistanceFn fn)  { m_camera_set_source_distance_fn  = std::move(fn); }
     void set_camera_shake_fn              (CameraShakeFn fn)              { m_camera_shake_fn                = std::move(fn); }
     void set_camera_set_target_controller_fn(CameraSetTargetControllerFn fn) { m_camera_set_target_controller_fn = std::move(fn); }
+
+    // Getters for chaining: wire_to_network installs the send-half, the host
+    // wraps it with a local camera-controller apply (see wire_host_broadcasts).
+    CameraApplySetupFn&          camera_apply_setup_fn()          { return m_camera_apply_setup_fn; }
+    CameraSetTargetPositionFn&   camera_set_target_position_fn()  { return m_camera_set_target_position_fn; }
+    CameraSetSourceDistanceFn&   camera_set_source_distance_fn()  { return m_camera_set_source_distance_fn; }
+    CameraShakeFn&               camera_shake_fn()                { return m_camera_shake_fn; }
+    CameraSetTargetControllerFn& camera_set_target_controller_fn(){ return m_camera_set_target_controller_fn; }
 
 
     // Connect input systems (call after input is initialized, before scripts run).
@@ -280,6 +304,7 @@ private:
     // pass agree on what "visible" means.
     bool effect_visible_to(const ActiveEffect& e, u32 player_id) const;
     SceneSwitchFn            m_scene_switch_fn;
+    SetControlledUnitFn      m_set_controlled_unit_fn;
     CameraApplySetupFn          m_camera_apply_setup_fn;
     CameraSetTargetPositionFn   m_camera_set_target_position_fn;
     CameraSetSourceDistanceFn   m_camera_set_source_distance_fn;
@@ -343,7 +368,7 @@ private:
 
     struct ItemEvent { simulation::Item item; };
     struct ProjectileEvent {
-        simulation::Unit projectile;
+        simulation::Projectile projectile;
         simulation::Unit hit_unit;
     };
     struct GenericEvent {};
@@ -376,6 +401,10 @@ private:
     };
 
     void dispatch(EventFrame& frame, std::string_view event_name);
+    // Broadcast a unit's current script anim queue as S_COLD{Anim} (empty = reset).
+    void emit_anim(u32 entity_id);
+    // Broadcast a STATIC's transform as S_COLD Transform (units self-heal via HOT).
+    void emit_static_transform(u32 entity_id);
     EventFrame* m_event_frame = nullptr;
 
     bool m_paused        = false;  // PauseGame()/UnpauseGame() — App reads via is_paused()

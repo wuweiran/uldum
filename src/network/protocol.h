@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <algorithm>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -30,9 +31,28 @@ namespace uldum::network {
 //   0x1X  client → server, playing
 //   0x2X  client → server, any phase
 //   0x4X  server → client, lobby / pre-game
-//   0x5X  server → client, playing / entity sync
+//   0x5X  server → client, playing / entity sync — organized by TIER
 //   0x6X  server → client, playing / session events
 //   0x7X  server → client, HUD sync (16c-v)
+//   0x8X  server → client, audio (script-initiated)
+//   0x9X  server → client, environment
+//
+// ── Entity-sync tier taxonomy (the 0x5X block) ────────────────────────────
+// Every server→client entity message belongs to exactly one tier:
+//   MATERIALIZE    entity enters client knowledge (birth / fog-reveal / join).
+//                  Reliable. S_SPAWN / S_SHOW (slim identity) + an S_COLD BATCH right after.
+//   HOT            per-tick position/state while in sight. Unreliable (self-heals next tick).
+//                  S_UNIT_STATE (carries health → death) / S_PROJECTILE_STATE.
+//   COLD           cold state. Reliable. One grouped envelope S_COLD, count-prefixed:
+//                  1 record on-change, N records = the materialize batch.
+//   EVENT          discrete one-shots while in sight. Reliable. S_PROJECTILE_DYING /
+//                  S_SOUND / S_EFFECT_*.
+//   DEMATERIALIZE  entity leaves client knowledge. Reliable. S_HIDE (still in world) / S_DESTROY (gone).
+//
+// INVARIANT: the MATERIALIZE S_COLD batch is exactly every COLD record the entity currently has
+// (health→death, states, abilities, cooldowns, attrs, current anim). COLD applies one record;
+// MATERIALIZE applies the set. Same records, same client apply. Cold state survives a fog round-trip,
+// and death is just the Health record (no "dead" component is ever replicated).
 enum class MsgType : u8 {
     // Sentinel for empty / corrupted packets. No real message uses 0.
     Invalid         = 0x00,
@@ -61,17 +81,34 @@ enum class MsgType : u8 {
     S_LOBBY_COMMIT  = 0x43,   // host locked the lobby — start loading the map
     S_WELCOME       = 0x44,   // bridge: final player_id, sent at end of Loading
 
-    // Playing — entity sync
-    S_SPAWN         = 0x50,   // entity BORN into the world → client materializes + plays birth
-    S_DESTROY       = 0x51,   // entity REMOVED from the world (decayed / expired / Lua) → client always removes
-    S_STATE         = 0x52,
-    S_UPDATE        = 0x53,   // on-change: attribute, state, or ability update
-    S_SOUND         = 0x54,
-    S_SHOW          = 0x55,   // already-alive entity ENTERS the peer's live sight → materialize at state, NO birth
-    S_HIDE          = 0x56,   // entity LEAVES the peer's live sight (still exists) → client: static→snapshot, mobile→drop
-    S_EFFECT_CREATE = 0x57,   // CreateEffect / CreateEffectOnUnit (with handle)
-    S_EFFECT_DESTROY = 0x58,  // DestroyEffect (handle)
-    S_PROJECTILE_DYING = 0x59, // projectile entered dying state — play death clip
+    // Playing — entity sync (0x5X), grouped by TIER (see taxonomy above).
+
+    // MATERIALIZE (reliable): entity enters client knowledge.
+    // S_SPAWN/S_SHOW carry SLIM IDENTITY only. Cold state (health→death, states,
+    // abilities, cooldowns, attrs, the current script anim) rides an S_COLD BATCH
+    // sent right after, for every stateful category — that batch IS the snapshot.
+    S_SPAWN         = 0x50,   // BORN into the world → client materializes + plays birth clip
+    S_SHOW          = 0x51,   // already-alive entity ENTERS live sight → materialize at state, NO birth
+
+    // HOT (unreliable, self-healing): per-tick state while in sight.
+    S_UNIT_STATE       = 0x52, // rich: pos/facing/flags/health/states — UNITS only
+    S_PROJECTILE_STATE = 0x53, // lean: pos/facing — PROJECTILES only
+
+    // COLD (reliable): cold state. ONE grouped envelope (see ColdKind), carrying a
+    // COUNT-PREFIXED batch of records: 1 record = on-change while in sight; N
+    // records = the MATERIALIZE batch after S_SPAWN/S_SHOW. Death is NOT here — it
+    // rides the Health record (health < threshold ⇒ dead) + the HOT health field.
+    S_COLD          = 0x54,
+
+    // EVENT (reliable): discrete one-shots while in sight.
+    S_PROJECTILE_DYING = 0x55, // projectile entered dying state — play death clip once
+    S_SOUND            = 0x56, // positional world SFX
+    S_EFFECT_CREATE    = 0x57, // CreateEffect / CreateEffectOnUnit (with handle)
+    S_EFFECT_DESTROY   = 0x58, // DestroyEffect (handle)
+
+    // DEMATERIALIZE (reliable): entity leaves client knowledge.
+    S_HIDE          = 0x59,   // leaves live sight (still exists) → client: static→snapshot, mobile→drop
+    S_DESTROY       = 0x5A,   // removed from the world (decay / expiry / Lua) → client always removes
 
     // Playing — session events
     S_START         = 0x60,   // all players loaded, game begins
@@ -92,6 +129,11 @@ enum class MsgType : u8 {
     S_CAMERA_SHAKE                  = 0x67,  // intensity, duration: 2 × f32
     S_CAMERA_SET_TARGET_CONTROLLER  = 0x68,  // entity_id: u32 (UINT32_MAX = unlock)
 
+    // Playing — scripted selection lock. SetControlledUnit(unit) is routed to the
+    // unit's owner only (a P1 client never inherits P0's hero) and replayed on join
+    // (main() runs before a client finishes loading).
+    S_SET_CONTROLLED_UNIT           = 0x69,  // entity_id: u32 (UINT32_MAX = clear)
+
     // Playing — HUD sync
     S_HUD_CREATE_NODE         = 0x70, // template instantiation + placement
     S_HUD_DESTROY_NODE        = 0x71,
@@ -102,6 +144,7 @@ enum class MsgType : u8 {
     S_HUD_SET_BUTTON_ENABLED  = 0x76,
     S_HUD_CREATE_TEXT_TAG     = 0x77,
     S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
+    S_HUD_ACTION_BAR_SET_SLOT = 0x7A, // manual-mode slot→ability binding (empty ability = clear)
 
     // Playing — audio (script-initiated). Sim sound effects from the
     // combat / ability systems use S_SOUND directly; these mirror the
@@ -343,15 +386,21 @@ inline std::vector<u8> build_reject(RejectReason reason) {
     return std::move(w.data());
 }
 
-// `model_path` is an explicit render override carried inline — empty
-// for normal entities where the client looks up the model via the
-// type registry; non-empty for entities whose model isn't in a type
-// def (projectiles spawned with a custom glTF, future map decorations
-// with per-instance models, etc.).
+// `variation` selects the model for entities whose type def lists multiple
+// (destructables/doodads: `def.models[variation % N]`). The client resolves the
+// model itself from `type_id + variation` — it has the full type registry — so
+// the wire carries 1 byte, not a model string. Projectiles are the one exception
+// (not in any registry): for them the host puts the model PATH in the `type_id`
+// field (projectiles are sentinel-dispatched client-side), and `variation` is
+// unused. Units/items ignore `variation` (single model from the type).
+//
+// SLIM IDENTITY ONLY. All cold/render-sticky state (health→death, states,
+// abilities, cooldowns, attrs, current script anim) rides the S_COLD BATCH sent
+// right after this — one mechanism for materialize, on-change, and re-show.
 inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
                                     u8 owner, f32 x, f32 y, f32 facing,
                                     bool newly_created = false,
-                                    std::string_view model_path = {}) {
+                                    u8 variation = 0) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SPAWN));
     w.write_u32(entity_id);
@@ -361,7 +410,7 @@ inline std::vector<u8> build_spawn(u32 entity_id, std::string_view type_id,
     w.write_f32(y);
     w.write_f32(facing);
     w.write_bool(newly_created);
-    w.write_string(model_path);
+    w.write_u8(variation);
     return std::move(w.data());
 }
 
@@ -373,13 +422,13 @@ inline std::vector<u8> build_destroy(u32 entity_id) {
 }
 
 // S_SHOW — an already-alive entity entered the peer's live sight. Same payload
-// as S_SPAWN (full materialize data) so the client can build it if it doesn't
-// have it, but semantically "show, don't birth": the client comes up at the
-// current state, no birth clip. (Distinct opcode from S_SPAWN so the client
-// never confuses re-entry with birth.)
+// as S_SPAWN (slim identity) so the client can build it if it doesn't have it,
+// but semantically "show, don't birth": the client comes up at current state,
+// no birth clip. (Distinct opcode from S_SPAWN so the client never confuses
+// re-entry with birth.) Cold state follows in the S_COLD batch.
 inline std::vector<u8> build_show(u32 entity_id, std::string_view type_id,
                                   u8 owner, f32 x, f32 y, f32 facing,
-                                  std::string_view model_path = {}) {
+                                  u8 variation = 0) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SHOW));
     w.write_u32(entity_id);
@@ -388,7 +437,7 @@ inline std::vector<u8> build_show(u32 entity_id, std::string_view type_id,
     w.write_f32(x);
     w.write_f32(y);
     w.write_f32(facing);
-    w.write_string(model_path);
+    w.write_u8(variation);
     return std::move(w.data());
 }
 
@@ -401,30 +450,71 @@ inline std::vector<u8> build_hide(u32 entity_id) {
     return std::move(w.data());
 }
 
-// Per-entity record in S_STATE
-struct EntityState {
+// Per-unit record in the per-tick S_UNIT_STATE snapshot — the HOT tier for
+// UNITS. Carries ONLY fields that change ~every tick, all engine-native (no
+// derived fractions, no quantization): position, facing, runtime flags, and the
+// AUTHENTIC current values of health + map-defined states. The cold tier
+// (max / regen / abilities / attributes / cooldowns) rides S_COLD, not here.
+// Statics (destructables/doodads/items) are NOT in this packet at all — they
+// don't move or regen; their lifecycle rides S_SPAWN/S_SHOW/S_HIDE/S_DESTROY.
+//
+// States are KEYLESS: the client owns the same frozen, sorted per-unit state
+// schema (StateBlock seeded from the unit type at spawn — Lua can't add keys),
+// so the wire sends only the current values in that order. `health_current` is
+// present only when the has_health flag (0x20) is set. `target_id` is present
+// only when the attacking flag (0x02) is set.
+struct UnitState {
     u32 entity_id;
     f32 x, y, z;
     f32 facing;
-    f32 health_frac;
-    u8  flags;       // bit 0: moving, bit 1: attacking, bit 3: dead, bit 4: corpse-hidden
-    u32 target_id;
+    u8  flags;       // 0x01 moving, 0x02 attacking, 0x04 casting, 0x08 FREE, 0x10 corpse-hidden, 0x20 has_health (death is derived from the health field, not a flag)
+    f32 health_current;              // authentic Health.current; valid iff (flags & 0x20)
+    u32 target_id;                   // valid iff (flags & 0x02)
+    std::vector<f32> state_currents; // authentic StateValue.current, in the unit's sorted state-key order
 };
 
-inline std::vector<u8> build_state(u32 tick, const std::vector<EntityState>& entities) {
+inline std::vector<u8> build_unit_state(u32 tick, const std::vector<UnitState>& units) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_STATE));
+    w.write_u8(static_cast<u8>(MsgType::S_UNIT_STATE));
     w.write_u32(tick);
-    w.write_u16(static_cast<u16>(entities.size()));
-    for (auto& e : entities) {
+    w.write_u16(static_cast<u16>(units.size()));
+    for (auto& e : units) {
         w.write_u32(e.entity_id);
         w.write_f32(e.x);
         w.write_f32(e.y);
         w.write_f32(e.z);
         w.write_f32(e.facing);
-        w.write_f32(e.health_frac);
         w.write_u8(e.flags);
-        w.write_u32(e.target_id);
+        if (e.flags & 0x20) w.write_f32(e.health_current);
+        if (e.flags & 0x02) w.write_u32(e.target_id);
+        w.write_u8(static_cast<u8>(std::min<usize>(e.state_currents.size(), 255)));
+        usize n = std::min<usize>(e.state_currents.size(), 255);
+        for (usize i = 0; i < n; ++i) w.write_f32(e.state_currents[i]);
+    }
+    return std::move(w.data());
+}
+
+// Per-projectile record in the per-tick S_PROJECTILE_STATE snapshot — the LEAN
+// HOT tier. Projectiles move every tick but have no health / states / combat, so
+// they carry position + facing only. Separate packet from units so neither pays
+// for the other's fields.
+struct ProjectileState {
+    u32 entity_id;
+    f32 x, y, z;
+    f32 facing;
+};
+
+inline std::vector<u8> build_projectile_state(u32 tick, const std::vector<ProjectileState>& projs) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_PROJECTILE_STATE));
+    w.write_u32(tick);
+    w.write_u16(static_cast<u16>(projs.size()));
+    for (auto& p : projs) {
+        w.write_u32(p.entity_id);
+        w.write_f32(p.x);
+        w.write_f32(p.y);
+        w.write_f32(p.z);
+        w.write_f32(p.facing);
     }
     return std::move(w.data());
 }
@@ -668,11 +758,11 @@ inline WelcomeData parse_welcome(std::span<const u8> data) {
 
 struct SpawnData {
     u32 entity_id;
-    std::string type_id;
+    std::string type_id;   // registry type id; for projectiles, the model path
     u8 owner;
     f32 x, y, facing;
     bool newly_created = false;
-    std::string model_path;   // empty = look up via type registry
+    u8 variation = 0;      // model selector for multi-model types (destructable/doodad)
 };
 
 inline SpawnData parse_spawn(std::span<const u8> data) {
@@ -686,7 +776,7 @@ inline SpawnData parse_spawn(std::span<const u8> data) {
     s.y             = r.read_f32();
     s.facing        = r.read_f32();
     s.newly_created = r.read_bool();
-    s.model_path    = r.read_string();
+    s.variation     = r.read_u8();
     return s;
 }
 
@@ -709,7 +799,7 @@ inline SpawnData parse_show(std::span<const u8> data) {
     s.y          = r.read_f32();
     s.facing     = r.read_f32();
     s.newly_created = false;   // show ≠ birth
-    s.model_path = r.read_string();
+    s.variation  = r.read_u8();
     return s;
 }
 
@@ -719,28 +809,54 @@ inline u32 parse_hide(std::span<const u8> data) {
     return r.read_u32();
 }
 
-struct StateData {
+struct UnitStateData {
     u32 tick;
-    std::vector<EntityState> entities;
+    std::vector<UnitState> units;
 };
 
-inline StateData parse_state(std::span<const u8> data) {
+inline UnitStateData parse_unit_state(std::span<const u8> data) {
     ByteReader r(data);
     r.read_u8();
-    StateData s;
+    UnitStateData s;
     s.tick = r.read_u32();
     u16 count = r.read_u16();
-    s.entities.resize(count);
+    s.units.resize(count);
     for (u16 i = 0; i < count; ++i) {
-        auto& e = s.entities[i];
+        auto& e = s.units[i];
         e.entity_id = r.read_u32();
         e.x = r.read_f32();
         e.y = r.read_f32();
         e.z = r.read_f32();
         e.facing = r.read_f32();
-        e.health_frac = r.read_f32();
         e.flags = r.read_u8();
-        e.target_id = r.read_u32();
+        e.health_current = (e.flags & 0x20) ? r.read_f32() : 0.0f;
+        e.target_id      = (e.flags & 0x02) ? r.read_u32() : UINT32_MAX;
+        u8 nstates = r.read_u8();
+        e.state_currents.reserve(nstates);
+        for (u8 j = 0; j < nstates; ++j) e.state_currents.push_back(r.read_f32());
+    }
+    return s;
+}
+
+struct ProjectileStateData {
+    u32 tick;
+    std::vector<ProjectileState> projectiles;
+};
+
+inline ProjectileStateData parse_projectile_state(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();
+    ProjectileStateData s;
+    s.tick = r.read_u32();
+    u16 count = r.read_u16();
+    s.projectiles.resize(count);
+    for (u16 i = 0; i < count; ++i) {
+        auto& p = s.projectiles[i];
+        p.entity_id = r.read_u32();
+        p.x = r.read_f32();
+        p.y = r.read_f32();
+        p.z = r.read_f32();
+        p.facing = r.read_f32();
     }
     return s;
 }
@@ -914,6 +1030,13 @@ inline std::vector<u8> build_camera_set_target_controller(u32 entity_id) {
     return std::move(w.data());
 }
 
+inline std::vector<u8> build_set_controlled_unit(u32 entity_id) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_SET_CONTROLLED_UNIT));
+    w.write_u32(entity_id);
+    return std::move(w.data());
+}
+
 // Mid-game pause snapshot. Host broadcasts to all clients so everyone sees
 // the same "Player X disconnected, 57s remaining" dialog. Sent on every
 // change (disconnect / reconnect / drop) and once per second while paused
@@ -984,234 +1107,301 @@ inline EndData parse_end(std::span<const u8> data) {
     return e;
 }
 
-// ── On-change unit updates ───────────────────────────────────────────────
-
-enum class UpdateType : u8 {
-    Attribute      = 0,   // numeric attribute changed (armor, strength, etc.)
-    StringAttribute = 1,  // string attribute changed (armor_type, etc.)
-    State          = 2,   // state current/max changed (mana, energy, etc.)
-    AbilityAdd     = 3,   // ability added
-    AbilityRemove  = 4,   // ability removed
-    Owner          = 5,   // ownership changed
-    AbilityModifier = 6,  // SetAbilityModifier(unit, ability, key, value)
-    Status         = 7,   // SetUnitStatus(unit, flag, on) — manual_bits layer
-    Cooldown       = 8,   // SetAbilityCooldown / ResetAbilityCooldown
-    ItemCharges    = 9,   // SetItemCharges(item, n)
-    ItemLevel      = 10,  // SetItemLevel(item, n)
-    Inventory      = 11,  // item entered/left a carrier's inventory slot (pickup/drop)
+// ── COLD tier: on-change cold state + the MATERIALIZE batch (both S_COLD) ─────
+//
+// A ColdRecord is one unit of cold state. S_COLD is count-prefixed and used two ways:
+//   • 1 record  — on-change while the entity is in sight.
+//   • N records — the MATERIALIZE batch, sent right after S_SPAWN/S_SHOW, so cold
+//                 state (incl. health→death) survives a fog round-trip.
+// write_cold_record / read_cold_record is the single wire-layout source of truth;
+// apply_cold_record (network.cpp) is the single client apply. Snapshot = apply all;
+// on-change = apply one.
+enum class ColdKind : u8 {
+    // vitals
+    Health          = 0,   // current + max (max has no other channel — this IS the max sync)
+    State           = 1,   // a map-defined state's current + max (mana, energy, …)
+    Attribute       = 2,   // numeric attribute (armor, strength, …)
+    StringAttribute = 3,   // string attribute (armor_type, …)
+    // abilities
+    AbilityAdd      = 4,
+    AbilityRemove   = 5,
+    AbilityModifier = 6,   // SetAbilityModifier(unit, ability, key, value)
+    Cooldown        = 7,   // SetAbilityCooldown / ResetAbilityCooldown
+    // identity / status / transform
+    Owner           = 8,   // ownership changed
+    Status          = 9,   // manual status bits (SetUnitStatus) — snapshot + on-change
+    Transform       = 10,  // static teleport/facing (units self-heal via HOT S_UNIT_STATE)
+    // items (item-entity cold state)
+    ItemCharges     = 11,
+    ItemLevel       = 12,
+    Inventory       = 13,  // item entered/left a carrier's inventory slot (pickup/drop)
+    // render-sticky
+    Anim            = 14,  // scripted animation queue (SetUnitAnimation/Queue/Reset); empty list = reset
 };
 
-inline std::vector<u8> build_update_attr(u32 entity_id, std::string_view key, f32 value) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::Attribute));
-    w.write_string(key);
-    w.write_f32(value);
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_update_str_attr(u32 entity_id, std::string_view key, std::string_view value) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::StringAttribute));
-    w.write_string(key);
-    w.write_string(value);
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_update_state(u32 entity_id, std::string_view state_id, f32 current, f32 max) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::State));
-    w.write_string(state_id);
-    w.write_f32(current);
-    w.write_f32(max);
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_update_ability_add(
-        u32 entity_id, std::string_view ability_id, u32 level,
-        u8 source_kind) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::AbilityAdd));
-    w.write_string(ability_id);
-    w.write_u32(level);
-    w.write_u8(source_kind);
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_update_ability_remove(
-        u32 entity_id, std::string_view ability_id,
-        u8 source_kind, bool all_instances) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::AbilityRemove));
-    w.write_string(ability_id);
-    w.write_u8(source_kind);
-    w.write_bool(all_instances);
-    return std::move(w.data());
-}
-
-// Set a single modifier key on every instance of an ability on the
-// unit. Layout: ability_id (key), modifier key (str_value), value.
-// Mirrors the Lua-side SetAbilityModifier API used by tweens.
-inline std::vector<u8> build_update_ability_modifier(u32 entity_id, std::string_view ability_id,
-                                                      std::string_view modifier_key, f32 value) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::AbilityModifier));
-    w.write_string(ability_id);
-    w.write_string(modifier_key);
-    w.write_f32(value);
-    return std::move(w.data());
-}
-
-// SetUnitStatus — manual_bits layer (the refcount layer is plumbed via
-// AbilityAdd / AbilityRemove). flag is a single bit value (status::*).
-inline std::vector<u8> build_update_status(u32 entity_id, u32 flag, bool on) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::Status));
-    w.write_u32(flag);
-    w.write_bool(on);
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_update_owner(u32 entity_id, u8 new_owner) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::Owner));
-    w.write_u8(new_owner);
-    return std::move(w.data());
-}
-
-// Ability cooldown on a unit. `ability_id` keys the instance; multiple
-// stackable instances all receive the same cooldown (matches the
-// server's SetAbilityCooldown semantics).
-inline std::vector<u8> build_update_cooldown(u32 entity_id,
-                                              std::string_view ability_id, f32 secs) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::Cooldown));
-    w.write_string(ability_id);
-    w.write_f32(secs);
-    return std::move(w.data());
-}
-
-// Item-entity scalar mutations. `entity_id` is the item's entity id,
-// not the carrier's — items are first-class entities in this engine.
-// Values are reinterpret-cast to u32 on the wire; clients decode back
-// to i32. Charges/level are small magnitudes — int32 has plenty of room.
-inline std::vector<u8> build_update_item_charges(u32 item_entity_id, i32 charges) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(item_entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::ItemCharges));
-    w.write_u32(static_cast<u32>(charges));
-    return std::move(w.data());
-}
-
-inline std::vector<u8> build_update_item_level(u32 item_entity_id, i32 level) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(item_entity_id);
-    w.write_u8(static_cast<u8>(UpdateType::ItemLevel));
-    w.write_u32(static_cast<u32>(level));
-    return std::move(w.data());
-}
-
-// Inventory pickup/drop. entity_id = carrier (the unit). item_id = the item
-// entity, or UINT32_MAX to CLEAR the slot (drop). Keyed on the carrier so the
-// client can rebuild the carrier's Inventory slot + the item's Carriable.
-inline std::vector<u8> build_update_inventory(u32 carrier_id, u32 slot, u32 item_id) {
-    ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_UPDATE));
-    w.write_u32(carrier_id);
-    w.write_u8(static_cast<u8>(UpdateType::Inventory));
-    w.write_u32(slot);
-    w.write_u32(item_id);
-    return std::move(w.data());
-}
-
-struct UpdateData {
-    u32 entity_id;
-    UpdateType type;
-    std::string key;
-    f32 value = 0;
-    f32 value2 = 0;    // max for State
-    std::string str_value;
-    u32 uint_value = 0; // level for AbilityAdd, owner for Owner, flag bit for Status, slot for Inventory
-    u32 uint_value2 = 0; // item_id for Inventory (UINT32_MAX = clear slot / drop)
-    u8 byte_value = 0;  // AbilitySourceKind
-    bool bool_value = false; // all-instances mode or on/off for Status
+struct ColdRecord {
+    ColdKind kind;
+    std::string key;         // attribute/state/ability id
+    f32 value = 0;           // primary scalar (attr value, state current, cooldown secs, health current, …)
+    f32 value2 = 0;          // secondary scalar (state/health max)
+    std::string str_value;   // string attr value / ability modifier key
+    u32 uint_value = 0;      // ability level / owner / status flag / inventory slot
+    u32 uint_value2 = 0;     // inventory item_id (UINT32_MAX = clear slot / drop)
+    u8 byte_value = 0;       // AbilitySourceKind
+    bool bool_value = false; // all-instances mode / status on-off / anim looping
+    f32 x = 0, y = 0, z = 0; // inventory drop pos / transform pos
+    f32 facing = 0;          // transform facing
+    std::vector<std::string> clips;  // Anim: script clip list (empty = reset)
 };
 
-inline UpdateData parse_update(std::span<const u8> data) {
-    ByteReader r(data);
-    r.read_u8();  // skip MsgType
-    UpdateData u;
-    u.entity_id = r.read_u32();
-    u.type = static_cast<UpdateType>(r.read_u8());
-    switch (u.type) {
-    case UpdateType::Attribute:
-        u.key = r.read_string();
-        u.value = r.read_f32();
+// Wire layout of one record: kind byte + kind-specific payload. NO entity_id and
+// NO opcode here — the caller (S_COLD single or batch) frames those.
+inline void write_cold_record(ByteWriter& w, const ColdRecord& rec) {
+    w.write_u8(static_cast<u8>(rec.kind));
+    switch (rec.kind) {
+    case ColdKind::Health:
+        w.write_f32(rec.value); w.write_f32(rec.value2);
         break;
-    case UpdateType::StringAttribute:
-        u.key = r.read_string();
-        u.str_value = r.read_string();
+    case ColdKind::State:
+        w.write_string(rec.key); w.write_f32(rec.value); w.write_f32(rec.value2);
         break;
-    case UpdateType::State:
-        u.key = r.read_string();
-        u.value = r.read_f32();
-        u.value2 = r.read_f32();
+    case ColdKind::Attribute:
+        w.write_string(rec.key); w.write_f32(rec.value);
         break;
-    case UpdateType::AbilityAdd:
-        u.key = r.read_string();
-        u.uint_value = r.read_u32();
-        u.byte_value = r.read_u8();
+    case ColdKind::StringAttribute:
+        w.write_string(rec.key); w.write_string(rec.str_value);
         break;
-    case UpdateType::AbilityRemove:
-        u.key = r.read_string();
-        u.byte_value = r.read_u8();
-        u.bool_value = r.read_bool();
+    case ColdKind::AbilityAdd:
+        w.write_string(rec.key); w.write_u32(rec.uint_value); w.write_u8(rec.byte_value);
         break;
-    case UpdateType::Owner:
-        u.uint_value = r.read_u8();
+    case ColdKind::AbilityRemove:
+        w.write_string(rec.key); w.write_u8(rec.byte_value); w.write_bool(rec.bool_value);
         break;
-    case UpdateType::AbilityModifier:
-        u.key = r.read_string();           // ability_id
-        u.str_value = r.read_string();     // modifier key (e.g. "visual_alpha_mult")
-        u.value = r.read_f32();
+    case ColdKind::AbilityModifier:
+        w.write_string(rec.key); w.write_string(rec.str_value); w.write_f32(rec.value);
         break;
-    case UpdateType::Status:
-        u.uint_value = r.read_u32();       // flag bit value
-        u.bool_value = r.read_bool();
+    case ColdKind::Cooldown:
+        w.write_string(rec.key); w.write_f32(rec.value);
         break;
-    case UpdateType::Cooldown:
-        u.key = r.read_string();           // ability_id
-        u.value = r.read_f32();            // remaining seconds
+    case ColdKind::Owner:
+        w.write_u8(static_cast<u8>(rec.uint_value));
         break;
-    case UpdateType::ItemCharges:
-    case UpdateType::ItemLevel:
-        u.uint_value = r.read_u32();       // value (reinterpret cast on read)
+    case ColdKind::Status:
+        w.write_u32(rec.uint_value); w.write_bool(rec.bool_value);
         break;
-    case UpdateType::Inventory:
-        u.uint_value  = r.read_u32();      // slot
-        u.uint_value2 = r.read_u32();      // item_id (UINT32_MAX = clear)
+    case ColdKind::Transform:
+        w.write_f32(rec.x); w.write_f32(rec.y); w.write_f32(rec.z); w.write_f32(rec.facing);
+        break;
+    case ColdKind::ItemCharges:
+    case ColdKind::ItemLevel:
+        w.write_u32(rec.uint_value);
+        break;
+    case ColdKind::Inventory:
+        w.write_u32(rec.uint_value); w.write_u32(rec.uint_value2);
+        w.write_f32(rec.x); w.write_f32(rec.y); w.write_f32(rec.z);
+        break;
+    case ColdKind::Anim: {
+        w.write_u8(static_cast<u8>(std::min<usize>(rec.clips.size(), 255)));
+        usize n = std::min<usize>(rec.clips.size(), 255);
+        for (usize i = 0; i < n; ++i) w.write_string(rec.clips[i]);
+        w.write_bool(rec.bool_value);  // looping
         break;
     }
-    return u;
+    }
+}
+
+inline ColdRecord read_cold_record(ByteReader& r) {
+    ColdRecord rec;
+    rec.kind = static_cast<ColdKind>(r.read_u8());
+    switch (rec.kind) {
+    case ColdKind::Health:
+        rec.value = r.read_f32(); rec.value2 = r.read_f32();
+        break;
+    case ColdKind::State:
+        rec.key = r.read_string(); rec.value = r.read_f32(); rec.value2 = r.read_f32();
+        break;
+    case ColdKind::Attribute:
+        rec.key = r.read_string(); rec.value = r.read_f32();
+        break;
+    case ColdKind::StringAttribute:
+        rec.key = r.read_string(); rec.str_value = r.read_string();
+        break;
+    case ColdKind::AbilityAdd:
+        rec.key = r.read_string(); rec.uint_value = r.read_u32(); rec.byte_value = r.read_u8();
+        break;
+    case ColdKind::AbilityRemove:
+        rec.key = r.read_string(); rec.byte_value = r.read_u8(); rec.bool_value = r.read_bool();
+        break;
+    case ColdKind::AbilityModifier:
+        rec.key = r.read_string(); rec.str_value = r.read_string(); rec.value = r.read_f32();
+        break;
+    case ColdKind::Cooldown:
+        rec.key = r.read_string(); rec.value = r.read_f32();
+        break;
+    case ColdKind::Owner:
+        rec.uint_value = r.read_u8();
+        break;
+    case ColdKind::Status:
+        rec.uint_value = r.read_u32(); rec.bool_value = r.read_bool();
+        break;
+    case ColdKind::Transform:
+        rec.x = r.read_f32(); rec.y = r.read_f32(); rec.z = r.read_f32(); rec.facing = r.read_f32();
+        break;
+    case ColdKind::ItemCharges:
+    case ColdKind::ItemLevel:
+        rec.uint_value = r.read_u32();
+        break;
+    case ColdKind::Inventory:
+        rec.uint_value = r.read_u32(); rec.uint_value2 = r.read_u32();
+        rec.x = r.read_f32(); rec.y = r.read_f32(); rec.z = r.read_f32();
+        break;
+    case ColdKind::Anim: {
+        u8 n = r.read_u8();
+        rec.clips.reserve(n);
+        for (u8 i = 0; i < n; ++i) rec.clips.push_back(r.read_string());
+        rec.bool_value = r.read_bool();  // looping
+        break;
+    }
+    }
+    return rec;
+}
+
+// S_COLD — a COUNT-PREFIXED batch of cold records for one entity. Wire:
+// {entity_id, u16 count, ColdRecord[count]}. One record = on-change while in
+// sight; N records = the MATERIALIZE batch sent right after S_SPAWN/S_SHOW. Same
+// records, same client apply (apply_cold_record) — batch = apply all.
+inline std::vector<u8> build_cold_batch(u32 entity_id, const std::vector<ColdRecord>& recs) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_COLD));
+    w.write_u32(entity_id);
+    w.write_u16(static_cast<u16>(recs.size()));
+    for (auto& rec : recs) write_cold_record(w, rec);
+    return std::move(w.data());
+}
+
+// Convenience for the common on-change case (one record).
+inline std::vector<u8> build_cold(u32 entity_id, const ColdRecord& rec) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_COLD));
+    w.write_u32(entity_id);
+    w.write_u16(1);
+    write_cold_record(w, rec);
+    return std::move(w.data());
+}
+
+struct ColdData {
+    u32 entity_id;
+    std::vector<ColdRecord> records;
+};
+
+inline ColdData parse_cold(std::span<const u8> data) {
+    ByteReader r(data);
+    r.read_u8();  // skip MsgType
+    ColdData c;
+    c.entity_id = r.read_u32();
+    u16 n = r.read_u16();
+    c.records.reserve(n);
+    for (u16 i = 0; i < n; ++i) c.records.push_back(read_cold_record(r));
+    return c;
+}
+
+// Record makers — the one place each kind's fields are set, shared by the single
+// on-change builders below AND the host's collect_cold_records batch.
+inline ColdRecord cold_health(f32 current, f32 max) {
+    ColdRecord r; r.kind = ColdKind::Health; r.value = current; r.value2 = max; return r;
+}
+inline ColdRecord cold_state(std::string_view id, f32 current, f32 max) {
+    ColdRecord r; r.kind = ColdKind::State; r.key = id; r.value = current; r.value2 = max; return r;
+}
+inline ColdRecord cold_attr_rec(std::string_view key, f32 value) {
+    ColdRecord r; r.kind = ColdKind::Attribute; r.key = key; r.value = value; return r;
+}
+inline ColdRecord cold_str_attr_rec(std::string_view key, std::string_view value) {
+    ColdRecord r; r.kind = ColdKind::StringAttribute; r.key = key; r.str_value = value; return r;
+}
+inline ColdRecord cold_ability_add_rec(std::string_view ability_id, u32 level, u8 source_kind) {
+    ColdRecord r; r.kind = ColdKind::AbilityAdd; r.key = ability_id; r.uint_value = level; r.byte_value = source_kind; return r;
+}
+inline ColdRecord cold_ability_remove_rec(std::string_view ability_id, u8 source_kind, bool all_instances) {
+    ColdRecord r; r.kind = ColdKind::AbilityRemove; r.key = ability_id; r.byte_value = source_kind; r.bool_value = all_instances; return r;
+}
+inline ColdRecord cold_ability_modifier_rec(std::string_view ability_id, std::string_view modifier_key, f32 value) {
+    ColdRecord r; r.kind = ColdKind::AbilityModifier; r.key = ability_id; r.str_value = modifier_key; r.value = value; return r;
+}
+inline ColdRecord cold_cooldown_rec(std::string_view ability_id, f32 secs) {
+    ColdRecord r; r.kind = ColdKind::Cooldown; r.key = ability_id; r.value = secs; return r;
+}
+inline ColdRecord cold_owner_rec(u8 new_owner) {
+    ColdRecord r; r.kind = ColdKind::Owner; r.uint_value = new_owner; return r;
+}
+inline ColdRecord cold_status_rec(u32 flag, bool on) {
+    ColdRecord r; r.kind = ColdKind::Status; r.uint_value = flag; r.bool_value = on; return r;
+}
+inline ColdRecord cold_transform_rec(f32 x, f32 y, f32 z, f32 facing) {
+    ColdRecord r; r.kind = ColdKind::Transform; r.x = x; r.y = y; r.z = z; r.facing = facing; return r;
+}
+inline ColdRecord cold_item_charges_rec(i32 charges) {
+    ColdRecord r; r.kind = ColdKind::ItemCharges; r.uint_value = static_cast<u32>(charges); return r;
+}
+inline ColdRecord cold_item_level_rec(i32 level) {
+    ColdRecord r; r.kind = ColdKind::ItemLevel; r.uint_value = static_cast<u32>(level); return r;
+}
+inline ColdRecord cold_inventory_rec(u32 slot, u32 item_id, f32 x, f32 y, f32 z) {
+    ColdRecord r; r.kind = ColdKind::Inventory; r.uint_value = slot; r.uint_value2 = item_id;
+    r.x = x; r.y = y; r.z = z; return r;
+}
+inline ColdRecord cold_anim_rec(const std::vector<std::string>& clips, bool looping) {
+    ColdRecord r; r.kind = ColdKind::Anim; r.clips = clips; r.bool_value = looping; return r;
+}
+
+// Single on-change message builders (rename of the old build_update_* — same
+// arg lists, so call sites are a pure rename). Each wraps a record maker.
+inline std::vector<u8> build_cold_health(u32 entity_id, f32 current, f32 max) {
+    return build_cold(entity_id, cold_health(current, max));
+}
+inline std::vector<u8> build_cold_attr(u32 entity_id, std::string_view key, f32 value) {
+    return build_cold(entity_id, cold_attr_rec(key, value));
+}
+inline std::vector<u8> build_cold_str_attr(u32 entity_id, std::string_view key, std::string_view value) {
+    return build_cold(entity_id, cold_str_attr_rec(key, value));
+}
+inline std::vector<u8> build_cold_state(u32 entity_id, std::string_view state_id, f32 current, f32 max) {
+    return build_cold(entity_id, cold_state(state_id, current, max));
+}
+inline std::vector<u8> build_cold_ability_add(u32 entity_id, std::string_view ability_id, u32 level, u8 source_kind) {
+    return build_cold(entity_id, cold_ability_add_rec(ability_id, level, source_kind));
+}
+inline std::vector<u8> build_cold_ability_remove(u32 entity_id, std::string_view ability_id, u8 source_kind, bool all_instances) {
+    return build_cold(entity_id, cold_ability_remove_rec(ability_id, source_kind, all_instances));
+}
+inline std::vector<u8> build_cold_ability_modifier(u32 entity_id, std::string_view ability_id,
+                                                    std::string_view modifier_key, f32 value) {
+    return build_cold(entity_id, cold_ability_modifier_rec(ability_id, modifier_key, value));
+}
+inline std::vector<u8> build_cold_status(u32 entity_id, u32 flag, bool on) {
+    return build_cold(entity_id, cold_status_rec(flag, on));
+}
+inline std::vector<u8> build_cold_owner(u32 entity_id, u8 new_owner) {
+    return build_cold(entity_id, cold_owner_rec(new_owner));
+}
+inline std::vector<u8> build_cold_transform(u32 entity_id, f32 x, f32 y, f32 z, f32 facing) {
+    return build_cold(entity_id, cold_transform_rec(x, y, z, facing));
+}
+inline std::vector<u8> build_cold_cooldown(u32 entity_id, std::string_view ability_id, f32 secs) {
+    return build_cold(entity_id, cold_cooldown_rec(ability_id, secs));
+}
+inline std::vector<u8> build_cold_item_charges(u32 item_entity_id, i32 charges) {
+    return build_cold(item_entity_id, cold_item_charges_rec(charges));
+}
+inline std::vector<u8> build_cold_item_level(u32 item_entity_id, i32 level) {
+    return build_cold(item_entity_id, cold_item_level_rec(level));
+}
+inline std::vector<u8> build_cold_inventory(u32 carrier_id, u32 slot, u32 item_id,
+                                             f32 x = 0, f32 y = 0, f32 z = 0) {
+    return build_cold(carrier_id, cold_inventory_rec(slot, item_id, x, y, z));
+}
+inline std::vector<u8> build_cold_anim(u32 entity_id, const std::vector<std::string>& clips, bool looping) {
+    return build_cold(entity_id, cold_anim_rec(clips, looping));
 }
 
 // ── HUD sync builders + parsers (16c-v) ──────────────────────────────────
@@ -1346,6 +1536,19 @@ inline std::vector<u8> build_hud_display_message(
         wr.write_string(loc_args[i].second);
     }
     wr.write_f32(duration);
+    return std::move(wr.data());
+}
+
+// Manual-mode action-bar slot binding (ActionBarSetSlot / ClearSlot). Runs in
+// host/worker Lua only, so it must be synced to clients + replayed on join —
+// otherwise the client's slots keep the hud.json default (empty bound_ability)
+// and the manual-mode bar renders nothing. slot is 0-based; empty ability_id
+// clears the slot.
+inline std::vector<u8> build_hud_action_bar_set_slot(u32 slot, std::string_view ability_id) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_ACTION_BAR_SET_SLOT));
+    wr.write_u32(slot);
+    wr.write_string(ability_id);
     return std::move(wr.data());
 }
 

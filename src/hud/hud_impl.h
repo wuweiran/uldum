@@ -80,6 +80,12 @@ struct Hud::Impl {
     struct InstantiatedTree {
         std::string                  id;
         ::uldum::hud::Placement      placement;   // layout::Placement (AnchorFrac-based)
+        // Original create-packet args, retained so the join-replay can re-emit
+        // build_hud_create_node verbatim (Placement stores the resolved
+        // AnchorFrac, not the string anchor the wire format needs).
+        std::string                  anchor;       // string form ("tc", "tl", …)
+        f32                          x = 0, y = 0, w = 0, h = 0;
+        u32                          players_mask = UINT32_MAX;
     };
     std::vector<InstantiatedTree> instantiated_trees;
 

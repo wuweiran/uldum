@@ -13,7 +13,7 @@ const HandleInfo*             WorldView::handle_info(u32 id)    const { return m
 const Movement*               WorldView::movement(u32 id)       const { return m_world->movements.get(id); }
 const Combat*                 WorldView::combat(u32 id)         const { return m_world->combats.get(id); }
 const Selectable*             WorldView::selectable(u32 id)     const { return m_world->selectables.get(id); }
-const DeadState*              WorldView::dead_state(u32 id)     const { return m_world->dead_states.get(id); }
+bool                          WorldView::is_dead(u32 id)        const { return health_is_dead(m_world->healths.get(id)); }
 const StatusFlags*            WorldView::status(u32 id)         const { return m_world->status_flags.get(id); }
 const UnitClassificationComp* WorldView::classification(u32 id) const { return m_world->classifications.get(id); }
 const AbilitySet*             WorldView::ability_set(u32 id)    const { return m_world->ability_sets.get(id); }
@@ -78,8 +78,8 @@ const Movement* LocalView::movement(u32 id) const {
 const Combat* LocalView::combat(u32 id) const {
     return resolve<Combat>(*this, id, nullptr, source->combats);
 }
-const DeadState* LocalView::dead_state(u32 id) const {
-    return resolve<DeadState>(*this, id, nullptr, source->dead_states);
+bool LocalView::is_dead(u32 id) const {
+    return health_is_dead(health(id));
 }
 const StatusFlags* LocalView::status(u32 id) const {
     return resolve<StatusFlags>(*this, id, nullptr, source->status_flags);

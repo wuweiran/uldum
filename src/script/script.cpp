@@ -219,6 +219,10 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         "id", &simulation::Destructable::id,
         sol::meta_function::equal_to, [](const simulation::Destructable& a, const simulation::Destructable& b) { return a == b; }
     );
+    lua.new_usertype<simulation::Projectile>("Projectile",
+        "id", &simulation::Projectile::id,
+        sol::meta_function::equal_to, [](const simulation::Projectile& a, const simulation::Projectile& b) { return a == b; }
+    );
 
     bind_api();
     bind_trigger_api();
@@ -251,7 +255,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         dispatch(frame, "unit_dying");
     };
 
-    sim.world().on_projectile_hit = [this](simulation::Unit projectile,
+    sim.world().on_projectile_hit = [this](simulation::Projectile projectile,
                                           simulation::Unit hit_unit) {
         EventFrame frame;
         frame.entity = hit_unit;
@@ -260,7 +264,7 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         dispatch(frame, "global_projectile_hit");
         dispatch(frame, "projectile_hit");
     };
-    sim.world().on_projectile_destroyed = [this](simulation::Unit projectile) {
+    sim.world().on_projectile_destroyed = [this](simulation::Projectile projectile) {
         EventFrame frame;
         frame.registered_entity = projectile;
         frame.payload = ProjectileEvent{projectile, {}};
@@ -801,6 +805,34 @@ void ScriptEngine::fire_player_event(std::string_view event_name, u32 player_id)
     dispatch(frame, event_name);
 }
 
+void ScriptEngine::emit_anim(u32 entity_id) {
+    if (!m_unit_update_fn) return;
+    auto& w = m_sim->world();
+    std::vector<std::string> clips;
+    bool looping = false;
+    if (const auto* q = w.anim_queues.get(entity_id)) {
+        for (const auto& c : q->clips) clips.push_back(c);
+        looping = q->looping;
+    }
+    auto pkt = network::build_cold_anim(entity_id, clips, looping);
+    m_unit_update_fn(entity_id, pkt);
+}
+
+void ScriptEngine::emit_static_transform(u32 entity_id) {
+    if (!m_unit_update_fn) return;
+    auto& w = m_sim->world();
+    // Units re-sync position/facing every tick via the HOT S_UNIT_STATE snapshot,
+    // so a Transform cold message is only needed for STATICS (destructable/doodad/
+    // item), which ride no per-tick tier. Skip units — their HOT tick covers it.
+    const auto* hi = w.handle_infos.get(entity_id);
+    if (!hi || hi->category == simulation::Category::Unit) return;
+    const auto* t = w.transforms.get(entity_id);
+    if (!t) return;
+    auto pkt = network::build_cold_transform(entity_id, t->position.x, t->position.y,
+                                             t->position.z, t->facing);
+    m_unit_update_fn(entity_id, pkt);
+}
+
 void ScriptEngine::dispatch(EventFrame& frame, std::string_view event_name) {
     frame.event = event_name;
     EventScope scope(*this, frame);
@@ -871,6 +903,11 @@ void ScriptEngine::bind_api() {
         return p.is_valid() ? sol::make_object(*m_lua, p) : sol::make_object(*m_lua, sol::nil);
     };
 
+    auto projectile_or_nil = [&](simulation::Projectile p) -> sol::object {
+        return sim.world().contains(p) ? sol::make_object(*m_lua, p)
+                                       : sol::make_object(*m_lua, sol::nil);
+    };
+
     // ── Unit API ──────────────────────────────────────────────────────
 
     lua["CreateUnit"] = [&](const std::string& type_id, simulation::Player owner, f32 x, f32 y, sol::optional<f32> facing_deg) -> sol::object {
@@ -880,10 +917,9 @@ void ScriptEngine::bind_api() {
         f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
         auto unit = simulation::create_unit(world, type_id, owner, x, y, facing_rad);
         if (simulation::is_non_null_handle(unit)) {
-            auto* t = world.transforms.get(unit.id);
-            if (t) t->position.z = ::uldum::map::sample_height(terrain_ref,x, y);
-            auto* mov = world.movements.get(unit.id);
-            if (mov) mov->cliff_level = sim.pathfinder().cliff_level_at(x, y);
+            // Z is sampled from terrain inside create_unit now (world.terrain).
+            auto* pth = world.pathings.get(unit.id);
+            if (pth) pth->cliff_level = sim.pathfinder().cliff_level_at(x, y);
             EventFrame frame;
             frame.entity = unit;
             frame.registered_entity = unit;
@@ -908,7 +944,7 @@ void ScriptEngine::bind_api() {
         f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
         auto d = simulation::create_destructable(world, type_id, x, y, facing_rad, variation.value_or(0));
         if (simulation::is_non_null_handle(d)) {
-            if (auto* t = world.transforms.get(d.id)) t->position.z = ::uldum::map::sample_height(terrain_ref, x, y);
+            // Z is sampled from terrain inside create_destructable now.
             // Stamp the pathing footprint. The map-load and editor placement
             // paths do this at their call site; a runtime CreateDestructable
             // must too, or units path straight through the crate. block_cells
@@ -998,6 +1034,7 @@ void ScriptEngine::bind_api() {
         if (!sim.world().contains(u)) return;
         auto* t = sim.world().transforms.get(u.id);
         if (t) { t->position.x = x; t->position.y = y; t->position.z = ::uldum::map::sample_height(terrain_ref,x, y); }
+        emit_static_transform(u.id);   // no-op for units (HOT tick re-syncs them)
     };
     lua["GetUnitFacing"] = [&](simulation::Unit u) -> f32 {
         if (!sim.world().contains(u)) return 0;
@@ -1008,6 +1045,7 @@ void ScriptEngine::bind_api() {
         if (!sim.world().contains(u)) return;
         auto* t = sim.world().transforms.get(u.id);
         if (t) t->facing = degrees * 0.0174532925f;  // deg → rad
+        emit_static_transform(u.id);
     };
 
     // Script-driven animation. SetUnitAnimation replaces whatever the
@@ -1034,6 +1072,7 @@ void ScriptEngine::bind_api() {
             aq.looping = looping.value_or(false);
             w.anim_queues.add(u.id, std::move(aq));
         }
+        emit_anim(u.id);
     };
 
     lua["QueueUnitAnimation"] = [&](simulation::Unit u, const std::string& clip) {
@@ -1047,11 +1086,13 @@ void ScriptEngine::bind_api() {
             aq.clips.push_back(clip);
             w.anim_queues.add(u.id, std::move(aq));
         }
+        emit_anim(u.id);
     };
 
     lua["ResetUnitAnimation"] = [&](simulation::Unit u) {
         if (!sim.world().contains(u)) return;
         sim.world().anim_queues.remove(u.id);
+        emit_anim(u.id);   // empty clip list = reset on the client
     };
 
     // Health
@@ -1128,7 +1169,7 @@ void ScriptEngine::bind_api() {
         ab->base[name] = value;
         simulation::recalculate_modifiers(sim.world(), u.id);
         if (m_unit_update_fn) {
-            auto pkt = network::build_update_attr(u.id, name, effective_attr(u, name));
+            auto pkt = network::build_cold_attr(u.id, name, effective_attr(u, name));
             m_unit_update_fn(u.id, pkt);
         }
     };
@@ -1148,7 +1189,7 @@ void ScriptEngine::bind_api() {
         if (!ab) return;
         ab->string_attrs[name] = value;
         if (m_unit_update_fn) {
-            auto pkt = network::build_update_str_attr(u.id, name, value);
+            auto pkt = network::build_cold_str_attr(u.id, name, value);
             m_unit_update_fn(u.id, pkt);
         }
     };
@@ -1184,7 +1225,7 @@ void ScriptEngine::bind_api() {
         if (v > it->second.max) v = it->second.max;
         it->second.current = v;
         if (m_unit_update_fn) {
-            auto pkt = network::build_update_state(u.id, name, v, it->second.max);
+            auto pkt = network::build_cold_state(u.id, name, v, it->second.max);
             m_unit_update_fn(u.id, pkt);
         }
     };
@@ -1255,7 +1296,7 @@ void ScriptEngine::bind_api() {
         if (!o) return;
         *o = p;
         if (m_unit_update_fn) {
-            auto pkt = network::build_update_owner(u.id, static_cast<u8>(p.id));
+            auto pkt = network::build_cold_owner(u.id, static_cast<u8>(p.id));
             m_unit_update_fn(u.id, pkt);
         }
     };
@@ -1331,53 +1372,57 @@ void ScriptEngine::bind_api() {
         auto u = simulation::create_projectile(sim.world(), source, model);
         return simulation::is_non_null_handle(u) ? sol::make_object(*m_lua, u) : sol::make_object(*m_lua, sol::nil);
     };
-    lua["EmitProjectileTarget"] = [&](simulation::Unit proj, simulation::Unit target,
+    lua["EmitProjectileTarget"] = [&](simulation::Projectile proj, simulation::Unit target,
                                        f32 speed, sol::optional<f32> arc_height) {
         simulation::emit_projectile_target(sim.world(), proj, target, speed,
                                             arc_height.value_or(0.0f));
     };
-    lua["EmitProjectileLoc"] = [&](simulation::Unit proj, f32 x, f32 y, f32 z,
+    lua["EmitProjectileLoc"] = [&](simulation::Projectile proj, f32 x, f32 y, f32 z,
                                     f32 speed, f32 hit_radius, f32 max_distance) {
         simulation::emit_projectile_loc(sim.world(), proj, glm::vec3{x, y, z},
                                          speed, hit_radius, max_distance);
     };
-    lua["DestroyProjectile"] = [&](simulation::Unit proj) {
+    lua["DestroyProjectile"] = [&](simulation::Projectile proj) {
         simulation::destroy_projectile(sim.world(), proj);
     };
 
     // Damage payload. is_attack is set by the engine for auto-attack
     // projectiles and consumed by the built-in hit handler; ability
     // projectiles can use damage as a free-form field via Set/Get.
-    lua["GetProjectileDamage"] = [&](simulation::Unit proj) -> f32 {
+    lua["GetProjectileDamage"] = [&](simulation::Projectile proj) -> f32 {
         if (!sim.world().contains(proj)) return 0.0f;
         auto* p = sim.world().projectiles.get(proj.id);
         return p ? p->damage : 0.0f;
     };
-    lua["SetProjectileDamage"] = [&](simulation::Unit proj, f32 damage) {
+    lua["SetProjectileDamage"] = [&](simulation::Projectile proj, f32 damage) {
         if (!sim.world().contains(proj)) return;
         if (auto* p = sim.world().projectiles.get(proj.id)) p->damage = damage;
     };
-    lua["IsProjectileNormalAttack"] = [&](simulation::Unit proj) -> bool {
+    lua["IsProjectileNormalAttack"] = [&](simulation::Projectile proj) -> bool {
         if (!sim.world().contains(proj)) return false;
         auto* p = sim.world().projectiles.get(proj.id);
         return p && p->is_attack;
     };
     // Projectile world position — the impact point when read inside a
     // PROJECTILE_HIT trigger (splash/AoE centers here). A projectile shares
-    // the Unit handle + Transform, so this reads the same transform GetUnitX
-    // would; the dedicated name keeps map code reading intentionally. X/Y only
+    // the Transform, so this reads the same transform GetUnitX would; the
+    // dedicated name keeps map code reading intentionally. X/Y only
     // (world plane) — Z stays out of the position API, WC3 convention.
-    lua["GetProjectileX"] = [&](simulation::Unit proj) -> f32 {
-        return simulation::get_position(sim.world(), proj).x;
+    lua["GetProjectileX"] = [&](simulation::Projectile proj) -> f32 {
+        if (!sim.world().contains(proj)) return 0.0f;
+        auto* t = sim.world().transforms.get(proj.id);
+        return t ? t->position.x : 0.0f;
     };
-    lua["GetProjectileY"] = [&](simulation::Unit proj) -> f32 {
-        return simulation::get_position(sim.world(), proj).y;
+    lua["GetProjectileY"] = [&](simulation::Projectile proj) -> f32 {
+        if (!sim.world().contains(proj)) return 0.0f;
+        auto* t = sim.world().transforms.get(proj.id);
+        return t ? t->position.y : 0.0f;
     };
 
-    lua["GetTriggerProjectile"] = [&, unit_or_nil]() -> sol::object {
+    lua["GetTriggerProjectile"] = [&, projectile_or_nil]() -> sol::object {
         if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
         auto* event = std::get_if<ProjectileEvent>(&m_event_frame->payload);
-        return event ? unit_or_nil(event->projectile)
+        return event ? projectile_or_nil(event->projectile)
                      : sol::make_object(*m_lua, sol::nil);
     };
     lua["GetProjectileSource"] = [&, unit_or_nil]() -> sol::object {
@@ -1393,9 +1438,8 @@ void ScriptEngine::bind_api() {
 
     // Projectile-scoped trigger registration. Same shape as the
     // per-unit registration, but exists as its own name so map code
-    // reads as intended (a projectile isn't a unit conceptually even
-    // though it shares the handle type).
-    lua["TriggerRegisterProjectileEvent"] = [&](sol::table t, simulation::Unit proj, sol::object event_obj) {
+    // reads as intended (a projectile isn't a unit conceptually).
+    lua["TriggerRegisterProjectileEvent"] = [&](sol::table t, simulation::Projectile proj, sol::object event_obj) {
         if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
             log::warn(TAG, "TriggerRegisterProjectileEvent: event name is nil or empty");
             return;
@@ -1433,7 +1477,7 @@ void ScriptEngine::bind_api() {
         if (changed) {
             simulation::recalculate_modifiers(w, u.id);
             if (m_unit_update_fn) {
-                auto pkt = network::build_update_ability_modifier(u.id, ability_id, key, value);
+                auto pkt = network::build_cold_ability_modifier(u.id, ability_id, key, value);
                 m_unit_update_fn(u.id, pkt);
             }
         }
@@ -1480,7 +1524,7 @@ void ScriptEngine::bind_api() {
             }
         }
         if (changed && m_unit_update_fn) {
-            auto pkt = network::build_update_cooldown(u.id, ability_id, clamped);
+            auto pkt = network::build_cold_cooldown(u.id, ability_id, clamped);
             m_unit_update_fn(u.id, pkt);
         }
     };
@@ -1494,7 +1538,7 @@ void ScriptEngine::bind_api() {
             if (a.ability_id == ability_id) { a.cooldown_remaining = 0.0f; changed = true; }
         }
         if (changed && m_unit_update_fn) {
-            auto pkt = network::build_update_cooldown(u.id, ability_id, 0.0f);
+            auto pkt = network::build_cold_cooldown(u.id, ability_id, 0.0f);
             m_unit_update_fn(u.id, pkt);
         }
     };
@@ -2103,12 +2147,7 @@ void ScriptEngine::bind_api() {
         glm::vec2 g = sim.pathfinder().find_nearest_valid(x, y, simulation::MoveType::Ground);
         x = g.x; y = g.y;
         auto item = simulation::create_item(sim.world(), type_id, x, y);
-        if (simulation::is_non_null_handle(item)) {
-            if (auto* t = sim.world().transforms.get(item.id)) {
-                t->position.z      = ::uldum::map::sample_height(terrain_ref, x, y);
-                t->prev_position.z = t->position.z;
-            }
-        }
+        // Z is sampled from terrain inside create_item now (world.terrain).
         return item_or_nil(item);
     };
     lua["RemoveItem"] = [&](simulation::Item item) {
@@ -2215,7 +2254,7 @@ void ScriptEngine::bind_api() {
         if (!sim.world().contains(item)) return;
         simulation::set_charges(sim.world(), item, n);
         if (m_unit_update_fn) {
-            auto pkt = network::build_update_item_charges(item.id, n);
+            auto pkt = network::build_cold_item_charges(item.id, n);
             m_unit_update_fn(item.id, pkt);
         }
     };
@@ -2224,7 +2263,7 @@ void ScriptEngine::bind_api() {
         if (!sim.world().contains(item)) return;
         simulation::set_level(sim.world(), item, n);
         if (m_unit_update_fn) {
-            auto pkt = network::build_update_item_level(item.id, n);
+            auto pkt = network::build_cold_item_level(item.id, n);
             m_unit_update_fn(item.id, pkt);
         }
     };
@@ -2957,9 +2996,22 @@ void ScriptEngine::bind_input_api() {
     // player-0 hero's portrait, abilities, and reticle. A rejected call
     // leaves the selection empty and the HUD shows nothing.
     lua["SetControlledUnit"] = [this](simulation::Unit unit) {
-        if (!m_selection || !m_sim || !m_sim->world().contains(unit)) return;
+        if (!m_sim || !m_sim->world().contains(unit)) return;
         auto* owner = m_sim->world().owners.get(unit.id);
-        if (!owner || owner->id != m_selection->player().id) return;
+        if (!owner) return;
+        // Routed path (MP host + worker): send to the owner's client (persisted
+        // for join-replay); the host chains its own local select on top. The
+        // per-owner routing is what refuses a P1 client the P0 hero — no local
+        // owner==player check needed, because only the owner's client is told.
+        if (m_set_controlled_unit_fn) {
+            m_set_controlled_unit_fn(1u << owner->id, unit);
+            return;
+        }
+        // Fallback (offline single binary, no network): App selection is the
+        // script's selection. Keep the ownership guard so a non-owning local
+        // slot doesn't inherit the hero.
+        if (!m_selection) return;
+        if (owner->id != m_selection->player().id) return;
         m_selection->select(unit);
     };
 

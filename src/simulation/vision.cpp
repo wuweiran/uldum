@@ -83,7 +83,7 @@ void Vision::update(World& world, const Simulation& sim) {
         const auto* owner = world.owners.get(id);
         const auto* transform = world.transforms.get(id);
         if (!owner || !transform) continue;
-        if (world.dead_states.has(id)) continue;
+        if (world.corpses.has(id)) continue;
 
         u32 player_id = owner->id;
         if (player_id >= m_player_count) continue;
@@ -97,16 +97,18 @@ void Vision::update(World& world, const Simulation& sim) {
         f32 cy = (transform->position.y - oy) / m_tile_size;
         f32 radius = sight.sight_range / m_tile_size;
 
-        // Viewer's cliff level (from Movement component or terrain).
-        // Air units see over everything — they fly above the terrain, so no
-        // cliff blocks their line of sight. Max cliff level → has_cliff_los
-        // never finds a higher intermediate tile.
+        // Viewer's cliff level. Air units see over everything (fly above the
+        // terrain), so nothing blocks their LOS. For ground units, derive the
+        // level from the TERRAIN at their current position rather than from
+        // Movement::cliff_level — that field is only updated by the movement
+        // system each sim tick, which the network CLIENT never runs, so on the
+        // client it's frozen at 0 (spawn default). Reading terrain here is
+        // authoritative on host AND client (position is synced every tick), so a
+        // unit standing on a mesa reveals from its real elevation on both sides.
         u8 viewer_cliff = 0;
         const auto* mov = world.movements.get(id);
         if (mov && mov->type == MoveType::Air) {
             viewer_cliff = 255;
-        } else if (mov) {
-            viewer_cliff = mov->cliff_level;
         } else if (m_terrain) {
             viewer_cliff = m_terrain->cliff_level_at(transform->position.x, transform->position.y);
         }
@@ -149,7 +151,7 @@ void Vision::update(World& world, const Simulation& sim) {
         const auto& ab = attrs.data()[i];
         auto it = ab.numeric.find("true_sight");
         if (it == ab.numeric.end() || it->second <= 0.0f) continue;
-        if (world.dead_states.has(detector_id)) continue;
+        if (world.corpses.has(detector_id)) continue;
 
         const auto* d_owner = world.owners.get(detector_id);
         const auto* d_transform = world.transforms.get(detector_id);

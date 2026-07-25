@@ -1045,7 +1045,8 @@ bool instantiate_template(Hud& hud, std::string_view template_id,
         hud.register_instantiated_tree(root_node->id,
                                        placement.anchor,
                                        placement.x, placement.y,
-                                       placement.w, placement.h);
+                                       placement.w, placement.h,
+                                       placement.players_mask);
     }
     return true;
 }

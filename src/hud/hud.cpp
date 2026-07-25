@@ -485,10 +485,91 @@ bool Hud::remove_node_by_id(std::string_view id) {
 }
 
 void Hud::register_instantiated_tree(std::string id, std::string_view anchor,
-                                     f32 x, f32 y, f32 w, f32 h) {
+                                     f32 x, f32 y, f32 w, f32 h, u32 players_mask) {
     if (!m_impl || id.empty()) return;
-    ::uldum::hud::Placement p{ parse_anchor(anchor), x, y, w, h };
-    m_impl->instantiated_trees.push_back({ std::move(id), p });
+    Impl::InstantiatedTree t;
+    t.placement    = ::uldum::hud::Placement{ parse_anchor(anchor), x, y, w, h };
+    t.anchor       = std::string(anchor);
+    t.x = x; t.y = y; t.w = w; t.h = h;
+    t.players_mask = players_mask;
+    t.id           = std::move(id);
+    m_impl->instantiated_trees.push_back(std::move(t));
+}
+
+void Hud::emit_state_to(const ReplaySend& send) {
+    if (!m_impl) return;
+    auto& s = *m_impl;
+
+    // Persistent Lua-created node trees: re-emit the create, then the current
+    // imperative state read back from the LIVE node (identical to the packets a
+    // connected client received). The client rebuilds the subtree from its own
+    // template on create, so we only need to replay per-node overrides. All
+    // filtered by the tree's players_mask (the joining peer only gets what it
+    // may see).
+    for (const auto& tree : s.instantiated_trees) {
+        Node* root = find_node_by_id(tree.id);
+        if (!root) continue;
+        send(uldum::network::build_hud_create_node(tree.id, tree.anchor,
+                                                   tree.x, tree.y, tree.w, tree.h),
+             tree.players_mask);
+
+        // Walk the subtree; re-emit each id'd node's current typed value +
+        // visibility. Applying a template-equal value on the client is
+        // idempotent, so unconditional emission is correct and simplest.
+        std::vector<Node*> stack{ root };
+        while (!stack.empty()) {
+            Node* n = stack.back();
+            stack.pop_back();
+            if (!n->id.empty()) {
+                if (!n->visible) {
+                    send(uldum::network::build_hud_set_node_visible(n->id, false),
+                         tree.players_mask);
+                }
+                if (auto* l = dynamic_cast<hud::Label*>(n); l && !l->text.key.empty()) {
+                    send(uldum::network::build_hud_set_label_text(n->id, l->text.key, l->text.args),
+                         tree.players_mask);
+                } else if (auto* b = dynamic_cast<hud::Bar*>(n)) {
+                    send(uldum::network::build_hud_set_bar_fill(n->id, b->fill),
+                         tree.players_mask);
+                } else if (auto* im = dynamic_cast<hud::Image*>(n); im && !im->source.empty()) {
+                    send(uldum::network::build_hud_set_image_source(n->id, im->source),
+                         tree.players_mask);
+                } else if (auto* btn = dynamic_cast<hud::Button*>(n); btn && !btn->enabled) {
+                    send(uldum::network::build_hud_set_button_enabled(n->id, false),
+                         tree.players_mask);
+                }
+            }
+            for (const auto& c : n->children()) {
+                if (c) stack.push_back(c.get());
+            }
+        }
+    }
+
+    // Permanent text tags (lifespan == 0). Transient tags (lifespan > 0) are
+    // in-flight and not worth replaying to a late joiner.
+    for (const auto& t : s.text_tags) {
+        if (!t.alive || t.lifespan != 0.0f) continue;
+        send(uldum::network::build_hud_create_text_tag(
+                 t.text.key, t.text.args, t.px_size,
+                 t.world_pos.x, t.world_pos.y, t.world_pos.z,
+                 t.unit, t.z_offset,
+                 t.color.rgba,
+                 t.velocity_x, t.velocity_y,
+                 t.lifespan, t.fadepoint),
+             t.players_mask);
+    }
+
+    // Manual-mode action-bar slot bindings (ActionBarSetSlot, host/worker Lua
+    // only). Replay the bound slots so a late joiner's manual bar isn't empty.
+    // Global config → UINT32_MAX mask, same as the live emit_sync.
+    {
+        const auto& slots = s.action_bar_cfg.slots;
+        for (u32 i = 0; i < slots.size(); ++i) {
+            if (slots[i].bound_ability.empty()) continue;
+            send(uldum::network::build_hud_action_bar_set_slot(i, slots[i].bound_ability),
+                 UINT32_MAX);
+        }
+    }
 }
 
 // ── Template registry ────────────────────────────────────────────────────
@@ -511,12 +592,17 @@ void Hud::clear_node_templates() {
 
 bool Hud::instantiate_template(std::string_view id, const Placement& placement) {
     if (!m_impl) return false;
-    // Use the cached physical extent (pushed by HudRenderer::begin_frame
-    // and on_viewport_resized). Before the first viewport push, returns
-    // false rather than instantiating against a 0×0 viewport.
+    // Physical extent (pushed by HudRenderer::begin_frame / on_viewport_resized).
+    // On a headless authoritative server (worker) this stays 0×0 forever. That's
+    // fine: parse_node builds the node STRUCTURE regardless, and resolve_rect is
+    // pure arithmetic (no divide) that just yields all-zero rects — never read
+    // headless (there's no renderer / hit-test). The tree is still registered
+    // and the create is still synced, so clients (which re-resolve against their
+    // OWN viewport in apply_network_message) and the join-replay both work. A
+    // host that later gains a viewport re-anchors via reflow(). So DON'T gate on
+    // viewport — the model is authoritative, layout is a client/render concern.
     u32 ext_w = m_impl->physical_w;
     u32 ext_h = m_impl->physical_h;
-    if (ext_w == 0 || ext_h == 0) return false;
     TemplatePlacement tp{};
     tp.anchor       = placement.anchor;
     tp.x            = placement.x;
@@ -879,6 +965,13 @@ void Hud::action_bar_set_slot(u32 slot, std::string_view ability_id) {
     auto& slots = m_impl->action_bar_cfg.slots;
     if (slot >= slots.size()) return;
     slots[slot].bound_ability.assign(ability_id);
+    // Sync to ALL clients (global HUD config — the action bar comes from
+    // hud.json, shared by every player; a client whose selected unit lacks the
+    // bound ability just renders the slot empty). Host-only; clients no-op
+    // (sync_fn null). Without this a manual-mode bar is empty on every client.
+    emit_sync(*m_impl,
+              uldum::network::build_hud_action_bar_set_slot(slot, ability_id),
+              UINT32_MAX);
 }
 
 void Hud::action_bar_clear_slot(u32 slot) {
@@ -886,6 +979,9 @@ void Hud::action_bar_clear_slot(u32 slot) {
     auto& slots = m_impl->action_bar_cfg.slots;
     if (slot >= slots.size()) return;
     slots[slot].bound_ability.clear();
+    emit_sync(*m_impl,
+              uldum::network::build_hud_action_bar_set_slot(slot, std::string_view{}),
+              UINT32_MAX);
 }
 
 void Hud::set_action_bar_cast_fn(ActionBarCastFn fn) {
@@ -1070,7 +1166,7 @@ void Hud::pickup_bar_update() {
     for (u32 item_id : world.item_info_ids()) {
         simulation::Item item{item_id};
         if (!world.contains(item.id)) continue;
-        if (world.dead_state(item_id)) continue;
+        if (world.is_dead(item_id)) continue;
         const auto* carriable = world.carriable(item_id);
         if (!carriable || simulation::is_non_null_handle(carriable->carried_by)) continue;
         const auto* item_tf = world.transform(item_id);
@@ -1804,7 +1900,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                 // Commands always reject dead units — Move-on-corpse can't
                 // follow, Attack-on-corpse can't attack. Abilities run the
                 // full filter (alive/dead flags handled inside).
-                if (is_command && world.dead_state(id)) continue;
+                if (is_command && world.is_dead(id)) continue;
                 // Command attackability: match desktop — only snap a target
                 // some selected unit can actually hit. Destructables always
                 // gate on their widget bit (crate=debris yes, tree no).

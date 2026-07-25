@@ -591,7 +591,7 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
     using simulation::CastState;
     using simulation::AttackState;
 
-    if (world.dead_state(id)) return {AnimState::Death, 0.8f, false};
+    if (world.is_dead(id)) return {AnimState::Death, 0.8f, false};
 
     auto get_type_def = [&]() -> const simulation::UnitTypeDef* {
         auto* hi = world.handle_info(id);
@@ -3313,7 +3313,7 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
         // Compute the per-entity model matrix once.
         glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, lm->mesh.native_z_up);
 
-        bool is_corpse = world.dead_state(id);
+        bool is_corpse = world.is_dead(id);
         f32  entity_alpha = effective_visual_alpha(world, id, renderable);
         if (is_in_fog_memory(world, id)) entity_alpha *= kFoggedMemoryAlpha;
 
@@ -3699,15 +3699,15 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             // last frame). The AnimationInstance persists across live→memory
             // (same id, never culled), so its bones already carry the last live
             // pose; we simply skip derive/update/evaluate and let Pass 1 re-upload
-            // them. This is why the snapshot store needs no DeadState — "dead" is
-            // just "the last frame," same as every other state.
+            // them. This is why the snapshot store needs no death marker — "dead"
+            // is just "the last frame," same as every other state.
             if (fog == simulation::FogVis::Memory) continue;
 
             // Script-driven animation override (SetUnitAnimation /
             // QueueUnitAnimation). Death always wins — if the unit is
             // dying we drop the queue so the death clip plays cleanly.
             auto* aq = world.anim_queue_mut(id);
-            const bool is_dying = world.dead_state(id);
+            const bool is_dying = world.is_dead(id);
             if (aq && is_dying) {
                 world.clear_anim_queue(id);
                 aq = nullptr;
@@ -3846,7 +3846,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             // Corpse override: placeholder models (no real texture) use the
             // corpse material for every submesh. Models with real textures
             // bind per-submesh below.
-            bool is_corpse = world.dead_state(id);
+            bool is_corpse = world.is_dead(id);
             bool has_own_texture = lm->diffuse_texture.texture.is_valid();
             bool use_corpse = is_corpse && !has_own_texture;
             if (!m_shadow_desc_set.is_valid()) continue;

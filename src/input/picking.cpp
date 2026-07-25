@@ -206,7 +206,7 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
         if (selectable_only) {
             if (auto* d = m_world->destructable(id); d && !d->selectable) continue;
         }
-        if (m_world->dead_state(id)) continue;
+        if (m_world->is_dead(id)) continue;
         if (auto* sf = m_world->status(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
 
@@ -278,7 +278,7 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
 
         auto* info = m_world->handle_info(id);
         if (!info || info->category != simulation::Category::Item) continue;
-        if (m_world->dead_state(id)) continue;
+        if (m_world->is_dead(id)) continue;
         // Skip items currently being carried (they're "inside" a unit).
         auto* car = m_world->carriable(id);
         if (car && simulation::is_non_null_handle(car->carried_by)) continue;
@@ -318,7 +318,7 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
     for (u32 id : m_world->selectable_ids()) {
         auto* info = m_world->handle_info(id);
         if (!info || info->category != simulation::Category::Unit) continue;
-        if (m_world->dead_state(id)) continue;
+        if (m_world->is_dead(id)) continue;
         if (auto* sf = m_world->status(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;
 

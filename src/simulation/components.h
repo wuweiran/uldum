@@ -61,6 +61,16 @@ struct Health {
     Unit killer{};
 };
 
+// Death is a DERIVED VIEW of health, not a stored flag: an entity is dead when
+// its health has been driven below this floor. The sim's kill path
+// (system_death) and the is_dead() predicate BOTH use this so host and client
+// (which only ever receives health, never a "dead" component) agree exactly.
+// `max > 0` guards placeholder Health{0,0} components (never "dead").
+inline constexpr f32 DEATH_THRESHOLD = 0.05f;
+inline bool health_is_dead(const Health* h) {
+    return h && h->max > 0 && h->current < DEATH_THRESHOLD;
+}
+
 // Map-defined states beyond HP (mana, energy, rage, etc.).
 struct StateValue {
     f32 current     = 0;
@@ -100,8 +110,18 @@ struct Movement {
     f32       turn_rate = 0;  // radians per second
     f32       collision_radius = 32.0f;  // per-unit collision radius (game units)
     MoveType  type      = MoveType::Ground;  // engine preset (pathfinding needs it)
-    u8        cliff_level = 0;  // current cliff level the unit is on
-    bool      moving    = false;
+    bool      moving    = false;  // synced to the client (walk anim); everything below is host-only Pathing
+};
+
+// Pathfinder / mover SCRATCH state — HOST-ONLY. The network client never runs
+// the movement or pathfinding systems, so none of this is meaningful there; it
+// is deliberately NOT created by spawn_client_entity, so client units don't
+// carry an empty A* corridor vector or stale cliff level. Only create_unit (host)
+// adds it, and only system_movement / system_collision / pathfinding read+write
+// it. `cliff_level` is a cache of terrain.cliff_level_at(pos); vision derives its
+// own value from terrain directly rather than reading this (works on both sides).
+struct Pathing {
+    u8        cliff_level = 0;  // current cliff level (terrain cache, refreshed on move)
 
     // Corridor from A* (cell path) and current straight-line waypoint.
     // Stored in pathing-cell coordinates (terrain tile × PATHING_SUBDIV);
@@ -178,7 +198,7 @@ struct Combat {
 };
 
 // Dead unit state — unit becomes a corpse, then eventually gets cleaned up.
-struct DeadState {
+struct Corpse {
     f32 corpse_timer   = 0;     // time since death
     f32 corpse_duration = 8.0f; // seconds corpse remains visible
     f32 cleanup_delay  = 30.0f; // seconds before entity is fully destroyed
