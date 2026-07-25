@@ -211,7 +211,7 @@ private:
     bool is_fog_hidden(const simulation::IWorldView& world, u32 id, const simulation::Transform& t) const;
     // Returns true if a static-remembered entity is being shown from
     // the player's *memory* (Explored tile) rather than live vision.
-    // Draw paths use this to apply the kFoggedMemoryAlpha dim cue.
+    // Draw paths use this to apply the kFoggedMemoryDim dim cue.
     bool is_in_fog_memory(const simulation::IWorldView& world, u32 id) const;
 
     rhi::Rhi* m_rhi = nullptr;

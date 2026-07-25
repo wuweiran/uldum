@@ -41,10 +41,13 @@ static constexpr const char* TAG = "Render";
 // with visual_alpha_mult: 0 if they want a different visual treatment.
 static constexpr f32 kInvisibleGhostAlpha = 0.5f;
 
-// Multiplier on a static-remembered entity (tree / doodad / building)
-// rendered from the player's *memory* of an Explored tile rather than
-// live vision. Reads as "scouted but no longer lit."
-static constexpr f32 kFoggedMemoryAlpha = 0.6f;
+// Color multiplier on a static-remembered entity (tree / doodad / building)
+// rendered from the player's *memory* of an Explored tile rather than live
+// vision. Reads as "scouted but no longer lit." Applied to base_color.rgb (the
+// model stays OPAQUE) — NOT to alpha: a translucent box shows its own far faces
+// through the near ones ("a crate drawn on a crate"). Mirrors terrain memory,
+// which darkens (lit_color *= fog) at full opacity.
+static constexpr f32 kFoggedMemoryDim = 0.6f;
 
 static f32 effective_visual_alpha(const simulation::IWorldView& world, u32 id,
                                   const simulation::Renderable& renderable) {
@@ -3300,7 +3303,11 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
             inst.material_index     = fallback.texture_index;
             inst.alpha              = effective_visual_alpha(world, id, renderable);
             inst.alpha_cutoff       = 0.0f;
-            if (is_in_fog_memory(world, id)) inst.alpha *= kFoggedMemoryAlpha;
+            if (is_in_fog_memory(world, id)) {
+                inst.base_color_factor.r *= kFoggedMemoryDim;
+                inst.base_color_factor.g *= kFoggedMemoryDim;
+                inst.base_color_factor.b *= kFoggedMemoryDim;
+            }
             buckets[gi].push_back(inst);
             continue;
         }
@@ -3315,7 +3322,7 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
 
         bool is_corpse = world.is_dead(id);
         f32  entity_alpha = effective_visual_alpha(world, id, renderable);
-        if (is_in_fog_memory(world, id)) entity_alpha *= kFoggedMemoryAlpha;
+        f32  mem_dim = is_in_fog_memory(world, id) ? kFoggedMemoryDim : 1.0f;
 
         // Emit one instance per submesh. Each lands in its own (geometry,
         // pipeline-class) draw group, so multi-draw-indirect dispatches
@@ -3352,6 +3359,9 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
             InstanceData inst{};
             inst.model              = model;
             inst.base_color_factor  = sm.base_color_factor;
+            inst.base_color_factor.r *= mem_dim;
+            inst.base_color_factor.g *= mem_dim;
+            inst.base_color_factor.b *= mem_dim;
             inst.material_index     = tex_idx;
             inst.alpha              = entity_alpha;
             inst.alpha_cutoff       = sm.alpha_cutoff;
@@ -3858,7 +3868,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Vertex,
                                0, sizeof(push), &push);
             f32 alpha_eff = effective_visual_alpha(world, id, renderable);
-            if (is_in_fog_memory(world, id)) alpha_eff *= kFoggedMemoryAlpha;
+            f32 mem_dim   = is_in_fog_memory(world, id) ? kFoggedMemoryDim : 1.0f;
 
             cmd.bind_vertex_buffer(0, lm->mesh.vertex_buffer);
             cmd.bind_index_buffer(lm->mesh.index_buffer, 0, rhi::IndexType::U32);
@@ -3874,7 +3884,11 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
 
                 struct { glm::vec4 visual; glm::vec4 factor; } fpush{
                     {alpha_eff, 0.0f, 0.0f, 0.0f},
-                    use_corpse ? glm::vec4{1, 1, 1, 1} : sm.base_color_factor };
+                    use_corpse ? glm::vec4{mem_dim, mem_dim, mem_dim, 1}
+                               : glm::vec4{sm.base_color_factor.r * mem_dim,
+                                           sm.base_color_factor.g * mem_dim,
+                                           sm.base_color_factor.b * mem_dim,
+                                           sm.base_color_factor.a} };
                 cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Fragment,
                                    sizeof(push), sizeof(fpush), &fpush);
                 cmd.draw_indexed(sm.mesh.index_count, 1, sm.mesh.first_index, 0, 0);

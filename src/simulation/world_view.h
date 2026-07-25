@@ -18,7 +18,7 @@ namespace uldum::simulation {
 // AUTH World; this is only "how does the view draw it":
 //   Live    — currently in live sight: render + animate normally.
 //   Memory  — a static shown from the player's memory (snapshot, out of live
-//             sight): dim (kFoggedMemoryAlpha) + freeze animation on last frame.
+//             sight): dim (kFoggedMemoryDim) + freeze animation on last frame.
 //   Hidden  — not in the view at all (never iterated; the enum value exists so
 //             fog_mode is total over any id).
 enum class FogVis : u8 { Hidden, Memory, Live };
