@@ -97,7 +97,7 @@ struct InputContext {
     // destructables (crates, trees), neutral-passive entities — they all
     // share the neutral palette entry rather than each carrying a kind.
     enum class TargetPingKind : u8 { Enemy, Ally, Neutral };
-    std::function<void(simulation::Unit unit, glm::vec3 world_pos, TargetPingKind kind)> target_ping_fn;
+    std::function<void(simulation::Widget unit, glm::vec3 world_pos, TargetPingKind kind)> target_ping_fn;
 };
 
 // Base class for input presets. Each preset translates raw input into
@@ -188,7 +188,7 @@ std::unique_ptr<InputPreset> create_preset(std::string_view name);
 // Position is sampled from the target's current transform. Returns nullopt
 // when the order isn't target-bound or the target has no transform.
 struct DerivedPing {
-    simulation::Unit unit;
+    simulation::Widget unit;
     glm::vec3        pos;
     InputContext::TargetPingKind kind;
 };

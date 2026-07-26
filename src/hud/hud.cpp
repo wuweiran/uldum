@@ -696,6 +696,7 @@ void Hud::update_focus(f32 /*dt*/) {
         s.focus_manual = false;
         return;
     }
+    // Only .id is read; the hero_owner-null guard below rejects a non-unit.
     auto hero = sel.selected().front();
     if (!world.contains(hero.id)) {
         s.focus_target_unit = simulation::Unit{};
@@ -1133,7 +1134,7 @@ void Hud::pickup_bar_update() {
         return;
     }
 
-    simulation::Unit unit = selected.front();
+    simulation::Unit unit = simulation::Unit{selected.front().id};
     const auto* owner = world.owner(unit.id);
     const auto* unit_tf = world.transform(unit.id);
     const auto* inventory = world.inventory(unit.id);
@@ -1392,7 +1393,8 @@ bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
     const auto& sel = s.world_ctx->selection->selected();
     if (sel.empty()) return false;
     const simulation::IWorldView& world = *s.world_ctx->world;
-    simulation::Unit lead = sel.front();
+    // Only .id is read; the own-player guard below rejects a non-unit selection.
+    auto lead = sel.front();
     const auto* own = world.owner(lead.id);
     if (!own || own->id != s.world_ctx->local_player.id) return false;
 
@@ -1871,7 +1873,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             simulation::Unit caster_unit{};
             if (s.world_ctx->selection &&
                 !s.world_ctx->selection->selected().empty()) {
-                caster_unit = s.world_ctx->selection->selected().front();
+                caster_unit = simulation::Unit{s.world_ctx->selection->selected().front().id};
             }
             f32 snap_r = std::max(64.0f, s.drag_cast.range * 0.15f);
             f32 best_d2 = snap_r * snap_r;
@@ -1928,7 +1930,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                     if (s.world_ctx->selection) {
                         for (auto u : s.world_ctx->selection->selected()) {
                             if (s.world_ctx->simulation->target_filter_passes(
-                                    def->target_filter, u, cand)) {
+                                    def->target_filter, simulation::Unit{u.id}, cand)) {
                                 any_can_cast = true; break;
                             }
                         }
@@ -2320,7 +2322,7 @@ Hud::AbilityAimState Hud::aim_state() const {
     if (!is_unit && !accept_point) return out;
 
     if (ctx.selection->selected().empty()) return out;
-    simulation::Unit caster_unit = ctx.selection->selected().front();
+    auto caster_unit = ctx.selection->selected().front();   // only .id is read
     const auto* caster_tf = ctx.world->transform(caster_unit.id);
     if (!caster_tf) return out;
 
@@ -2395,7 +2397,7 @@ Hud::AbilityAimState Hud::aim_state() const {
             // Batch cast: snap if ANY selected unit can target the candidate.
             bool any_can_cast = false;
             for (auto u : ctx.selection->selected()) {
-                if (ctx.simulation->target_filter_passes(def->target_filter, u, cand)) {
+                if (ctx.simulation->target_filter_passes(def->target_filter, simulation::Unit{u.id}, cand)) {
                     any_can_cast = true; break;
                 }
             }

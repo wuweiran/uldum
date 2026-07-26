@@ -321,16 +321,21 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         simulation::Unit target_unit;
         f32  target_x = 0, target_y = 0;
         std::string ability_id;
+        // GetOrderTargetUnit() is nil for a non-unit target (e.g. attacking a crate).
+        auto unit_if_unit = [this](simulation::Widget w) -> simulation::Unit {
+            return simulation::is_unit(m_sim->world(), w) ? simulation::Unit{w.id}
+                                                          : simulation::Unit{};
+        };
         std::visit([&](const auto& p) {
             using T = std::decay_t<decltype(p)>;
             if constexpr (std::is_same_v<T, simulation::orders::Move>) {
                 type_tag = "move";
-                if (simulation::is_non_null_handle(p.target_unit)) target_unit = p.target_unit;
+                target_unit = unit_if_unit(p.target_widget);
                 target_x = p.target.x; target_y = p.target.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
                 type_tag = "attack";
                 target_x = p.target.x; target_y = p.target.y;
-                if (simulation::is_non_null_handle(p.target_widget)) target_unit = p.target_widget;
+                target_unit = unit_if_unit(p.target_widget);
             } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
                 type_tag = "stop";
             } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
@@ -996,6 +1001,11 @@ void ScriptEngine::bind_api() {
 
     lua["IsUnitBuilding"] = [&](simulation::Unit unit) -> bool {
         return simulation::is_building(sim.world(), unit);
+    };
+
+    // IsUnit(handle) — is this handle a Unit (vs. destructable / item)?
+    lua["IsUnit"] = [&](u32 id) -> bool {
+        return simulation::is_unit(sim.world(), simulation::Handle{id});
     };
 
     lua["GetUnitTypeId"] = [&](simulation::Unit unit) -> std::string {
@@ -2925,7 +2935,10 @@ void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::
                     order_event.type = "attack";
                     order_event.target_x = payload.target.x;
                     order_event.target_y = payload.target.y;
-                    order_event.target_unit = payload.target_widget;
+                    // nil for a non-unit (crate) target.
+                    if (simulation::is_unit(m_sim->world(), payload.target_widget)) {
+                        order_event.target_unit = simulation::Unit{payload.target_widget.id};
+                    }
                 } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
                     order_event.type = "stop";
                 } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {

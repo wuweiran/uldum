@@ -62,12 +62,12 @@ public:
     // selectable_only: skip destructables flagged non-selectable (trees) — used by
     // click-selection so a left-click can't select a tree, while attack/cast
     // targeting (pick_target) still hits it.
-    simulation::Unit pick_widget(f32 screen_x, f32 screen_y,
-                                 simulation::Player player = {},
-                                 bool selectable_only = false) const;
+    simulation::Widget pick_widget(f32 screen_x, f32 screen_y,
+                                   simulation::Player player = {},
+                                   bool selectable_only = false) const;
 
-    // Pick the best targetable unit under screen coordinates (any ownership — for attack/cast targeting).
-    simulation::Unit pick_target(f32 screen_x, f32 screen_y) const;
+    // Pick the best targetable widget under screen coordinates (any ownership — for attack/cast targeting).
+    simulation::Widget pick_target(f32 screen_x, f32 screen_y) const;
 
     // Pick the closest ground item under screen coordinates. Used for
     // smart-order routing: right-click on an item issues PickupItem.

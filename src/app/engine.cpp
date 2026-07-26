@@ -661,7 +661,7 @@ bool Engine::start_session() {
                f32 target_x, f32 target_y, f32 target_z) {
             simulation::GameCommand cmd;
             cmd.player = m_selection.player();
-            cmd.units  = m_selection.selected();
+            cmd.units  = m_selection.selected_units(active_sim().world());
             simulation::orders::Cast c;
             c.ability_id = ability_id;
             if (target_unit_id != UINT32_MAX) {
@@ -693,7 +693,7 @@ bool Engine::start_session() {
                f32 target_x, f32 target_y, f32 target_z) {
             simulation::GameCommand cmd;
             cmd.player = m_selection.player();
-            cmd.units  = m_selection.selected();
+            cmd.units  = m_selection.selected_units(active_sim().world());
             const glm::vec3 wp{target_x, target_y, target_z};
             if (command_id == "move") {
                 simulation::orders::Move m;
@@ -704,9 +704,9 @@ bool Engine::start_session() {
                     // into the leader's collider).
                     const auto& world = active_sim().world();
                     if (world.handle_infos.has(target_unit_id)) {
-                        m.target_unit = simulation::Unit{target_unit_id};
-                        m.target      = wp;   // last-seen seed for the fog/removed seek
-                        m.range       = 96.0f;
+                        m.target_widget = simulation::Unit{target_unit_id};
+                        m.target        = wp;   // last-seen seed for the fog/removed seek
+                        m.range         = 96.0f;
                     } else {
                         m.target = wp;   // handle invalid mid-frame — fall back to ground
                     }
@@ -802,7 +802,7 @@ bool Engine::start_session() {
 
         simulation::GameCommand cmd;
         cmd.player = m_selection.player();
-        cmd.units  = m_selection.selected();
+        cmd.units  = m_selection.selected_units(active_sim().world());
         simulation::orders::DropItem d;
         d.item = item;
         d.pos  = world_pos;
@@ -815,7 +815,7 @@ bool Engine::start_session() {
     m_hud.set_inventory_swap_fn([this](i32 slot_a, i32 slot_b) {
         simulation::GameCommand cmd;
         cmd.player = m_selection.player();
-        cmd.units  = m_selection.selected();
+        cmd.units  = m_selection.selected_units(active_sim().world());
         cmd.order  = simulation::orders::SwapInventorySlot{slot_a, slot_b};
         m_commands.submit(cmd);
     });
@@ -1843,8 +1843,8 @@ void Engine::run() {
                     const auto& world = active_world();
                     const simulation::Player me = m_selection.player();
                     const auto& cur = m_selection.selected();
-                    // Selection can't mix players. The FIRST selected unit sets
-                    // the lead owner; any unit whose owner differs is dropped.
+                    // Selection can't mix players. The FIRST selected widget sets
+                    // the lead owner; any widget whose owner differs is dropped.
                     // This is what reacts to SetUnitOwner: a selected unit that
                     // changes hands no longer matches the lead → leaves the
                     // selection (and the HUD action bar refreshes for free).
@@ -1852,15 +1852,15 @@ void Engine::run() {
                     if (!cur.empty()) {
                         if (const auto* lo = world.owner(cur.front().id)) lead_owner = lo->id;
                     }
-                    auto keep = [&](simulation::Unit u) {
+                    auto keep = [&](simulation::Widget u) {
                         // View-side "alive": present in the view-world with
                         // positive projected health. (is_alive() is the
                         // auth-world predicate; here we read active_world().)
                         if (!world.contains(u.id)) return false;
                         const auto* h = world.health(u.id);
                         if (!h || h->current <= 0) return false;
-                        // Owner-homogeneity: drop if this unit's owner differs
-                        // from the first selected unit's (owner changed mid-select).
+                        // Owner-homogeneity: drop if this widget's owner differs
+                        // from the first selected widget's (owner changed mid-select).
                         const auto* own = world.owner(u.id);
                         u32 own_id = own ? own->id : UINT32_MAX;
                         if (own_id != lead_owner) return false;
@@ -1872,17 +1872,23 @@ void Engine::run() {
                         // on the AUTH World, a different, gameplay question).
                         return world.fog_mode(u.id) == simulation::FogVis::Live;
                     };
-                    bool any_gone = false;
-                    for (auto& u : cur) {
-                        if (!keep(u)) { any_gone = true; break; }
-                    }
-                    if (any_gone) {
-                        std::vector<simulation::Unit> live;
-                        live.reserve(cur.size());
-                        for (auto& u : cur) {
-                            if (keep(u)) live.push_back(u);
+                    // Prune dropped entities, preserving shape: first survivor
+                    // decides own-units group vs. lone view widget.
+                    std::vector<simulation::Widget> live;
+                    live.reserve(cur.size());
+                    for (auto w : cur) if (keep(w)) live.push_back(w);
+                    if (live.size() != cur.size()) {
+                        if (live.empty()) {
+                            m_selection.clear();
+                        } else if (const auto* lo = world.owner(live.front().id);
+                                   lo && lo->id == me.id) {
+                            std::vector<simulation::Unit> units;
+                            units.reserve(live.size());
+                            for (auto w : live) units.push_back(simulation::Unit{w.id});
+                            m_selection.select_multiple(std::move(units));
+                        } else {
+                            m_selection.select(live.front());   // lone view widget
                         }
-                        m_selection.select_multiple(std::move(live));
                     }
                 }
 
@@ -2006,7 +2012,7 @@ void Engine::run() {
                     preset_alpha,
                     jx, jy,
                     &m_hud,
-                    [this](simulation::Unit unit, glm::vec3 pos,
+                    [this](simulation::Widget unit, glm::vec3 pos,
                            input::InputContext::TargetPingKind kind) {
                         m_target_ping.unit     = unit;
                         m_target_ping.pos      = pos;

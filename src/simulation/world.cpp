@@ -581,18 +581,20 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
 
 // ── Unit API ───────────────────────────────────────────────────────────────
 
-void deal_damage(World& world, Unit source, Unit target, f32 amount, std::string_view damage_type) {
+void deal_damage(World& world, Unit source, Widget target, f32 amount, std::string_view damage_type) {
     if (!world.contains(target)) return;
     auto* hp = world.healths.get(target.id);
     if (!hp || hp->current <= 0) return;
 
-    // Invulnerable short-circuits before the on_damage script hook
-    // fires — no damage event observed for unhittable units.
-    if (unit_has_status(world, target, status::Invulnerable)) return;
-
-    // Let script engine intercept (fire on_damage event, may modify amount)
-    if (world.on_damage) {
-        world.on_damage(source, target, amount, damage_type);
+    // Invulnerability and the on_damage trigger are unit-only (a crate can't be
+    // invulnerable, and GetTriggerUnit is never a crate). Non-units skip both and
+    // take HP damage directly.
+    if (is_unit(world, target)) {
+        Unit u{target.id};
+        if (unit_has_status(world, u, status::Invulnerable)) return;
+        if (world.on_damage) {
+            world.on_damage(source, u, amount, damage_type);
+        }
     }
 
     if (amount <= 0) return;
@@ -662,7 +664,7 @@ void issue_order(World& world, Unit unit, Order order) {
     // immunity rejects hostile casts unless the ability has
     // pierces_immune. Allied / self casts (e.g. healing your ally who's
     // magic-immune) pass through the immunity check.
-    auto target_flags = [&](Unit t) -> u32 {
+    auto target_flags = [&](Widget t) -> u32 {
         if (is_null_handle(t) || !world.contains(t)) return 0;
         auto* sf = world.status_flags.get(t.id);
         return sf ? sf->flags : 0;
@@ -729,7 +731,7 @@ void issue_order(World& world, Unit unit, Order order) {
             if (def && !def->target_filter.self_) return;
         }
     } else if (auto* mv = std::get_if<orders::Move>(&order.payload)) {
-        if (is_non_null_handle(mv->target_unit) && mv->target_unit.id == unit.id) return;
+        if (is_non_null_handle(mv->target_widget) && mv->target_widget.id == unit.id) return;
     } else if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
         if (is_non_null_handle(atk->target_widget) && atk->target_widget.id == unit.id) return;
     }
@@ -852,6 +854,11 @@ bool is_dead(const World& world, Unit unit) {
 
 bool is_building(const World& world, Unit unit) {
     return world.contains(unit) && world.buildings.has(unit.id);
+}
+
+bool is_unit(const World& world, Handle h) {
+    const auto* info = world.handle_infos.get(h.id);
+    return info && info->category == Category::Unit;
 }
 
 // ── Destructable API ───────────────────────────────────────────────────────

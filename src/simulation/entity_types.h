@@ -43,10 +43,14 @@ inline bool is_non_null_handle(Handle h) {
     return is_non_null_entity(h);
 }
 
-// Typed gameplay handles — script-addressable, so they carry Handle vocabulary.
-struct Unit         : Handle {};
-struct Destructable : Handle {};
-struct Item         : Handle {};
+// Widget — the WC3 mid-tier: a Unit, Destructable, or Item. Common base so a
+// targetable thing (order/combat target, picker return) has one type.
+struct Widget : Handle {};
+
+// Unit / Destructable / Item are Widgets; Projectile is a handle but not a widget.
+struct Unit         : Widget {};
+struct Destructable : Widget {};
+struct Item         : Widget {};
 // Projectile is a transient agent (missile / bolt): unlike WC3 — where missile
 // art has no script identity — ours is script-addressable (CreateProjectile,
 // GetProjectile*, projectile_hit/destroyed events), so it's a real handle.

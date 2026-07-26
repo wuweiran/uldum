@@ -309,7 +309,7 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
         using T = std::decay_t<decltype(payload)>;
         if constexpr (std::is_same_v<T, simulation::orders::Move>) {
             w.write_vec3(payload.target);
-            w.write_u32(payload.target_unit.id);
+            w.write_u32(payload.target_widget.id);
             w.write_f32(payload.range);
         } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
             w.write_vec3(payload.target);

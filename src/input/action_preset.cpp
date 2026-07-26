@@ -40,13 +40,13 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
         if (id == "stop") {
             GameCommand cmd;
             cmd.player = ctx.selection.player();
-            cmd.units  = ctx.selection.selected();
+            cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
             cmd.order  = simulation::orders::Stop{};
             ctx.commands.submit(cmd);
         } else if (id == "hold_position") {
             GameCommand cmd;
             cmd.player = ctx.selection.player();
-            cmd.units  = ctx.selection.selected();
+            cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
             cmd.order  = simulation::orders::HoldPosition{};
             ctx.commands.submit(cmd);
         } else if (id == "attack" && ctx.hud) {
@@ -55,7 +55,7 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
                 !ctx.selection.empty()) {
                 GameCommand cmd;
                 cmd.player = ctx.selection.player();
-                cmd.units  = ctx.selection.selected();
+                cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
                 cmd.order  = simulation::orders::Attack{focus};
                 ctx.commands.submit(cmd);
             }
@@ -173,7 +173,7 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     // naturally idles next tick. No latch tracking, no Stop emission.
     GameCommand cmd;
     cmd.player = sel.player();
-    cmd.units  = sel.selected();
+    cmd.units  = sel.selected_units(ctx.simulation.world());
     cmd.order  = simulation::orders::MoveDirection{dir};
     ctx.commands.submit(cmd);
     m_last_move_emit = now;
@@ -215,12 +215,12 @@ bool ActionPreset::handle_targeting(const InputContext& ctx) {
             // need its scope extended when those forms ship.
             simulation::Unit target{};
             if (def->widget_kinds != 0) {
-                target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+                target = simulation::Unit{ctx.picker.pick_target(input.mouse_x, input.mouse_y).id};
             }
             if (simulation::is_non_null_handle(target)) {
                 GameCommand cmd;
                 cmd.player = sel.player();
-                cmd.units  = sel.selected();
+                cmd.units  = sel.selected_units(ctx.simulation.world());
                 cmd.order  = simulation::orders::Cast{m_targeting_ability_id, target, {}};
                 cmd.queued = input.key_shift;
                 ctx.commands.submit(cmd);
@@ -229,7 +229,7 @@ bool ActionPreset::handle_targeting(const InputContext& ctx) {
                 if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                     GameCommand cmd;
                     cmd.player = sel.player();
-                    cmd.units  = sel.selected();
+                    cmd.units  = sel.selected_units(ctx.simulation.world());
                     cmd.order  = simulation::orders::Cast{m_targeting_ability_id, {}, world_pos};
                     cmd.queued = input.key_shift;
                     ctx.commands.submit(cmd);
@@ -265,7 +265,7 @@ void ActionPreset::handle_focus_click(const InputContext& ctx) {
         // the reticle sit on the player.
         auto& sel = ctx.selection;
         if (!sel.empty() && target.id == sel.selected().front().id) return;
-        ctx.hud->set_focus_target(target);
+        ctx.hud->set_focus_target(simulation::Unit{target.id});
     } else {
         // Click on empty terrain — release any manual lock so auto
         // resumes choosing.
@@ -290,7 +290,7 @@ void ActionPreset::handle_pickup_click(const InputContext& ctx) {
 
     GameCommand cmd;
     cmd.player = sel.player();
-    cmd.units  = sel.selected();
+    cmd.units  = sel.selected_units(ctx.simulation.world());
     cmd.order  = simulation::orders::PickupItem{item};
     ctx.commands.submit(cmd);
     // Yellow item ping, matching RTS right-click.
@@ -411,7 +411,7 @@ void ActionPreset::dispatch_ability(const InputContext& ctx,
     if (def->form == simulation::AbilityForm::Instant) {
         GameCommand cmd;
         cmd.player = sel.player();
-        cmd.units  = sel.selected();
+        cmd.units  = sel.selected_units(ctx.simulation.world());
         cmd.order  = simulation::orders::Cast{std::string(ability_id), {}, {}};
         cmd.queued = queued_modifier;
         ctx.commands.submit(cmd);

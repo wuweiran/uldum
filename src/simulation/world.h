@@ -339,8 +339,9 @@ f32 unit_fly_height(const World& world, u32 id);
 
 void     issue_order(World& world, Unit unit, Order order);
 
-// Deal damage with type. Fires on_damage callback if set.
-void     deal_damage(World& world, Unit source, Unit target, f32 amount, std::string_view damage_type = "attack");
+// Deal damage. Fires on_damage (units only). `target` is a Widget — crates take
+// damage too; `source` is always a Unit.
+void     deal_damage(World& world, Unit source, Widget target, f32 amount, std::string_view damage_type = "attack");
 
 // ── Ability API ───────────────────────────────────────────────────────────
 
@@ -388,7 +389,7 @@ void     ability_pay_cost(World& world, u32 unit_id,
 // acquisition and the input layer's reject feedback. When it returns false and
 // `out_specifier` is non-null, `*out_specifier` is set to the target's class
 // name ("air"/"tree"/…) for a reject message.
-bool     can_attack_target(const World& world, u8 target_mask, Unit target,
+bool     can_attack_target(const World& world, u8 target_mask, Widget target,
                            std::string* out_specifier = nullptr);
 void     recalculate_modifiers(World& world, u32 id);
 
@@ -406,7 +407,7 @@ void     flag_refcount_delta(World& world, u32 id,
 // the projectile sits at the source point — Lua uses this window to
 // attach triggers and side-table state.
 Projectile create_projectile(World& world, Unit source, const std::string& model, glm::vec3 launch_local = glm::vec3{0.0f});
-void emit_projectile_target(World& world, Projectile projectile, Unit target, f32 speed, f32 arc_height);
+void emit_projectile_target(World& world, Projectile projectile, Widget target, f32 speed, f32 arc_height);
 void emit_projectile_loc(World& world, Projectile projectile, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance);
 void destroy_projectile(World& world, Projectile projectile);
@@ -433,6 +434,8 @@ Player   get_owner(const World& world, Unit unit);
 bool     is_alive(const World& world, Unit unit);
 bool     is_dead(const World& world, Unit unit);
 bool     is_building(const World& world, Unit unit);
+// Is this handle a Unit (vs. Destructable / Item / Doodad / Projectile)?
+bool     is_unit(const World& world, Handle h);
 
 // ── Destructable API ───────────────────────────────────────────────────────
 

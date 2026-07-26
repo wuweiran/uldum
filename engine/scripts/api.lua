@@ -273,6 +273,11 @@ function IsUnitHero(unit) end
 ---@return boolean
 function IsUnitBuilding(unit) end
 
+--- Check if a handle is a Unit (as opposed to a destructable, item, etc.).
+---@param handle any
+---@return boolean
+function IsUnit(handle) end
+
 --- Get the unit's type id string.
 ---@param unit unit
 ---@return string

@@ -9,6 +9,8 @@
 
 namespace uldum::simulation {
 
+struct World;
+
 static constexpr u32 MAX_SELECTION = 24;
 static constexpr u32 NUM_CONTROL_GROUPS = 10;
 
@@ -22,43 +24,38 @@ public:
     Player player() const { return m_player; }
 
     // ── Selection ─────────────────────────────────────────────────────────
+    // Two shapes, enforced at the input layer: N of your own units
+    // (commandable), or exactly one other widget (foreign unit / crate,
+    // view-only). Never mixed — so the first element decides for the whole set.
 
-    const std::vector<Unit>& selected() const { return m_selected; }
+    const std::vector<Widget>& selected() const { return m_selected; }
     bool empty() const { return m_selected.empty(); }
     u32  count() const { return static_cast<u32>(m_selected.size()); }
 
-    // Replace selection with a single unit.
-    void select(Unit unit);
+    // Command recipients: the selection as units, but empty unless the first
+    // element is one of the local player's own units. This is why orders never
+    // reach a view-only widget — no recipients.
+    std::vector<Unit> selected_units(const World& world) const;
 
-    // Replace selection with multiple units (clamped to MAX_SELECTION).
-    void select_multiple(std::vector<Unit> units);
-
-    // Toggle a unit in/out of selection (shift-click).
-    void toggle(Unit unit);
-
-    // Clear selection.
+    void select(Widget widget);                    // single widget (any)
+    void select_multiple(std::vector<Unit> units); // own-units group
+    void toggle(Unit unit);                        // shift-click own unit
     void clear();
-
-    // Check if a unit is selected.
-    bool is_selected(Unit unit) const;
+    bool is_selected(Widget widget) const;
 
     // Selection change callback (fired after any mutation).
     std::function<void()> on_change;
 
     // ── Control groups ────────────────────────────────────────────────────
-
-    // Assign current selection to group N (0-9).
-    void assign_group(u32 group);
-
-    // Recall group N — replace current selection.
+    // Groups hold own units only, so mutators take the world to resolve
+    // the current selection to its command recipients.
+    void assign_group(const World& world, u32 group);
     void recall_group(u32 group);
-
-    // Add current selection to group N.
-    void add_to_group(u32 group);
+    void add_to_group(const World& world, u32 group);
 
 private:
     Player m_player;
-    std::vector<Unit> m_selected;
+    std::vector<Widget> m_selected;
     std::array<std::vector<Unit>, NUM_CONTROL_GROUPS> m_groups;
 };
 

@@ -288,11 +288,11 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 // capture). Once it fogs or is removed, seek that last-seen point
                 // and end on arrival — never read a hidden entity's live
                 // transform (anti-leak), the same rule Attack uses.
-                if (is_non_null_handle(m->target_unit)) {
+                if (is_non_null_handle(m->target_widget)) {
                     auto* owner = world.owners.get(id);
-                    bool visible = world.contains(m->target_unit) &&
-                                   (!owner || grid.is_visible_to(world, m->target_unit.id, *owner));
-                    auto* tt = visible ? world.transforms.get(m->target_unit.id) : nullptr;
+                    bool visible = world.contains(m->target_widget) &&
+                                   (!owner || grid.is_visible_to(world, m->target_widget.id, *owner));
+                    auto* tt = visible ? world.transforms.get(m->target_widget.id) : nullptr;
                     if (tt) {
                         m->target = tt->position;      // refresh last-seen
                         goal2d = {tt->position.x, tt->position.y};
@@ -661,7 +661,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 // ── Helper: deal attack damage ────────────────────────────────────────────
 // Uses the unified deal_damage() from world.cpp which fires the on_damage callback.
 
-static void deal_attack_damage(World& world, Unit source, Unit target, f32 amount) {
+static void deal_attack_damage(World& world, Unit source, Widget target, f32 amount) {
     deal_damage(world, source, target, amount, "attack");
 }
 
@@ -722,7 +722,7 @@ Projectile create_projectile(World& world, Unit source, const std::string& model
     return Projectile{h.id};
 }
 
-void emit_projectile_target(World& world, Projectile proj_unit, Unit target, f32 speed, f32 arc_height) {
+void emit_projectile_target(World& world, Projectile proj_unit, Widget target, f32 speed, f32 arc_height) {
     if (!world.contains(proj_unit)) return;
     auto* p = world.projectiles.get(proj_unit.id);
     if (!p) return;
@@ -753,7 +753,7 @@ void emit_projectile_loc(World& world, Projectile proj_unit, glm::vec3 loc, f32 
 // Back-compat for auto-attack call site below — spawns + emits in one
 // step with is_attack=true. Will be inlined / removed once the combat
 // system uses the full Lua-style API directly.
-static Projectile spawn_attack_projectile(World& world, Unit source, Unit target,
+static Projectile spawn_attack_projectile(World& world, Unit source, Widget target,
                                      f32 damage, const ProjectileSpec& spec) {
     Projectile u = create_projectile(world, source, spec.model, spec.launch);  // "" → default "projectile" mesh
     if (is_null_handle(u)) return u;
@@ -772,7 +772,7 @@ static Projectile spawn_attack_projectile(World& world, Unit source, Unit target
 // a class bit (AIR / GROUND / STRUCTURE) from its `classifications`. The attack
 // must carry the target's bit. This is what stops a ground attack hitting a
 // flyer (flyer is classified "air") or an ordinary unit chopping trees.
-bool can_attack_target(const World& world, u8 target_mask, Unit target,
+bool can_attack_target(const World& world, u8 target_mask, Widget target,
                        std::string* out_specifier) {
     u8 target_bits;
     if (const auto* d = world.destructables.get(target.id)) {
@@ -853,7 +853,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
 
         // Target: the order's explicit widget, else combat.target (auto-acquired).
-        Unit target;
+        Widget target;
         if (has_widget) {
             target = attack_order->target_widget;
         } else {
@@ -1827,12 +1827,12 @@ void system_projectile(World& world, float dt) {
                 f32 dist_h = glm::length(to_h);
                 if (dist_h < proj.hit_radius) {
                     Projectile pu = world.projectile(id);
-                    Unit target = proj.target;
+                    Widget target = proj.target;
                     Unit source = proj.source;
                     f32 damage  = proj.damage;
                     bool attack = proj.is_attack;
-                    if (world.contains(target) && world.on_projectile_hit) {
-                        world.on_projectile_hit(pu, target);
+                    if (is_unit(world, target) && world.on_projectile_hit) {
+                        world.on_projectile_hit(pu, Unit{target.id});
                     }
                     if (!world.contains(pu)) continue;
                     if (attack && world.contains(target)) {
@@ -1863,12 +1863,12 @@ void system_projectile(World& world, float dt) {
             f32 dist = glm::length(to);
             if (dist < proj.hit_radius) {
                 Projectile pu = world.projectile(id);
-                Unit target = proj.target;
+                Widget target = proj.target;
                 Unit source = proj.source;
                 f32 damage  = proj.damage;
                 bool attack = proj.is_attack;
-                if (world.contains(target) && world.on_projectile_hit) {
-                    world.on_projectile_hit(pu, target);
+                if (is_unit(world, target) && world.on_projectile_hit) {
+                    world.on_projectile_hit(pu, Unit{target.id});
                 }
                 if (!world.contains(pu)) continue;
                 if (attack && world.contains(target)) {

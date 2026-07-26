@@ -228,7 +228,7 @@ bool ability_can_afford(const IWorldView& world, u32 unit_id,
     return true;
 }
 
-bool can_attack_target(const IWorldView& world, u8 target_mask, Unit target) {
+bool can_attack_target(const IWorldView& world, u8 target_mask, Widget target) {
     u8 target_bits;
     if (const auto* d = world.destructable(target.id)) {
         target_bits = d->target_bit;

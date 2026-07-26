@@ -22,16 +22,9 @@ static bool key_pressed(bool current, bool& prev) {
 }
 
 void RtsPreset::commit(const InputContext& ctx, const GameCommand& cmd) {
-    // Guard: the local player must actually CONTROL the selected units. You can
-    // view-select foreign units (an enemy's, a neutral crate), but issuing an
-    // order through them is doomed — the server's order pipeline drops it on
-    // ownership. Firing the local ping anyway is misleading feedback (a white/red
-    // flash for an order that never happens). Selection can't mix players, so the
-    // first unit's owner decides for the whole batch.
-    if (!cmd.units.empty()) {
-        const auto* o = ctx.simulation.world().owners.get(cmd.units.front().id);
-        if (!o || o->id != cmd.player.id) return;   // don't submit or ping
-    }
+    // A view-only selection yields no recipients → empty cmd.units. Don't submit
+    // or ping (right-clicking with a non-commandable selection does nothing).
+    if (cmd.units.empty()) return;
 
     ctx.commands.submit(cmd);
     // Local-input feedback: flash the target ping if this order landed on a
@@ -189,8 +182,12 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 if (simulation::is_non_null_handle(unit)) {
                     auto* own = ctx.simulation.world().owners.get(unit.id);
                     bool is_own = own && own->id == sel.player().id;
-                    if (input.key_shift && is_own) sel.toggle(unit);
-                    else                           sel.select(unit);
+                    if (is_own) {
+                        if (input.key_shift) sel.toggle(simulation::Unit{unit.id});
+                        else                 sel.select(unit);
+                    } else if (!input.key_shift) {
+                        sel.select(unit);   // foreign unit / crate → view-only
+                    }
                 }
                 // No unit found: don't change selection
             }
@@ -260,14 +257,14 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 bool target_picked = false;
                 std::string reject_specifier;
                 if (def->widget_kinds != 0) {
-                    target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
+                    target = simulation::Unit{ctx.picker.pick_target(input.mouse_x, input.mouse_y).id};
                     if (simulation::is_non_null_handle(target)) {
                         target_picked = true;
                         // Batch cast: valid if ANY selected unit can target
                         // it (each unit that can't is dropped by the sim).
                         for (auto u : sel.selected()) {
                             if (ctx.simulation.target_filter_passes(
-                                    def->target_filter, u, target, &reject_specifier)) {
+                                    def->target_filter, simulation::Unit{u.id}, target, &reject_specifier)) {
                                 target_ok = true; break;
                             }
                         }
@@ -276,7 +273,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 if (target_ok) {
                     GameCommand cmd;
                     cmd.player = sel.player();
-                    cmd.units  = sel.selected();
+                    cmd.units  = sel.selected_units(ctx.simulation.world());
                     cmd.order  = simulation::orders::Cast{m_target_ability_id, target, {}};
                     cmd.queued = input.key_shift;
                     commit(ctx, cmd);   // cast on a unit → fires Enemy/Ally ping
@@ -288,7 +285,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                     if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                         GameCommand cmd;
                         cmd.player = sel.player();
-                        cmd.units  = sel.selected();
+                        cmd.units  = sel.selected_units(ctx.simulation.world());
                         cmd.order  = simulation::orders::Cast{m_target_ability_id, {}, world_pos};
                         cmd.queued = input.key_shift;
                         ctx.commands.submit(cmd);
@@ -324,15 +321,15 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         if (!sel.empty()) {
             GameCommand cmd;
             cmd.player = sel.player();
-            cmd.units  = sel.selected();
+            cmd.units  = sel.selected_units(ctx.simulation.world());
             cmd.queued = input.key_shift;
 
             auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
             if (simulation::is_non_null_handle(target)) {
-                // Follow any unit — Move with target_unit set; the sim
+                // Follow any unit — Move with target_widget set; the sim
                 // re-resolves the goal from its position each tick.
                 simulation::orders::Move m;
-                m.target_unit = target;
+                m.target_widget = target;
                 if (const auto* t = ctx.view.transform(target.id)) m.target = t->position;
                 m.range       = 96.0f;   // same follow distance as smart-click
                 cmd.order     = std::move(m);
@@ -376,12 +373,12 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 }
                 GameCommand cmd;
                 cmd.player = sel.player();
-                cmd.units  = sel.selected();
+                cmd.units  = sel.selected_units(ctx.simulation.world());
                 // Seed the point with the target's view position — the fog/death
                 // last-seen fallback (see the smart-click branch below).
                 glm::vec3 tpos{0.0f};
                 if (const auto* t = ctx.view.transform(target.id)) tpos = t->position;
-                cmd.order  = simulation::orders::Attack{tpos, simulation::Unit{target}};
+                cmd.order  = simulation::orders::Attack{tpos, target};
                 cmd.queued = input.key_shift;
                 commit(ctx, cmd);   // submits + fires the red Enemy ping
             } else {
@@ -390,7 +387,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                     GameCommand cmd;
                     cmd.player = sel.player();
-                    cmd.units  = sel.selected();
+                    cmd.units  = sel.selected_units(ctx.simulation.world());
                     cmd.order  = simulation::orders::Attack{world_pos};
                     cmd.queued = input.key_shift;
                     ctx.commands.submit(cmd);
@@ -421,7 +418,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         if (simulation::is_non_null_handle(picked_item)) {
             GameCommand cmd;
             cmd.player = sel.player();
-            cmd.units  = sel.selected();
+            cmd.units  = sel.selected_units(ctx.simulation.world());
             cmd.order  = simulation::orders::PickupItem{picked_item};
             cmd.queued = input.key_shift;
             commit(ctx, cmd);   // submits + fires the yellow Item ping
@@ -467,7 +464,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                     GameCommand mv;
                     mv.player = sel.player();
-                    mv.units  = sel.selected();
+                    mv.units  = sel.selected_units(ctx.simulation.world());
                     mv.order  = simulation::orders::Move{world_pos};
                     mv.queued = input.key_shift;
                     ctx.commands.submit(mv);
@@ -477,7 +474,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
 
             GameCommand cmd;
             cmd.player = sel.player();
-            cmd.units  = sel.selected();
+            cmd.units  = sel.selected_units(ctx.simulation.world());
             cmd.queued = input.key_shift;
 
             if (is_enemy || is_destructable) {
@@ -488,7 +485,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 // applies to a mobile enemy as well as a static widget.
                 glm::vec3 tpos{0.0f};
                 if (const auto* t = view.transform(target.id)) tpos = t->position;
-                cmd.order = simulation::orders::Attack{tpos, simulation::Unit{target}};
+                cmd.order = simulation::orders::Attack{tpos, target};
             } else {
                 // Friendly unit — Follow. Same Move order, just with
                 // the target_unit slot filled in instead of a fixed
@@ -499,7 +496,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 // radius is a small follow distance so we don't push
                 // into the followed unit's collision circle.
                 simulation::orders::Move m;
-                m.target_unit = simulation::Unit{target};
+                m.target_widget = target;
                 if (const auto* t = view.transform(target.id)) m.target = t->position;
                 m.range       = 96.0f;   // follow distance — beyond collision_radius * 2
                 cmd.order     = std::move(m);
@@ -513,7 +510,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                 GameCommand cmd;
                 cmd.player = sel.player();
-                cmd.units  = sel.selected();
+                cmd.units  = sel.selected_units(ctx.simulation.world());
                 cmd.order  = simulation::orders::Move{world_pos};
                 cmd.queued = input.key_shift;
                 ctx.commands.submit(cmd);
@@ -533,7 +530,7 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
     if (bindings.action_pressed("stop", input) && !sel.empty()) {
         GameCommand cmd;
         cmd.player = sel.player();
-        cmd.units  = sel.selected();
+        cmd.units  = sel.selected_units(ctx.simulation.world());
         cmd.order  = simulation::orders::Stop{};
         cmd.queued = input.key_shift;
         ctx.commands.submit(cmd);
@@ -543,7 +540,7 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
     if (bindings.action_pressed("hold", input) && !sel.empty()) {
         GameCommand cmd;
         cmd.player = sel.player();
-        cmd.units  = sel.selected();
+        cmd.units  = sel.selected_units(ctx.simulation.world());
         cmd.order  = simulation::orders::HoldPosition{};
         cmd.queued = input.key_shift;
         ctx.commands.submit(cmd);
@@ -563,7 +560,7 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
     for (u32 i = 0; i < 10; ++i) {
         if (key_pressed(input.key_num[i], m_prev_key_num[i])) {
             if (input.key_ctrl) {
-                sel.assign_group(i);
+                sel.assign_group(ctx.simulation.world(), i);
             } else {
                 sel.recall_group(i);
             }
@@ -626,7 +623,7 @@ void RtsPreset::dispatch_ability(const InputContext& ctx,
     if (def->form == simulation::AbilityForm::Instant) {
         GameCommand cmd;
         cmd.player = sel.player();
-        cmd.units  = sel.selected();
+        cmd.units  = sel.selected_units(ctx.simulation.world());
         cmd.order  = simulation::orders::Cast{std::string(ability_id), {}, {}};
         cmd.queued = queued_modifier;
         ctx.commands.submit(cmd);
@@ -654,14 +651,14 @@ void RtsPreset::dispatch_command(const InputContext& ctx,
         cancel_targeting();
         GameCommand cmd;
         cmd.player = sel.player();
-        cmd.units  = sel.selected();
+        cmd.units  = sel.selected_units(ctx.simulation.world());
         cmd.order  = simulation::orders::Stop{};
         ctx.commands.submit(cmd);
     } else if (command_id == "hold_position") {
         cancel_targeting();
         GameCommand cmd;
         cmd.player = sel.player();
-        cmd.units  = sel.selected();
+        cmd.units  = sel.selected_units(ctx.simulation.world());
         cmd.order  = simulation::orders::HoldPosition{};
         ctx.commands.submit(cmd);
     } else if (command_id == "attack") {

@@ -147,7 +147,7 @@ struct Pathing {
 
     // Approach mode: set by combat/cast to request movement toward a target.
     // Movement system handles pathfinding + stepping; requester just checks distance.
-    Unit      approach_target;          // entity to approach (dynamic position)
+    Widget    approach_target;          // widget to approach (dynamic position: unit, crate, or item)
     glm::vec2 approach_goal{0};         // fixed position to approach (when no entity target)
     f32       approach_range = 0;       // stop when within this distance (0 = disabled)
 
@@ -194,7 +194,7 @@ struct Combat {
     // Runtime state
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;
-    Unit        target;
+    Widget      target;   // Unit or Destructable — the thing being attacked
 };
 
 // Dead unit state — unit becomes a corpse, then eventually gets cleaned up.
@@ -459,7 +459,7 @@ struct Carriable {
 
 struct ProjectileComp {
     Unit        source;
-    Unit        target;                  // homing target (invalid for Linear)
+    Widget      target;                  // homing target (invalid for Linear) — Unit or Destructable
     glm::vec3   target_pos{0.0f};        // linear terminus or fallback for Homing on target loss
     f32         speed         = 0;
     f32         arc_height    = 0;       // peak height of a ballistic arc (game units). 0 = straight/flat flight.

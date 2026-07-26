@@ -280,7 +280,7 @@ private:
     // valid, the ring follows the unit's interpolated position; if not,
     // it stays at `pos`.
     struct TargetPing {
-        simulation::Unit unit{};       // invalid → use `pos`
+        simulation::Widget unit{};     // invalid → use `pos`
         glm::vec3        pos{0.0f};
         input::InputContext::TargetPingKind kind = input::InputContext::TargetPingKind::Ally;
         // Start ALREADY EXPIRED (age >= lifespan) so no ping draws until a real

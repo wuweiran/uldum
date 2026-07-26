@@ -99,8 +99,8 @@ struct WorldContext {
     // that need them gate on a truthy check so headless / editor uses
     // can leave them unset.
     std::function<simulation::Item(f32 sx, f32 sy)>            pick_item;
-    std::function<simulation::Unit(f32 sx, f32 sy)>            pick_target;
-    std::function<simulation::Unit(f32 sx, f32 sy)>            pick_unit_local;  // own units only (Player = local)
+    std::function<simulation::Widget(f32 sx, f32 sy)>          pick_target;
+    std::function<simulation::Widget(f32 sx, f32 sy)>          pick_unit_local;  // own units only (Player = local)
     std::function<bool(f32 sx, f32 sy, glm::vec3& world_pos)>  screen_to_world;
 
     // Camera yaw in radians — read by Hud's data-side drag-cast logic

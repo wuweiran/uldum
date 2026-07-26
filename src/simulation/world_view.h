@@ -255,6 +255,6 @@ f32  unit_fly_height(const IWorldView& world, u32 id);
 bool ability_can_afford(const IWorldView& world, u32 unit_id,
                         const std::map<std::string, f32>& cost,
                         std::string* out_lacking = nullptr);
-bool can_attack_target(const IWorldView& world, u8 target_mask, Unit target);
+bool can_attack_target(const IWorldView& world, u8 target_mask, Widget target);
 
 } // namespace uldum::simulation

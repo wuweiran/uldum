@@ -34,15 +34,16 @@ Key points from WC3:
 - **Hero IS a Unit** — same type, just has the HERO flag plus level/XP/inventory
 - **Item is NOT a Destructable** — they are siblings under Widget
 - **Doodad** is not in the type system — purely visual, outside the gameplay model
-- **Projectile** is also not in the type system — a visual effect, not a gameplay object
+- **Projectile** is a script-addressable Handle (CreateProjectile, hit/destroyed events) but
+  NOT a Widget — a transient agent, not a targetable/damageable object
 
 ### Uldum Hierarchy
 
-Same model, expressed as **component sets** rather than class inheritance.
-Each "type" in the hierarchy is defined by which components a handle receives at creation.
+The handle *types* mirror WC3's inheritance (`Widget : Handle`, `Unit/Destructable/Item : Widget`),
+but *behavior* is the component set each type receives at creation. The tree shows that layering.
 
 ```
-Handle (monotonic u32 id)
+Handle (monotonic u32 id — script-addressable)
 │
 ├── Widget (Transform + Health + Selectable)
 │   │
@@ -71,11 +72,17 @@ Handle (monotonic u32 id)
 │   └── Item (Widget + ItemInfo + Carriable)
 │              e.g. Potion, Sword, Scroll
 │
-├── Doodad (Transform + Renderable only — NOT a Widget, no gameplay)
-│            e.g. Flower, Signpost, Fence
-│
 └── Projectile (Transform + Projectile + Renderable — transient, NOT a Widget)
                  e.g. Arrow, Fireball, Frost Bolt
+```
+
+Doodad is NOT a Handle — a bare Entity (`struct Doodad : Entity`), the one type
+with no script binding. Pure decoration, addressable only by its internal ECS id
+(WC3 has no `doodad` handle type):
+
+```
+Doodad (Transform + Renderable only — NOT a Handle, no gameplay)
+         e.g. Flower, Signpost, Fence
 ```
 
 ### Three Levels
@@ -98,10 +105,11 @@ hold a handle reference.
 JASS                          Uldum C++                    Uldum Lua
 ────                          ──────────                   ─────────
 handle (base)                 Handle { id }                (not exposed)
-├── unit                      Unit   : Handle              Unit
-├── destructable              Destructable : Handle        Destructable
-├── item                      Item   : Handle              Item
-└── player                    Player { u32 id }            Player
+└── widget                    Widget : Handle              (not exposed)
+    ├── unit                  Unit   : Widget              Unit
+    ├── destructable          Destructable : Widget        Destructable
+    └── item                  Item   : Widget              Item
+player                        Player { u32 id }            Player
 ```
 
 Each typed handle holds a monotonic `id`. IDs are never reused while a `World`
@@ -111,7 +119,8 @@ checks the `HandleInfo` pool to determine whether an ID is currently present. An
 old handle therefore resolves to no entity rather than aliasing a new one.
 
 - **Type safety**: you cannot pass an Item where a Unit is expected — enforced at
-  compile time in C++ and at runtime in Lua.
+  compile time in C++ and at runtime in Lua. `Widget` is the shared base, so a
+  targetable thing (attack/move/combat target, picker return) is typed `Widget`.
 - **Stable identity**: a destroyed id is permanently retired for that game session.
 - Component pools use paged sparse indices, so large monotonic ids do not force
   every pool to allocate one contiguous sparse array.
@@ -120,10 +129,16 @@ old handle therefore resolves to no entity rather than aliasing a new one.
 // Base handle — shared by all game object types
 struct Handle { u32 id; };
 
-// Typed handles — distinct types, same layout
-struct Unit          : Handle {};
-struct Destructable  : Handle {};
-struct Item          : Handle {};
+// Widget — WC3 mid-tier: anything with position + health that can be targeted /
+// damaged / selected. The common base for the three targetable handle types.
+struct Widget        : Handle {};
+
+// Typed handles — distinct types, same layout. Unit/Destructable/Item are Widgets;
+// Projectile is a handle but NOT a widget (transient agent, not a damage target).
+struct Unit          : Widget {};
+struct Destructable  : Widget {};
+struct Item          : Widget {};
+struct Projectile    : Handle {};
 struct Player        { u32 id; };
 ```
 
@@ -971,10 +986,13 @@ struct World {
 // ── Typed Game Objects ─────────────────────────────────────────
 // Public-facing types. Each holds a stable session id.
 // These are what C++ game code and Lua scripts work with.
+// Unit / Destructable / Item share the Widget base (targetable things);
+// Projectile is a handle but not a widget.
 
-struct Unit          { u32 id; };
-struct Destructable  { u32 id; };
-struct Item          { u32 id; };
+struct Widget        : Handle {};
+struct Unit          : Widget {};
+struct Destructable  : Widget {};
+struct Item          : Widget {};
 struct Player        { u32 id; };
 
 // ── Creation (free functions) ──────────────────────────────────

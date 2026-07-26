@@ -12,35 +12,24 @@
 namespace uldum::simulation {
 
 namespace orders {
-    // Unified movement order. Three flavors fall out of the same struct:
-    //   • Point click (Move):     target_unit invalid, target = point,    range = 0
-    //   • Smart-click ally:       target_unit = ally,  range = follow-cluster radius
-    //   • Hold position-of-X:     target_unit = X,     range = stop radius
-    // Termination policy:
-    //   • Point + range==0  → ends on arrival OR stuck-timeout
-    //   • Unit  + range>0   → never ends on arrival (keep tracking),
-    //                          ends only when target dies / leaves vision
-    //                          or a new order replaces it
-    // Per-tick the simulation re-resolves the goal from `target_unit` when
-    // it's valid, otherwise from `target`. This is what makes "Follow" a
-    // free emergent behavior of the same primitive.
+    // Move / Follow. target_widget invalid → move to `target` point. Valid →
+    // follow it while visible (host refreshes `target` to its live pos); on
+    // fog/removal, seek that last-seen point and end on arrival (anti-leak:
+    // never read a hidden entity's live transform). range: 0 = exact arrival.
     struct Move          {
-        glm::vec3 target;            // used when target_unit is invalid
-        Unit      target_unit;       // when valid → follow this unit each tick
-        f32       range = 0.0f;      // 0 = exact arrival; >0 = stop within radius
+        glm::vec3 target;
+        Widget    target_widget;
+        f32       range = 0.0f;
     };
-    // Attack toward a point, preferring a widget — the sibling of Move. When
-    // target_widget is set the host refreshes `target` to its live position each
-    // tick it's visible, so on fog/death the unit seeks that LAST-SEEN point
-    // (never a hidden entity's live transform — anti-leak). "widget" = a targetable
-    // Unit/Destructable (cf. pick_widget); handle stays Unit for how destructables
-    // are targeted in combat.
+    // Attack toward a point, preferring a widget — sibling of Move. Same
+    // last-seen seek on fog/death. target_widget is a Widget (a crate is a
+    // first-class attack target).
     struct Attack {
         glm::vec3 target{0.0f};
-        Unit      target_widget;
+        Widget    target_widget;
         Attack() = default;
-        Attack(glm::vec3 pt, Unit w = {}) : target(pt), target_widget(w) {}  // A-move / targeted-with-seek
-        explicit Attack(Unit w) : target_widget(w) {}  // targeted; point auto-fills tick-1 from live pos
+        Attack(glm::vec3 pt, Widget w = {}) : target(pt), target_widget(w) {}
+        explicit Attack(Widget w) : target_widget(w) {}
     };
     struct Stop          {};
     struct HoldPosition  {};

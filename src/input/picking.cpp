@@ -177,7 +177,7 @@ static f32 ray_cylinder_dist(glm::vec3 ray_origin, glm::vec3 ray_dir,
     return std::sqrt(dx * dx + dy * dy);
 }
 
-simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
+simulation::Widget Picker::pick_widget(f32 screen_x, f32 screen_y,
                                      simulation::Player player,
                                      bool selectable_only) const {
     if (!m_camera || !m_world) return {};
@@ -188,7 +188,7 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
     glm::vec3 origin = ray_origin(screen_x, screen_y);
     glm::vec3 dir = screen_to_ray(screen_x, screen_y);
 
-    simulation::Unit best{};
+    simulation::Widget best{};
     f32 best_ray_t = 1e9f;
 
     for (u32 id : m_world->selectable_ids()) {
@@ -258,7 +258,7 @@ simulation::Unit Picker::pick_widget(f32 screen_x, f32 screen_y,
     return best;
 }
 
-simulation::Unit Picker::pick_target(f32 screen_x, f32 screen_y) const {
+simulation::Widget Picker::pick_target(f32 screen_x, f32 screen_y) const {
     return pick_widget(screen_x, screen_y, {}); // no player filter — pick any widget
 }
 

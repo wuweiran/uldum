@@ -219,8 +219,8 @@ void draw_unit_name_label_impl(HudRenderer& r,
     f32 picker_x = mx * s;
     f32 picker_y = my * s;
 
-    simulation::Unit hovered = ctx.pick_target(picker_x, picker_y);
-    if (hovered.id == simulation::Unit{}.id) return;  // nothing under cursor
+    simulation::Widget hovered = ctx.pick_target(picker_x, picker_y);
+    if (simulation::is_null_handle(hovered)) return;  // nothing under cursor
 
     const auto& world = *ctx.world;
     const auto* tf    = world.transform(hovered.id);

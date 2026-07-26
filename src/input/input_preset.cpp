@@ -12,17 +12,18 @@ std::optional<DerivedPing> derive_target_ping(const simulation::GameCommand& cmd
     namespace o = simulation::orders;
     const auto& world = sim.world();
 
-    // Pull the target unit/item out of whatever order this is. Each order
+    // Pull the target widget/item out of whatever order this is. Each order
     // stores its target in a different slot; we only care that there IS one.
-    simulation::Unit target{};
+    // Widget so a Unit, Destructable, or Item all fit without a type-lie.
+    simulation::Widget target{};
     if (const auto* a = std::get_if<o::Attack>(&cmd.order)) {
         target = a->target_widget;               // invalid for a ground-point A-move
     } else if (const auto* m = std::get_if<o::Move>(&cmd.order)) {
-        target = m->target_unit;                 // invalid for plain ground move
+        target = m->target_widget;               // invalid for plain ground move
     } else if (const auto* c = std::get_if<o::Cast>(&cmd.order)) {
         target = c->target_unit;                 // invalid for point/no-target casts
     } else if (const auto* p = std::get_if<o::PickupItem>(&cmd.order)) {
-        target = simulation::Unit{p->item};
+        target = p->item;                        // Item is a Widget — no Unit wrapper
     }
     if (simulation::is_null_handle(target)) return std::nullopt;  // ground / non-target order
 
