@@ -282,27 +282,27 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // Priority 1: Move / Attack order
         if (oq->current) {
             if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
-                // Resolve target each tick. With target_unit valid, the
-                // goal moves with the unit — that's Follow, no extra
-                // order kind needed. On invalid target, end the order;
-                // matches WC3's behavior when the followed unit dies
-                // or vanishes from sight (vision check is implicit:
-                // the picker filters foreign units in fog out at
-                // smart-click time, so we already won't have started a
-                // Follow on someone we can't see).
+                // Widget-targeted Move (Follow) — the mirror of Attack, minus
+                // acquisition. While the target is visible to the owner, trail
+                // its live position and refresh m->target to it (the last-seen
+                // capture). Once it fogs or is removed, seek that last-seen point
+                // and end on arrival — never read a hidden entity's live
+                // transform (anti-leak), the same rule Attack uses.
                 if (is_non_null_handle(m->target_unit)) {
-                    if (!world.contains(m->target_unit)) {
-                        oq->advance();
-                        mov.moving = false;
-                        pth.stuck_timer = 0;
-                        continue;
-                    }
-                    auto* tt = world.transforms.get(m->target_unit.id);
+                    auto* owner = world.owners.get(id);
+                    bool visible = world.contains(m->target_unit) &&
+                                   (!owner || grid.is_visible_to(world, m->target_unit.id, *owner));
+                    auto* tt = visible ? world.transforms.get(m->target_unit.id) : nullptr;
                     if (tt) {
+                        m->target = tt->position;      // refresh last-seen
                         goal2d = {tt->position.x, tt->position.y};
                         has_goal = true;
                         is_follow = true;
                         goal_range = m->range;
+                    } else {
+                        // Fogged / removed → walk to last-seen point, stop on arrival.
+                        goal2d = {m->target.x, m->target.y};
+                        has_goal = true;
                     }
                 } else {
                     goal2d = {m->target.x, m->target.y};
@@ -916,11 +916,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 pth->approach_range = 0;
             }
 
-            // Auto-acquire: scan for nearby enemies. Hold Position restricts
-            // scanning to the unit's own attack range so the unit never picks
-            // up a target it would then need to chase.
+            // Auto-acquire: scan for nearby enemies. This is the A-MOVE
+            // behavior — it must NOT run for a widget-targeted Attack.
+            // Hold Position restricts scanning to the unit's own attack range so
+            // the unit never picks up a target it would then need to chase.
             f32 acquire_r = is_holding ? combat.range : combat.acquire_range;
-            if (!no_acquire && !is_casting && !is_moving && acquire_r > 0 && combat.damage > 0) {
+            if (!has_widget && !no_acquire && !is_casting && !is_moving && acquire_r > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;

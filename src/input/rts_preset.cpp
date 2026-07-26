@@ -333,6 +333,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 // re-resolves the goal from its position each tick.
                 simulation::orders::Move m;
                 m.target_unit = target;
+                if (const auto* t = ctx.view.transform(target.id)) m.target = t->position;
                 m.range       = 96.0f;   // same follow distance as smart-click
                 cmd.order     = std::move(m);
                 commit(ctx, cmd);        // submits + fires Enemy/Ally ping
@@ -499,6 +500,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 // into the followed unit's collision circle.
                 simulation::orders::Move m;
                 m.target_unit = simulation::Unit{target};
+                if (const auto* t = view.transform(target.id)) m.target = t->position;
                 m.range       = 96.0f;   // follow distance — beyond collision_radius * 2
                 cmd.order     = std::move(m);
             }

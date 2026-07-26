@@ -705,6 +705,7 @@ bool Engine::start_session() {
                     const auto& world = active_sim().world();
                     if (world.handle_infos.has(target_unit_id)) {
                         m.target_unit = simulation::Unit{target_unit_id};
+                        m.target      = wp;   // last-seen seed for the fog/removed seek
                         m.range       = 96.0f;
                     } else {
                         m.target = wp;   // handle invalid mid-frame — fall back to ground

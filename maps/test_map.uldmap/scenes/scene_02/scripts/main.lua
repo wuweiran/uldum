@@ -189,7 +189,6 @@ function main()
                 IssueOrder(creep, "attack", 0, 0)
             end
         end
-        Log("[Wave " .. wave .. "] Spawned " .. count .. " creeps")
     end)
     Log("[Scene02] Creep spawner active (every " .. SPAWN_INTERVAL .. "s)")
 

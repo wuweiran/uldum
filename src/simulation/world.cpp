@@ -1256,7 +1256,6 @@ bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target
         world.on_ability_added(target, ability_id, 1, source);
     }
 
-    log::trace(TAG, "ApplyPassiveAbility: '{}' on unit {} (duration={:.1f}s)", ability_id, target.id, duration);
     return true;
 }
 
