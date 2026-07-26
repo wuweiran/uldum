@@ -108,18 +108,27 @@ public:
     // Send a command to the server (called instead of local CommandSystem).
     void send_order(const simulation::GameCommand& cmd);
 
-    // Raw access to the client mirror World (see m_view_world). NOT what gets
-    // rendered — that's active_view() (a LocalView) in every mode. Exposed for
-    // the client's setup writes (types/abilities, set_world_override) and for
-    // spawn_client_entity to materialize network entities into it.
-    simulation::World& view_world() { return m_view_world; }
+    // Raw access to the client mirror World — the World owned by GameClient's
+    // Simulation (injected via set_mirror). This is REPLICATED TRUTH: the wire
+    // handlers + interpolation write entities here. NOT what gets rendered —
+    // that's active_view() (a fog-gated LocalView projected OVER this). Exposed
+    // so spawn_client_entity + the wire handlers can materialize entities into
+    // it. Client-only: null on host/offline/worker (nothing reads it there — the
+    // LocalView projects over the authoritative world instead).
+    simulation::World& mirror_world() { return *m_mirror; }
+
+    // Inject the client mirror World (GameClient's Simulation world). Set once in
+    // enter_lobby on the client, before connect, so an early S_WELCOME can't
+    // null-deref. Replaces the old owned mirror World + Simulation world-override.
+    void set_mirror(simulation::World* w) { m_mirror = w; }
 
     // The IWorldView the renderer / picker / HUD read: the LocalView projection
     // in EVERY mode. Host/offline project over the auth world; the client
-    // projects over its network mirror (its sim overrides route world()->mirror,
-    // vision()->client_vision) — same project_local_view call, same Live/Memory
-    // membership. m_local_view_impl.source is wired on the first projection, so
-    // this is only read after a session is playing.
+    // projects over its network mirror (mirror_world() + its own fog) — same
+    // project_local_view call, same Live/Memory membership. This is a VIEW over
+    // the mirror, not a second world: it holds fog membership + snapshots + per-
+    // viewer render scratch, with .source pointing at the world it projects.
+    // Wired on the first projection, so this is only read after a session plays.
     simulation::IWorldView& active_view() { return m_local_view_impl; }
 
     // Project the authoritative world into the view-world for the local player,
@@ -161,14 +170,6 @@ public:
     // Client: report a HUD node event (button press, etc.) to the host.
     void send_node_event(std::string_view node_id, NodeEventKind kind);
 
-
-    // Initialize client-side fog of war from map data.
-    void init_client_fog(const map::TerrainData& terrain, const map::MapManager& map,
-                         const simulation::Simulation& sim);
-
-    // Update client fog of war visuals (call per frame). Returns visual grid or nullptr.
-    const f32* update_client_fog(f32 dt);
-    simulation::Vision& client_vision() { return m_client_vision; }
 
     // Set the map's script-hash (SHA-256) for join verification.
     // Client and server compute the same digest from the map's .lua
@@ -511,19 +512,17 @@ private:
                        std::unordered_set<u32>& discovered) const;
 
     // ── This process's view-world ───────────────────────────────────────
-    // Filled from network snapshots (remote client) or by project_local_view()
-    // The network CLIENT's mirror world — filled from S_SPAWN/S_SHOW/S_UNIT_STATE/
-    // S_HIDE/S_DESTROY. On host/offline it's unused (the projection reads the
-    // authoritative world directly). active_view() never returns this raw World;
-    // it always returns m_local_view_impl (a LocalView), which on the client
-    // points its .source at this mirror. Kept as a plain World so the setup writes
-    // (types/abilities, set_world_override) and spawn_client_entity can target it.
-    simulation::World m_view_world;
+    // The network CLIENT's mirror world — owned by GameClient's Simulation,
+    // injected via set_mirror. Filled from S_SPAWN/S_SHOW/S_UNIT_STATE/S_HIDE/
+    // S_DESTROY + interpolation. Client-only: null on host/offline/worker (they
+    // never set it — nothing reads it there). active_view() never returns this
+    // raw World; it returns m_local_view_impl (a LocalView) whose .source is this
+    // mirror on the client, the auth world on host/offline.
+    simulation::World* m_mirror = nullptr;
     // The one IWorldView the renderer / picker / HUD read, in EVERY mode. On
     // host/offline project_local_view() drives it over the authoritative world;
-    // on the client it drives it over m_view_world (the network mirror) — same
-    // LocalView, same snapshot/visible membership. Its .source is wired on the
-    // first project_local_view() call.
+    // on the client over the mirror — same LocalView, same snapshot/visible
+    // membership. Its .source is wired on the first project_local_view() call.
     simulation::LocalView m_local_view_impl;
     simulation::Player m_local_player{UINT32_MAX};
 
@@ -533,11 +532,6 @@ private:
     HudMessageFn            m_hud_message_fn;
     script::ScriptEngine*   m_script = nullptr;
     hud::Hud*               m_hud_replay = nullptr;  // host-side join-replay source
-
-    // Vision (client computes fog locally from received entities; the
-    // server already filtered out anything this client can't see)
-    simulation::Vision m_client_vision;
-    const simulation::Simulation* m_client_sim_ref = nullptr;  // for shared vision queries
 
     // Snapshot buffer for interpolation (two most recent). Units and projectiles
     // ride separate HOT packets (S_UNIT_STATE / S_PROJECTILE_STATE) and land in

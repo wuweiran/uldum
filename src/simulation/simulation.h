@@ -35,6 +35,12 @@ public:
     void shutdown();
     void tick(float dt);
 
+    // The network client's per-frame derivation pass — sibling of tick().
+    // Runs ONLY the derivation-safe subset (attack-cycle + ability-cooldown
+    // timer decay over the replicated mirror world); NEVER an authoritative
+    // rules system. See the body comment in simulation.cpp for the invariant.
+    void client_tick(float dt);
+
     // Set terrain for pathfinding, height queries, and spatial grid sizing.
     void set_terrain(const map::TerrainData* terrain);
 
@@ -42,18 +48,13 @@ public:
     // Call once after map entities are created.
     void sync_pathing_blockers();
 
-    // On the multiplayer client this Simulation is never ticked; its
-    // own m_world / m_vision stay empty and the network code populates
-    // a separate client world + vision. To keep call sites uniform
-    // (input presets, HUD, etc. all read sim.world() / sim.vision()),
-    // the client can install pointer overrides via the setters below.
-    // When set, world() / vision() — and methods like
-    // target_filter_passes that consult world internally — read through
-    // the override instead. Host / offline never sets these and behaves
-    // identically to before.
-    World&       world()       { return m_world_override ? *m_world_override : m_world; }
-    const World& world() const { return m_world_override ? *m_world_override : m_world; }
-    void set_world_override(World* w) { m_world_override = w; }
+    // world() / vision() return this Simulation's OWN world + fog. Every process
+    // owns its game state directly now: the authoritative one on host/offline/
+    // worker (GameServer), the network mirror + client-computed fog on a client
+    // (GameClient). There is no override indirection — a client's GameClient
+    // Simulation genuinely owns the replicated world it reads.
+    World&       world()       { return m_world; }
+    const World& world() const { return m_world; }
 
     TypeRegistry&       types()       { return m_types; }
     const TypeRegistry& types() const { return m_types; }
@@ -67,9 +68,8 @@ public:
     SpatialGrid&       spatial_grid()       { return m_spatial_grid; }
     const SpatialGrid& spatial_grid() const { return m_spatial_grid; }
 
-    Vision&       vision()       { return m_vision_override ? *m_vision_override : m_vision; }
-    const Vision& vision() const { return m_vision_override ? *m_vision_override : m_vision; }
-    void set_vision_override(Vision* v) { m_vision_override = v; }
+    Vision&       vision()       { return m_vision; }
+    const Vision& vision() const { return m_vision; }
 
     // ── Alliance system ──────────────────────────────────────────────────
     // Initialize with player count (call after loading manifest).
@@ -125,8 +125,6 @@ private:
     SpatialGrid     m_spatial_grid;
     Vision          m_vision;
     const map::TerrainData* m_terrain = nullptr;
-    World*          m_world_override  = nullptr;  // set by client to client_world
-    Vision*         m_vision_override = nullptr;  // set by client to client_vision
 
     // Alliance table: m_alliances[a * m_player_count + b] = flags from a toward b
     std::vector<AllianceFlags> m_alliances;

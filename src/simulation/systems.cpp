@@ -1704,52 +1704,57 @@ static void destroy_projectile_entity(World& world, u32 id) {
     world.anim_queues.remove(id);
 }
 
-// Window the projectile lingers in the Dying state so its death clip
-// can play out before teardown. Generous enough for typical glTF
-// death clips (most well under 1.5 s); for static / non-skinned
-// projectiles this is just the cleanup grace period and unused
-// visually. Long clips (> 1.5 s) get cut short — author should keep
-// the death clip brief or we should plumb the model's actual clip
-// duration in (TODO: render→sim query for clip length on Dying entry).
+// Window the projectile lingers in the Dying state so its death clip can play
+// out before teardown. Fallback when no renderer-backed get_clip_duration is
+// wired (headless worker); real death clips are typically well under this.
 static constexpr f32 kProjectileDeathAnimSecs = 1.5f;
 
-// Begin destruction. Fires PROJECTILE_DESTROYED once (gameplay end),
-// queues the "death" clip on the renderer's anim queue, marks the
-// projectile dying, sets the teardown timer. The actual entity removal
-// happens in system_projectile after death_timer drains.
-static void begin_destroy_projectile(World& world, u32 id) {
-    auto* p = world.projectiles.get(id);
-    if (!p || p->dying) return;
-    // Size the linger window to the actual death clip duration so the
-    // projectile vanishes exactly when the animation finishes. Falls
-    // back to the small constant if the renderer hasn't installed the
-    // resolver or the model has no "death" clip.
-    f32 timer = kProjectileDeathAnimSecs;
+// Size the death-clip linger to the model's actual "death" clip when a resolver
+// is wired (a renderer-backed host / client), else the fallback constant. Host
+// and client compute the SAME value so a dying projectile retires on the same
+// clock on both — which is what lets the host skip S_DESTROY for projectiles
+// (the client tears its own down via tick_projectile_death).
+static f32 projectile_death_duration(const World& world, u32 id) {
     if (world.get_clip_duration) {
         auto* r = world.renderables.get(id);
         if (r && !r->model_path.empty()) {
             f32 dur = world.get_clip_duration(r->model_path, "death");
-            if (dur > 0.0f) timer = dur;
+            if (dur > 0.0f) return dur;
         }
     }
-    Projectile pu = world.projectile(id);
-    if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
-    if (!world.contains(pu)) return;
-    p = world.projectiles.get(id);
+    return kProjectileDeathAnimSecs;
+}
+
+// Put a projectile into the Dying state: mark it, size its death_timer to the
+// model's death clip, and queue that clip for the renderer. NO gameplay side
+// effects (no PROJECTILE_DESTROYED). The host reaches this via
+// begin_destroy_projectile (which fires the callback first); a network client
+// calls it directly on S_PROJECTILE_DYING. Idempotent — a no-op if already dying
+// or not a projectile.
+void enter_projectile_dying(World& world, u32 id) {
+    auto* p = world.projectiles.get(id);
     if (!p || p->dying) return;
     p->dying       = true;
-    p->death_timer = timer;
-    // Queue the "death" clip. If the model has a "death" clip the
-    // renderer plays it; if not, the renderer falls back to the bind
-    // pose / current clip — harmless either way.
+    p->death_timer = projectile_death_duration(world, id);
+    // Queue the "death" clip. If the model has one the renderer plays it; if not
+    // it falls back to the bind pose / current clip — harmless either way.
     AnimQueue aq;
     aq.clips.push_back("death");
     aq.looping = false;
-    if (auto* q = world.anim_queues.get(id)) {
-        *q = std::move(aq);
-    } else {
-        world.anim_queues.add(id, std::move(aq));
-    }
+    if (auto* q = world.anim_queues.get(id)) *q = std::move(aq);
+    else world.anim_queues.add(id, std::move(aq));
+}
+
+// Begin destruction. Fires PROJECTILE_DESTROYED once (gameplay end), then enters
+// the dying state (clip + teardown timer). The actual entity removal happens in
+// system_projectile after death_timer drains.
+static void begin_destroy_projectile(World& world, u32 id) {
+    auto* p = world.projectiles.get(id);
+    if (!p || p->dying) return;
+    Projectile pu = world.projectile(id);
+    if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
+    if (!world.contains(pu)) return;
+    enter_projectile_dying(world, id);
 }
 
 // Public entry — explicit DestroyProjectile from Lua.
@@ -1952,6 +1957,27 @@ void system_projectile(World& world, float dt) {
         }
     }
 
+    for (Projectile projectile : to_teardown) {
+        if (world.contains(projectile)) destroy_projectile_entity(world, projectile.id);
+    }
+}
+
+// Client-side twin of the dying branch in system_projectile: drain each dying
+// projectile's death_timer and tear it down when it drains. The host runs that
+// teardown inside its full system_projectile tick; a network client — which
+// never ticks the rules systems — calls THIS from Simulation::client_tick over
+// its mirror world, so a projectile retires on the same clock it would on the
+// host. This is what lets the host stop sending S_DESTROY for projectiles: each
+// side owns its own teardown on a matching death_timer.
+void tick_projectile_death(World& world, float dt) {
+    if (dt <= 0) return;
+    std::vector<Projectile> to_teardown;
+    for (u32 id : world.projectiles.ids()) {
+        auto* p = world.projectiles.get(id);
+        if (!p || !p->dying) continue;
+        p->death_timer -= dt;
+        if (p->death_timer <= 0) to_teardown.push_back(world.projectile(id));
+    }
     for (Projectile projectile : to_teardown) {
         if (world.contains(projectile)) destroy_projectile_entity(world, projectile.id);
     }

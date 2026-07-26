@@ -315,6 +315,11 @@ void NetworkManager::host_commit_start() {
 
 void NetworkManager::host_finish_start() {
     if (m_mode != Mode::Host || m_phase != Phase::Loading) return;
+    // A scene switch also parks the phase at Loading but runs its own finish
+    // (host_finish_scene_switch). Without this guard the worker's "Loading &&
+    // all_peers_loaded" transition would re-send S_WELCOME mid-switch with the
+    // stale placement_count over the empty world → client PLACEMENT DESYNC.
+    if (m_scene_switching) return;
 
     // S_WELCOME + spawn burst per seated peer, then broadcast S_START.
     for (auto& peer : m_peers) {
@@ -1056,6 +1061,14 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             // disappear on the client at decay (8s), not at handle-free (30s).
             if (is_decayed_corpse(world, id)) continue;
 
+            // A dying projectile is gameplay-dead; its death clip is a pure
+            // client-side visual. We already sent S_PROJECTILE_DYING and the
+            // client now owns teardown (it drains death_timer + removes the
+            // entity). Treat it as GONE for the wire: skip visible_now so the
+            // leave-loop drops it from `known` SILENTLY — no S_DESTROY (projectiles
+            // are too common to spend one) and no S_HIDE (that would cut the clip).
+            if (const auto* pc = world.projectiles.get(id); pc && pc->dying) continue;
+
             visible_now.insert(id);
 
             // First knowledge: born this tick → S_SPAWN (plays birth); already
@@ -1090,6 +1103,9 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
         //   CARRIED           → drop from `known` SILENTLY (the S_COLD Inventory
         //                       already hid+carried it; S_HIDE/S_DESTROY here would
         //                       kill the client's slot).
+        //   dying projectile   → drop SILENTLY. S_PROJECTILE_DYING already went out
+        //                       and the client owns teardown; no S_DESTROY (too
+        //                       common) and no S_HIDE (it would cut the death clip).
         //   decayed corpse     → S_DESTROY (past corpse_duration: gone on the host
         //                       even though the handle lingers as GC until cleanup).
         //   gone from world    → S_DESTROY (freed / expiry / Lua).
@@ -1099,7 +1115,9 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             if (visible_now.contains(known_id)) continue;
             const auto* car = world.carriables.get(known_id);
             const bool carried = car && simulation::is_non_null_handle(car->carried_by);
-            if (!carried) {
+            const auto* pc = world.projectiles.get(known_id);
+            const bool dying_projectile = pc && pc->dying;
+            if (!carried && !dying_projectile) {
                 const bool gone = !infos.has(known_id) || is_decayed_corpse(world, known_id);
                 auto msg = gone ? build_destroy(known_id)
                                 : build_hide(known_id);
@@ -1532,7 +1550,7 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
     // with silently diverged worlds, treat it like a fatal disconnect: tear the
     // connection down and drop m_connected so the App surfaces the same
     // "Lost connection / no longer in sync" dialog it shows for a dropped host.
-    u32 client_n = m_view_world.entities.next_id();
+    u32 client_n = mirror_world().entities.next_id();
     if (client_n != w.placement_count) {
         log::error(TAG, "PLACEMENT DESYNC: host placement_count={} but client built {} "
                         "placement entities — flagging fatal (worlds would diverge)",
@@ -1550,7 +1568,7 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
     auto s = parse_spawn(data);
-    spawn_client_entity(m_view_world, s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
+    spawn_client_entity(mirror_world(), s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
                         s.newly_created, s.variation);
     // Cold state (health→death, abilities, current anim, …) arrives in the S_COLD
     // batch the host sends right after, in the same reliable-ordered drain — so
@@ -1567,7 +1585,7 @@ void NetworkManager::client_handle_show(std::span<const u8> data) {
     // cooldowns, the current script anim — so a dead crate rebuilds as a corpse,
     // not intact.
     auto s = parse_show(data);
-    spawn_client_entity(m_view_world, s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
+    spawn_client_entity(mirror_world(), s.entity_id, s.type_id, s.owner, s.x, s.y, s.facing,
                         /*newly_created=*/false, s.variation);
     m_local_view_impl.drop_snapshot(s.entity_id);
 }
@@ -1580,8 +1598,8 @@ void NetworkManager::client_handle_hide(std::span<const u8> data) {
     //       It renders frozen/dimmed while out of sight; dropped on reveal.
     //   mobile            → just remove from the mirror (forgotten; ghost-proof).
     u32 id = parse_hide(data);
-    if (simulation::is_static_remembered_entity(m_view_world, id)) {
-        m_local_view_impl.snapshot_from(m_view_world, id);
+    if (simulation::is_static_remembered_entity(mirror_world(), id)) {
+        m_local_view_impl.snapshot_from(mirror_world(), id);
     }
     destroy_client_entity(id);   // remove from mirror either way
 }
@@ -1645,18 +1663,13 @@ void NetworkManager::client_handle_effect_destroy(std::span<const u8> data) {
 }
 
 void NetworkManager::client_handle_projectile_dying(std::span<const u8> data) {
-    u32 id = parse_projectile_dying(data);
-    auto& world = m_view_world;
-    if (!world.handle_infos.has(id)) return;
-    // The renderer reads projectile animation from LocalView::own_anim_queues,
-    // which project_local_view only fills when ProjectileComp::dying is set — so
-    // set the flag (not just the queue). S_DESTROY tears it down after.
-    if (auto* p = world.projectiles.get(id)) p->dying = true;
-    simulation::AnimQueue aq;
-    aq.clips.push_back("death");
-    aq.looping = false;
-    if (auto* q = world.anim_queues.get(id)) *q = std::move(aq);
-    else world.anim_queues.add(id, std::move(aq));
+    // Wire signal is bare (just an id) — the client never runs system_projectile,
+    // so it applies the dying state itself: mark + size death_timer + queue the
+    // death clip (all in enter_projectile_dying). The renderer reads the queued
+    // clip via project_local_view (which fills own_anim_queues only when dying is
+    // set), and client_tick → tick_projectile_death drains the timer + removes the
+    // entity. The host sends no S_DESTROY for projectiles.
+    simulation::enter_projectile_dying(mirror_world(), parse_projectile_dying(data));
 }
 
 // Interpolate one record's transform into the view world. Works for any record
@@ -1698,14 +1711,14 @@ void NetworkManager::client_apply_interpolation() {
         // Only one snapshot — snap both classes directly to it.
         auto& snap = m_snapshots[m_snap_idx];
         for (auto& e : snap.units) {
-            if (auto* t = m_view_world.transforms.get(e.entity_id)) {
+            if (auto* t = mirror_world().transforms.get(e.entity_id)) {
                 t->prev_position = t->position = {e.x, e.y, e.z};
                 t->prev_facing = t->facing = e.facing;
             }
-            apply_unit_state_scalars(m_view_world, e);
+            apply_unit_state_scalars(mirror_world(), e);
         }
         for (auto& p : snap.projectiles) {
-            if (auto* t = m_view_world.transforms.get(p.entity_id)) {
+            if (auto* t = mirror_world().transforms.get(p.entity_id)) {
                 t->prev_position = t->position = {p.x, p.y, p.z};
                 t->prev_facing = t->facing = p.facing;
             }
@@ -1734,10 +1747,10 @@ void NetworkManager::client_apply_interpolation() {
     for (auto& e : snap_old.units) unit_old[e.entity_id] = &e;
     for (auto& e : snap_new.units) {
         auto it = unit_old.find(e.entity_id);
-        interp_transform(m_view_world, e, it != unit_old.end() ? it->second : nullptr, alpha);
+        interp_transform(mirror_world(), e, it != unit_old.end() ? it->second : nullptr, alpha);
         // Scalar half (health / flags / target / states) — shared with the host's
         // in-process apply. Transform interp above stays client-specific.
-        apply_unit_state_scalars(m_view_world, e);
+        apply_unit_state_scalars(mirror_world(), e);
     }
 
     // Projectiles: transform only.
@@ -1745,7 +1758,7 @@ void NetworkManager::client_apply_interpolation() {
     for (auto& p : snap_old.projectiles) proj_old[p.entity_id] = &p;
     for (auto& p : snap_new.projectiles) {
         auto it = proj_old.find(p.entity_id);
-        interp_transform(m_view_world, p, it != proj_old.end() ? it->second : nullptr, alpha);
+        interp_transform(mirror_world(), p, it != proj_old.end() ? it->second : nullptr, alpha);
     }
 }
 
@@ -2059,7 +2072,7 @@ void NetworkManager::client_handle_cold(std::span<const u8> data) {
     // current anim) on fog re-show instead of leaving type defaults.
     auto c = parse_cold(data);
     for (const auto& rec : c.records)
-        apply_cold_record(m_view_world, c.entity_id, rec);
+        apply_cold_record(mirror_world(), c.entity_id, rec);
 }
 
 void NetworkManager::spawn_client_entity(simulation::World& world, u32 entity_id,
@@ -2071,7 +2084,7 @@ void NetworkManager::spawn_client_entity(simulation::World& world, u32 entity_id
     // create_* construction code the host uses (via the spawn_*_with_id id-seam),
     // so the client can never drift from the host. Z is sampled from world.terrain
     // inside the builders (WC3-style local Z). Category is resolved from the
-    // world's own type registry (already wired on the client's view_world).
+    // world's own type registry (already wired on the client's mirror world).
     if (world.handle_infos.has(entity_id)) return;
 
     // skip_birth: the wire's newly_created flag says whether this is a fresh birth
@@ -2100,20 +2113,27 @@ void NetworkManager::spawn_client_entity(simulation::World& world, u32 entity_id
 }
 
 void NetworkManager::destroy_client_entity(u32 entity_id) {
-    simulation::remove_all_components(m_view_world, entity_id);
+    simulation::remove_all_components(mirror_world(), entity_id);
 }
 
 void NetworkManager::reset_local_view() {
-    m_view_world.clear_entities();          // client mirror
+    // Only the client clears its mirror here (GameClient's sim world). Host/offline
+    // point the mirror at the auth world (wiped separately by the scene-switch);
+    // the worker has no mirror. The LocalView projection is cleared in every mode.
+    if (m_mode == Mode::Client && m_mirror) {
+        m_mirror->clear_entities();
+    }
     m_local_discovered.clear();
-    m_local_view_impl.clear();              // host/offline zero-copy projection
+    m_local_view_impl.clear();
 }
 
 void NetworkManager::project_local_view(const simulation::Simulation& sim,
                                         simulation::Player local, u32 placement_count) {
     // `src` = what LocalView's live reads resolve to: the authoritative World on
-    // host/offline, or the network mirror on the client (sim.world() is routed to
-    // the mirror there via set_world_override). LocalView::source points at it.
+    // host/offline, or the network mirror on the client. Either way it's sim.world()
+    // of the caller's active Simulation (GameServer's on host/offline, GameClient's
+    // on a client) — the client's sim genuinely owns the mirror. LocalView::source
+    // points at it.
     auto& src = const_cast<simulation::World&>(sim.world());
     const auto& vis = sim.vision();
     auto& view = m_local_view_impl;
@@ -2237,29 +2257,6 @@ void NetworkManager::project_local_view(const simulation::Simulation& sim,
     for (u32 id : view.snapshot.transforms.ids())  view.iter_transforms.push_back(id);
 }
 
-// ── Client fog of war ───────────────────────────────────────────────────
-
-void NetworkManager::init_client_fog(const map::TerrainData& terrain,
-                                      const map::MapManager& map,
-                                      const simulation::Simulation& sim) {
-    auto& manifest = map.manifest();
-    simulation::FogMode fog_mode = simulation::FogMode::None;
-    if (manifest.fog_of_war == "explored") fog_mode = simulation::FogMode::Explored;
-    else if (manifest.fog_of_war == "unexplored") fog_mode = simulation::FogMode::Unexplored;
-
-    m_client_vision.init(terrain.tiles_x, terrain.tiles_y, terrain.tile_size,
-                      static_cast<u32>(manifest.players.size()), fog_mode, &terrain);
-    m_client_sim_ref = &sim;
-}
-
-const f32* NetworkManager::update_client_fog(f32 dt) {
-    if (!m_client_vision.enabled() || !m_local_player.is_valid()) return nullptr;
-    if (m_client_sim_ref) {
-        m_client_vision.update(m_view_world, *m_client_sim_ref);
-    }
-    return m_client_vision.update_visual(m_local_player, dt);
-}
-
 // ── Shared ──────────────────────────────────────────────────────────────
 
 void NetworkManager::send_order(const simulation::GameCommand& cmd) {
@@ -2282,71 +2279,10 @@ void NetworkManager::update(f32 dt) {
         client_apply_interpolation();
     }
 
-    // Client: advance attack cycle timers
-    if (m_mode == Mode::Client && dt > 0) {
-        for (u32 i = 0; i < m_view_world.combats.count(); ++i) {
-            auto& combat = m_view_world.combats.data()[i];
-            if (combat.attack_state == simulation::AttackState::Idle) continue;
-
-            combat.attack_timer -= dt;
-            if (combat.attack_timer <= 0) {
-                if (combat.attack_state == simulation::AttackState::WindUp) {
-                    // WindUp finished → Backswing. This is the damage point of a
-                    // NORMAL attack — the exact "hit lands" moment. Bump the
-                    // target's local hit_count so its renderer plays the flinch
-                    // ("hit") clip, matching the host's system_health (which bumps
-                    // hit_count only on "attack"-type damage). Derived locally
-                    // from the attack cycle the client already re-simulates — no
-                    // network field. Spells/DoT go through cast_state, not this
-                    // cycle, so they correctly never flinch.
-                    if (combat.target.id != UINT32_MAX) {
-                        if (auto* thp = m_view_world.healths.get(combat.target.id)) {
-                            ++thp->hit_count;
-                        }
-                    }
-                    combat.attack_state = simulation::AttackState::Backswing;
-                    combat.attack_timer = combat.backsw_time;
-                } else if (combat.attack_state == simulation::AttackState::Backswing) {
-                    // Backswing finished → Cooldown
-                    f32 cooldown = combat.attack_cooldown - combat.dmg_time - combat.backsw_time;
-                    if (cooldown > 0) {
-                        combat.attack_state = simulation::AttackState::Cooldown;
-                        combat.attack_timer = cooldown;
-                    } else {
-                        // No cooldown gap → start next swing
-                        combat.attack_state = simulation::AttackState::WindUp;
-                        combat.attack_timer = combat.dmg_time;
-                    }
-                } else if (combat.attack_state == simulation::AttackState::Cooldown) {
-                    // Cooldown finished → next swing
-                    combat.attack_state = simulation::AttackState::WindUp;
-                    combat.attack_timer = combat.dmg_time;
-                }
-            }
-        }
-    }
-
-    // Client: tick ABILITY cooldowns locally. The host broadcasts the cooldown
-    // START (S_COLD Cooldown, keyed on the caster) but the client never runs
-    // system_abilities, so without this the cooldown_remaining the HUD reads
-    // would freeze at its start value → the slot greys FOREVER. Mirror the
-    // host's per-tick decrement (systems.cpp) so the pie/greyed slot counts down
-    // and clears. Same "client re-simulates its own timers" pattern as attacks.
-    if (m_mode == Mode::Client && dt > 0) {
-        for (u32 i = 0; i < m_view_world.ability_sets.count(); ++i) {
-            auto& aset = m_view_world.ability_sets.data()[i];
-            for (auto& ability : aset.abilities) {
-                if (ability.cooldown_remaining > 0.0f) {
-                    ability.cooldown_remaining = std::max(0.0f, ability.cooldown_remaining - dt);
-                }
-            }
-        }
-    }
-
-    // The client owns ZERO lifecycle timing. It never advances corpse
-    // timers, never hides a corpse, and never self-destroys an entity —
-    // the host is the single clock. The corpse's visibility comes from the
-    // synced `hidden` state bit, and teardown comes solely from S_DESTROY.
+    // Client derivation (attack/cooldown timers, projectile teardown, fog) lives
+    // in Simulation::client_tick, driven from the engine's client branch. Corpse
+    // lifecycle is host-driven: the client never advances corpse timers or hides a
+    // corpse (visibility rides the synced `hidden` bit; corpse teardown is S_DESTROY).
 }
 
 void NetworkManager::shutdown() {
@@ -2372,11 +2308,10 @@ void NetworkManager::shutdown() {
     m_disconnected_view.clear();
     reset_local_view();
 
-    // Session hygiene: wipe the client mirror + interpolation buffers +
-    // host per-tick set so a following session never inherits a stale entity
-    // (a dynamic id reused in the next scene/session would otherwise collide
-    // with a leftover here and be silently dropped by the has()-guard).
-    m_view_world.clear_entities();
+    // Session hygiene: wipe interp buffers + host per-tick set. The mirror is
+    // owned by GameClient and cleared by its own shutdown() — just drop the
+    // pointer so a reused NetworkManager never derefs a stale one.
+    m_mirror = nullptr;
     m_snapshots[0] = Snapshot{};
     m_snapshots[1] = Snapshot{};
     m_snap_idx = 0;

@@ -10,6 +10,7 @@
 #include "core/settings.h"
 #include "i18n/locale.h"
 #include "network/game_server.h"
+#include "network/game_client.h"
 #include "network/network.h"
 #include "network/lobby.h"
 #include "simulation/command_system.h"
@@ -140,6 +141,22 @@ private:
     // only through m_server.simulation().world() (systems + Lua).
     simulation::IWorldView& active_world();
 
+    // The Simulation that backs this process's game state: the client's replica
+    // (GameClient) on a network client, the authoritative one (GameServer)
+    // everywhere else. Render / picker / HUD / input read gameplay state
+    // (world, vision, registries, alliances) through this — the single seam that
+    // used to be papered over by GameServer's world/vision overrides. Only valid
+    // during a session.
+    simulation::Simulation&       active_sim();
+    const simulation::Simulation& active_sim() const;
+
+    // Launch-mode predicates — the session's net_mode is fixed for its lifetime,
+    // so these read cleaner than the raw `m_args.net_mode == Mode::X` compares
+    // scattered across the update loop / session setup / teardown.
+    bool is_client()  const { return m_args.net_mode == network::Mode::Client; }
+    bool is_host()    const { return m_args.net_mode == network::Mode::Host; }
+    bool is_offline() const { return m_args.net_mode == network::Mode::Offline; }
+
     // Poll safe-area insets from the platform and re-push to the HUD
     // only when they changed. Called per frame because Android's
     // GameActivity_getWindowInsets returns zeros until after the first
@@ -182,6 +199,14 @@ private:
     // the script installs its handlers (init_game / scene re-init), from both
     // start_session and scene_switch_run_main.
     void wire_host_broadcasts();
+
+    // Client-side server→client wiring: installs the NetworkManager receive
+    // callbacks that apply replicated events to App-owned systems (audio, VFX,
+    // scripted camera, controlled-unit selection, scene-switch teardown). The
+    // twin of wire_host_broadcasts — it lives here, not on GameClient, because
+    // it touches the renderer / audio / camera which the network module can't
+    // link. Called from start_session's client branch.
+    void wire_client_callbacks();
 
     // Fire the WC3-style target ping for a locally-committed order, if it
     // landed on a unit/item (input::derive_target_ping decides). Used by the
@@ -232,6 +257,7 @@ private:
 
     // ── Per-session (created in start_session, destroyed in end_session) ─
     network::GameServer      m_server;
+    network::GameClient      m_client;   // the replica sim on a network client (see active_sim)
     network::NetworkManager  m_network;
     simulation::CommandSystem m_commands;
     simulation::SelectionState m_selection;

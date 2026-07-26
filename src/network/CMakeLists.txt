@@ -1,6 +1,7 @@
 add_library(uldum_network STATIC
     network.cpp
     game_server.cpp
+    game_client.cpp
     enet_transport.cpp
 )
 

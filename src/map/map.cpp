@@ -411,9 +411,10 @@ bool MapManager::load_scene_terrain(std::string_view scene_name, asset::AssetMan
 bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
     if (!load_scene_terrain(scene_name, assets)) return false;
     // Wire the sim's world terrain BEFORE placements so create_* can sample ground
-    // height for preplaced entities. sim.world() is the client's view_world when a
-    // world-override is active, or the host's authoritative world otherwise — both
-    // need world.terrain set. (Also refreshes the pathfinder/grid via set_terrain.)
+    // height for preplaced entities. sim.world() is the client's mirror world (its
+    // GameClient Simulation) on a client, or the host's authoritative world
+    // otherwise — both need world.terrain set. (Also refreshes the pathfinder/grid
+    // via set_terrain.)
     // load_scene_terrain already guaranteed terrain is valid (returns false else).
     sim.set_terrain(&m_scene.terrain);
     if (!load_scene_metadata(scene_name, assets)) {

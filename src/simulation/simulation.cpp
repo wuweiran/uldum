@@ -50,12 +50,6 @@ void Simulation::shutdown() {
     m_alliances.clear();
     m_player_count = 0;
     m_player_names.clear();
-    // Drop the client-mode world/vision overrides. The Simulation instance is
-    // reused across sessions; if a Client game left these pointing at the
-    // network client world, a following Offline/Host session would read the
-    // stale world through world()/vision() while ticking m_world.
-    m_world_override = nullptr;
-    m_vision_override = nullptr;
     log::info(TAG, "Simulation shut down");
 }
 
@@ -132,9 +126,8 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
         return false;
     };
 
-    // Read world through the accessor so the client's m_world_override
-    // is honored — without this, MP clients query the empty server
-    // simulation's world and every target is rejected.
+    // Reads this sim's own world — the client's GameClient sim owns the mirror,
+    // so an MP client resolves targets against the replicated entities directly.
     const World& w = world();
     if (!w.contains(target)) return reject("");
 
@@ -212,6 +205,78 @@ void Simulation::tick(float dt) {
     system_regions(m_world);
 
     m_vision.update(m_world, *this);
+}
+
+// The network client's per-frame derivation pass — the sibling of tick().
+// INVARIANT: never runs a rules system (movement / combat / collision / death /
+// ability / projectile). The client's world is replicated truth; re-running
+// rules would double-simulate and fight the snapshots. This only decays
+// local-only timers the host doesn't stream continuously (they'd otherwise
+// freeze) and recomputes fog.
+void Simulation::client_tick(float dt) {
+    if (dt <= 0) return;
+    World& w = world();
+
+    // Attack cycle: advance the swing state machine so attack anims + flinch play
+    // (the timing half of system_combat; no acquisition/damage — host's job).
+    for (u32 i = 0; i < w.combats.count(); ++i) {
+        auto& combat = w.combats.data()[i];
+        if (combat.attack_state == AttackState::Idle) continue;
+
+        combat.attack_timer -= dt;
+        if (combat.attack_timer <= 0) {
+            if (combat.attack_state == AttackState::WindUp) {
+                // WindUp → Backswing at the damage point: bump the target's local
+                // hit_count so its renderer plays the flinch clip, matching the
+                // host's system_health (which bumps it only on "attack" damage).
+                if (combat.target.id != UINT32_MAX) {
+                    if (auto* thp = w.healths.get(combat.target.id)) {
+                        ++thp->hit_count;
+                    }
+                }
+                combat.attack_state = AttackState::Backswing;
+                combat.attack_timer = combat.backsw_time;
+            } else if (combat.attack_state == AttackState::Backswing) {
+                f32 cooldown = combat.attack_cooldown - combat.dmg_time - combat.backsw_time;
+                if (cooldown > 0) {
+                    combat.attack_state = AttackState::Cooldown;
+                    combat.attack_timer = cooldown;
+                } else {
+                    combat.attack_state = AttackState::WindUp;
+                    combat.attack_timer = combat.dmg_time;
+                }
+            } else if (combat.attack_state == AttackState::Cooldown) {
+                combat.attack_state = AttackState::WindUp;
+                combat.attack_timer = combat.dmg_time;
+            }
+        }
+    }
+
+    // Ability cooldowns: the host broadcasts the cooldown START but the client
+    // never runs system_abilities, so without this the HUD's cooldown_remaining
+    // freezes at its start value and the slot greys forever.
+    for (u32 i = 0; i < w.ability_sets.count(); ++i) {
+        auto& aset = w.ability_sets.data()[i];
+        for (auto& ability : aset.abilities) {
+            if (ability.cooldown_remaining > 0.0f) {
+                ability.cooldown_remaining -= dt;
+                if (ability.cooldown_remaining < 0.0f) ability.cooldown_remaining = 0.0f;
+            }
+        }
+    }
+
+    // Projectile teardown: same clip-sized death_timer drain the host runs in
+    // system_projectile. The client owns this — the host sends no S_DESTROY for
+    // projectiles.
+    tick_projectile_death(w, dt);
+
+    // Recompute fog from the mirror world — the call tick() ends with. Without it
+    // the client fog never advances past its init state. (true-sight queries this
+    // sim's spatial_grid, which the client never ticks, so it relies on the host's
+    // send-gate — same as before.)
+    if (m_vision.enabled()) {
+        m_vision.update(w, *this);
+    }
 }
 
 } // namespace uldum::simulation

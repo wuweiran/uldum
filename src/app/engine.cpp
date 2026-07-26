@@ -43,18 +43,18 @@ static constexpr float TICK_RATE = network::SIM_TICK_RATE;
 static constexpr float TICK_DT  = network::SIM_TICK_DT;
 
 simulation::IWorldView& Engine::active_world() {
-    // The world that render / pick / HUD read. It is ALWAYS a fog-projected
-    // view-world, never the authoritative one — filled from the network mirror
-    // on a client, from the in-process projection on host/offline, but it's the
-    // one m_view_world either way. The authoritative world is reachable only
-    // through m_server.simulation().world() (systems + Lua). This is the
-    // structural seam that keeps "local game = server↔client without the wire"
-    // from drifting: render code is never handed authoritative truth.
-    //
-    // Returned as IWorldView& (a WorldView adapter over m_view_world): view
-    // consumers read the interface, never a concrete World. In S4 host/offline
-    // swaps the backing to a zero-copy LocalView without touching this seam.
+    // What render / pick / HUD read: always the fog-projected LocalView, never a
+    // raw World. The authoritative / mirror world is reached via active_sim().world().
     return m_network.active_view();
+}
+
+simulation::Simulation& Engine::active_sim() {
+    // Client → the replica sim (GameClient); host/offline → the authoritative one
+    // (GameServer). Replaces the old world()/vision() override indirection.
+    return is_client() ? m_client.simulation() : m_server.simulation();
+}
+const simulation::Simulation& Engine::active_sim() const {
+    return is_client() ? m_client.simulation() : m_server.simulation();
 }
 
 void Engine::set_state(AppState s) {
@@ -393,8 +393,8 @@ bool Engine::init(const LaunchArgs& args) {
         std::string_view entity_id = rest.substr(0, dot2);
         std::string_view field     = rest.substr(dot2 + 1);
 
-        auto& types     = m_server.simulation().types();
-        auto& abilities = m_server.simulation().abilities();
+        auto& types     = active_sim().types();
+        auto& abilities = active_sim().abilities();
         using Cat = simulation::TypeRegistry::Category;
 
         if (prefix == "ability") {
@@ -430,12 +430,22 @@ bool Engine::init(const LaunchArgs& args) {
 bool Engine::enter_lobby() {
     log::info(TAG, "=== Entering lobby: {} ===", m_args.map_path);
 
-    // init_host needs a Simulation reference to accept C_ORDER mid-game,
-    // so the sim object has to exist already. It's cheap — just creates an
-    // empty type registry; map content loads later in start_session().
-    if (!m_server.init_simulation(m_asset)) {
-        log::error(TAG, "GameServer simulation init failed");
-        return false;
+    // The sim must exist before init_host/init_client (map content loads later in
+    // start_session). Client and host each init their own; the other stays untouched.
+    if (is_client()) {
+        if (!m_client.init_simulation(m_asset)) {
+            log::error(TAG, "GameClient simulation init failed");
+            return false;
+        }
+        // Point the mirror at the client sim's world before init_client connects,
+        // so an early S_WELCOME (reads mirror_world() for the placement-count
+        // check) can't null-deref. The address is stable for the session.
+        m_network.set_mirror(&m_client.simulation().world());
+    } else {
+        if (!m_server.init_simulation(m_asset)) {
+            log::error(TAG, "GameServer simulation init failed");
+            return false;
+        }
     }
 
     if (!m_map.init()) {
@@ -513,12 +523,16 @@ void Engine::leave_lobby() {
     m_renderer.set_fog_grid(nullptr, 0, 0);
     m_network.shutdown();
     m_map.shutdown();
-    m_server.shutdown();
+    // Only the sim that enter_lobby actually inited (client → m_client, else
+    // m_server) gets torn down — the other was never touched, so shutting it
+    // down is wasted work + a spurious log.
+    if (is_client()) m_client.shutdown();
+    else             m_server.shutdown();
     m_lobby_active = false;
 }
 
 void Engine::fire_local_ping(const simulation::GameCommand& cmd) {
-    if (auto ping = input::derive_target_ping(cmd, m_server.simulation())) {
+    if (auto ping = input::derive_target_ping(cmd, active_sim())) {
         m_target_ping.unit     = ping->unit;
         m_target_ping.pos      = ping->pos;
         m_target_ping.kind     = ping->kind;
@@ -535,36 +549,19 @@ bool Engine::start_session() {
     log::info(TAG, "=== Loading session: {} (local slot {}) ===",
               m_args.map_path, m_args.local_slot);
 
-    bool is_client = (m_args.net_mode == network::Mode::Client);
+    bool is_client = this->is_client();
 
-    // Client: build preplaced entities into the CLIENT world (not the empty
-    // server-sim world it would otherwise discard). Point the sim's world
-    // accessor at client_world and wire that world's registry pointers before
-    // load_content, so load_placements creates the same preplaced entities the
-    // host does — deterministic ids [0, N) on both sides (the allocator resets
-    // to 0 at each scene wipe). The type/ability registries are filled in place
-    // by load_content's load_types; we only pre-wire the pointers.
-    if (is_client) {
-        auto& sim = m_server.simulation();
-        m_network.view_world().types     = &sim.types();
-        m_network.view_world().abilities = &sim.abilities();
-        sim.set_world_override(&m_network.view_world());
-    }
-
-    // The heavy lift deferred from enter_lobby — tileset, types, terrain,
-    // preplaced objects. Happens here so the Lobby screen is cheap to show
-    // and the loading cost is paid behind a Loading screen with a ready
-    // handshake.
-    if (!m_map.load_content(m_asset, m_server.simulation())) {
+    // The mirror was already set in enter_lobby (client only). load_content builds
+    // preplaced into active_sim()'s world — on the client that IS the mirror, so it
+    // materializes the host's preplaced set at deterministic ids [0, N).
+    if (!m_map.load_content(m_asset, active_sim())) {
         log::error(TAG, "Failed to load map content for '{}'", m_args.map_path);
         return false;
     }
 
-    // Preplaced/dynamic id boundary: right after load_content, every entity in
-    // the world was created from placements.bin (Lua main() hasn't run yet),
-    // so next_id == N marks where dynamic ids begin. Host ships N to clients in
-    // S_WELCOME and uses it to suppress preplaced S_SPAWN / fog-destroy.
-    m_network.set_placement_count(m_server.simulation().world().entities.next_id());
+    // Preplaced/dynamic id boundary: after load_content (before Lua main()), next_id
+    // == N marks where dynamic ids begin. Host ships N to clients in S_WELCOME.
+    m_network.set_placement_count(active_sim().world().entities.next_id());
 
     // Renderer-side setup moved from enter_lobby. Tileset textures, terrain
     // mesh, environment, and the scene camera pose are only meaningful once
@@ -636,7 +633,7 @@ bool Engine::start_session() {
     // Button click callback. Host / offline fires the server trigger
     // directly; client forwards to host via C_NODE_EVENT.
     m_hud.set_button_event_fn([this](const std::string& node_id) {
-        if (m_args.net_mode == network::Mode::Client) {
+        if (this->is_client()) {
             m_network.send_node_event(node_id, network::NodeEventKind::ButtonPressed);
         } else {
             m_server.script().fire_node_event("button_pressed",
@@ -668,7 +665,7 @@ bool Engine::start_session() {
             simulation::orders::Cast c;
             c.ability_id = ability_id;
             if (target_unit_id != UINT32_MAX) {
-                const auto& world = m_server.simulation().world();
+                const auto& world = active_sim().world();
                 if (world.handle_infos.has(target_unit_id)) {
                     c.target_unit = simulation::Unit{target_unit_id};
                 }
@@ -705,7 +702,7 @@ bool Engine::start_session() {
                     // target_unit; range > 0 so the unit stops at a
                     // comfortable trailing distance instead of clipping
                     // into the leader's collider).
-                    const auto& world = m_server.simulation().world();
+                    const auto& world = active_sim().world();
                     if (world.handle_infos.has(target_unit_id)) {
                         m.target_unit = simulation::Unit{target_unit_id};
                         m.range       = 96.0f;
@@ -719,7 +716,7 @@ bool Engine::start_session() {
             } else if (command_id == "attack" || command_id == "attack_move") {
                 if (target_unit_id != UINT32_MAX) {
                     // Snapped to a unit → Attack on that unit.
-                    const auto& world = m_server.simulation().world();
+                    const auto& world = active_sim().world();
                     if (!world.handle_infos.has(target_unit_id)) return;
                     cmd.order = simulation::orders::Attack{
                         simulation::Unit{target_unit_id}};
@@ -741,7 +738,7 @@ bool Engine::start_session() {
     // the preset's path doesn't carry source_item — the HUD-already-
     // gated castable check ran in the press-release handler.
     m_hud.set_inventory_use_fn([this](u32 item_id, const std::string& ability_id) {
-        const auto& world = m_server.simulation().world();
+        const auto& world = active_sim().world();
         if (!world.handle_infos.has(item_id)) return;
         simulation::Item item{item_id};
 
@@ -771,7 +768,7 @@ bool Engine::start_session() {
     m_hud.set_inventory_use_at_target_fn(
         [this](u32 item_id, const std::string& ability_id,
                u32 target_unit_id, glm::vec3 world_pos) {
-            const auto& world = m_server.simulation().world();
+            const auto& world = active_sim().world();
             if (!world.handle_infos.has(item_id)) return;
             simulation::Item item{item_id};
 
@@ -799,7 +796,7 @@ bool Engine::start_session() {
     // Inventory drop — held-then-clicked-on-terrain (WC3 style). The
     // sim places the item at the explicit world pos passed in.
     m_hud.set_inventory_drop_fn([this](u32 item_id, i32 /*slot*/, glm::vec3 world_pos) {
-        const auto& world = m_server.simulation().world();
+        const auto& world = active_sim().world();
         if (!world.handle_infos.has(item_id)) return;
         simulation::Item item{item_id};
 
@@ -889,7 +886,7 @@ bool Engine::start_session() {
         // mode only; offline host_hud_sync no-ops (no peers). NOT part of
         // wire_to_network (which runs after init_game — too late for the
         // main()-time node/tag creates).
-        if (m_args.net_mode == network::Mode::Host) {
+        if (is_host()) {
             m_hud.set_sync_fn([this](const std::vector<u8>& pkt, u32 owner) {
                 m_network.host_hud_sync(pkt, owner);
             });
@@ -898,7 +895,7 @@ bool Engine::start_session() {
         // Surface the launch mode to Lua before main() runs so scripts
         // can branch on IsSinglePlayer() at scene-init time (e.g.
         // build SP-only HUD nodes, register pause-aware triggers).
-        m_server.script().set_singleplayer(m_args.net_mode == network::Mode::Offline);
+        m_server.script().set_singleplayer(is_offline());
 
         // SetSunDirection (Lua) updates the host's own renderer here;
         // the network broadcast to peers happens inside the binding
@@ -931,28 +928,13 @@ bool Engine::start_session() {
         }
     }
 
-    // Type/ability registries + terrain feed the client's spawn path (which now
-    // builds entities through the SAME create_* code as the host) AND the
-    // host/offline local view-world projection. Wire them on the view_world for
-    // all modes (harmless pointers on host/offline). The host's authoritative sim
-    // world gets terrain via Simulation::set_terrain; the client's view_world is a
-    // separate override world, so it needs terrain set here for ground-Z sampling.
-    m_network.view_world().types     = &m_server.simulation().types();
-    m_network.view_world().abilities = &m_server.simulation().abilities();
-    m_network.view_world().terrain   = m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
-
-    if (m_args.net_mode == network::Mode::Host) {
+    if (is_host()) {
         m_network.set_disconnect_timeout(m_map.manifest().disconnect_timeout);
         m_network.set_pause_on_disconnect(m_map.manifest().pause_on_disconnect);
     } else if (is_client) {
-        m_network.init_client_fog(m_map.terrain(), m_map, m_server.simulation());
-        // Route the never-ticked server simulation's world/vision
-        // accessors to the network-mirrored state so input presets,
-        // HUD, target_filter_passes, and is_allied/is_enemy queries
-        // (which all reach in via m_server.simulation()) see the real
-        // entities and fog instead of the empty server-side defaults.
-        m_server.simulation().set_world_override(&m_network.view_world());
-        m_server.simulation().set_vision_override(&m_network.client_vision());
+        // Client post-load setup on its own replica sim: alliances + terrain + fog
+        // (the non-scripting subset of GameServer::init_game).
+        m_client.init_game(m_map);
     }
 
     // Wire callbacks
@@ -984,118 +966,18 @@ bool Engine::start_session() {
                 return m_renderer.clip_duration(model_path, clip_name);
             };
     } else {
-        m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
-            m_audio.play_sfx(path, pos);
-        };
-        // Script-initiated audio mirrors the Lua API surface 1:1.
-        m_network.on_sound_2d = [this](std::string_view path) {
-            m_audio.play_sfx_2d(path);
-        };
-        m_network.on_music_play = [this](std::string_view path, f32 fade_in) {
-            m_audio.play_music(path, fade_in);
-        };
-        m_network.on_music_stop = [this](f32 fade_out) {
-            m_audio.stop_music(fade_out);
-        };
-        // Ambient loops are host-handle-keyed. We map the host's
-        // handle to the local AudioEngine handle returned by our own
-        // play_ambient call, then look up on stop.
-        m_network.on_ambient_start = [this](u32 host_handle, std::string_view path, f32 x, f32 y) {
-            auto h = m_audio.play_ambient(path, {x, y, 0});
-            m_client_ambient_handles[host_handle] = h.id;
-        };
-        m_network.on_ambient_stop = [this](u32 host_handle, f32 fade_out) {
-            auto it = m_client_ambient_handles.find(host_handle);
-            if (it == m_client_ambient_handles.end()) return;
-            m_audio.stop_ambient({it->second}, fade_out);
-            m_client_ambient_handles.erase(it);
-        };
-        m_network.on_set_sun_direction = [this](f32 x, f32 y, f32 z) {
-            map::EnvironmentConfig env;
-            env.sun_direction = glm::vec3{x, y, z};  // normalized + guarded in set_environment
-            m_renderer.set_environment(env);
-        };
-        // CreateEffect: persistent effect with stable server-assigned
-        // id. Track server→local handle so a later destroy can find
-        // its EffectManager instance.
-        m_network.on_effect_create = [this](u32 server_id, std::string_view name,
-                                              simulation::Unit entity, glm::vec3 pos,
-                                              std::string_view attach_point) {
-            auto& mgr = m_renderer.effect_manager();
-            u32 local_id = simulation::is_non_null_handle(entity)
-                ? mgr.create_on_unit(std::string(name), entity, pos,
-                                     std::string(attach_point))
-                : mgr.create(std::string(name), pos);
-            m_effect_id_map[server_id] = local_id;
-        };
-        m_network.on_effect_destroy = [this](u32 server_id) {
-            auto it = m_effect_id_map.find(server_id);
-            if (it != m_effect_id_map.end()) {
-                m_renderer.effect_manager().destroy(it->second);
-                m_effect_id_map.erase(it);
-            }
-        };
-        // Host-driven scene swap. NetworkManager fires this when an
-        // S_SCENE_SWITCH arrives; the App tears down local scene
-        // state inline (terrain swap, sim wipe, HUD/picker reset,
-        // camera re-pose). NetworkManager handles the C_LOAD_DONE
-        // ack right after the callback returns. The host then bursts
-        // S_SPAWN/S_HUD_* messages once every peer has acked, so the
-        // client renders the new scene as those deltas arrive.
-        m_network.set_scene_switch_recv_fn([this](std::string_view scene) {
-            scene_switch_local_teardown(std::string(scene));
-        });
-        // Scripted-camera apply. The host has already chosen this
-        // client as the recipient; just hand off to the controller.
-        m_network.set_camera_apply_setup_recv_fn(
-            [this](f32 tx, f32 ty, f32 tz, f32 distance,
-                   f32 pitch_rad, f32 yaw_rad, f32 duration) {
-                m_camera_controller.apply_setup({tx, ty, tz}, distance,
-                                                  pitch_rad, yaw_rad, duration);
-            });
-        m_network.set_camera_set_target_position_recv_fn(
-            [this](f32 x, f32 y, f32 z, f32 d) {
-                m_camera_controller.set_target_position(x, y, z, d);
-            });
-        m_network.set_camera_set_source_distance_recv_fn(
-            [this](f32 distance, f32 d) {
-                m_camera_controller.set_source_distance(distance, d);
-            });
-        m_network.set_camera_shake_recv_fn([this](f32 i, f32 d) {
-            m_camera_controller.shake(i, d);
-        });
-        m_network.set_camera_set_target_controller_recv_fn([this](u32 entity_id) {
-            if (entity_id == UINT32_MAX) {
-                m_camera_controller.unlock_unit();
-            } else {
-                m_camera_controller.lock_unit(simulation::Unit{entity_id});
-            }
-        });
-        // Action-preset hero lock from the server's SetControlledUnit. The
-        // Action preset reads m_selection (no separate controlled field), so a
-        // plain select is the whole apply; camera-follow keys off selection too.
-        m_network.set_set_controlled_unit_recv_fn([this](u32 entity_id) {
-            if (entity_id == UINT32_MAX) {
-                m_selection.clear();
-            } else {
-                m_selection.select(simulation::Unit{entity_id});
-            }
-        });
+        // Client: install the receive callbacks that apply replicated events to
+        // App-owned systems — the twin of wire_host_broadcasts.
+        wire_client_callbacks();
     }
 
     // Picking: needs camera + terrain, both ready after map content load.
     m_picker.init(&m_renderer.camera(), &m_map.terrain(),
                   &active_world(),
                   m_platform->width(), m_platform->height());
-    // Fog filter — entities in unscouted tiles drop out of pick_widget /
-    // pick_target / pick_item, so smart-orders treat a click in the
-    // fog as a ground click. Client mirrors fog from the server; host
-    // / offline reads its own simulation fog directly.
-    if (is_client) {
-        m_picker.set_vision(&m_network.client_vision(), simulation::Player{m_args.local_slot});
-    } else {
-        m_picker.set_vision(&m_server.simulation().vision(), simulation::Player{m_args.local_slot});
-    }
+    // Fog filter — entities in unscouted tiles drop out of pick_*. active_sim()
+    // .vision() is the local player's fog (client replica or authoritative).
+    m_picker.set_vision(&active_sim().vision(), simulation::Player{m_args.local_slot});
 
     // Input preset + bindings — preset is map-defined; bindings are the
     // user-customizable layer on top of preset defaults.
@@ -1103,22 +985,10 @@ bool Engine::start_session() {
     m_bindings.load(m_map.manifest().input_bindings_json);
     m_bindings.apply_defaults(input::rts_default_bindings());
 
-    // Wire fog of war to renderer — local viewer = the slot this user picked
-    // in the lobby. Previously hardcoded to 0, which meant Host always saw
-    // slot-0's fog regardless of which slot they actually played.
-    if (!is_client) {
-        m_renderer.set_simulation(&m_server.simulation());
-        m_renderer.set_local_player(m_args.local_slot);
-    } else {
-        // Client: the renderer needs the simulation ref to fog-cull entities.
-        // The client now builds preplaced entities locally (units/trees in
-        // never-scouted fog exist client-side), so the renderer must hide
-        // them itself — is_fog_hidden / is_in_fog_memory read the vision
-        // override (client vision) through this ref. (Before local preplaced,
-        // the host pre-filtered by fog and the client held nothing to cull.)
-        m_renderer.set_simulation(&m_server.simulation());
-        m_renderer.set_local_player(m_args.local_slot);
-    }
+    // Renderer reads active_sim() to fog-cull entities (is_fog_hidden /
+    // is_in_fog_memory) — the client's replica sim or the authoritative one.
+    m_renderer.set_simulation(&active_sim());
+    m_renderer.set_local_player(m_args.local_slot);
 
     // HUD world-UI context: supplies world / fog / camera / picker / selection
     // / terrain / local player so draw_world_overlays() can iterate entities,
@@ -1126,19 +996,11 @@ bool Engine::start_session() {
     // the session; cleared in end_session().
     {
         m_hud_world_ctx = hud::WorldContext{};
-        // World is the one fog-projected view-world in every mode. Vision
-        // differs: a client computes its own fog locally (client_vision) over
-        // its network mirror; host/offline read the authoritative vision — the
-        // local player's real fog, incl. true-sight from the ticked spatial grid.
         m_hud_world_ctx.world = &active_world();
-        m_hud_world_ctx.vision = is_client ? &m_network.client_vision()
-                                           : &m_server.simulation().vision();
-        // Type registry: server/host owns one; the client's view_world also holds
-        // it (wired in start_session). Both resolve to the same pointer — the
-        // server's simulation types.
-        m_hud_world_ctx.types        = &m_server.simulation().types();
-        m_hud_world_ctx.abilities    = &m_server.simulation().abilities();
-        m_hud_world_ctx.simulation   = &m_server.simulation();
+        m_hud_world_ctx.vision = &active_sim().vision();
+        m_hud_world_ctx.types        = &active_sim().types();
+        m_hud_world_ctx.abilities    = &active_sim().abilities();
+        m_hud_world_ctx.simulation   = &active_sim();
         m_hud_world_ctx.camera       = &m_renderer.camera();
         m_hud_world_ctx.selection    = &m_selection;
         m_hud_world_ctx.terrain      = m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
@@ -1200,7 +1062,10 @@ void Engine::end_session() {
     // across sessions.
     m_network.shutdown();
     m_map.shutdown();
-    m_server.shutdown();
+    // Tear down only the sim that was inited for this session's mode (see
+    // leave_lobby) — client → m_client, host/offline → m_server.
+    if (is_client()) m_client.shutdown();
+    else             m_server.shutdown();
 
     // Renderer — drop session-scoped resources. Animations must clear
     // *after* the simulation tears down so no in-flight render
@@ -1368,6 +1233,113 @@ void Engine::wire_host_broadcasts() {
     }
 }
 
+// Client-side server→client wiring — the twin of wire_host_broadcasts (see the
+// header for why it lives in the App, not GameClient). Called once from
+// start_session's client branch; the recv callbacks persist for the connection.
+void Engine::wire_client_callbacks() {
+    // Client sizes a dying projectile's death_timer to the real "death" clip (see
+    // client_handle_projectile_dying), tearing it down when the clip finishes
+    // instead of waiting for an S_DESTROY the host no longer sends for projectiles.
+    m_client.simulation().world().get_clip_duration =
+        [this](std::string_view model_path, std::string_view clip_name) -> f32 {
+            return m_renderer.clip_duration(model_path, clip_name);
+        };
+    m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
+        m_audio.play_sfx(path, pos);
+    };
+    // Script-initiated audio mirrors the Lua API surface 1:1.
+    m_network.on_sound_2d = [this](std::string_view path) {
+        m_audio.play_sfx_2d(path);
+    };
+    m_network.on_music_play = [this](std::string_view path, f32 fade_in) {
+        m_audio.play_music(path, fade_in);
+    };
+    m_network.on_music_stop = [this](f32 fade_out) {
+        m_audio.stop_music(fade_out);
+    };
+    // Ambient loops are host-handle-keyed. We map the host's handle to the local
+    // AudioEngine handle returned by our own play_ambient call, then look up on stop.
+    m_network.on_ambient_start = [this](u32 host_handle, std::string_view path, f32 x, f32 y) {
+        auto h = m_audio.play_ambient(path, {x, y, 0});
+        m_client_ambient_handles[host_handle] = h.id;
+    };
+    m_network.on_ambient_stop = [this](u32 host_handle, f32 fade_out) {
+        auto it = m_client_ambient_handles.find(host_handle);
+        if (it == m_client_ambient_handles.end()) return;
+        m_audio.stop_ambient({it->second}, fade_out);
+        m_client_ambient_handles.erase(it);
+    };
+    m_network.on_set_sun_direction = [this](f32 x, f32 y, f32 z) {
+        map::EnvironmentConfig env;
+        env.sun_direction = glm::vec3{x, y, z};  // normalized + guarded in set_environment
+        m_renderer.set_environment(env);
+    };
+    // CreateEffect: persistent effect with stable server-assigned id. Track
+    // server→local handle so a later destroy can find its EffectManager instance.
+    m_network.on_effect_create = [this](u32 server_id, std::string_view name,
+                                          simulation::Unit entity, glm::vec3 pos,
+                                          std::string_view attach_point) {
+        auto& mgr = m_renderer.effect_manager();
+        u32 local_id = simulation::is_non_null_handle(entity)
+            ? mgr.create_on_unit(std::string(name), entity, pos,
+                                 std::string(attach_point))
+            : mgr.create(std::string(name), pos);
+        m_effect_id_map[server_id] = local_id;
+    };
+    m_network.on_effect_destroy = [this](u32 server_id) {
+        auto it = m_effect_id_map.find(server_id);
+        if (it != m_effect_id_map.end()) {
+            m_renderer.effect_manager().destroy(it->second);
+            m_effect_id_map.erase(it);
+        }
+    };
+    // Host-driven scene swap. NetworkManager fires this when an S_SCENE_SWITCH
+    // arrives; the App tears down local scene state inline (terrain swap, sim
+    // wipe, HUD/picker reset, camera re-pose). NetworkManager handles the
+    // C_LOAD_DONE ack right after the callback returns. The host then bursts
+    // S_SPAWN/S_HUD_* messages once every peer has acked, so the client renders
+    // the new scene as those deltas arrive.
+    m_network.set_scene_switch_recv_fn([this](std::string_view scene) {
+        scene_switch_local_teardown(std::string(scene));
+    });
+    // Scripted-camera apply. The host has already chosen this client as the
+    // recipient; just hand off to the controller.
+    m_network.set_camera_apply_setup_recv_fn(
+        [this](f32 tx, f32 ty, f32 tz, f32 distance,
+               f32 pitch_rad, f32 yaw_rad, f32 duration) {
+            m_camera_controller.apply_setup({tx, ty, tz}, distance,
+                                              pitch_rad, yaw_rad, duration);
+        });
+    m_network.set_camera_set_target_position_recv_fn(
+        [this](f32 x, f32 y, f32 z, f32 d) {
+            m_camera_controller.set_target_position(x, y, z, d);
+        });
+    m_network.set_camera_set_source_distance_recv_fn(
+        [this](f32 distance, f32 d) {
+            m_camera_controller.set_source_distance(distance, d);
+        });
+    m_network.set_camera_shake_recv_fn([this](f32 i, f32 d) {
+        m_camera_controller.shake(i, d);
+    });
+    m_network.set_camera_set_target_controller_recv_fn([this](u32 entity_id) {
+        if (entity_id == UINT32_MAX) {
+            m_camera_controller.unlock_unit();
+        } else {
+            m_camera_controller.lock_unit(simulation::Unit{entity_id});
+        }
+    });
+    // Action-preset hero lock from the server's SetControlledUnit. The Action
+    // preset reads m_selection (no separate controlled field), so a plain select
+    // is the whole apply; camera-follow keys off selection too.
+    m_network.set_set_controlled_unit_recv_fn([this](u32 entity_id) {
+        if (entity_id == UINT32_MAX) {
+            m_selection.clear();
+        } else {
+            m_selection.select(simulation::Unit{entity_id});
+        }
+    });
+}
+
 // Local teardown — runs on host AND clients when entering a new scene.
 // Wipes sim entities, swaps terrain, resets the HUD's per-scene tree,
 // re-poses the camera, and clears selection / picking handles. The
@@ -1389,7 +1361,9 @@ void Engine::wire_host_broadcasts() {
 void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     log::info(TAG, "Scene switch teardown → '{}'", scene_name);
 
-    auto& sim = m_server.simulation();
+    // The active sim: client replica on a client, authoritative on host/offline.
+    // On a client this is where the new scene's preplaced entities rebuild.
+    auto& sim = active_sim();
 
     // Terrain swap (and entity wipe → allocator reset to 0). On host's
     // offline + post-barrier paths we then call load_scene_placements; on
@@ -1404,7 +1378,7 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     // Wipe the local player's view-world in lockstep with the authoritative
     // entity wipe above (H4) — its ids/discovered must not leak across scenes.
     m_network.reset_local_view();
-    if (is_session_active() && m_args.net_mode == network::Mode::Client) {
+    if (is_session_active() && is_client()) {
         if (!m_map.load_scene_placements(scene_name, m_asset, sim)) {
             log::warn(TAG, "Scene '{}': no client placements loaded", scene_name);
         }
@@ -1466,12 +1440,13 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     m_picker.init(&m_renderer.camera(), &m_map.terrain(), &active_world(),
                   m_platform->width(), m_platform->height());
 
-    // Client: rebuild the fog mirror against the new terrain
-    // dimensions. Host's authoritative fog lives on its own
-    // simulation and is rebuilt by sim.set_terrain above.
-    if (m_args.net_mode == network::Mode::Client && m_map.terrain().is_valid()) {
-        m_network.init_client_fog(m_map.terrain(), m_map, m_server.simulation());
-        m_picker.set_vision(&m_network.client_vision(), simulation::Player{m_args.local_slot});
+    // Client: rebuild alliances + terrain + fog against the new scene on the
+    // client's own replica sim (its vision was wiped with the entities). Host's
+    // authoritative fog was rebuilt by sim.set_terrain above.
+    if (is_client() && m_map.terrain().is_valid()) {
+        m_client.reinit_after_scene_switch(m_map);
+        m_picker.set_vision(&m_client.simulation().vision(),
+                            simulation::Player{m_args.local_slot});
     }
 }
 
@@ -1497,7 +1472,7 @@ void Engine::scene_switch_run_main(const std::string& scene_name) {
             env.sun_direction = glm::normalize(glm::vec3{x, y, z});
             m_renderer.set_environment(env);
         });
-        script.set_singleplayer(m_args.net_mode == network::Mode::Offline);
+        script.set_singleplayer(is_offline());
         // Server→client sends + host local-apply (effects, item sync, ability /
         // cooldown / charge, EndGame, unit updates, player-leave). Re-chains onto
         // the freshly-inited script handlers — WITHOUT this, effects/items broke
@@ -1524,11 +1499,11 @@ void Engine::scene_switch_run_main(const std::string& scene_name) {
 // Clients never call this directly — they react to S_SCENE_SWITCH
 // via the recv_fn registered in start_session.
 void Engine::perform_scene_switch(const std::string& scene_name) {
-    if (m_args.net_mode == network::Mode::Client) return;
+    if (is_client()) return;
 
     log::info(TAG, "Scene switch → '{}'", scene_name);
 
-    if (m_args.net_mode == network::Mode::Offline) {
+    if (is_offline()) {
         scene_switch_local_teardown(scene_name);
         scene_switch_run_main(scene_name);
         return;
@@ -1671,7 +1646,7 @@ void Engine::run() {
             // C_RELEASE_SLOT and client receives S_LOBBY_STATE.
             m_network.update(frame_dt);
             // Client: host broadcast S_LOBBY_COMMIT → flip to Loading.
-            if (m_args.net_mode == network::Mode::Client &&
+            if (is_client() &&
                 m_network.phase() == network::Phase::Loading) {
                 u32 my_slot = network::lobby_slot_for_peer(
                     m_network.lobby_state(), m_network.client_peer_id());
@@ -1689,7 +1664,7 @@ void Engine::run() {
                 skip_lobby_ui = true;
 #endif
                 if (m_args.auto_start) skip_lobby_ui = true;
-                if (skip_lobby_ui && m_args.net_mode == network::Mode::Offline) {
+                if (skip_lobby_ui && is_offline()) {
                     u32 my_slot = network::lobby_slot_for_peer(
                         m_network.lobby_state(), network::LOCAL_PEER);
                     m_args.local_slot = (my_slot == UINT32_MAX) ? 0 : my_slot;
@@ -1713,9 +1688,9 @@ void Engine::run() {
             m_network.update(frame_dt);
 
             bool ready_to_play = false;
-            if (m_args.net_mode == network::Mode::Offline) {
+            if (is_offline()) {
                 ready_to_play = true;
-            } else if (m_args.net_mode == network::Mode::Host) {
+            } else if (is_host()) {
                 if (m_network.all_peers_loaded()) {
                     m_network.host_finish_start();  // sends S_WELCOME + S_SPAWN + S_START
                     ready_to_play = true;
@@ -1736,14 +1711,11 @@ void Engine::run() {
                 // the frame-1 prune — so the view is empty for one frame and an
                 // owned unit main() selected gets pruned out. Priming here
                 // covers both paths: host/offline stamps auth vision, the
-                // client recomputes its mirror fog; both then project.
-                if (m_args.net_mode == network::Mode::Client) {
-                    m_network.update_client_fog(0.0f);
-                } else {
-                    auto& sim = m_server.simulation();
-                    sim.vision().update(sim.world(), sim);
-                }
-                m_network.project_local_view(m_server.simulation(),
+                // client recomputes its mirror fog; both then project. Both read
+                // active_sim() — client replica or authoritative — uniformly.
+                auto& sim = active_sim();
+                sim.vision().update(sim.world(), sim);
+                m_network.project_local_view(sim,
                                              simulation::Player{m_args.local_slot},
                                              m_network.placement_count());
 
@@ -1755,7 +1727,7 @@ void Engine::run() {
         }
 
         case AppState::Playing: {
-            bool is_client = (m_args.net_mode == network::Mode::Client);
+            bool is_client = this->is_client();
 
             m_network.update(frame_dt);
 
@@ -1798,7 +1770,7 @@ void Engine::run() {
             }
 
             bool should_tick = !is_client &&
-                (m_args.net_mode == network::Mode::Offline || m_network.is_game_started()) &&
+                (is_offline() || m_network.is_game_started()) &&
                 !m_network.is_paused() &&
                 !m_network.is_scene_switching() &&
                 !m_server.script().is_paused();
@@ -1819,7 +1791,7 @@ void Engine::run() {
                         log::warn(TAG, "Slow tick: {:.1f}ms", tick_ms);
                     }
                     tick_counter++;
-                    if (m_args.net_mode == network::Mode::Host)
+                    if (is_host())
                         m_network.host_broadcast_tick(tick_counter);
                     // Project the authoritative world into the local player's
                     // view-world (host + offline) — the in-process sibling of
@@ -1831,6 +1803,20 @@ void Engine::run() {
                                                  m_network.placement_count());
                     accumulator -= TICK_DT;
                 }
+            }
+
+            // Client twin of the host tick above: derive local-only timers + fog,
+            // then project the LocalView — the same pairing the host does per tick,
+            // but per FRAME (client_tick is linear/idempotent, so it needs no fixed
+            // step, and per-frame membership keeps the fog fade + view flicker-free).
+            // After m_network.update()'s interpolation (above), so projection reads
+            // this frame's positions.
+            if (is_client && m_network.is_game_started() &&
+                !m_network.is_paused() && !m_network.is_scene_switching()) {
+                m_client.tick(frame_dt);
+                m_network.project_local_view(m_client.simulation(),
+                                             simulation::Player{m_args.local_slot},
+                                             m_network.placement_count());
             }
 
             {
@@ -1991,7 +1977,7 @@ void Engine::run() {
                 // Same sub-tick interpolation factor the renderer uses.
                 // Clients don't run the tick loop locally, so they pin
                 // it at 1.0 (mirror snapshots are already at-the-tick).
-                bool  is_client_now = (m_args.net_mode == network::Mode::Client);
+                bool  is_client_now = this->is_client();
                 f32   preset_alpha  = is_client_now ? 1.0f : (accumulator / TICK_DT);
 
                 f32 jx = 0.0f, jy = 0.0f;
@@ -2011,7 +1997,7 @@ void Engine::run() {
 
                 input::InputContext ictx{
                     m_platform->input(), m_selection, m_commands, m_picker,
-                    m_renderer.camera(), m_bindings, m_server.simulation(),
+                    m_renderer.camera(), m_bindings, active_sim(),
                     m_platform->width(), m_platform->height(),
                     m_hud.input_captured(),
                     minimap_hovered,
@@ -2084,7 +2070,7 @@ void Engine::run() {
                 // the view-world wouldn't contain it, so the lookup would return
                 // NaN and the controller would drop the lock. Camera targeting
                 // is a sim-authoring concern, not a fog-of-war display concern.
-                auto& world = m_server.simulation().world();
+                auto& world = active_sim().world();
                 m_camera_controller.update(frame_dt,
                     [&world](simulation::Unit unit) -> glm::vec2 {
                         if (!world.contains(unit)) {
@@ -2112,22 +2098,15 @@ void Engine::run() {
                     m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
                 }
             } else {
-                const f32* visual = m_network.update_client_fog(frame_dt);
-                if (visual) {
-                    m_renderer.set_fog_grid(visual, m_network.client_vision().tiles_x(),
-                                            m_network.client_vision().tiles_y());
+                // Fog fade grid the renderer draws — the visual half of fog, per
+                // frame like the host's. (Membership + projection ran in the client
+                // tick block above; this is only the smooth fade.)
+                auto& vision = m_client.simulation().vision();
+                if (vision.enabled()) {
+                    const f32* visual = vision.update_visual(
+                        simulation::Player{m_args.local_slot}, frame_dt);
+                    m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
                 }
-                // Client projects its OWN view over its mirror + client_vision —
-                // the exact same call the host/offline path makes over the auth
-                // world (the client's sim overrides route world()->mirror,
-                // vision()->client_vision). This gives the client its own
-                // Live/Memory membership: live entities read from the mirror,
-                // statics it can't see freeze into its snapshot store. Runs per
-                // FRAME (not per tick — the client has no sim tick), after fog +
-                // interpolation are current for this frame.
-                m_network.project_local_view(m_server.simulation(),
-                                             simulation::Player{m_args.local_slot},
-                                             m_network.placement_count());
             }
             break;
         }
@@ -2165,7 +2144,7 @@ void Engine::run() {
 
         bool have_world = (m_state == AppState::Playing && m_session_active);
         if (have_world) {
-            bool is_client = (m_args.net_mode == network::Mode::Client);
+            bool is_client = this->is_client();
             auto& world = active_world();
             f32 alpha = is_client ? 1.0f : (accumulator / TICK_DT);
             auto r0 = std::chrono::steady_clock::now();
@@ -2627,9 +2606,9 @@ void Engine::run() {
             } else {
                 // Signal "I'm loaded". Host marks self locally; Client sends
                 // C_LOAD_DONE. Offline skips the handshake entirely.
-                if (m_args.net_mode == network::Mode::Host) {
+                if (is_host()) {
                     m_network.mark_self_loaded();
-                } else if (m_args.net_mode == network::Mode::Client) {
+                } else if (is_client()) {
                     m_network.send_load_done();
                 }
             }

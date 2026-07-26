@@ -410,6 +410,12 @@ void emit_projectile_target(World& world, Projectile projectile, Unit target, f3
 void emit_projectile_loc(World& world, Projectile projectile, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance);
 void destroy_projectile(World& world, Projectile projectile);
+// Put a projectile into the Dying state (mark + size death_timer to its death
+// clip + queue the clip), with no gameplay side effects — unlike
+// destroy_projectile, which fires PROJECTILE_DESTROYED first. A network client
+// calls this on S_PROJECTILE_DYING (it never runs system_projectile); the host
+// reaches it via begin_destroy_projectile.
+void enter_projectile_dying(World& world, u32 id);
 
 // Status flag helpers. Read returns false for an invalid handle or
 // when the unit has no StatusFlags component (treated as "no flags").

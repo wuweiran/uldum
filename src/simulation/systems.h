@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/types.h"
+
 namespace uldum::map { struct TerrainData; }
 
 namespace uldum::simulation {
@@ -21,6 +23,9 @@ void system_regions(World& world);
 void system_ability(World& world, float dt, const class AbilityRegistry& abilities, const SpatialGrid& grid);
 void system_items(World& world, float dt);
 void system_projectile(World& world, float dt);
+// Advance every dying projectile's death_timer and tear down those that drain —
+// the retirement the host runs inside system_projectile
+void tick_projectile_death(World& world, float dt);
 void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& pathfinder);
 void system_death(World& world, float dt);
 
