@@ -3976,7 +3976,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                     if (is_fog_hidden(world, id, tf)) continue;
                     // Flying units skim above the surface — no splash/ripple.
                     if (const auto* mov = world.movement(id);
-                        mov && mov->type == simulation::MoveType::Air) continue;
+                        mov && mov->type == simulation::MoveType::Fly) continue;
 
                     auto tile = m_terrain_data->world_to_tile(tf.position.x, tf.position.y);
                     u32 tx = static_cast<u32>(tile.x);

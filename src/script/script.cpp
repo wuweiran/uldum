@@ -1004,10 +1004,10 @@ void ScriptEngine::bind_api() {
         return info ? info->type_id : "";
     };
 
-    // Movement layer: "ground" / "air" / "water" / "amphibious". Engine truth
-    // (reads Movement.type), so it can't be mistagged like a classification
-    // string. Units without a Movement (buildings, destructables) read as
-    // "ground" — same default the combat target handshake uses.
+    // Movement layer: "ground" / "fly" / "water" / "amphibious" / "none". Engine
+    // truth (reads Movement.type), so it can't be mistagged like a classification
+    // string. This is the pathing axis — targeting uses classifications. Units
+    // without a Movement (buildings, destructables) read as "ground".
     lua["GetUnitMoveType"] = [&](simulation::Unit u) -> std::string {
         if (!sim.world().contains(u)) return simulation::move_type_name(simulation::MoveType::Ground);
         auto* mov = sim.world().movements.get(u.id);

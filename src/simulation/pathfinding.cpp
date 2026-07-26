@@ -17,7 +17,7 @@ namespace uldum::simulation {
 
 bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
     if (!m_terrain) return false;
-    if (move_type == MoveType::Air) return true;
+    if (move_type == MoveType::Fly) return true;
     if (!m_terrain->is_tile_passable(tx, ty)) return false;
     if (move_type == MoveType::Ground && m_terrain->is_tile_deep_water(tx, ty)) return false;
     if (move_type == MoveType::Water  && !m_terrain->is_tile_deep_water(tx, ty)) return false;
@@ -32,7 +32,7 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
 bool Pathfinder::are_connected(u32 src_tx, u32 src_ty, u32 dst_tx, u32 dst_ty,
                                 MoveType move_type) const {
     if (!m_terrain) return false;
-    if (move_type == MoveType::Air) return true;
+    if (move_type == MoveType::Fly) return true;
 
     // Both tiles must be occupiable
     if (!can_occupy(src_tx, src_ty, move_type)) return false;
@@ -146,7 +146,7 @@ bool Pathfinder::is_cell_blocked(i32 cx, i32 cy) const {
 
 bool Pathfinder::can_occupy_cell(i32 cx, i32 cy, MoveType move_type) const {
     if (!m_terrain) return false;
-    if (move_type == MoveType::Air) return true;
+    if (move_type == MoveType::Fly) return true;
     if (cx < 0 || cy < 0) return false;
     if (static_cast<u32>(cx) >= m_cells_w || static_cast<u32>(cy) >= m_cells_h) return false;
     // Water is the inverse of Ground: passable only over deep water. The
@@ -198,7 +198,7 @@ bool Pathfinder::pos_clear_for_radius(f32 x, f32 y, f32 radius, MoveType move_ty
 
 glm::vec2 Pathfinder::clamp_goal_for_radius(glm::vec2 goal, glm::vec2 from,
                                             f32 radius, MoveType move_type) const {
-    if (move_type == MoveType::Air) return goal;
+    if (move_type == MoveType::Fly) return goal;
     if (pos_clear_for_radius(goal.x, goal.y, radius, move_type)) return goal;
 
     // Walk from goal back toward `from`, in sub-cell steps, returning the first
@@ -223,7 +223,7 @@ static bool tiles_terrain_connected(const map::TerrainData& td,
                                      u32 src_tx, u32 src_ty,
                                      u32 dst_tx, u32 dst_ty,
                                      MoveType move_type) {
-    if (move_type == MoveType::Air) return true;
+    if (move_type == MoveType::Fly) return true;
     if (!td.is_tile_passable(src_tx, src_ty)) return false;
     if (!td.is_tile_passable(dst_tx, dst_ty)) return false;
     if (move_type == MoveType::Ground) {
@@ -255,7 +255,7 @@ static bool tiles_terrain_connected(const map::TerrainData& td,
 bool Pathfinder::can_move_to(f32 old_x, f32 old_y, f32 new_x, f32 new_y,
                               MoveType move_type) const {
     if (!m_terrain || !m_terrain->is_valid()) return true;
-    if (move_type == MoveType::Air) return true;
+    if (move_type == MoveType::Fly) return true;
 
     // Destination block check at CELL granularity. A destructable's
     // footprint can straddle a tile boundary (a 2×2-cell tree snapped
@@ -405,7 +405,7 @@ static void flood_components(const map::TerrainData& td,
                               u32 cells_w, u32 cells_h,
                               std::vector<u32>& out) {
     out.assign(static_cast<size_t>(cells_w) * cells_h, 0);
-    if (mt == MoveType::Air) return;  // air doesn't need components
+    if (mt == MoveType::Fly) return;  // air doesn't need components
 
     std::vector<u32> queue;
     queue.reserve(1024);
@@ -466,7 +466,7 @@ static void flood_components(const map::TerrainData& td,
 
 void Pathfinder::refresh_components_if_dirty(MoveType mt) const {
     if (!m_terrain || !m_terrain->is_valid()) return;
-    if (mt == MoveType::Air) return;
+    if (mt == MoveType::Fly) return;
     if (mt == MoveType::Amphibious) {
         if (!m_components_amphibious_dirty) return;
         flood_components(*m_terrain, *this, MoveType::Amphibious,
@@ -563,7 +563,7 @@ Corridor Pathfinder::find_corridor(glm::vec2 start, glm::vec2 goal,
     // escape path. Without this snap a unit that ends up on a blocked
     // cell goes inert until stuck-detection drops the order.
     refresh_components_if_dirty(move_type);
-    if (move_type != MoveType::Air) {
+    if (move_type != MoveType::Fly) {
         const auto& comps = (move_type == MoveType::Amphibious)
             ? m_components_amphibious
             : (move_type == MoveType::Water) ? m_components_water

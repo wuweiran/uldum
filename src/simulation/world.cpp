@@ -105,6 +105,11 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
 
     // Unit
     world.owners.add(id, Player{owner});
+    // Every unit gets Movement — including immobile buildings/towers, which
+    // declare "movement": { "speed": 0 }. Keeping the component present means
+    // collision_radius / move_type are always available (attack-range math,
+    // collision layering) and the movement + collision loops don't special-case
+    // a missing component. A speed-0 unit simply never advances.
     {
         Movement m;
         m.speed = def.move_speed;
@@ -113,9 +118,6 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
         m.type = def.move_type;
         world.movements.add(id, std::move(m));
     }
-    // Pathfinder scratch. On the host the movement/pathfinding systems use it;
-    // on the client it stays inert (the client never ticks movement). Kept in
-    // the shared builder — one empty struct is cheaper than a forked code path.
     world.pathings.add(id, Pathing{});
     // Combat is opt-in: only units whose type declares a `weapon` get the
     // component. system_combat iterates world.combats.ids(), so a unit
@@ -799,7 +801,7 @@ void issue_order(World& world, Unit unit, Order order) {
 
 f32 unit_fly_height(const World& world, u32 id) {
     const auto* mov = world.movements.get(id);
-    if (!mov || mov->type != MoveType::Air || !world.types) return 0.0f;
+    if (!mov || mov->type != MoveType::Fly || !world.types) return 0.0f;
     const auto* hi = world.handle_infos.get(id);
     if (!hi) return 0.0f;
     const auto* def = world.types->get_unit_type(hi->type_id);

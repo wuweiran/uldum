@@ -197,7 +197,7 @@ bool is_static_remembered_entity(const IWorldView& world, u32 entity_id) {
 
 f32 unit_fly_height(const IWorldView& world, u32 id) {
     const auto* mov = world.movement(id);
-    if (!mov || mov->type != MoveType::Air) return 0.0f;
+    if (!mov || mov->type != MoveType::Fly) return 0.0f;
     const auto* types = world.type_registry();
     if (!types) return 0.0f;
     const auto* hi = world.handle_info(id);
@@ -229,12 +229,15 @@ bool ability_can_afford(const IWorldView& world, u32 unit_id,
 }
 
 bool can_attack_target(const IWorldView& world, u8 target_mask, Unit target) {
+    u8 target_bits;
     if (const auto* d = world.destructable(target.id)) {
-        return (target_mask & d->target_bit) != 0;
+        target_bits = d->target_bit;
+    } else if (const auto* cls = world.classification(target.id)) {
+        target_bits = target_class_from_classifications(cls->flags);
+    } else {
+        target_bits = TARGET_BIT_GROUND;
     }
-    const auto* mov = world.movement(target.id);
-    MoveType t = mov ? mov->type : MoveType::Ground;
-    return (target_mask & move_type_bit(t)) != 0;
+    return (target_mask & target_bits) != 0;
 }
 
 } // namespace uldum::simulation

@@ -278,9 +278,11 @@ function IsUnitBuilding(unit) end
 ---@return string
 function GetUnitTypeId(unit) end
 
---- Get the unit's movement layer: "ground" / "air" / "water" / "amphibious".
---- Engine truth (reads Movement.type), so it can't be mistagged like a
---- classification string. Buildings / destructables read as "ground".
+--- Get the unit's movement layer: "ground" / "fly" / "water" / "amphibious" /
+--- "none". Engine truth (reads Movement.type), so it can't be mistagged like a
+--- classification string. This is the PATHING axis, not the attack-targeting
+--- axis — use classifications ("air"/"ground") for "can this be hit" checks.
+--- Buildings / destructables read as "ground".
 ---@param unit unit
 ---@return string
 function GetUnitMoveType(unit) end

@@ -68,7 +68,7 @@ static f32 angle_diff(f32 from, f32 to) {
 // with Air, surface (Ground/Water/Amphibious) with surface. Air units fly
 // over everything, so they never block or push ground/water units (WC3-style).
 static bool same_collision_layer(MoveType a, MoveType b) {
-    return (a == MoveType::Air) == (b == MoveType::Air);
+    return (a == MoveType::Fly) == (b == MoveType::Fly);
 }
 
 static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
@@ -76,7 +76,7 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
                                 f32 self_radius, glm::vec2 from, glm::vec2 to,
                                 MoveType move_type) {
     if (!self_owner) return false;          // unowned movers ignore this layer
-    if (move_type == MoveType::Air) return false;
+    if (move_type == MoveType::Fly) return false;
     // Phased units (DOTA Phase Boots / Wind Walk) pass through any unit —
     // unit-vs-unit collision off. Terrain + buildings still block (A*).
     if (auto* sf = world.status_flags.get(self_id); sf && (sf->flags & status::Phased)) return false;
@@ -767,22 +767,23 @@ static Projectile spawn_attack_projectile(World& world, Unit source, Unit target
 // ── Combat system ─────────────────────────────────────────────────────────
 
 // Can an attack with `target_mask` hit `target`? Two axes of the WC3-style
-// handshake: a destructable presents a widget bit (STRUCTURE / TREE) — the
-// attack must carry it (this is what stops ordinary units chopping trees).
-// Everything else is matched by its movement layer; units with no Movement
-// (buildings) count as Ground/surface. Ground attacks can't hit flyers unless
-// the type opts in with combat.targets including "air".
+// handshake, both fully decoupled from MoveType: a destructable presents a
+// widget bit (STRUCTURE / TREE / DEBRIS) from its "targeted_as"; a unit presents
+// a class bit (AIR / GROUND / STRUCTURE) from its `classifications`. The attack
+// must carry the target's bit. This is what stops a ground attack hitting a
+// flyer (flyer is classified "air") or an ordinary unit chopping trees.
 bool can_attack_target(const World& world, u8 target_mask, Unit target,
                        std::string* out_specifier) {
+    u8 target_bits;
     if (const auto* d = world.destructables.get(target.id)) {
-        bool ok = (target_mask & d->target_bit) != 0;
-        if (!ok && out_specifier) out_specifier->clear();   // no move layer
-        return ok;
+        target_bits = d->target_bit;
+    } else if (const auto* cls = world.classifications.get(target.id)) {
+        target_bits = target_class_from_classifications(cls->flags);
+    } else {
+        target_bits = TARGET_BIT_GROUND;   // no classification → ground plane
     }
-    const auto* mov = world.movements.get(target.id);
-    MoveType t = mov ? mov->type : MoveType::Ground;
-    bool ok = (target_mask & move_type_bit(t)) != 0;
-    if (!ok && out_specifier) *out_specifier = move_type_name(t);
+    bool ok = (target_mask & target_bits) != 0;
+    if (!ok && out_specifier) *out_specifier = target_class_name(target_bits);
     return ok;
 }
 
@@ -895,12 +896,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
 
         if (!target_valid) {
-            // No live target. system_movement owns the walk-to-atk->target and the
-            // arrival-advance (Priority-1 Attack branch); combat just drops the strike
-            // target + clears the live-handle approach so it doesn't fight the point
-            // goal, then auto-acquires (which may re-engage en route / on reveal).
-            // (An immobile attacker that can't reach atk->target still advances via
-            // movement's stuck-timeout, so the order never hangs.)
+            // No live target. system_movement owns the walk-to-atk->target +
+            // arrival-advance (Priority-1 Attack branch); combat just drops the
+            // strike target + clears the live-handle approach so it doesn't fight
+            // the point goal, then auto-acquires. A speed-0 unit can't walk the
+            // seek, but its Attack order self-terminates via the movement stuck-
+            // timeout, so nothing sticks.
             combat.target = Unit{};
             if (combat.attack_state != AttackState::Idle &&
                 combat.attack_state != AttackState::Backswing &&

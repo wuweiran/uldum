@@ -190,7 +190,7 @@ struct Combat {
     f32         dmg_pt          = 0.5f;    // fraction of attack animation at damage point
     std::optional<ProjectileSpec> projectile;  // set → ranged; unset → melee
     f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range
-    u8          target_mask     = TARGET_MASK_SURFACE;  // which MoveType layers this attack can hit
+    u8          target_mask     = TARGET_MASK_SURFACE;  // which target classes this attack can hit
     // Runtime state
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;

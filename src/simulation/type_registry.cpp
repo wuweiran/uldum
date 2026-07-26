@@ -134,10 +134,11 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
                 }
                 w.projectile = std::move(spec);
             }
-            // Attack target layers. JSON "targets": ["ground","air",...]. Omitted
-            // → surface (ground/water/amphibious) + structure, NOT air — units
-            // opt into anti-air. parse_target_mask({}) supplies the implicit
-            // STRUCTURE bit so an ordinary unit can still smash crates/barrels.
+            // Attack target classes. JSON "targets": ["ground","air",...]. Omitted
+            // → surface (ground) + structure/debris, NOT air — units opt into
+            // anti-air. parse_target_mask({}) supplies the implicit STRUCTURE +
+            // DEBRIS bits so an ordinary unit can still smash crates/barrels.
+            // Fully decoupled from movement.type (the pathing axis).
             std::vector<std::string> tl;
             if (c.contains("targets") && c["targets"].is_array()) {
                 for (auto& t : c["targets"]) if (t.is_string()) tl.push_back(t.get<std::string>());

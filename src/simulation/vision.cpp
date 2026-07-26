@@ -107,7 +107,7 @@ void Vision::update(World& world, const Simulation& sim) {
         // unit standing on a mesa reveals from its real elevation on both sides.
         u8 viewer_cliff = 0;
         const auto* mov = world.movements.get(id);
-        if (mov && mov->type == MoveType::Air) {
+        if (mov && mov->type == MoveType::Fly) {
             viewer_cliff = 255;
         } else if (m_terrain) {
             viewer_cliff = m_terrain->cliff_level_at(transform->position.x, transform->position.y);

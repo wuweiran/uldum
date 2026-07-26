@@ -1204,14 +1204,14 @@ bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
     // surface↔surface) can't share a spot. Skip the preview entity (it sits at
     // the cursor and would always fail).
     if (my_radius > 0) {
-        bool my_air = (move_type == simulation::MoveType::Air);
+        bool my_air = (move_type == simulation::MoveType::Fly);
         const auto& world = m_simulation.world();
         for (u32 i = 0; i < world.movements.count(); ++i) {
             u32 id = world.movements.ids()[i];
             if (id == m_preview_handle.id) continue;
             const auto& other = world.movements.data()[i];
             // Different collision layer (air vs surface) → no overlap.
-            if ((other.type == simulation::MoveType::Air) != my_air) continue;
+            if ((other.type == simulation::MoveType::Fly) != my_air) continue;
             const auto* t = world.transforms.get(id);
             if (!t) continue;
             f32 dx = t->position.x - wx;

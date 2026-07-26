@@ -10,7 +10,7 @@ See `docs/map-system.md` for the full engine vs map boundary definition.
 - **Ability**: anything attached to a unit that has effects — active (cast by player), passive (always on), or applied (given to a unit by another ability, with optional duration and auto-remove). In WC3 terms, "buffs" and "auras" are both just abilities.
 - **State**: a depletable/regenerating resource (HP, mana, energy). Has `current`, `max`, `regen`. HP is engine-built-in; others are map-defined.
 - **Attribute**: a single-value modifier (strength, agility, intelligence). Does not deplete. All map-defined.
-- **Classification**: a string-based targeting flag ("ground", "air", "hero"). All map-defined.
+- **Classification**: a string-based flag on a unit, all map-defined. Drives two things: ability/trigger filters (`"hero"`, `"mechanical"`, `"undead"`, …) and — since targeting was decoupled from `MoveType` — the WC3-style **"Targeted As"** axis for attacks (`"air"` → hit as air, else ground; `"structure"` → also hit as structure). A flyer is targeted as air because it's classified `"air"`, not because it flies.
 
 ## 1. Object Hierarchy
 
@@ -251,6 +251,9 @@ AbilitySet {
 
 UnitClassificationComp {
     std::vector<string> flags   // map-defined strings: "ground", "air", "hero", "structure", etc.
+    // Two roles: ability/trigger filters, AND the attack "Targeted As" axis
+    // ("air" → hit as air else ground; "structure" adds the structure class).
+    // Fully decoupled from MoveType (pathing) — a flyer must be classified "air".
 }
 
 // Map-defined attributes (strength, agility, intelligence, etc.)
@@ -259,8 +262,11 @@ AttributeBlock {
 }
 ```
 
-Note: `MoveType` is one of the few engine-defined enums because pathfinding needs
-to query terrain differently for ground vs air vs amphibious movement.
+Note: `MoveType` (`ground` / `fly` / `amphibious` / `water` / `none`) is one of
+the few engine-defined enums because pathfinding needs to query terrain
+differently for each. It is the **pathing axis only** — attack targeting is
+driven by classification flags (`"air"` / `"structure"`), not `MoveType`, exactly
+like WC3 separates "Movement Type" from "Targeted As".
 
 ### Inventory (any unit with inventory_size > 0)
 

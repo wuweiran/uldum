@@ -13,7 +13,7 @@ Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 - **Tileset**: a set of ground textures used by terrain (grass, dirt, stone, etc.).
 - **State**: a depletable/regenerating resource on a unit (HP, mana, energy). Has `current`, `max`, `regen`.
 - **Attribute**: a single-value modifier on a unit (strength, agility, intelligence). Does not deplete or regenerate.
-- **Classification**: a string-based flag on a unit used for targeting filters (e.g., "ground", "air", "hero", "structure"). Map-defined.
+- **Classification**: a string-based flag on a unit, map-defined. Used both for ability/trigger filters ("hero", "mechanical", …) and as the attack **"Targeted As"** axis — "air" makes the unit hittable as air (else ground), "structure" adds the structure class. Decoupled from `MoveType`: a flyer is targeted as air because it's classified "air", not because its movement type is `fly`.
 
 ## Engine vs Map Boundary
 
@@ -40,7 +40,8 @@ Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 
 | Concept | Details |
 |---------|---------|
-| Classifications | String-based flags: "ground", "air", "hero", "structure", "mechanical", etc. |
+| Classifications | String-based flags: "ground", "air", "hero", "structure", "mechanical", etc. Drive ability filters + the attack "Targeted As" axis ("air"/"structure"). |
+| Movement type | Engine enum (pathing only): "ground", "fly", "amphibious", "water", "none". Separate from targeting. |
 | Attack types | String-based: "normal", "pierce", "siege", "magic", "chaos", etc. |
 | Armor types | String-based: "unarmored", "light", "heavy", "fortified", etc. |
 | States (beyond HP) | Map declares: mana, energy, rage, etc. with max/regen per unit type |

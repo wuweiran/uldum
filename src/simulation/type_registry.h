@@ -51,7 +51,7 @@ struct UnitTypeDef {
         f32 dmg_time = 0.3f;         // seconds: fore-swing before damage (JSON: weapon.dmg_time)
         f32 backsw_time = 0.3f;      // seconds: backswing after damage (JSON: weapon.backsw_time)
         std::optional<ProjectileSpec> projectile;  // set → ranged auto-attack; unset → melee
-        u8  target_mask = TARGET_MASK_SURFACE;      // which MoveType layers this attack can hit (JSON: weapon.targets)
+        u8  target_mask = TARGET_MASK_SURFACE;      // which target classes this attack can hit (JSON: weapon.targets)
     };
     std::optional<WeaponDef> weapon;
 
