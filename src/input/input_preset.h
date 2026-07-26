@@ -29,6 +29,12 @@ struct InputContext {
     render::Camera&             camera;
     const InputBindings&        bindings;
     const simulation::Simulation& simulation;
+    // The fog-projected view the picker resolves hits through (LocalView). Order
+    // handlers classify a picked target through THIS, not simulation.world(): an
+    // out-of-sight static is a snapshot here but was dropped from the mirror on
+    // S_HIDE. Set from the SAME active_world() the picker was init'd with, so a hit
+    // and its classification resolve against one view.
+    const simulation::IWorldView& view;
     u32 screen_w;
     u32 screen_h;
     // True when the HUD has captured pointer input for this frame (hover
@@ -110,10 +116,10 @@ public:
     virtual void queue_ability(std::string_view /*ability_id*/) {}
 
     // Ask the preset to run one of the engine-built-in commands —
-    // `"stop"`, `"hold_position"`, `"attack"`, `"attack_move"`,
-    // `"move"`, `"patrol"`. Instant ones submit orders immediately;
-    // targeting ones enter a mode where the next world-click commits.
-    // Same zero-latency processing as queue_ability.
+    // `"stop"`, `"hold_position"`, `"attack"`, `"move"`, `"patrol"`.
+    // Instant ones submit orders immediately; targeting ones enter a
+    // mode where the next world-click commits. Same zero-latency
+    // processing as queue_ability.
     virtual void queue_command(std::string_view /*command_id*/) {}
 
     // Id of the ability currently in "pick a target" mode, or empty
@@ -124,9 +130,8 @@ public:
 
     // Command id currently in targeting mode — mirror of the above,
     // for the command_bar composite. Empty when no command is armed.
-    // Today: "attack" / "attack_move" (→ m_attack_move_mode), "move"
-    // (→ m_move_targeting_mode). Instant commands (stop / hold) never
-    // stay armed. Default: never armed.
+    // Today: "attack" (→ AttackMove targeting), "move" (→ Move targeting).
+    // Instant commands (stop / hold) never stay armed. Default: never armed.
     virtual std::string_view active_command_id() const { return {}; }
 
     // Whether ground-plane selection rings should render for this

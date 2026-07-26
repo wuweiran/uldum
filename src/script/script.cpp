@@ -327,12 +327,10 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
                 type_tag = "move";
                 if (simulation::is_non_null_handle(p.target_unit)) target_unit = p.target_unit;
                 target_x = p.target.x; target_y = p.target.y;
-            } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
-                type_tag = "attack_move";
-                target_x = p.target.x; target_y = p.target.y;
             } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
                 type_tag = "attack";
-                if (simulation::is_non_null_handle(p.target)) target_unit = p.target;
+                target_x = p.target.x; target_y = p.target.y;
+                if (simulation::is_non_null_handle(p.target_widget)) target_unit = p.target_widget;
             } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
                 type_tag = "stop";
             } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
@@ -1311,11 +1309,12 @@ void ScriptEngine::bind_api() {
         if (order_type == "move" && va.size() >= 2) {
             order.payload = simulation::orders::Move{glm::vec3{va[0].as<f32>(), va[1].as<f32>(), 0}};
         } else if (order_type == "attack" && va.size() >= 1) {
-            // attack(unit) = attack target, attack(x, y) = attack-move to point
+            // attack(unit) → attack that widget; attack(x, y) → A-move to point.
             if (va[0].is<simulation::Unit>()) {
                 order.payload = simulation::orders::Attack{va[0].as<simulation::Unit>()};
             } else if (va[0].is<f32>() && va.size() >= 2) {
-                order.payload = simulation::orders::AttackMove{glm::vec3{va[0].as<f32>(), va[1].as<f32>(), 0}};
+                order.payload = simulation::orders::Attack{
+                    glm::vec3{va[0].as<f32>(), va[1].as<f32>(), 0}};
             } else {
                 return;
             }
@@ -2922,13 +2921,11 @@ void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::
                     order_event.type = "move";
                     order_event.target_x = payload.target.x;
                     order_event.target_y = payload.target.y;
-                } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
-                    order_event.type = "attack_move";
-                    order_event.target_x = payload.target.x;
-                    order_event.target_y = payload.target.y;
                 } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
                     order_event.type = "attack";
-                    order_event.target_unit = payload.target;
+                    order_event.target_x = payload.target.x;
+                    order_event.target_y = payload.target.y;
+                    order_event.target_unit = payload.target_widget;
                 } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
                     order_event.type = "stop";
                 } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {

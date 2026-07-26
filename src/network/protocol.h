@@ -311,10 +311,9 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
             w.write_vec3(payload.target);
             w.write_u32(payload.target_unit.id);
             w.write_f32(payload.range);
-        } else if constexpr (std::is_same_v<T, simulation::orders::AttackMove>) {
-            w.write_vec3(payload.target);
         } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
-            w.write_u32(payload.target.id);
+            w.write_vec3(payload.target);
+            w.write_u32(payload.target_widget.id);
         } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
             // no payload
         } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
@@ -674,22 +673,22 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
         cmd.order = simulation::orders::Move{t, tu, range};
         break;
     }
-    case 1: cmd.order = simulation::orders::AttackMove{r.read_vec3()}; break;
-    case 2: {
-        cmd.order = simulation::orders::Attack{
-            simulation::Unit{r.read_u32()}};
+    case 1: {
+        glm::vec3 pt = r.read_vec3();
+        simulation::Unit w{r.read_u32()};
+        cmd.order = simulation::orders::Attack{pt, w};
         break;
     }
-    case 3: cmd.order = simulation::orders::Stop{}; break;
-    case 4: cmd.order = simulation::orders::HoldPosition{}; break;
-    case 5: {
+    case 2: cmd.order = simulation::orders::Stop{}; break;
+    case 3: cmd.order = simulation::orders::HoldPosition{}; break;
+    case 4: {
         simulation::orders::Patrol p;
         u8 wpc = r.read_u8();
         for (u8 i = 0; i < wpc; ++i) p.waypoints.push_back(r.read_vec3());
         cmd.order = std::move(p);
         break;
     }
-    case 6: {
+    case 5: {
         std::string ability = r.read_string();
         simulation::Unit tu{r.read_u32()};
         glm::vec3 tp = r.read_vec3();
@@ -697,32 +696,32 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
         cmd.order = simulation::orders::Cast{std::move(ability), tu, tp, src};
         break;
     }
-    case 7: cmd.order = simulation::orders::Train{r.read_string()}; break;
-    case 8: cmd.order = simulation::orders::Research{r.read_string()}; break;
-    case 9: {
+    case 6: cmd.order = simulation::orders::Train{r.read_string()}; break;
+    case 7: cmd.order = simulation::orders::Research{r.read_string()}; break;
+    case 8: {
         std::string bt = r.read_string();
         glm::vec3 p = r.read_vec3();
         cmd.order = simulation::orders::Build{std::move(bt), p};
         break;
     }
-    case 10: {
+    case 9: {
         cmd.order = simulation::orders::PickupItem{
             simulation::Item{r.read_u32()}};
         break;
     }
-    case 11: {
+    case 10: {
         simulation::Item item{r.read_u32()};
         glm::vec3 p = r.read_vec3();
         cmd.order = simulation::orders::DropItem{item, p};
         break;
     }
-    case 12: {
+    case 11: {
         i32 a = static_cast<i32>(r.read_u32());
         i32 b = static_cast<i32>(r.read_u32());
         cmd.order = simulation::orders::SwapInventorySlot{a, b};
         break;
     }
-    case 13: {
+    case 12: {
         f32 dx = r.read_f32();
         f32 dy = r.read_f32();
         cmd.order = simulation::orders::MoveDirection{{dx, dy}};

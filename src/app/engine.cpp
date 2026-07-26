@@ -713,16 +713,15 @@ bool Engine::start_session() {
                     m.target = wp;
                 }
                 cmd.order = std::move(m);
-            } else if (command_id == "attack" || command_id == "attack_move") {
+            } else if (command_id == "attack") {
                 if (target_unit_id != UINT32_MAX) {
-                    // Snapped to a unit → Attack on that unit.
+                    // Snapped to a widget → Attack it (point filled from live pos by sim).
                     const auto& world = active_sim().world();
                     if (!world.handle_infos.has(target_unit_id)) return;
-                    cmd.order = simulation::orders::Attack{
-                        simulation::Unit{target_unit_id}};
+                    cmd.order = simulation::orders::Attack{wp, simulation::Unit{target_unit_id}};
                 } else {
-                    // No snap → AttackMove on the ground point.
-                    cmd.order = simulation::orders::AttackMove{wp};
+                    // No snap → A-move to the ground point.
+                    cmd.order = simulation::orders::Attack{wp};
                 }
             } else {
                 return;   // unknown command — drop silently
@@ -1997,7 +1996,7 @@ void Engine::run() {
 
                 input::InputContext ictx{
                     m_platform->input(), m_selection, m_commands, m_picker,
-                    m_renderer.camera(), m_bindings, active_sim(),
+                    m_renderer.camera(), m_bindings, active_sim(), active_world(),
                     m_platform->width(), m_platform->height(),
                     m_hud.input_captured(),
                     minimap_hovered,

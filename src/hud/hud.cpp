@@ -1404,7 +1404,6 @@ bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
     bool can_attack = world.combat(lead.id) != nullptr;
 
     if (command == "attack")        return can_attack;
-    if (command == "attack_move")   return can_attack && can_move;
     if (command == "move" ||
         command == "patrol" ||
         command == "hold_position") return can_move;
@@ -1908,8 +1907,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
                 // can't snap a flyer) ONLY for attack commands — Move/Follow
                 // must still snap any unit, including allies it can't attack.
                 if (is_command) {
-                    bool is_attack = (s.drag_cast.command_id == "attack" ||
-                                      s.drag_cast.command_id == "attack_move");
+                    bool is_attack = (s.drag_cast.command_id == "attack");
                     bool gate = (hinfo->category == simulation::Category::Destructable)
                                 || is_attack;
                     if (gate && s.world_ctx->selection) {
@@ -2080,8 +2078,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // focus). A tap on Move with no direction is still genuinely
     // ambiguous and stays a no-op.
     if (!commit && is_command && s.drag_cast.phase == Phase::Pressed) {
-        if (s.drag_cast.command_id == "attack" ||
-            s.drag_cast.command_id == "attack_move") {
+        if (s.drag_cast.command_id == "attack") {
             if (simulation::is_non_null_handle(s.focus_target_unit) && s.world_ctx &&
                 s.world_ctx->world &&
                 s.world_ctx->world->contains(s.focus_target_unit.id)) {
@@ -3029,8 +3026,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             if (s.is_mobile && s.world_ctx && s.command_bar_drag_commit_fn) {
                 const auto& slot = s.command_bar_cfg.slots[cmd_slot];
                 bool targetable = (slot.command == "move"
-                                || slot.command == "attack"
-                                || slot.command == "attack_move");
+                                || slot.command == "attack");
                 u32 caster_id = s.world_ctx->selection &&
                                 !s.world_ctx->selection->selected().empty()
                                   ? s.world_ctx->selection->selected().front().id

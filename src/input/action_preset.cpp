@@ -49,7 +49,7 @@ void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
             cmd.units  = ctx.selection.selected();
             cmd.order  = simulation::orders::HoldPosition{};
             ctx.commands.submit(cmd);
-        } else if ((id == "attack" || id == "attack_move") && ctx.hud) {
+        } else if (id == "attack" && ctx.hud) {
             auto focus = ctx.hud->focus_target();
             if (simulation::is_non_null_handle(focus) && ctx.simulation.world().contains(focus) &&
                 !ctx.selection.empty()) {

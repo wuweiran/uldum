@@ -29,8 +29,19 @@ namespace orders {
         Unit      target_unit;       // when valid → follow this unit each tick
         f32       range = 0.0f;      // 0 = exact arrival; >0 = stop within radius
     };
-    struct AttackMove    { glm::vec3 target; };
-    struct Attack        { Unit target; };
+    // Attack toward a point, preferring a widget — the sibling of Move. When
+    // target_widget is set the host refreshes `target` to its live position each
+    // tick it's visible, so on fog/death the unit seeks that LAST-SEEN point
+    // (never a hidden entity's live transform — anti-leak). "widget" = a targetable
+    // Unit/Destructable (cf. pick_widget); handle stays Unit for how destructables
+    // are targeted in combat.
+    struct Attack {
+        glm::vec3 target{0.0f};
+        Unit      target_widget;
+        Attack() = default;
+        Attack(glm::vec3 pt, Unit w = {}) : target(pt), target_widget(w) {}  // A-move / targeted-with-seek
+        explicit Attack(Unit w) : target_widget(w) {}  // targeted; point auto-fills tick-1 from live pos
+    };
     struct Stop          {};
     struct HoldPosition  {};
     struct Patrol        { std::vector<glm::vec3> waypoints; u32 current = 0; };
@@ -63,7 +74,6 @@ namespace orders {
 
 using OrderPayload = std::variant<
     orders::Move,
-    orders::AttackMove,
     orders::Attack,
     orders::Stop,
     orders::HoldPosition,

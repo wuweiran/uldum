@@ -16,7 +16,7 @@ std::optional<DerivedPing> derive_target_ping(const simulation::GameCommand& cmd
     // stores its target in a different slot; we only care that there IS one.
     simulation::Unit target{};
     if (const auto* a = std::get_if<o::Attack>(&cmd.order)) {
-        target = a->target;
+        target = a->target_widget;               // invalid for a ground-point A-move
     } else if (const auto* m = std::get_if<o::Move>(&cmd.order)) {
         target = m->target_unit;                 // invalid for plain ground move
     } else if (const auto* c = std::get_if<o::Cast>(&cmd.order)) {

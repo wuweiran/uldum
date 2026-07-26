@@ -279,7 +279,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // also keys off this — Follow never gives up.
         bool is_follow = false;
 
-        // Priority 1: Move / AttackMove order
+        // Priority 1: Move / Attack order
         if (oq->current) {
             if (auto* m = std::get_if<orders::Move>(&oq->current->payload)) {
                 // Resolve target each tick. With target_unit valid, the
@@ -309,13 +309,15 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     has_goal = true;
                     goal_range = m->range;
                 }
-            } else if (auto* am = std::get_if<orders::AttackMove>(&oq->current->payload)) {
-                // AttackMove with active combat target: defer to approach
+            } else if (auto* atk = std::get_if<orders::Attack>(&oq->current->payload)) {
+                // Engaged a live target → defer to approach (chase it). Else walk to
+                // atk->target: the A-move dest, or a fogged/dead target's last-seen
+                // point. Arrival-advance (below) ends the order on reaching it.
                 auto* combat = world.combats.get(id);
                 if (combat && is_non_null_handle(combat->target)) {
-                    // Don't set goal from order — fall through to approach
+                    // engaged — fall through to approach
                 } else {
-                    goal2d = {am->target.x, am->target.y};
+                    goal2d = {atk->target.x, atk->target.y};
                     has_goal = true;
                 }
             }
@@ -816,11 +818,13 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             }
         }
 
-        // Determine attack target: explicit Attack order, or auto-acquired during AttackMove/idle
+        // Attack is one order: with a valid target_widget it's a targeted attack;
+        // without, it's an A-move (walk to atk->target, auto-acquire en route).
         auto* attack_order = oq->current ? std::get_if<orders::Attack>(&oq->current->payload) : nullptr;
         bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
         bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
         bool is_holding = oq->current && std::get_if<orders::HoldPosition>(&oq->current->payload);
+        bool has_widget = attack_order && is_non_null_handle(attack_order->target_widget);
 
         // Unit has a Move order — don't attack, obey the order
         if (is_moving) {
@@ -830,15 +834,15 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
 
         // Acquire disabled (NoAcquire flag is set by some active buff —
-        // e.g. Wind Walk): drop the auto-acquired target (explicit Attack
-        // orders pass through) and snap any pre-strike state back to
+        // e.g. Wind Walk): drop the auto-acquired target (explicit widget-target
+        // Attack orders pass through) and snap any pre-strike state back to
         // Idle. Backswing / Cooldown finish naturally so an
         // already-committed swing still lands.
         bool no_acquire = false;
         if (auto* sf = world.status_flags.get(id)) {
             no_acquire = (sf->flags & status::NoAcquire) != 0;
         }
-        if (no_acquire && !attack_order) {
+        if (no_acquire && !has_widget) {
             combat.target = Unit{};
             if (combat.attack_state == AttackState::WindUp ||
                 combat.attack_state == AttackState::TurningToFace ||
@@ -847,10 +851,10 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             }
         }
 
-        // Get current target: from Attack order, or from combat.target (auto-acquired/fight-back)
+        // Target: the order's explicit widget, else combat.target (auto-acquired).
         Unit target;
-        if (attack_order) {
-            target = attack_order->target;
+        if (has_widget) {
+            target = attack_order->target_widget;
         } else {
             target = combat.target;
         }
@@ -883,31 +887,33 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             target_valid = false;
         }
 
+        // Anti-leak last-seen capture: while a widget target is valid + visible,
+        // keep atk->target on its position. If it then fogs/dies/frees, the unit
+        // seeks THIS point (below) — never the live transform of a hidden entity.
+        if (target_valid && has_widget && attack_order) {
+            if (auto* tt = world.transforms.get(target.id)) attack_order->target = tt->position;
+        }
+
         if (!target_valid) {
-            // Target dead or gone — let backswing/cooldown finish before clearing
+            // No live target. system_movement owns the walk-to-atk->target and the
+            // arrival-advance (Priority-1 Attack branch); combat just drops the strike
+            // target + clears the live-handle approach so it doesn't fight the point
+            // goal, then auto-acquires (which may re-engage en route / on reveal).
+            // (An immobile attacker that can't reach atk->target still advances via
+            // movement's stuck-timeout, so the order never hangs.)
             combat.target = Unit{};
             if (combat.attack_state != AttackState::Idle &&
                 combat.attack_state != AttackState::Backswing &&
                 combat.attack_state != AttackState::Cooldown) {
                 combat.attack_state = AttackState::Idle;
             }
-
-            // Clear approach so movement system stops chasing the dead target
-            // — but NOT when the unit is mid-cast: the cast pump owns
-            // approach_range / approach_target while a Cast order is active
-            // (walk-to-target until in range). Clearing them here every tick
-            // pinned the unit after one step of out-of-range cast walk-up.
+            // Clear the live-handle approach — but NOT mid-cast (the cast pump owns
+            // it). The movement Attack branch sets the point goal (Priority 1 wins).
             auto* pth = world.pathings.get(id);
             if (pth && !is_casting) {
                 pth->approach_target = Unit{};
                 pth->approach_range = 0;
             }
-
-            if (attack_order) {
-                // Explicit Attack order finished — advance queue
-                oq->advance();
-            }
-            // AttackMove: order stays — movement system picks up the destination next tick
 
             // Auto-acquire: scan for nearby enemies. Hold Position restricts
             // scanning to the unit's own attack range so the unit never picks
@@ -951,7 +957,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 }
             }
 
-            // No valid target — but let backswing/cooldown finish
+            // No valid target — but let backswing/cooldown finish.
             if (!target_valid) {
                 if (combat.attack_state == AttackState::Backswing) {
                     combat.attack_timer -= dt;

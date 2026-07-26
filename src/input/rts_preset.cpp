@@ -2,6 +2,7 @@
 #include "simulation/order.h"
 #include "simulation/ability_def.h"
 #include "simulation/world.h"
+#include "simulation/world_view.h"
 #include "hud/hud.h"
 #include "core/log.h"
 
@@ -375,17 +376,21 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 GameCommand cmd;
                 cmd.player = sel.player();
                 cmd.units  = sel.selected();
-                cmd.order  = simulation::orders::Attack{target};
+                // Seed the point with the target's view position — the fog/death
+                // last-seen fallback (see the smart-click branch below).
+                glm::vec3 tpos{0.0f};
+                if (const auto* t = ctx.view.transform(target.id)) tpos = t->position;
+                cmd.order  = simulation::orders::Attack{tpos, simulation::Unit{target}};
                 cmd.queued = input.key_shift;
                 commit(ctx, cmd);   // submits + fires the red Enemy ping
             } else {
-                // A-click on ground: AttackMove
+                // A-click on ground: A-move to the point.
                 glm::vec3 world_pos;
                 if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                     GameCommand cmd;
                     cmd.player = sel.player();
                     cmd.units  = sel.selected();
-                    cmd.order  = simulation::orders::AttackMove{world_pos};
+                    cmd.order  = simulation::orders::Attack{world_pos};
                     cmd.queued = input.key_shift;
                     ctx.commands.submit(cmd);
                 }
@@ -426,8 +431,13 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         auto target = ctx.picker.pick_target(input.mouse_x, input.mouse_y);
 
         if (simulation::is_non_null_handle(target)) {
-            // Clicking on a unit — determine if enemy or ally
-            auto* target_owner = ctx.simulation.world().owners.get(target.id);
+            // Classify the target through the PICKER'S VIEW, not the sim mirror.
+            // pick_target resolved it against the LocalView, where an out-of-sight
+            // static is a frozen snapshot; that same entity was removed from the
+            // mirror on S_HIDE, so a mirror read here returns null and a remembered
+            // crate silently falls through to a Follow instead of an Attack.
+            const auto& view = ctx.view;
+            auto* target_owner = view.owner(target.id);
             bool is_enemy = false;
             if (target_owner) {
                 is_enemy = ctx.simulation.is_enemy(sel.player(), *target_owner);
@@ -438,14 +448,13 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             // the TREE bit), so right-clicking one must fall through to a plain
             // ground move at the click point, not a dead Attack or a Follow.
             // Matches WC3.
-            auto* tinfo = ctx.simulation.world().handle_infos.get(target.id);
+            auto* tinfo = view.handle_info(target.id);
             bool is_dest = tinfo && tinfo->category == simulation::Category::Destructable;
             bool is_destructable = false;
             if (is_dest) {
-                const auto& w = ctx.simulation.world();
-                if (const auto* dc = w.destructables.get(target.id)) {
+                if (const auto* dc = view.destructable(target.id)) {
                     for (auto u : sel.selected()) {
-                        const auto* cb = w.combats.get(u.id);
+                        const auto* cb = view.combat(u.id);
                         if (cb && (cb->target_mask & dc->target_bit)) { is_destructable = true; break; }
                     }
                 }
@@ -471,7 +480,14 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             cmd.queued = input.key_shift;
 
             if (is_enemy || is_destructable) {
-                cmd.order = simulation::orders::Attack{simulation::Unit{target}};
+                // Attack the target. Capture where the player last saw it (its view
+                // position — live entity or memory snapshot) into the order's point:
+                // if it later fogs / dies, the unit walks to THIS point, never the
+                // live transform of something it can't see (anti-leak). Full WC3 —
+                // applies to a mobile enemy as well as a static widget.
+                glm::vec3 tpos{0.0f};
+                if (const auto* t = view.transform(target.id)) tpos = t->position;
+                cmd.order = simulation::orders::Attack{tpos, simulation::Unit{target}};
             } else {
                 // Friendly unit — Follow. Same Move order, just with
                 // the target_unit slot filled in instead of a fixed
@@ -531,8 +547,8 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         ctx.commands.submit(cmd);
     }
 
-    // Attack-move mode (A hotkey).
-    if (bindings.action_pressed("attack_move", input)) {
+    // Attack / attack-move mode (A hotkey).
+    if (bindings.action_pressed("attack", input)) {
         set_target_mode(TargetingMode::AttackMove);
     }
 
@@ -646,7 +662,7 @@ void RtsPreset::dispatch_command(const InputContext& ctx,
         cmd.units  = sel.selected();
         cmd.order  = simulation::orders::HoldPosition{};
         ctx.commands.submit(cmd);
-    } else if (command_id == "attack" || command_id == "attack_move") {
+    } else if (command_id == "attack") {
         set_target_mode(TargetingMode::AttackMove);
     } else if (command_id == "move") {
         set_target_mode(TargetingMode::Move);

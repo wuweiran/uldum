@@ -673,7 +673,7 @@ void issue_order(World& world, Unit unit, Order order) {
         return a->id != b->id;
     };
     if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
-        u32 tf = target_flags(atk->target);
+        u32 tf = target_flags(atk->target_widget);
         if (tf & (status::Untargetable | status::Unattackable)) return;
     } else if (auto* cast = std::get_if<orders::Cast>(&order.payload)) {
         if (is_non_null_handle(cast->target_unit)) {
@@ -729,7 +729,7 @@ void issue_order(World& world, Unit unit, Order order) {
     } else if (auto* mv = std::get_if<orders::Move>(&order.payload)) {
         if (is_non_null_handle(mv->target_unit) && mv->target_unit.id == unit.id) return;
     } else if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
-        if (is_non_null_handle(atk->target) && atk->target.id == unit.id) return;
+        if (is_non_null_handle(atk->target_widget) && atk->target_widget.id == unit.id) return;
     }
 
     if (order.queued && oq->current && oq->queued.size() >= MAX_QUEUED_ORDERS) return;
