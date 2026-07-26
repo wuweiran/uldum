@@ -178,14 +178,7 @@ inline f32 snap_cell_y(const TerrainData& td, f32 y) {
     return snap_cell_axis(td, y, td.origin_y());
 }
 
-// Create a flat terrain with all default values.
-TerrainData create_flat_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 128.0f, f32 base_height = 0.0f);
-
-// Create a procedural terrain with value-noise hills (placeholder for testing).
-TerrainData create_procedural_terrain(u32 tiles_x, u32 tiles_y, f32 tile_size = 128.0f);
-
 bool save_terrain(const TerrainData& td, std::string_view path);
-TerrainData load_terrain(std::string_view path);
 TerrainData load_terrain_from_memory(const u8* data, u32 size);
 
 } // namespace uldum::map

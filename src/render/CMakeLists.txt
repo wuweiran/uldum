@@ -7,7 +7,6 @@ add_library(uldum_render STATIC
     shadow.cpp
     terrain.cpp
     animation.cpp
-    procedural_skeleton.cpp
     particles.cpp
     glow_system.cpp
     effect.cpp
