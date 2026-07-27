@@ -29,6 +29,7 @@
         "error.cost":         "{resource}不足",
         "error.cost.mana":    "法力不足",
         "error.target":       "无效的目标",
+        "error.target.none":  "必须选择一个单位",
         "error.target.enemy": "不能以敌方单位为目标",
         "error.target.ally":  "不能以友方单位为目标",
         "error.target.dead":  "目标必须存活",

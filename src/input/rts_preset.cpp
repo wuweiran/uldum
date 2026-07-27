@@ -293,11 +293,13 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                         return;
                     }
                 }
-                // Widget-only with no valid target → stay in targeting mode.
-                // If a widget WAS picked but failed the filter, explain why.
+                // Widget-only, no valid target → stay armed; explain why
+                // (bad widget → specifier, empty ground → "none").
                 if (def->widget_kinds != 0 && !def->accept_point) {
-                    if (target_picked && ctx.hud) {
-                        ctx.hud->emit_order_error("target", reject_specifier);
+                    if (ctx.hud) {
+                        ctx.hud->emit_order_error("target",
+                            target_picked ? std::string_view{reject_specifier}
+                                          : std::string_view{"none"});
                     }
                     return;
                 }

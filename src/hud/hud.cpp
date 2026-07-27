@@ -2152,9 +2152,9 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         s.drag_cast.widget_kinds != 0 && !s.drag_cast.accept_point &&
         simulation::is_null_handle(s.drag_cast.snapped_target)) {
         commit = false;
-        // Released a widget-only cast with no valid target under the
-        // finger — explain it (bare `target`; no single offending unit).
-        emit_order_error("target", "");
+        // Widget-only cast released over empty ground — no widget at all
+        // (distinct from a wrong-widget reject, which carries a specifier).
+        emit_order_error("target", "none");
     }
     if (commit) {
         u32 target_uid = simulation::is_non_null_handle(s.drag_cast.snapped_target)
