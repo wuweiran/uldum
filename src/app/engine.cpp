@@ -168,6 +168,7 @@ bool Engine::init(const LaunchArgs& args) {
             auto* t = world.transform(u.id);
             if (!t) return {0, 0, 0};
             glm::vec3 pos = t->position;
+            pos.z += simulation::unit_fly_height(world, u.id);   // fly_height is render-only in the sim; match the visual lift
             if (!attach.empty()) {
                 pos += m_renderer.get_attachment_point(u.id, attach) * t->scale;
             }

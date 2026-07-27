@@ -4036,6 +4036,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 auto* t = c->w->transform(u.id);
                 if (!t) return {0,0,0};
                 glm::vec3 pos = t->position;
+                pos.z += simulation::unit_fly_height(*c->w, u.id);   // match the visual lift (fly_height is render-only in the sim)
                 if (!attach.empty()) {
                     pos += c->r->get_attachment_point(u.id, attach) * t->scale;
                 }
