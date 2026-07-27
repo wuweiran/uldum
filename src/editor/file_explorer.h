@@ -120,6 +120,10 @@ private:
     std::vector<std::string> m_clip_names;
     std::vector<std::string> m_model_warnings;
     std::string      m_model_error;
+    // Attachment points on the selected model. Conventional set (name, present)
+    // + any other "attach_"-prefixed bones the model defines.
+    std::vector<std::pair<std::string, bool>> m_attach_conventional;
+    std::vector<std::string>                  m_attach_extra;
 
     // Script inspection: the scene a selected .lua belongs to ("" = not under a
     // scene), and the last validation output (empty until a button is pressed).

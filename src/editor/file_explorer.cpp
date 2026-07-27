@@ -60,6 +60,7 @@ std::string scene_of(std::string_view rel) {
 
 constexpr ImVec4 kWarnColor{0.95f, 0.80f, 0.35f, 1.0f};   // loader warnings
 constexpr ImVec4 kErrorColor{0.95f, 0.45f, 0.40f, 1.0f};  // load failure
+constexpr ImVec4 kOkColor{0.45f, 0.85f, 0.50f, 1.0f};     // present attachment point
 } // namespace
 
 // ── Tree build ───────────────────────────────────────────────────────────────
@@ -223,6 +224,18 @@ void FileExplorer::draw_inspector(const FileExplorerContext& ctx) {
                 ImGui::TextDisabled("Clips:");
                 for (const auto& c : m_clip_names) { ImGui::SameLine(); ImGui::TextUnformatted(c.c_str()); }
             }
+            // Engine attachment points: the conventional set (green = present on
+            // this model, red = missing) plus any extra attach_ bones it defines.
+            ImGui::TextDisabled("Attachment points:");
+            for (const auto& [name, present] : m_attach_conventional) {
+                ImGui::SameLine();
+                ImGui::TextColored(present ? kOkColor : kErrorColor,
+                                   "%s%s", present ? "+" : "-", name.c_str());
+            }
+            for (const auto& name : m_attach_extra) {
+                ImGui::SameLine();
+                ImGui::TextColored(kOkColor, "+%s", name.c_str());
+            }
             // 3D orbit preview (offscreen render target). An InvisibleButton over
             // the image captures the mouse so dragging orbits the model instead of
             // moving the window; wheel zooms while hovered.
@@ -368,6 +381,8 @@ void FileExplorer::clear_selection_preview(const FileExplorerContext& ctx) {
     m_clip_names.clear();
     m_model_warnings.clear();
     m_model_error.clear();
+    m_attach_conventional.clear();
+    m_attach_extra.clear();
     m_script_scene.clear();
     m_script_results.clear();
     m_json_label.clear();
@@ -400,6 +415,13 @@ void FileExplorer::select_model(const FileExplorerContext& ctx, const std::strin
                                   md->meshes.size() + md->skinned_meshes.size(), verts,
                                   md->skeleton.bones.size(), md->animations.size(), md->materials.size());
     for (const auto& a : md->animations) m_clip_names.push_back(a.name);
+
+    for (auto name : asset::attachment_points::CONVENTIONAL)
+        m_attach_conventional.emplace_back(std::string(name),
+                                           asset::attachment_points::resolves(md->skeleton, name));
+    for (const auto& b : md->skeleton.bones)
+        if (asset::attachment_points::is_attach_bone(b.name))
+            m_attach_extra.push_back(b.name);
 
     // Hand the model to the renderer's offscreen viewer (loads via its own cache,
     // renders isolated). Only meaningful for a source-folder map the renderer's

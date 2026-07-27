@@ -83,6 +83,36 @@ struct Skeleton {
     bool empty() const { return bones.empty(); }
 };
 
+// Attachment points are ordinary skeleton bones: an attach name resolves to a
+// bone named exactly that OR prefixed with "attach_" (see render::find_bone).
+// These are the engine's conventional names (docs/model-format.md); a map may
+// still reference any bone name.
+namespace attachment_points {
+
+inline constexpr std::string_view CONVENTIONAL[] = {
+    "origin", "chest", "overhead", "right_hand", "left_hand",
+};
+
+// True if `attach_name` resolves to a bone on `skel` (raw or "attach_"-prefixed).
+inline bool resolves(const Skeleton& skel, std::string_view attach_name) {
+    for (const auto& b : skel.bones) {
+        if (b.name == attach_name) return true;
+        if (b.name.size() == attach_name.size() + 7 &&
+            b.name.compare(0, 7, "attach_") == 0 &&
+            std::string_view(b.name).substr(7) == attach_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// True if `bone_name` is an "attach_"-prefixed bone (an explicit attachment).
+inline bool is_attach_bone(std::string_view bone_name) {
+    return bone_name.size() > 7 && bone_name.compare(0, 7, "attach_") == 0;
+}
+
+} // namespace attachment_points
+
 // ── Animation ─────────────────────────────────────────────────────────────
 
 struct AnimationChannel {
