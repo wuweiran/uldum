@@ -254,6 +254,7 @@ function main()
 
     CreateTextTag({
         text = L("ui.portal_label", { scene = "scene_01" }),
+        style = "permanent",
         size = 28,
         pos  = { portal_x, portal_y, 200 },  -- raised above ground for legibility
         color = "#FFD600FF",

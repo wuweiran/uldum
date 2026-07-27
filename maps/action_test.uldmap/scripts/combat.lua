@@ -50,15 +50,28 @@ function register_damage_text()
     TriggerAddAction(trig, function()
         local target = GetDamageTarget()
         if not target then return end
+        local source = GetDamageSource()
+        local is_paladin_attack = source and GetUnitTypeId(source) == "paladin"
+                                  and GetDamageType() == "attack"
+
+        local style, color, size = "rise", "#FF5050FF", 12
+        if is_paladin_attack then
+            if RandomFloat(0.0, 1.0) < 0.20 then
+                -- Crit: 150% damage, pop the number big and gold.
+                SetDamageAmount(GetDamageAmount() * 1.5)
+                style, color, size = "pop", "#FFD040FF", 22
+            else
+                style = "wander"
+            end
+        end
+
         CreateTextTag{
-            text      = L("combat.damage_number", { amount = math.floor(GetDamageAmount() + 0.5) }),
-            unit      = target,
-            z_offset  = 120.0,
-            size      = 12,
-            color     = "#FF5050FF",
-            velocity  = { 0, -40 },     -- rise up the screen (y-down)
-            lifespan  = 1.2,
-            fadepoint = 0.6,
+            text     = L("combat.damage_number", { amount = math.floor(GetDamageAmount() + 0.5) }),
+            unit     = target,
+            style    = style,
+            z_offset = 120.0,
+            size     = size,
+            color    = color,
         }
     end)
     Log("[Combat] Damage text numbers active")

@@ -45,8 +45,8 @@ function M.register_hit_vfx()
     end)
 end
 
---- Register floating damage numbers. Fires on attack damage and creates
---- a red text tag above the target unit that rises and fades out.
+--- Register floating damage numbers. Fires on any damage; player 0's
+--- damage uses the "wander" style, everyone else's rises straight up.
 function M.register_damage_text()
     local trig = CreateTrigger(TRIGGER_PRIORITY_LOW)
     TriggerRegisterEvent(trig, EVENT_GLOBAL_DAMAGE)
@@ -56,15 +56,16 @@ function M.register_damage_text()
     TriggerAddAction(trig, function()
         local target = GetDamageTarget()
         if not target then return end
+        local source = GetDamageSource()
+        local owner  = source and GetUnitOwner(source)
+        local style  = (owner and owner.id == 0) and "wander" or "rise"
         CreateTextTag{
-            text      = L("combat.damage_number", { amount = math.floor(GetDamageAmount() + 0.5) }),
-            unit      = target,
-            z_offset  = 120.0,
-            size      = 12,
-            color     = "#FF5050FF",
-            velocity  = { 0, -40 },     -- rise up the screen (y-down)
-            lifespan  = 1.2,
-            fadepoint = 0.6,
+            text     = L("combat.damage_number", { amount = math.floor(GetDamageAmount() + 0.5) }),
+            unit     = target,
+            style    = style,
+            z_offset = 120.0,
+            size     = 12,
+            color    = "#FF5050FF",
         }
     end)
     Log("[Combat] Damage text numbers active")

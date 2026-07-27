@@ -234,14 +234,12 @@ function M.register_wind_walk(opts)
         RemoveAbility(src, "windwalk_invisible")
         local total = math.floor(GetDamageAmount() + 0.5)
         CreateTextTag{
-            text      = L("combat.unveil_hit", { amount = total }),
-            unit      = target,
-            z_offset  = 140.0,
-            size      = 20,
-            color     = "#FFD040FF",
-            velocity  = { 0, -50 },
-            lifespan  = 1.4,
-            fadepoint = 0.7,
+            text     = L("combat.unveil_hit", { amount = total }),
+            unit     = target,
+            style    = "pop",
+            z_offset = 140.0,
+            size     = 20,
+            color    = "#FFD040FF",
         }
         Log(string.format("[WindWalk] %s unveiling strike +%d on %s (total %d)",
             GetUnitTypeId(src), UNVEIL_BONUS, GetUnitTypeId(target), total))

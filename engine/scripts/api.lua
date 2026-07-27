@@ -1287,64 +1287,44 @@ function L(key, args) end
 --------------------------------------------------------------------------------
 
 --- Create a floating text tag at a world position or attached to a unit.
---- Returns a handle (0 on failure). The `text` field MUST be a
+--- Returns a TextTag handle (nil on failure). The `text` field MUST be a
 --- LocalizedString; pass a plain string and the call is dropped with a
 --- warning.
 ---
+--- A `style` preset drives the motion + fade; the knobs below override its
+--- per-style defaults. Styles:
+---   "rise"      straight up, fade out (classic damage number; default)
+---   "wander"    up while swaying side to side, fade out
+---   "pop"       up while growing to `scale`, fade out
+---   "permanent" stationary, never fades — a label; remove with DestroyTextTag
+---
 --- args fields:
 ---   text       LocalizedString   required
+---   style      string            "rise" | "wander" | "pop" | "permanent"
 ---   pos        {x, y, z}         world point (if no unit)
 ---   unit       unit              attach to a unit (overrides pos)
 ---   z_offset   number            world-up height above anchor
----   size       number            text px size (default 14)
+---   size       number            base text px size (default 14)
 ---   color      string            "#RRGGBB" or "#RRGGBBAA"
----   velocity   {vx, vy}          screen px/sec drift
----   lifespan   number            seconds; 0 = permanent
----   fadepoint  number            seconds before end of lifespan to fade
+---   speed      number            upward drift px/sec (rise/wander/pop)
+---   spread     number            sway amplitude px (wander)
+---   scale      number            end size multiplier (pop)
+---   lifespan   number            seconds; 0 = permanent (only for "permanent")
+---   fade       number            fade-out tail, seconds before end of lifespan
 ---   owner      player            single-player target (alias for players={p})
 ---   players    player | table    target mask; omit for broadcast
 ---
+--- One-shot styles (rise/wander/pop) need a finite lifespan; passing 0
+--- there is clamped to the preset default with a warning.
+---
 ---@param args table
----@return number  text-tag handle (0 on failure)
+---@return TextTag|nil  tag handle (nil on failure)
 function CreateTextTag(args) end
 
---- Destroy a text tag by handle.
----@param handle number
+--- Destroy a text tag by handle. For permanent tags; transient ones
+--- self-expire when their lifespan ends.
+---@param handle TextTag
 function DestroyTextTag(handle) end
-
---- Replace the text of an existing tag. Requires LocalizedString.
----@param handle number
----@param text LocalizedString
-function SetTextTagText(handle, text) end
-
---- Move a tag to a world point.
----@param handle number
----@param x number
----@param y number
----@param z number
-function SetTextTagPos(handle, x, y, z) end
-
---- Attach a tag to a unit (replaces world-position anchor).
----@param handle number
----@param unit unit
----@param z_offset number
-function SetTextTagPosUnit(handle, unit, z_offset) end
-
---- Update the text color.
----@param handle number
----@param color string   "#RRGGBB" or "#RRGGBBAA"
-function SetTextTagColor(handle, color) end
-
---- Update screen-space drift velocity.
----@param handle number
----@param vx number   px/sec
----@param vy number   px/sec
-function SetTextTagVelocity(handle, vx, vy) end
-
---- Show / hide the tag.
----@param handle number
----@param visible boolean
-function SetTextTagVisible(handle, visible) end
 
 --------------------------------------------------------------------------------
 -- HUD: nodes (panels, labels, bars, buttons, images) from hud.json templates

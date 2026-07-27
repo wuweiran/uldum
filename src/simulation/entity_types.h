@@ -55,6 +55,10 @@ struct Item         : Widget {};
 // art has no script identity — ours is script-addressable (CreateProjectile,
 // GetProjectile*, projectile_hit/destroyed events), so it's a real handle.
 struct Projectile   : Handle {};
+// TextTag is a floating/label text object: script-addressable (CreateTextTag
+// returns it, DestroyTextTag takes it) but not targetable, so it's a handle
+// and not a Widget — same tier as Projectile. Its id is a shared ECS id.
+struct TextTag      : Handle {};
 // Doodad is pure decoration with no script binding: an Entity, not a handle.
 struct Doodad       : Entity {};
 

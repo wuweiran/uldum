@@ -20,6 +20,7 @@
 #include "hud/inventory.h"
 #include "hud/pickup_bar.h"
 #include "hud/display_message.h"
+#include "hud/text_tag.h"               // TextTagStyle
 #include "render/hud/world.h"           // WorldOverlayConfig (POD); WorldContext fwd
 #include "simulation/entity_types.h"
 #include "simulation/ability_def.h"    // AbilityForm, IndicatorShape
@@ -270,24 +271,25 @@ struct Hud::Impl {
     // generation; create_text_tag reuses the first dead slot it finds.
     struct TextTagEntry {
         bool                  alive       = false;
-        u32                   generation  = 0;
+        simulation::TextTag   id{};                       // shared ECS handle; key for destroy-by-id
         i18n::LocalizedString text;                       // resolved per-render with active locale
         f32                   px_size     = 14.0f;
         Color              color       = rgba(255, 255, 255);
-        bool               visible     = true;
         glm::vec3          world_pos   {0.0f};
         simulation::Unit   unit;
         f32                z_offset    = 0.0f;
-        f32                velocity_x  = 0.0f;         // screen px/sec
-        f32                velocity_y  = 0.0f;
-        f32                screen_dx   = 0.0f;         // accumulated screen offset from velocity
-        f32                screen_dy   = 0.0f;
+        TextTagStyle       style       = TextTagStyle::Rise;
+        f32                speed       = 0.0f;         // upward screen px/sec
+        f32                spread      = 0.0f;         // Wander sway amplitude, px
+        f32                scale_end   = 1.0f;         // Pop end size multiplier
+        f32                phase       = 0.0f;         // Wander sway phase, radians (local, cosmetic)
         f32                age         = 0.0f;
         f32                lifespan    = 0.0f;         // 0 → permanent
-        f32                fadepoint   = 0.0f;         // seconds before end of lifespan to fade
+        f32                fade        = 0.0f;         // fade-out tail, seconds before end of lifespan
         u32                players_mask = UINT32_MAX;  // broadcast by default
     };
     std::vector<TextTagEntry> text_tags;
+    u32 text_tag_phase_seq = 0;  // bumps per created tag → varied wander phase
 
     // Input state.
     f32   pointer_x = 0.0f;

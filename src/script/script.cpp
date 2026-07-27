@@ -223,6 +223,10 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         "id", &simulation::Projectile::id,
         sol::meta_function::equal_to, [](const simulation::Projectile& a, const simulation::Projectile& b) { return a == b; }
     );
+    lua.new_usertype<simulation::TextTag>("TextTag",
+        "id", &simulation::TextTag::id,
+        sol::meta_function::equal_to, [](const simulation::TextTag& a, const simulation::TextTag& b) { return a == b; }
+    );
 
     bind_api();
     bind_trigger_api();
@@ -3209,30 +3213,60 @@ void ScriptEngine::bind_hud_api() {
     };
 
     // ── Text tags ────────────────────────────────────────────────────────
-    // Handles: a single Lua integer packing (generation << 32) | index.
-    // Generation 0 = invalid sentinel.
+    // A tag's handle is a TextTag (a shared ECS id). The host allocates
+    // the id and ships it; the returned handle is identical on every
+    // client. Transient styles (rise/wander/pop) self-expire by lifespan;
+    // permanent tags are removed with DestroyTextTag.
 
-    auto pack_id = [](hud::TextTagId id) -> u64 {
-        return (static_cast<u64>(id.generation) << 32) | static_cast<u64>(id.index);
-    };
-    auto unpack_id = [](u64 h) -> hud::TextTagId {
-        return hud::TextTagId{ static_cast<u32>(h & 0xFFFFFFFFu),
-                               static_cast<u32>(h >> 32) };
-    };
-
-    // CreateTextTag{ ... }. See docs/ui.md for the full list of fields.
-    lua["CreateTextTag"] = [this, parse_color, pack_id](sol::table args) -> u64 {
-        if (!m_hud) return 0;
+    // CreateTextTag{ text=, style=, ... }. See docs/ui.md for all fields.
+    lua["CreateTextTag"] = [this, parse_color](sol::table args) -> sol::object {
+        if (!m_hud || !m_sim) return sol::make_object(*m_lua, sol::nil);
         hud::TextTagCreateInfo info{};
         // `text` must be a LocalizedString — wrap with L("key", args).
-        // Plain string is rejected with a warn-log.
-        info.text     = parse_localized_string(args["text"], "CreateTextTag");
-        info.px_size  = args["size"].get_or(14.0f);
+        info.text = parse_localized_string(args["text"], "CreateTextTag");
+
+        // Style preset drives the per-style defaults below; a few knobs
+        // override them.
+        hud::TextTagStyle style = hud::TextTagStyle::Rise;
+        if (auto s = args["style"]; s.valid()) {
+            std::string sv = s.get<std::string>();
+            if      (sv == "rise")      style = hud::TextTagStyle::Rise;
+            else if (sv == "wander")    style = hud::TextTagStyle::Wander;
+            else if (sv == "pop")       style = hud::TextTagStyle::Pop;
+            else if (sv == "permanent") style = hud::TextTagStyle::Permanent;
+            else log::warn(TAG, "CreateTextTag: unknown style '{}', using 'rise'", sv);
+        }
+        info.style = style;
+
+        // Per-style defaults (speed px/s, spread px, scale, lifespan s, fade s).
+        f32 def_speed = 0.0f, def_spread = 0.0f, def_scale = 1.0f;
+        f32 def_life = 0.0f, def_fade = 0.0f;
+        switch (style) {
+            case hud::TextTagStyle::Rise:      def_speed=60; def_life=1.2f; def_fade=0.6f; break;
+            case hud::TextTagStyle::Wander:    def_speed=28; def_spread=12; def_life=1.2f; def_fade=0.6f; break;
+            case hud::TextTagStyle::Pop:       def_speed=50; def_scale=1.6f; def_life=1.0f; def_fade=0.5f; break;
+            case hud::TextTagStyle::Permanent: break;  // stationary, permanent
+        }
+
+        info.px_size   = args["size"].get_or(14.0f);
+        info.speed     = args["speed"].get_or(def_speed);
+        info.spread    = args["spread"].get_or(def_spread);
+        info.scale_end = args["scale"].get_or(def_scale);
+        info.lifespan  = args["lifespan"].get_or(def_life);
+        info.fade      = args["fade"].get_or(def_fade);
+
+        // One-shot styles need a finite lifespan; lifespan=0 on them would
+        // mean "rise forever off-screen". Clamp to the preset default.
+        if (style != hud::TextTagStyle::Permanent && info.lifespan <= 0.0f) {
+            log::warn(TAG, "CreateTextTag: style '{}' needs a lifespan; using {}s",
+                      args["style"].get_or(std::string("rise")), def_life);
+            info.lifespan = def_life;
+        }
 
         // Position: either `pos = { x, y, z }` world point or `unit = U`.
         if (args["unit"].valid()) {
             simulation::Unit unit = args["unit"].get<simulation::Unit>();
-            if (!m_sim || !m_sim->world().contains(unit)) return 0;
+            if (!m_sim->world().contains(unit)) return sol::make_object(*m_lua, sol::nil);
             info.unit = unit;
         } else if (args["pos"].valid()) {
             sol::table p = args["pos"];
@@ -3242,55 +3276,27 @@ void ScriptEngine::bind_hud_api() {
 
         if (auto c = args["color"]; c.valid()) info.color = parse_color(c.get<std::string>());
 
-        if (auto v = args["velocity"]; v.valid()) {
-            sol::table vt = v;
-            info.velocity_x = vt[1].get_or(0.0f);
-            info.velocity_y = vt[2].get_or(0.0f);
-        }
-        info.lifespan  = args["lifespan"].get_or(0.0f);
-        info.fadepoint = args["fadepoint"].get_or(0.0f);
-
-        // `players` (Player | {Player, ...}) selects which clients see
-        // this tag. Omit for broadcast. `owner` is accepted as a
-        // single-player alias for ergonomic single-recipient calls.
+        // `players` (Player | {Player, ...}) selects which clients see this
+        // tag. Omit for broadcast. `owner` is a single-player alias.
         if (auto p = args["players"]; p.valid()) {
             info.players_mask = parse_players_mask(p);
         } else if (auto o = args["owner"]; o.valid()) {
             info.players_mask = 1u << o.get<simulation::Player>().id;
         }
 
-        return pack_id(m_hud->create_text_tag(info));
+        // Host-authoritative id: allocate from the shared ECS id space so
+        // the handle is unique and identical on every client (shipped in
+        // the create packet).
+        info.id = simulation::TextTag{ m_sim->world().entities.allocate().id };
+        auto handle = m_hud->create_text_tag(info);
+        return simulation::is_non_null_handle(handle)
+                   ? sol::make_object(*m_lua, handle)
+                   : sol::make_object(*m_lua, sol::nil);
     };
 
-    lua["DestroyTextTag"] = [this, unpack_id](u64 h) {
+    lua["DestroyTextTag"] = [this](simulation::TextTag tag) {
         if (!m_hud) return;
-        m_hud->destroy_text_tag(unpack_id(h));
-    };
-
-    lua["SetTextTagText"] = [this, unpack_id](u64 h, sol::object text) {
-        if (!m_hud) return;
-        auto loc = parse_localized_string(text, "SetTextTagText");
-        m_hud->set_text_tag_text(unpack_id(h), std::move(loc));
-    };
-    lua["SetTextTagPos"] = [this, unpack_id](u64 h, f32 x, f32 y, f32 z) {
-        if (!m_hud) return;
-        m_hud->set_text_tag_pos(unpack_id(h), x, y, z);
-    };
-    lua["SetTextTagPosUnit"] = [this, unpack_id](u64 h, simulation::Unit unit, f32 z_offset) {
-        if (!m_hud || !m_sim || !m_sim->world().contains(unit)) return;
-        m_hud->set_text_tag_pos_unit(unpack_id(h), unit, z_offset);
-    };
-    lua["SetTextTagColor"] = [this, unpack_id, parse_color](u64 h, const std::string& color) {
-        if (!m_hud) return;
-        m_hud->set_text_tag_color(unpack_id(h), parse_color(color));
-    };
-    lua["SetTextTagVelocity"] = [this, unpack_id](u64 h, f32 vx, f32 vy) {
-        if (!m_hud) return;
-        m_hud->set_text_tag_velocity(unpack_id(h), vx, vy);
-    };
-    lua["SetTextTagVisible"] = [this, unpack_id](u64 h, bool visible) {
-        if (!m_hud) return;
-        m_hud->set_text_tag_visible(unpack_id(h), visible);
+        m_hud->destroy_text_tag(tag);
     };
 
     // ── Action-bar composite ─────────────────────────────────────────────

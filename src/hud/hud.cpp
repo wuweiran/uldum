@@ -550,12 +550,15 @@ void Hud::emit_state_to(const ReplaySend& send) {
     for (const auto& t : s.text_tags) {
         if (!t.alive || t.lifespan != 0.0f) continue;
         send(uldum::network::build_hud_create_text_tag(
-                 t.text.key, t.text.args, t.px_size,
+                 t.id.id,
+                 t.text.key, t.text.args,
+                 static_cast<u8>(t.style),
+                 t.px_size,
                  t.world_pos.x, t.world_pos.y, t.world_pos.z,
                  t.unit, t.z_offset,
                  t.color.rgba,
-                 t.velocity_x, t.velocity_y,
-                 t.lifespan, t.fadepoint),
+                 t.speed, t.spread, t.scale_end,
+                 t.lifespan, t.fade),
              t.players_mask);
     }
 
@@ -819,22 +822,18 @@ void Hud::update_text_tags(f32 dt) {
         if (t.lifespan > 0.0f) {
             t.age += dt;
             if (t.age >= t.lifespan) {
-                // Expire — mirror destroy_text_tag's bookkeeping.
                 t.alive = false;
-                ++t.generation;
                 t.text.clear();
-                continue;
             }
         }
-        t.screen_dx += t.velocity_x * dt;
-        t.screen_dy += t.velocity_y * dt;
     }
+    // Motion/scale is derived analytically from `age` at render time; no
+    // per-frame integration needed here.
 }
 
-TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
-    if (!m_impl) return {};
+simulation::TextTag Hud::create_text_tag(const TextTagCreateInfo& info) {
+    if (!m_impl || simulation::is_null_handle(info.id)) return {};
     auto& pool = m_impl->text_tags;
-    // Find a dead slot, else grow.
     u32 idx = UINT32_MAX;
     for (u32 i = 0; i < pool.size(); ++i) {
         if (!pool[i].alive) { idx = i; break; }
@@ -844,98 +843,56 @@ TextTagId Hud::create_text_tag(const TextTagCreateInfo& info) {
         idx = static_cast<u32>(pool.size() - 1);
     }
     auto& t = pool[idx];
-    ++t.generation;  // generation 0 reserved for "invalid"; first real gen = 1
     t.alive      = true;
+    t.id         = info.id;
     t.text       = info.text;
     t.px_size    = info.px_size;
     t.color      = info.color;
-    t.visible    = true;
     t.world_pos  = info.pos;
     t.unit       = info.unit;
     t.z_offset   = info.z_offset;
-    t.velocity_x = info.velocity_x;
-    t.velocity_y = info.velocity_y;
-    t.screen_dx  = 0.0f;
-    t.screen_dy  = 0.0f;
+    t.style      = info.style;
+    t.speed      = info.speed;
+    t.spread     = info.spread;
+    t.scale_end  = info.scale_end;
+    // Wander phase is a local, per-tag value (golden-angle spread) so
+    // co-spawned tags sway out of step. Cosmetic — never synced.
+    t.phase      = static_cast<f32>(m_impl->text_tag_phase_seq++) * 2.399963f;
     t.age        = 0.0f;
     t.lifespan     = info.lifespan;
-    t.fadepoint    = info.fadepoint;
+    t.fade         = info.fade;
     t.players_mask = info.players_mask;
 
-    // MP sync: fire-and-forget creation. Clients run the animation
-    // locally from identical params (same lifespan / velocity / fadepoint).
-    // No mid-life setters are synced in v1 — setters apply locally only.
+    // MP sync: fire-and-forget creation carrying the host-assigned id.
+    // Clients run the animation locally from identical params; wander's
+    // phase is re-rolled per client (cosmetic).
     emit_sync(*m_impl,
               uldum::network::build_hud_create_text_tag(
+                  info.id.id,
                   info.text.key, info.text.args,
+                  static_cast<u8>(info.style),
                   info.px_size,
                   info.pos.x, info.pos.y, info.pos.z,
                   info.unit, info.z_offset,
                   info.color.rgba,
-                  info.velocity_x, info.velocity_y,
-                  info.lifespan, info.fadepoint),
+                  info.speed, info.spread, info.scale_end,
+                  info.lifespan, info.fade),
               info.players_mask);
 
-    return TextTagId{ idx, t.generation };
+    return info.id;
 }
 
-void Hud::destroy_text_tag(TextTagId id) {
-    if (!m_impl || !id.valid()) return;
-    auto& pool = m_impl->text_tags;
-    if (id.index >= pool.size()) return;
-    auto& t = pool[id.index];
-    if (!t.alive || t.generation != id.generation) return;
-    t.alive = false;
-    ++t.generation;
-    t.text.clear();
-}
-
-bool Hud::text_tag_alive(TextTagId id) const {
-    if (!m_impl || !id.valid()) return false;
-    const auto& pool = m_impl->text_tags;
-    if (id.index >= pool.size()) return false;
-    const auto& t = pool[id.index];
-    return t.alive && t.generation == id.generation;
-}
-
-// Helpers for the various setters — look up the entry if the handle is
-// live, else return nullptr (silently).
-static Hud::Impl::TextTagEntry* lookup_tag(Hud::Impl& s, TextTagId id) {
-    if (!id.valid() || id.index >= s.text_tags.size()) return nullptr;
-    auto& t = s.text_tags[id.index];
-    if (!t.alive || t.generation != id.generation) return nullptr;
-    return &t;
-}
-
-void Hud::set_text_tag_text(TextTagId id, i18n::LocalizedString text) {
-    if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) t->text = std::move(text);
-}
-void Hud::set_text_tag_pos(TextTagId id, f32 x, f32 y, f32 z) {
-    if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) {
-        t->world_pos = { x, y, z };
-        t->unit      = {};
+void Hud::destroy_text_tag(simulation::TextTag id) {
+    if (!m_impl || simulation::is_null_handle(id)) return;
+    for (auto& t : m_impl->text_tags) {
+        if (t.alive && t.id == id) {
+            t.alive = false;
+            t.text.clear();
+            emit_sync(*m_impl, uldum::network::build_hud_destroy_text_tag(id.id),
+                      t.players_mask);
+            return;
+        }
     }
-}
-void Hud::set_text_tag_pos_unit(TextTagId id, simulation::Unit unit, f32 z_offset) {
-    if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) {
-        t->unit     = unit;
-        t->z_offset = z_offset;
-    }
-}
-void Hud::set_text_tag_color(TextTagId id, Color color) {
-    if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) t->color = color;
-}
-void Hud::set_text_tag_velocity(TextTagId id, f32 vx, f32 vy) {
-    if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) { t->velocity_x = vx; t->velocity_y = vy; }
-}
-void Hud::set_text_tag_visible(TextTagId id, bool visible) {
-    if (!m_impl) return;
-    if (auto* t = lookup_tag(*m_impl, id)) t->visible = visible;
 }
 
 // ── Action-bar composite ──────────────────────────────────────────────────

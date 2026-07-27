@@ -87,7 +87,8 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
         r.read_u8();
         TextTagCreateInfo info{};
         // See network::build_hud_create_text_tag for the wire layout:
-        // localized key + args followed by the rest of the tag's physical state.
+        // id + localized key/args, then style + the tag's physical state.
+        info.id.id    = r.read_u32();
         info.text.key = r.read_string();
         u8 n = r.read_u8();
         info.text.args.reserve(n);
@@ -96,6 +97,7 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
             std::string v = r.read_string();
             info.text.args.emplace_back(std::move(k), std::move(v));
         }
+        info.style        = static_cast<TextTagStyle>(r.read_u8());
         info.px_size      = r.read_f32();
         info.pos.x        = r.read_f32();
         info.pos.y        = r.read_f32();
@@ -103,12 +105,19 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
         info.unit.id  = r.read_u32();
         info.z_offset = r.read_f32();
         info.color.rgba   = r.read_u32();
-        info.velocity_x   = r.read_f32();
-        info.velocity_y   = r.read_f32();
+        info.speed        = r.read_f32();
+        info.spread       = r.read_f32();
+        info.scale_end    = r.read_f32();
         info.lifespan     = r.read_f32();
-        info.fadepoint    = r.read_f32();
+        info.fade         = r.read_f32();
         info.players_mask = UINT32_MAX;  // server routed here, so it's for us
         hud.create_text_tag(info);
+        return true;
+    }
+    case network::MsgType::S_HUD_DESTROY_TEXT_TAG: {
+        network::ByteReader r(data);
+        r.read_u8();
+        hud.destroy_text_tag(simulation::TextTag{r.read_u32()});
         return true;
     }
     case network::MsgType::S_HUD_DISPLAY_MESSAGE: {

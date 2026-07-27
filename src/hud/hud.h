@@ -21,7 +21,6 @@ class Node;                    // node.h
 class Panel;                   // node.h
 struct WorldOverlayConfig;     // world.h
 struct WorldContext;           // world.h
-struct TextTagId;              // text_tag.h
 struct TextTagCreateInfo;      // text_tag.h
 struct ActionBarConfig;        // action_bar.h
 enum class ActionBarHotkeyMode : u8;  // action_bar.h
@@ -290,18 +289,12 @@ public:
 
     // ── Text tags ────────────────────────────────────────────────────────
     // WC3-style floating / persistent text. Engine-side API — Lua
-    // bindings in 16c-v forward here. Returns an invalid id if the pool
-    // is exhausted or the info is degenerate.
-    TextTagId create_text_tag(const TextTagCreateInfo& info);
-    void      destroy_text_tag(TextTagId id);
-    bool      text_tag_alive(TextTagId id) const;
-
-    void set_text_tag_text    (TextTagId id, i18n::LocalizedString text);
-    void set_text_tag_pos     (TextTagId id, f32 x, f32 y, f32 z);
-    void set_text_tag_pos_unit(TextTagId id, simulation::Unit unit, f32 z_offset);
-    void set_text_tag_color   (TextTagId id, Color color);
-    void set_text_tag_velocity(TextTagId id, f32 vx, f32 vy);
-    void set_text_tag_visible (TextTagId id, bool visible);
+    // A tag's handle IS its shared ECS entity id: the host allocates it
+    // and ships it at creation; create_text_tag on the client is handed
+    // the same id off the wire. Returns a null handle on failure.
+    // Transient styles self-expire; destroy_text_tag is for permanent tags.
+    simulation::TextTag create_text_tag(const TextTagCreateInfo& info);
+    void                destroy_text_tag(simulation::TextTag id);
 
     // ── Composites ───────────────────────────────────────────────────────
     // Engine-authored node groups whose layout + styling come from

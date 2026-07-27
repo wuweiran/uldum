@@ -144,6 +144,7 @@ enum class MsgType : u8 {
     S_HUD_SET_BUTTON_ENABLED  = 0x76,
     S_HUD_CREATE_TEXT_TAG     = 0x77,
     S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
+    S_HUD_DESTROY_TEXT_TAG    = 0x79, // remove a permanent text tag by shared ECS id
     S_HUD_ACTION_BAR_SET_SLOT = 0x7A, // manual-mode slot→ability binding (empty ability = clear)
 
     // Playing — audio (script-initiated). Sim sound effects from the
@@ -1477,10 +1478,11 @@ inline std::vector<u8> build_hud_set_button_enabled(std::string_view node_id, bo
     return std::move(wr.data());
 }
 
-// Text tags — fire-and-forget broadcast at creation. Animation runs
-// locally on each side from identical starting params (lifespan / velocity
-// / fadepoint); no mid-life sync. Permanent tags (lifespan == 0) are
-// out of scope for MP in v1.
+// Text tags — fire-and-forget broadcast at creation; animation runs
+// locally on each side from identical starting params. The tag's `id` is
+// a host-allocated shared ECS entity id, identical on every client, and
+// is the key DestroyTextTag uses. Permanent tags (lifespan == 0) are
+// replayed to late joiners; transient ones self-expire per side.
 // Text-tag create wire format. The text payload is a LocalizedString:
 //   - key: string (empty key = nothing to render; the tag still spawns
 //          for animation timing, but draws nothing locally).
@@ -1491,16 +1493,19 @@ inline std::vector<u8> build_hud_set_button_enabled(std::string_view node_id, bo
 // before rendering. There is no literal-text path — player-facing text
 // always flows through L() on the server.
 inline std::vector<u8> build_hud_create_text_tag(
+        u32 id,
         std::string_view loc_key,
         const std::vector<std::pair<std::string, std::string>>& loc_args,
+        u8 style,
         f32 px_size,
         f32 wx, f32 wy, f32 wz,
         simulation::Unit unit, f32 z_offset,
         u32 color_rgba,
-        f32 velocity_x, f32 velocity_y,
-        f32 lifespan, f32 fadepoint) {
+        f32 speed, f32 spread, f32 scale_end,
+        f32 lifespan, f32 fade) {
     ByteWriter wr;
     wr.write_u8(static_cast<u8>(MsgType::S_HUD_CREATE_TEXT_TAG));
+    wr.write_u32(id);
     wr.write_string(loc_key);
     usize n = std::min<usize>(loc_args.size(), 255);
     wr.write_u8(static_cast<u8>(n));
@@ -1508,13 +1513,22 @@ inline std::vector<u8> build_hud_create_text_tag(
         wr.write_string(loc_args[i].first);
         wr.write_string(loc_args[i].second);
     }
+    wr.write_u8(style);
     wr.write_f32(px_size);
     wr.write_f32(wx); wr.write_f32(wy); wr.write_f32(wz);
     wr.write_u32(unit.id);
     wr.write_f32(z_offset);
     wr.write_u32(color_rgba);
-    wr.write_f32(velocity_x); wr.write_f32(velocity_y);
-    wr.write_f32(lifespan); wr.write_f32(fadepoint);
+    wr.write_f32(speed); wr.write_f32(spread); wr.write_f32(scale_end);
+    wr.write_f32(lifespan); wr.write_f32(fade);
+    return std::move(wr.data());
+}
+
+// Destroy a permanent text tag by its shared ECS id.
+inline std::vector<u8> build_hud_destroy_text_tag(u32 id) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_DESTROY_TEXT_TAG));
+    wr.write_u32(id);
     return std::move(wr.data());
 }
 

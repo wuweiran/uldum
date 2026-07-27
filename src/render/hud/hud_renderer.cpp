@@ -2045,7 +2045,7 @@ static void draw_text_tags(HudRenderer::Impl& r, Hud::Impl& s,
     const auto& world  = *ctx.world;
     const u32 sw = s.screen_w, sh = s.screen_h;
     for (auto& t : s.text_tags) {
-        if (!t.alive || !t.visible || t.text.empty()) continue;
+        if (!t.alive || t.text.empty()) continue;
         if (!(t.players_mask & (1u << s.local_player))) continue;
 
         std::string rendered = s.locale_manager
@@ -2066,14 +2066,40 @@ static void draw_text_tags(HudRenderer::Impl& r, Hud::Impl& s,
         f32 cx = 0.0f, cy = 0.0f;
         if (!project_world_for_tag(vp, world_anchor, sw, sh, cx, cy)) continue;
 
-        cx += t.screen_dx;
-        cy += t.screen_dy;
+        // Per-style motion (screen px) + scale, evaluated from age. Rise
+        // drifts up; Wander drifts in a per-tag random direction with a
+        // gentle sway; Pop rises + grows to `scale_end`; Permanent sits still.
+        f32 scale = 1.0f;
+        switch (t.style) {
+            case hud::TextTagStyle::Rise:
+                cy -= t.speed * t.age;
+                break;
+            case hud::TextTagStyle::Wander: {
+                // `phase` doubles as the drift direction (full 360°, not
+                // up-biased); sway is a gentle wobble perpendicular to it.
+                f32 dx = std::cos(t.phase), dy = std::sin(t.phase);
+                f32 drift = t.speed * t.age;
+                f32 sway  = t.spread * std::sin(t.age * 2.5f + t.phase);
+                cx += dx * drift - dy * sway;
+                cy += dy * drift + dx * sway;
+                break;
+            }
+            case hud::TextTagStyle::Pop: {
+                cy -= t.speed * t.age;
+                f32 u = (t.lifespan > 0.0f) ? (t.age / t.lifespan) : 0.0f;
+                if (u > 1.0f) u = 1.0f;
+                scale = 1.0f + (t.scale_end - 1.0f) * u;
+                break;
+            }
+            case hud::TextTagStyle::Permanent:
+                break;
+        }
 
         f32 fade = 1.0f;
-        if (t.lifespan > 0.0f && t.fadepoint > 0.0f) {
-            f32 fade_start = t.lifespan - t.fadepoint;
+        if (t.lifespan > 0.0f && t.fade > 0.0f) {
+            f32 fade_start = t.lifespan - t.fade;
             if (t.age > fade_start) {
-                f32 f = 1.0f - (t.age - fade_start) / t.fadepoint;
+                f32 f = 1.0f - (t.age - fade_start) / t.fade;
                 if (f < 0.0f) f = 0.0f;
                 fade = f;
             }
@@ -2083,12 +2109,13 @@ static void draw_text_tags(HudRenderer::Impl& r, Hud::Impl& s,
         u8 out_a  = static_cast<u8>(base_a * fade);
         Color final_color{ (t.color.rgba & 0x00FFFFFFu) | (static_cast<u32>(out_a) << 24) };
 
-        f32 text_w    = measure_text(r, rendered, t.px_size);
-        f32 line_h    = measure_line_height(r, t.px_size);
-        f32 ascent    = measure_ascent(r, t.px_size);
+        f32 draw_px   = t.px_size * scale;
+        f32 text_w    = measure_text(r, rendered, draw_px);
+        f32 line_h    = measure_line_height(r, draw_px);
+        f32 ascent    = measure_ascent(r, draw_px);
         f32 x_left    = cx - text_w * 0.5f;
         f32 y_baseline = cy + ascent - line_h * 0.5f;
-        emit_text(r, x_left, y_baseline, rendered, final_color, t.px_size);
+        emit_text(r, x_left, y_baseline, rendered, final_color, draw_px);
     }
 }
 
