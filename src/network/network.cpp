@@ -451,11 +451,19 @@ bool NetworkManager::host_send_set_controlled_unit(u32 player_id, u32 entity_id)
 void NetworkManager::host_finish_scene_switch() {
     if (m_mode != Mode::Host || !m_scene_switching) return;
 
-    // Spawn burst per peer for the new scene's entities. host_send_spawn_burst
-    // resends every entity currently in the world; since switch_scene cleared
-    // the previous scene, only new-scene entities are visible.
+    // Re-welcome + spawn burst per peer for the new scene's entities. The
+    // welcome carries the new scene's placement_count so the client re-syncs
+    // its boundary (a scene switch rebuilds the world like a join); it also
+    // re-runs the client's determinism guard against the rebuilt world.
+    // host_send_spawn_burst resends every entity currently in the world;
+    // since switch_scene cleared the previous scene, only new-scene entities
+    // are visible.
     for (auto& peer : m_peers) {
         if (!peer.player.is_valid()) continue;
+        auto welcome = build_welcome(peer.player.id,
+            static_cast<u32>(m_simulation->world().handle_infos.count()), 32,
+            m_placement_count);
+        m_transport->send(peer.peer_id, welcome, true);
         peer.known.clear();
         host_send_spawn_burst(peer);
     }
@@ -1565,6 +1573,25 @@ void NetworkManager::client_handle_welcome(std::span<const u8> data) {
         m_connected = false;
         return;
     }
+
+    // Adopt the host's authoritative placement boundary. Sent at join AND at
+    // every scene switch (a switch rebuilds the world like a join, so the
+    // client's boundary would otherwise stay stale at the old scene's N and
+    // misclassify the new scene's dynamic entities as preplaced-local).
+    m_placement_count = w.placement_count;
+
+    // Resume the client from the scene-switch barrier. S_SCENE_SWITCH set
+    // m_scene_switching=true + Phase::Loading on this client; only the host
+    // cleared its own copy (host_finish_scene_switch). Without this the
+    // client's per-frame vision().update + project_local_view stay gated off
+    // forever → permanent fog, own units never revealed. The re-welcome is
+    // the host's "new scene ready" signal, reliable-ordered just before the
+    // spawn burst, so clearing here resumes cleanly. Harmless at first join
+    // (already Playing / not switching); S_START still handles that path.
+    if (m_scene_switching) {
+        m_scene_switching = false;
+        m_phase = Phase::Playing;
+    }
 }
 
 void NetworkManager::client_handle_spawn(std::span<const u8> data) {
@@ -2305,6 +2332,7 @@ void NetworkManager::shutdown() {
     m_paused = false;
     m_pause_view_active = false;
     m_pause_broadcast_timer = 0.0f;
+    m_placement_count = 0;
     m_disconnected.clear();
     m_disconnected_view.clear();
     reset_local_view();
