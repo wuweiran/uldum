@@ -147,19 +147,15 @@ void ActionPreset::handle_movement(const InputContext& ctx) {
     // an instant tap that landed on an earlier handler) writes
     // oq->current synchronously via issue_order. The sim hasn't ticked
     // yet, so cast_state is still None — emitting MoveDirection now
-    // would overwrite the Cast in oq before the cast pump ever sees
-    // it. A pickup-bar tap needs the same protection, including while
-    // system_items walks toward the item; otherwise a held joystick
-    // replaces PickupItem every render frame before it can complete.
+    // would overwrite the Cast in oq before the cast pump ever sees it.
     // Only casts in MovingToTarget remain player-cancellable by movement.
     //
-    // Attack / AttackMove are intentionally NOT gated: in the Action
-    // preset, joystick movement is sovereign. A player walking past
-    // an enemy who taps attack mid-stride keeps walking; if they want
-    // the attack, they release the joystick. This matches the "tap
-    // doesn't lock you in place" feel of MOBA / action games.
+    // Everything else — PickupItem, Attack, AttackMove — is intentionally
+    // NOT gated: in the Action preset, joystick movement is sovereign. A
+    // held/re-pressed stick cancels a pending pickup or attack and walks
+    // off, matching the "tap doesn't lock you in place" feel of MOBA /
+    // action games.
     if (auto* oq = world.order_queues.get(lead.id); oq && oq->current.has_value()) {
-        if (std::get_if<simulation::orders::PickupItem>(&oq->current->payload)) return;
         if (aset && aset->cast_state == simulation::CastState::None &&
             std::get_if<simulation::orders::Cast>(&oq->current->payload)) {
             return;
