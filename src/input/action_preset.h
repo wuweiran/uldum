@@ -29,6 +29,11 @@ public:
         return m_targeting_ability ? std::string_view{m_targeting_ability_id}
                                     : std::string_view{};
     }
+    bool is_targeting() const override { return m_targeting_ability; }
+    void cancel_targeting() override {
+        m_targeting_ability = false;
+        m_targeting_ability_id.clear();
+    }
     bool show_selection_circles() const override { return false; }
 
 private:
