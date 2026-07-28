@@ -1620,6 +1620,8 @@ void ScriptEngine::bind_api() {
         auto& ft = *filter_table;
         if (ft["owner"].valid())      filter.owner      = ft["owner"].get<simulation::Player>();
         if (ft["enemy_of"].valid())   filter.enemy_of   = ft["enemy_of"].get<simulation::Player>();
+        if (ft["classifications"].valid())
+            filter.classifications = ft["classifications"].get<std::vector<std::string>>();
         if (ft["alive_only"].valid()) filter.alive_only = ft["alive_only"].get<bool>();
         return filter;
     };
