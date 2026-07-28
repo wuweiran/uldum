@@ -204,13 +204,6 @@ int main(int argc, char* argv[]) {
     const uldum::u32 initial_placement_count =
         server.simulation().world().entities.next_id();
 
-    // Set water layers
-    {
-        std::vector<uldum::u8> shallow, deep;
-        map.tileset().get_water_layer_ids(shallow, deep);
-        map.terrain().set_water_layers(shallow, deep);
-    }
-
     // Init game logic. The pre-main hook injects GAME_SESSION (when the
     // orchestrator supplied initial_data) so the map's main() can read
     // session-specific config like loadouts or custom rules.

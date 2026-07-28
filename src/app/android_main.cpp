@@ -6,15 +6,10 @@
 // points do.
 
 #include "app/engine.h"
+#include "platform/android/android_platform.h"  // set_pending_android_app
 #include "core/log.h"
 
 #include <game-activity/native_app_glue/android_native_app_glue.h>
-
-namespace uldum::platform {
-// Implemented in src/platform/android/android_platform.cpp. Called from here
-// before App::init, read once by AndroidPlatform::init.
-void set_pending_android_app(struct android_app* app);
-}
 
 // Drains the ALooper once with the given timeout, dispatching any events.
 // Returns false if the Activity requested destroy (caller should bail).

@@ -17,17 +17,11 @@ public:
     // Check if the key bound to an action was just pressed this frame.
     bool action_pressed(const std::string& action, const platform::InputState& input) const;
 
-    // Check if the key bound to an action is currently held.
-    bool action_held(const std::string& action, const platform::InputState& input) const;
-
     // Load bindings from a JSON object: { "stop": "S", "hold": "H", ... }
     void load(const nlohmann::json& j);
 
     // Fill in missing actions from a defaults map.
     void apply_defaults(const std::unordered_map<std::string, std::string>& defaults);
-
-    // Get the key name bound to an action, or empty string.
-    const std::string& get_key(const std::string& action) const;
 
     // Resolve a key name string to the current value in InputState.
     // Public so ability hotkeys can check keys directly.

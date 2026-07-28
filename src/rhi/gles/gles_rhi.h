@@ -7,11 +7,6 @@
 // `rhi::CommandList`, etc., which the build-system selector in
 // rhi/rhi.h resolves to whichever backend is active.
 //
-// Implementation status: SKELETON. Methods declared and the class
-// shape established; most bodies are TODO stubs that log a warning
-// and return invalid handles. Filling them in is its own multi-week
-// project tracked outside the RHI abstraction work.
-//
 // Mapping notes (Vulkan → GL ES):
 //   - VkBuffer            → GLuint (gen by glGenBuffers)
 //   - VkImage             → GLuint (gen by glGenTextures)
@@ -24,9 +19,11 @@
 //   - Pipeline barriers   → mostly no-ops (driver-managed in GL)
 //   - Image layouts       → no-op (GL has no explicit layout concept)
 //
-// Shader format: GLSL ES 3.10 produced by spirv-cross at asset-pack
-// time; the engine ships both SPIR-V (for Vulkan target) and GLSL ES
-// (for this backend) inside engine.uldpak, picked by file extension.
+// Shader format: hand-authored GLSL ES 3.10 siblings of the Vulkan GLSL
+// sources (spirv-cross auto-translation was tried and rejected — see the
+// Gradle compileEngineShaders task). Vulkan builds ship SPIR-V; this
+// backend ships the .glsl siblings inside engine.uldpak, picked by
+// file extension.
 
 #include "core/types.h"
 

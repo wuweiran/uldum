@@ -178,9 +178,6 @@ bool Editor::init(const std::string& map_path) {
         m_renderer.load_tileset_textures(m_map.tileset());
         m_renderer.set_environment(m_map.manifest().environment);
         if (m_map.terrain().is_valid()) {
-            std::vector<u8> shallow, deep;
-            m_map.tileset().get_water_layer_ids(shallow, deep);
-            m_map.terrain().set_water_layers(shallow, deep);
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
             simulation::apply_scene_data(m_simulation, m_map.mutable_scene());
@@ -1910,14 +1907,6 @@ void Editor::open_map(const std::string& path) {
         m_renderer.load_tileset_textures(m_map.tileset());
         m_renderer.set_environment(m_map.manifest().environment);
         if (m_map.terrain().is_valid()) {
-            std::vector<u8> shallow, deep;
-            for (auto& layer : m_map.tileset().layers) {
-                if (layer.type == map::LayerType::WaterShallow)
-                    shallow.push_back(static_cast<u8>(layer.id));
-                else if (layer.type == map::LayerType::WaterDeep)
-                    deep.push_back(static_cast<u8>(layer.id));
-            }
-            m_map.terrain().set_water_layers(shallow, deep);
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
             simulation::apply_scene_data(m_simulation, m_map.mutable_scene());

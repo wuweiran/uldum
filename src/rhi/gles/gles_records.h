@@ -42,6 +42,8 @@ struct Rhi::TextureRecord {
     GLuint name        = 0;
     GLenum target      = GL_TEXTURE_2D;
     GLenum internal_format = 0;
+    GLenum upload_format   = 0;
+    GLenum upload_type     = 0;
     u32    width       = 0;
     u32    height      = 0;
     u32    layers      = 1;

@@ -5,9 +5,10 @@ if(WIN32)
 elseif(ANDROID)
     list(APPEND PLATFORM_SOURCES android/android_platform.cpp)
 else()
-    # Linux desktop. Today an empty stub — keeps the STATIC lib
-    # well-formed so the headless server build links. A real window /
-    # input implementation lands when we ship a Linux desktop target.
+    # Linux: headless-worker-only. linux_platform.cpp deliberately omits
+    # Platform::create() — the worker never calls it, and a GUI target that
+    # did would fail to link (the intended gate until a real Linux window/
+    # input backend lands). See the comment in linux_platform.cpp.
     list(APPEND PLATFORM_SOURCES linux/linux_platform.cpp)
 endif()
 

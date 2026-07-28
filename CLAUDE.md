@@ -25,14 +25,14 @@ Uldum is a game engine for map-based, unit-centric games with Lua scripting, mul
 | `core` | Types, math, logging, allocators, profiling | None |
 | `platform` | Window, input, filesystem (Win32 / GameActivity) | core |
 | `rhi` | Vulkan 1.3 abstraction (device, swapchain, commands) | core, platform |
-| `render` | Render graph, materials, terrain, animation, particles | core, rhi, asset |
-| `simulation` | ECS, units, abilities, pathfinding, collision, AI | core, script, map |
-| `script` | Lua 5.4 VM, engine API bindings, trigger system | core |
+| `render` | Render graph, materials, terrain, animation, particles | core, rhi, asset, simulation, map, hud |
+| `simulation` | ECS, units, abilities, pathfinding, collision, AI | core, asset, map |
+| `script` | Lua 5.4 VM, engine API bindings, trigger system | core, simulation, map, audio, hud, i18n |
 | `map` | Map format, terrain data, object placement, overrides | core, asset |
-| `network` | Server-authoritative sim, client prediction, state sync | core, simulation |
+| `network` | Server-authoritative sim, client prediction, state sync | core, simulation, script, map, hud |
 | `audio` | 3D positional audio, SFX, music streaming | core, asset |
 | `asset` | Resource manager, format loaders (glTF, KTX2, OGG) | core |
-| `editor` | In-engine terrain editor (ImGui) | core, render, simulation, map |
+| `editor` | In-engine terrain editor (ImGui) | core, platform, rhi, asset, audio, render, simulation, map |
 | `app` | Client entry points (uldum_dev, uldum_game), main loop, game state machine | All |
 | `server` | Headless server-side binaries (uldum_worker per-session, future uldum_server orchestrator) | core, asset, i18n, simulation, script, network, map |
 

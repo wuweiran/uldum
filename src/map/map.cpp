@@ -218,19 +218,6 @@ bool MapManager::load_manifest(asset::AssetManager& assets) {
             }
         }
 
-        if (j.contains("classifications")) {
-            for (auto& c : j["classifications"]) manifest.classifications.push_back(c.get<std::string>());
-        }
-        if (j.contains("attack_types")) {
-            for (auto& a : j["attack_types"]) manifest.attack_types.push_back(a.get<std::string>());
-        }
-        if (j.contains("armor_types")) {
-            for (auto& a : j["armor_types"]) manifest.armor_types.push_back(a.get<std::string>());
-        }
-        if (j.contains("attributes")) {
-            for (auto& a : j["attributes"]) manifest.attributes.push_back(a.get<std::string>());
-        }
-
         manifest.fog_of_war = j.value("fog_of_war", "none");
 
         if (j.contains("reconnect") && j["reconnect"].is_object()) {

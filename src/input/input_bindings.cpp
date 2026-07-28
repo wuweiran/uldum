@@ -60,12 +60,6 @@ bool InputBindings::action_pressed(const std::string& action, const platform::In
     return pressed;
 }
 
-bool InputBindings::action_held(const std::string& action, const platform::InputState& input) const {
-    auto it = m_bindings.find(action);
-    if (it == m_bindings.end()) return false;
-    return resolve_key(it->second, input);
-}
-
 void InputBindings::load(const nlohmann::json& j) {
     if (!j.is_object()) return;
     for (auto& [action, key] : j.items()) {
@@ -79,12 +73,6 @@ void InputBindings::apply_defaults(const std::unordered_map<std::string, std::st
     for (auto& [action, key] : defaults) {
         m_bindings.emplace(action, key);  // only inserts if not already present
     }
-}
-
-const std::string& InputBindings::get_key(const std::string& action) const {
-    static const std::string empty;
-    auto it = m_bindings.find(action);
-    return (it != m_bindings.end()) ? it->second : empty;
 }
 
 // ── RTS defaults ─────────────────────────────────────────────────────────

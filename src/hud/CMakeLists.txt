@@ -5,8 +5,9 @@
 # (src/render/hud/hud_renderer.{cpp,h}); this lib has no rhi / render /
 # vma / freetype dependency.
 #
-# node.cpp moved to src/render/hud/node.cpp because Node::draw consumes
-# the renderer; only the headers (POD data) live here.
+# node.cpp holds Node::draw and its subclass overrides. They dispatch
+# through the abstract HudRenderInterface (declared in hud.h), keeping
+# this lib renderer-free.
 
 add_library(uldum_hud STATIC
     hud.cpp

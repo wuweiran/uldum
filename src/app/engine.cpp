@@ -580,11 +580,6 @@ bool Engine::start_session() {
         std::string effects_path = m_map.map_root() + "/types/effects.json";
         m_renderer.effect_registry().load_from_json(effects_path);
     }
-    {
-        std::vector<u8> shallow, deep;
-        m_map.tileset().get_water_layer_ids(shallow, deep);
-        m_map.terrain().set_water_layers(shallow, deep);
-    }
     m_renderer.load_tileset_textures(m_map.tileset());
     m_renderer.set_environment(m_map.manifest().environment);
     if (m_map.terrain().is_valid()) {

@@ -118,12 +118,6 @@ struct MapManifest {
     std::vector<PlayerSlot> players;
     std::vector<TeamDef>    teams;
 
-    // Map-defined enumerations
-    std::vector<std::string> classifications;
-    std::vector<std::string> attack_types;
-    std::vector<std::string> armor_types;
-    std::vector<std::string> attributes;
-
     // Fog of war: "none", "explored", or "unexplored" (default: "none")
     std::string fog_of_war = "none";
 

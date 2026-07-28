@@ -764,6 +764,8 @@ TextureHandle Rhi::create_texture(const TextureDesc& desc) {
     rec.name            = name;
     rec.target          = target;
     rec.internal_format = fmt.internal;
+    rec.upload_format   = fmt.format;
+    rec.upload_type     = fmt.type;
     rec.width           = desc.width;
     rec.height          = desc.height;
     rec.layers          = desc.array_layers;
@@ -830,8 +832,8 @@ void Rhi::destroy_sampler(SamplerHandle h) {
 
 ShaderModuleHandle Rhi::create_shader_module(std::span<const u8> source) {
     // GLES expects null-terminated GLSL source. We rely on the asset packer
-    // shipping a `.glsl` variant alongside each `.spv` — produced by
-    // spirv-cross at desktop build time. The first byte of the bundle
+    // shipping a `.glsl` variant alongside each `.spv` — hand-authored GLES
+    // siblings staged by the Gradle build. The first byte of the bundle
     // indicates the stage (V=vertex, F=fragment) so we don't need a
     // separate descriptor:
     //

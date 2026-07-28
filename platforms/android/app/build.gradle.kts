@@ -43,10 +43,11 @@ android {
     }
 
     defaultConfig {
-        // minSdk 26 (Android 8.0 Oreo) — covers >98% of active devices and
-        // is the floor for guaranteed OpenGL ES 3.2 support across vendors.
-        // The engine's GLES backend targets ES 3.2 core and uses extensions
-        // where present (EXT_buffer_storage, KHR_debug).
+        // minSdk 26 (Android 8.0 Oreo) — covers >98% of active devices.
+        // The engine's GLES backend targets ES 3.1 core (EGL context is
+        // requested at 3.1 in gles_rhi.cpp) and uses extensions where
+        // present (EXT_buffer_storage, KHR_debug). 3.1 keeps the Android
+        // emulator and the older Mali/Adreno tail in range.
         minSdk = 26
         targetSdk = 36
         versionCode = 1

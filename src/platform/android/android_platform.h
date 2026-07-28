@@ -9,6 +9,12 @@ struct android_app;
 
 namespace uldum::platform {
 
+// android_main (src/app/android_main.cpp) hands the android_app* over
+// through this module-private slot before App::init; AndroidPlatform::init
+// reads and clears it. Declared here so the entry point includes rather
+// than locally forward-declares it.
+void set_pending_android_app(android_app* app);
+
 // Android platform layer. Integrates with GameActivity via native_app_glue —
 // `android_main` (in src/app/android_main.cpp) stashes the `android_app*`
 // before creating the App, then our init() picks it up, installs the

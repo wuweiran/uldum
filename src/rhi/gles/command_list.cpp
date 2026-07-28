@@ -453,17 +453,10 @@ void CommandList::copy_buffer_to_image(BufferHandle src, TextureHandle dst,
     for (const auto& r : regions) {
         const void* offset = reinterpret_cast<const void*>(
             static_cast<uintptr_t>(r.buffer_offset));
-        // The internal-format tells us the (format, type) pair to use for
-        // the upload. For now we infer from common cases.
-        GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
-        switch (tex->internal_format) {
-            case GL_R8:           format = GL_RED;  type = GL_UNSIGNED_BYTE; break;
-            case GL_RGBA8:        format = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
-            case GL_SRGB8_ALPHA8: format = GL_RGBA; type = GL_UNSIGNED_BYTE; break;
-            case GL_RGBA16F:      format = GL_RGBA; type = GL_HALF_FLOAT;    break;
-            case GL_R32F:         format = GL_RED;  type = GL_FLOAT;         break;
-            default: break;
-        }
+        // (format, type) were captured from to_gl_format at creation and
+        // stored on the record — no lossy re-inference from internal_format.
+        const GLenum format = tex->upload_format;
+        const GLenum type   = tex->upload_type;
         if (tex->target == GL_TEXTURE_2D_ARRAY) {
             glTexSubImage3D(tex->target, static_cast<GLint>(r.mip_level),
                             r.image_offset_x, r.image_offset_y,

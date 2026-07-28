@@ -36,6 +36,8 @@ class Rhi {
 public:
     Rhi() = default;
     ~Rhi();
+    Rhi(const Rhi&) = delete;
+    Rhi& operator=(const Rhi&) = delete;
 
     bool init(const Config& config, platform::Platform& platform);
     void shutdown();
