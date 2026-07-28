@@ -170,6 +170,19 @@ public:
     };
     CmdState& cmd_state() { return m_cmd_state; }
 
+    // Owned scratch FBOs for the two FBO-and-glClear paths. They are kept
+    // SEPARATE on purpose: clear_color_image leaves a color texture bound to
+    // its COLOR_ATTACHMENT0, and on GLES an FBO's render area is the min of
+    // its attachment dimensions — so sharing one name would let that leftover
+    // (e.g. a small font atlas) shrink a later depth-only pass (shadow map)
+    // to a corner and leave the rest uninitialized. Lazily created on first
+    // use and destroyed in shutdown() while the context is still current (a
+    // function-static would outlive the EGL context and leak / collide with a
+    // name from a later context). Returned as unsigned int to keep GL types
+    // out of this header (see m_default_vao).
+    unsigned int render_fbo();   // begin_rendering (color + depth attachments)
+    unsigned int clear_fbo();    // clear_color_image (color-only clear)
+
     // GLES baseInstance emulation. Writes `base` into the shared draw-info
     // UBO at slot kDrawInstanceInfoSlot so vertex shaders can add it to
     // gl_InstanceID. Called per-draw by command_list.cpp from
@@ -186,6 +199,8 @@ private:
     // one at init and keep it bound for the context's lifetime; vertex
     // format is reapplied per draw in command_list.cpp::apply_vertex_input.
     unsigned int m_default_vao = 0;  // GLuint without pulling in GL headers
+    unsigned int m_render_fbo  = 0;  // begin_rendering scratch FBO (see render_fbo())
+    unsigned int m_clear_fbo   = 0;  // clear_color_image scratch FBO (see clear_fbo())
     CmdState m_cmd_state;
 
     // Record tables live in the .cpp where the BufferRecord etc. structs

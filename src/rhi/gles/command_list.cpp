@@ -510,8 +510,7 @@ void CommandList::clear_color_image(TextureHandle image, f32 r, f32 g, f32 b, f3
     GLint prev_fbo = 0;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
 
-    static GLuint scratch_fbo = 0;
-    if (scratch_fbo == 0) glGenFramebuffers(1, &scratch_fbo);
+    GLuint scratch_fbo = rhi_of(m_cmd).clear_fbo();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, scratch_fbo);
     glDisable(GL_SCISSOR_TEST);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -546,8 +545,7 @@ void CommandList::begin_rendering(const RenderingDesc& desc) {
     // Build (or look up) an FBO for the requested attachments. For now,
     // a single transient FBO per call — caching keyed by attachment
     // handles is a future perf pass.
-    static GLuint scratch_fbo = 0;
-    if (scratch_fbo == 0) glGenFramebuffers(1, &scratch_fbo);
+    GLuint scratch_fbo = rhi_of(m_cmd).render_fbo();
 
     glBindFramebuffer(GL_FRAMEBUFFER, scratch_fbo);
     // Reset state that gates glClear / glClearBuffer*. A stale scissor

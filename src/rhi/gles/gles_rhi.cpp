@@ -455,6 +455,16 @@ void Rhi::shutdown() {
         glDeleteVertexArrays(1, &m_default_vao);
         m_default_vao = 0;
     }
+    if (m_render_fbo != 0) {
+        GLuint fbo = m_render_fbo;
+        glDeleteFramebuffers(1, &fbo);
+        m_render_fbo = 0;
+    }
+    if (m_clear_fbo != 0) {
+        GLuint fbo = m_clear_fbo;
+        glDeleteFramebuffers(1, &fbo);
+        m_clear_fbo = 0;
+    }
     if (m_impl->draw_info_ubo != 0) {
         glDeleteBuffers(1, &m_impl->draw_info_ubo);
         m_impl->draw_info_ubo = 0;
@@ -592,6 +602,24 @@ void Rhi::set_base_instance(u32 base) {
     u32 payload[4] = {base, 0, 0, 0};
     glBindBuffer(GL_UNIFORM_BUFFER, m_impl->draw_info_ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(payload), payload);
+}
+
+unsigned int Rhi::render_fbo() {
+    if (m_render_fbo == 0) {
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        m_render_fbo = fbo;
+    }
+    return m_render_fbo;
+}
+
+unsigned int Rhi::clear_fbo() {
+    if (m_clear_fbo == 0) {
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        m_clear_fbo = fbo;
+    }
+    return m_clear_fbo;
 }
 TextureFormat Rhi::depth_format()     const { return TextureFormat::D32_SFLOAT; }
 
