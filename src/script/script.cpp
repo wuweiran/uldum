@@ -120,6 +120,61 @@ static u32 parse_players_mask(sol::object v) {
 ScriptEngine::ScriptEngine() = default;
 ScriptEngine::~ScriptEngine() = default;
 
+ScriptEngine::OrderEvent ScriptEngine::order_to_event_data(
+        const simulation::OrderPayload& payload) const {
+    OrderEvent ev;
+    // nil target_unit for a non-unit (crate) target.
+    auto unit_if_unit = [this](simulation::Widget w) -> simulation::Unit {
+        return simulation::is_unit(m_sim->world(), w) ? simulation::Unit{w.id}
+                                                       : simulation::Unit{};
+    };
+    std::visit([&](const auto& p) {
+        using T = std::decay_t<decltype(p)>;
+        if constexpr (std::is_same_v<T, simulation::orders::Move>) {
+            ev.type = "move";
+            ev.target_unit = unit_if_unit(p.target_widget);
+            ev.target_x = p.target.x; ev.target_y = p.target.y;
+        } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
+            ev.type = "attack";
+            ev.target_unit = unit_if_unit(p.target_widget);
+            ev.target_x = p.target.x; ev.target_y = p.target.y;
+        } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
+            ev.type = "stop";
+        } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
+            ev.type = "hold";
+        } else if constexpr (std::is_same_v<T, simulation::orders::Patrol>) {
+            ev.type = "patrol";
+            if (!p.waypoints.empty()) {
+                ev.target_x = p.waypoints.front().x;
+                ev.target_y = p.waypoints.front().y;
+            }
+        } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
+            ev.type = "cast";
+            ev.ability_id = p.ability_id;
+            if (simulation::is_non_null_handle(p.target_unit)) ev.target_unit = p.target_unit;
+            ev.target_x = p.target_pos.x; ev.target_y = p.target_pos.y;
+        } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
+            ev.type = "train";
+        } else if constexpr (std::is_same_v<T, simulation::orders::Research>) {
+            ev.type = "research";
+        } else if constexpr (std::is_same_v<T, simulation::orders::Build>) {
+            ev.type = "build";
+            ev.target_x = p.pos.x; ev.target_y = p.pos.y;
+        } else if constexpr (std::is_same_v<T, simulation::orders::PickupItem>) {
+            ev.type = "pickup";
+        } else if constexpr (std::is_same_v<T, simulation::orders::DropItem>) {
+            ev.type = "drop";
+            ev.target_x = p.pos.x; ev.target_y = p.pos.y;
+        } else if constexpr (std::is_same_v<T, simulation::orders::SwapInventorySlot>) {
+            ev.type = "swap_inventory_slot";
+        } else if constexpr (std::is_same_v<T, simulation::orders::MoveDirection>) {
+            ev.type = "move_direction";
+            ev.target_x = p.dir.x; ev.target_y = p.dir.y;
+        }
+    }, payload);
+    return ev;
+}
+
 // ── Init / Shutdown ───────────────────────────────────────────────────────
 
 bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
@@ -312,77 +367,23 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     };
 
     // Hook order callback — fires every time a new order survives the
-    // sim's admission checks. std::visit unpacks the order variant to
-    // a string tag + target unit + target point + ability id (for Cast
-    // orders), all surfaced through trigger context accessors:
+    // sim's admission checks. order_to_event_data maps the order variant to
+    // the OrderEvent core, surfaced through trigger context accessors:
     //   GetTriggerUnit()          — the unit getting the order
     //   GetTriggerOrderType()     — "move" / "attack" / "cast" / ...
     //   GetOrderTargetUnit()      — target unit handle (nil if none)
     //   GetOrderTargetX/Y()       — target ground point
     //   GetTriggerAbilityId()     — for "cast" orders (existing context)
     sim.world().on_order = [this](simulation::Unit unit, const simulation::Order& order) {
-        std::string type_tag;
-        simulation::Unit target_unit;
-        f32  target_x = 0, target_y = 0;
-        std::string ability_id;
-        // GetOrderTargetUnit() is nil for a non-unit target (e.g. attacking a crate).
-        auto unit_if_unit = [this](simulation::Widget w) -> simulation::Unit {
-            return simulation::is_unit(m_sim->world(), w) ? simulation::Unit{w.id}
-                                                          : simulation::Unit{};
-        };
-        std::visit([&](const auto& p) {
-            using T = std::decay_t<decltype(p)>;
-            if constexpr (std::is_same_v<T, simulation::orders::Move>) {
-                type_tag = "move";
-                target_unit = unit_if_unit(p.target_widget);
-                target_x = p.target.x; target_y = p.target.y;
-            } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
-                type_tag = "attack";
-                target_x = p.target.x; target_y = p.target.y;
-                target_unit = unit_if_unit(p.target_widget);
-            } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
-                type_tag = "stop";
-            } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
-                type_tag = "hold";
-            } else if constexpr (std::is_same_v<T, simulation::orders::Patrol>) {
-                type_tag = "patrol";
-                if (!p.waypoints.empty()) {
-                    target_x = p.waypoints.front().x;
-                    target_y = p.waypoints.front().y;
-                }
-            } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
-                type_tag = "cast";
-                ability_id = p.ability_id;
-                if (simulation::is_non_null_handle(p.target_unit)) target_unit = p.target_unit;
-                target_x = p.target_pos.x; target_y = p.target_pos.y;
-            } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
-                type_tag = "train";
-            } else if constexpr (std::is_same_v<T, simulation::orders::Research>) {
-                type_tag = "research";
-            } else if constexpr (std::is_same_v<T, simulation::orders::Build>) {
-                type_tag = "build";
-                target_x = p.pos.x; target_y = p.pos.y;
-            } else if constexpr (std::is_same_v<T, simulation::orders::PickupItem>) {
-                type_tag = "pickup";
-            } else if constexpr (std::is_same_v<T, simulation::orders::DropItem>) {
-                type_tag = "drop";
-                target_x = p.pos.x; target_y = p.pos.y;
-            } else if constexpr (std::is_same_v<T, simulation::orders::SwapInventorySlot>) {
-                type_tag = "swap_inventory_slot";
-            } else if constexpr (std::is_same_v<T, simulation::orders::MoveDirection>) {
-                type_tag = "move_direction";
-                target_x = p.dir.x; target_y = p.dir.y;
-            }
-        }, order.payload);
-
         auto* owner = m_sim->world().owners.get(unit.id);
+        OrderEvent ev = order_to_event_data(order.payload);
+        ev.player = owner ? owner->id : UINT32_MAX;
+        ev.queued = order.queued;
         EventFrame frame;
         frame.entity = unit;
         frame.registered_entity = unit;
-        frame.player = owner ? owner->id : UINT32_MAX;
-        frame.payload = OrderEvent{std::move(type_tag), target_unit,
-                                   target_x, target_y, std::move(ability_id),
-                                   frame.player, order.queued};
+        frame.player = ev.player;
+        frame.payload = std::move(ev);
         dispatch(frame, "global_issued_order");
         dispatch(frame, "unit_issued_order");
     };
@@ -2927,44 +2928,9 @@ void ScriptEngine::set_input(simulation::SelectionState* selection, simulation::
     // target_filter, not script-overridable from this hook.
     if (m_commands) {
         m_commands->set_order_observer([this](const simulation::GameCommand& cmd) {
-            OrderEvent order_event;
+            OrderEvent order_event = order_to_event_data(cmd.order);
             order_event.player = cmd.player.id;
             order_event.queued = cmd.queued;
-
-            std::visit([&](const auto& payload) {
-                using T = std::decay_t<decltype(payload)>;
-                if constexpr (std::is_same_v<T, simulation::orders::Move>) {
-                    order_event.type = "move";
-                    order_event.target_x = payload.target.x;
-                    order_event.target_y = payload.target.y;
-                } else if constexpr (std::is_same_v<T, simulation::orders::Attack>) {
-                    order_event.type = "attack";
-                    order_event.target_x = payload.target.x;
-                    order_event.target_y = payload.target.y;
-                    // nil for a non-unit (crate) target.
-                    if (simulation::is_unit(m_sim->world(), payload.target_widget)) {
-                        order_event.target_unit = simulation::Unit{payload.target_widget.id};
-                    }
-                } else if constexpr (std::is_same_v<T, simulation::orders::Stop>) {
-                    order_event.type = "stop";
-                } else if constexpr (std::is_same_v<T, simulation::orders::HoldPosition>) {
-                    order_event.type = "hold";
-                } else if constexpr (std::is_same_v<T, simulation::orders::Patrol>) {
-                    order_event.type = "patrol";
-                    if (!payload.waypoints.empty()) {
-                        order_event.target_x = payload.waypoints[0].x;
-                        order_event.target_y = payload.waypoints[0].y;
-                    }
-                } else if constexpr (std::is_same_v<T, simulation::orders::Cast>) {
-                    order_event.type = "cast";
-                    order_event.ability_id = payload.ability_id;
-                    order_event.target_unit = payload.target_unit;
-                    order_event.target_x = payload.target_pos.x;
-                    order_event.target_y = payload.target_pos.y;
-                } else {
-                    order_event.type = "other";
-                }
-            }, cmd.order);
 
             EventFrame frame;
             frame.player = cmd.player.id;

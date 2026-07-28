@@ -2,6 +2,7 @@
 
 #include "core/types.h"
 #include "simulation/entity_types.h"
+#include "simulation/order.h"
 
 #include <glm/vec3.hpp>
 #include <nlohmann/json.hpp>
@@ -401,6 +402,11 @@ private:
     };
 
     void dispatch(EventFrame& frame, std::string_view event_name);
+    // Map an order payload to its OrderEvent core (type tag + target unit +
+    // target point + ability id). Shared by the world on_order hook and the
+    // command order-observer so both event paths agree. player/queued are
+    // caller-set (they come from different sources on each path).
+    OrderEvent order_to_event_data(const simulation::OrderPayload& payload) const;
     // Broadcast a unit's current script anim queue as S_COLD{Anim} (empty = reset).
     void emit_anim(u32 entity_id);
     // Broadcast a STATIC's transform as S_COLD Transform (units self-heal via HOT).
