@@ -1193,10 +1193,10 @@ function IsUnitSelected(unit_id) end
 --------------------------------------------------------------------------------
 -- Order context (input preset events)
 --------------------------------------------------------------------------------
--- These read the order currently being dispatched by the local player's
--- input preset. Distinct from the trigger context (`GetTriggerOrderType`
--- / `GetOrderTargetUnit` in the trigger-context section): those return
--- handles, these return raw ids.
+-- These read the order currently being dispatched. `GetOrderTargetUnit`
+-- returns a unit handle (or nil for a non-unit target); the rest return
+-- scalars. Same underlying order event as the `GetTriggerOrderType`
+-- trigger-context accessors.
 
 ---@return string
 function GetOrderType() end
@@ -1207,7 +1207,9 @@ function GetOrderTargetX() end
 ---@return number
 function GetOrderTargetY() end
 
----@return number   unit id (0 if not unit-targeted)
+--- Target unit of the order, or nil if the order has no unit target
+--- (e.g. a move to a point, or attacking a destructable).
+---@return unit|nil
 function GetOrderTargetUnit() end
 
 ---@return number   player id

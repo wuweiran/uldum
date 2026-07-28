@@ -3066,10 +3066,6 @@ void ScriptEngine::bind_input_api() {
         auto* event = current_order();
         return event ? event->target_y : 0.0f;
     };
-    lua["GetOrderTargetUnit"] = [current_order]() -> u32 {
-        auto* event = current_order();
-        return event ? event->target_unit.id : UINT32_MAX;
-    };
     lua["GetOrderPlayer"] = [current_order]() -> u32 {
         auto* event = current_order();
         return event ? event->player : UINT32_MAX;
