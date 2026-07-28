@@ -1,15 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Vulkan 1.3 capability is checked at runtime; this marks the app as requiring it. -->
-    <uses-feature
-        android:name="android.hardware.vulkan.version"
-        android:version="0x00403000"
-        android:required="true" />
-    <uses-feature
-        android:name="android.hardware.vulkan.level"
-        android:version="1"
-        android:required="true" />
+    <!-- No graphics <uses-feature>: the shared/base manifest is the GLES
+         lowest common denominator, so Play doesn't filter out GLES-capable
+         devices with weak/absent Vulkan. A future Vulkan-on-Android flavor
+         declares its own android.hardware.vulkan.* requirement in its overlay. -->
 
     <application
         android:label="${appLabel}"
