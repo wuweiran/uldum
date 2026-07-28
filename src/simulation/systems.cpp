@@ -822,13 +822,19 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         // Attack is one order: with a valid target_widget it's a targeted attack;
         // without, it's an A-move (walk to atk->target, auto-acquire en route).
         auto* attack_order = oq->current ? std::get_if<orders::Attack>(&oq->current->payload) : nullptr;
-        bool is_casting = oq->current && std::get_if<orders::Cast>(&oq->current->payload);
-        bool is_moving  = oq->current && std::get_if<orders::Move>(&oq->current->payload);
-        bool is_holding = oq->current && std::get_if<orders::HoldPosition>(&oq->current->payload);
         bool has_widget = attack_order && is_non_null_handle(attack_order->target_widget);
+        bool is_holding = oq->current && std::get_if<orders::HoldPosition>(&oq->current->payload);
 
-        // Unit has a Move order — don't attack, obey the order
-        if (is_moving) {
+        // Non-combat orders own the unit's movement (Move via Priority-1,
+        // Cast / item via the shared approach fields system_ability /
+        // system_items set). Combat runs first, so leave those units alone —
+        // otherwise its per-tick clear zeroes the approach before movement
+        // reads it. Attack, HoldPosition, and no-order units fall through.
+        if (oq->current &&
+            (std::get_if<orders::Move>(&oq->current->payload) ||
+             std::get_if<orders::Cast>(&oq->current->payload) ||
+             std::get_if<orders::PickupItem>(&oq->current->payload) ||
+             std::get_if<orders::DropItem>(&oq->current->payload))) {
             combat.target = Unit{};
             combat.attack_state = AttackState::Idle;
             continue;
@@ -908,10 +914,10 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 combat.attack_state != AttackState::Cooldown) {
                 combat.attack_state = AttackState::Idle;
             }
-            // Clear the live-handle approach — but NOT mid-cast (the cast pump owns
-            // it). The movement Attack branch sets the point goal (Priority 1 wins).
+            // Drop the stale live-handle approach. Only no-order / Attack / Hold
+            // units reach here; the movement Attack branch re-sets its point goal.
             auto* pth = world.pathings.get(id);
-            if (pth && !is_casting) {
+            if (pth) {
                 pth->approach_target = Unit{};
                 pth->approach_range = 0;
             }
@@ -921,7 +927,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             // Hold Position restricts scanning to the unit's own attack range so
             // the unit never picks up a target it would then need to chase.
             f32 acquire_r = is_holding ? combat.range : combat.acquire_range;
-            if (!has_widget && !no_acquire && !is_casting && !is_moving && acquire_r > 0 && combat.damage > 0) {
+            if (!has_widget && !no_acquire && acquire_r > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;
