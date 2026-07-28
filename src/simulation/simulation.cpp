@@ -193,8 +193,12 @@ void Simulation::tick(float dt) {
 
     system_health(m_world, dt);
     system_state(m_world, dt);
-    system_movement(m_world, dt, m_pathfinder, m_spatial_grid, m_terrain);
+    // Combat before movement: combat decides strike-vs-approach and sets the
+    // approach target/range; movement executes it the same tick. Reversed, a
+    // fresh Attack on an in-range target nudged one tick before combat could
+    // stop it (combat.target still cleared by issue_order).
     system_combat(m_world, dt, m_spatial_grid);
+    system_movement(m_world, dt, m_pathfinder, m_spatial_grid, m_terrain);
     system_ability(m_world, dt, m_abilities, m_spatial_grid);
     system_items(m_world, dt);
     system_projectile(m_world, dt);

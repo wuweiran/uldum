@@ -310,8 +310,8 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     goal_range = m->range;
                 }
             } else if (auto* atk = std::get_if<orders::Attack>(&oq->current->payload)) {
-                // Engaged a live target → defer to approach (chase it). Else walk to
-                // atk->target: the A-move dest, or a fogged/dead target's last-seen
+                // Engaged (combat ran first this tick) → approach chases it. Else
+                // walk to atk->target: the A-move dest, or a lost target's last-seen
                 // point. Arrival-advance (below) ends the order on reaching it.
                 auto* combat = world.combats.get(id);
                 if (combat && is_non_null_handle(combat->target)) {
