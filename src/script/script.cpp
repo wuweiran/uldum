@@ -117,6 +117,34 @@ static u32 parse_players_mask(sol::object v) {
     return UINT32_MAX;
 }
 
+// Shared body for the string-named TriggerRegister*Event bindings
+// (generic / unit / destructable / player / projectile). Validates the
+// event name, honors the caller's entity-liveness gate, then appends a
+// pre-filled binding to the trigger. `fn` names the call site for the
+// warning; `entity_ok` is the caller's contains() result (always true
+// for the entity-less variants).
+static void register_trigger_event(std::unordered_map<u32, Trigger>& triggers,
+                                   sol::table t, sol::object event_obj,
+                                   const char* fn, bool entity_ok,
+                                   Trigger::EventBinding eb) {
+    if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
+        log::warn(TAG, "{}: event name is nil or empty", fn);
+        return;
+    }
+    if (!entity_ok) return;
+    eb.event_name = event_obj.as<std::string>();
+    auto it = triggers.find(t["_id"].get<u32>());
+    if (it != triggers.end()) it->second.events.push_back(std::move(eb));
+}
+
+// Wrap a handle as a Lua object, or nil when the caller's validity gate
+// fails. The single make-object-or-nil idiom behind the unit_or_nil /
+// player_or_nil / projectile_or_nil / item_or_nil binding adapters.
+template <typename T>
+static sol::object obj_or_nil(sol::state& lua, bool valid, const T& value) {
+    return valid ? sol::make_object(lua, value) : sol::make_object(lua, sol::nil);
+}
+
 ScriptEngine::ScriptEngine() = default;
 ScriptEngine::~ScriptEngine() = default;
 
@@ -290,6 +318,20 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     bind_save_api();
     bind_hud_api();
 
+    // Build an entity-scoped EventFrame (entity == registered_entity) and
+    // fire it to a global + scoped listener pair. The common shape behind
+    // most of the world's on_* hooks below; hooks that vary the registered
+    // entity, set player/region, or branch the scoped name stay explicit.
+    auto fan_out = [this](simulation::Handle entity, auto payload,
+                          std::string_view global, std::string_view scoped) {
+        EventFrame frame;
+        frame.entity = entity;
+        frame.registered_entity = entity;
+        frame.payload = std::move(payload);
+        dispatch(frame, global);
+        dispatch(frame, scoped);
+    };
+
     sim.world().on_damage = [this](simulation::Unit source, simulation::Unit target,
                                   f32& amount, std::string_view damage_type) {
         EventFrame frame;
@@ -305,13 +347,8 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         amount = std::get<DamageEvent>(frame.payload).amount;
     };
 
-    sim.world().on_dying = [this](simulation::Unit dying, simulation::Unit killer) {
-        EventFrame frame;
-        frame.entity = dying;
-        frame.registered_entity = dying;
-        frame.payload = DeathEvent{killer};
-        dispatch(frame, "global_dying");
-        dispatch(frame, "unit_dying");
+    sim.world().on_dying = [fan_out](simulation::Unit dying, simulation::Unit killer) {
+        fan_out(dying, DeathEvent{killer}, "global_dying", "unit_dying");
     };
 
     sim.world().on_projectile_hit = [this](simulation::Projectile projectile,
@@ -394,17 +431,12 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     // channel end (natural OR interrupt), and effect resolution. See
     // World's on_ability_* docs for the ordering vs Foreswing /
     // Channeling / Backswing.
-    auto fan_out_cast = [this](std::string_view global, std::string_view scoped,
+    auto fan_out_cast = [fan_out](std::string_view global, std::string_view scoped,
                                simulation::Unit caster, std::string_view ability_id,
                                simulation::Unit target_unit, glm::vec3 target_pos,
                                simulation::Item source_item) {
-        EventFrame frame;
-        frame.entity = caster;
-        frame.registered_entity = caster;
-        frame.payload = AbilityEvent{std::string(ability_id), target_unit,
-                                     target_pos, source_item};
-        dispatch(frame, global);
-        dispatch(frame, scoped);
+        fan_out(caster, AbilityEvent{std::string(ability_id), target_unit,
+                                     target_pos, source_item}, global, scoped);
     };
 
     sim.world().on_ability_channel = [fan_out_cast](simulation::Unit caster, std::string_view ability_id,
@@ -429,23 +461,13 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     };
 
     // Item events fired by system_items.
-    sim.world().on_item_picked_up = [this](simulation::Unit unit,
+    sim.world().on_item_picked_up = [fan_out](simulation::Unit unit,
                                           simulation::Item item, i32) {
-        EventFrame frame;
-        frame.entity = unit;
-        frame.registered_entity = unit;
-        frame.payload = ItemEvent{item};
-        dispatch(frame, "global_item_picked_up");
-        dispatch(frame, "unit_item_picked_up");
+        fan_out(unit, ItemEvent{item}, "global_item_picked_up", "unit_item_picked_up");
     };
-    sim.world().on_item_dropped = [this](simulation::Unit unit,
+    sim.world().on_item_dropped = [fan_out](simulation::Unit unit,
                                         simulation::Item item) {
-        EventFrame frame;
-        frame.entity = unit;
-        frame.registered_entity = unit;
-        frame.payload = ItemEvent{item};
-        dispatch(frame, "global_item_dropped");
-        dispatch(frame, "unit_item_dropped");
+        fan_out(unit, ItemEvent{item}, "global_item_dropped", "unit_item_dropped");
     };
 
     // Region events fired by system_regions per tick. Region id is
@@ -901,19 +923,16 @@ void ScriptEngine::bind_api() {
     auto& sim = *m_sim;
     const auto& terrain_ref = m_map->terrain();
 
-    // Helper: return nil for invalid units
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
-        return sim.world().contains(u) ? sol::make_object(*m_lua, u)
-                                       : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, sim.world().contains(u), u);
     };
 
     auto player_or_nil = [&](simulation::Player p) -> sol::object {
-        return p.is_valid() ? sol::make_object(*m_lua, p) : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, p.is_valid(), p);
     };
 
     auto projectile_or_nil = [&](simulation::Projectile p) -> sol::object {
-        return sim.world().contains(p) ? sol::make_object(*m_lua, p)
-                                       : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, sim.world().contains(p), p);
     };
 
     // ── Unit API ──────────────────────────────────────────────────────
@@ -1440,20 +1459,9 @@ void ScriptEngine::bind_api() {
     // per-unit registration, but exists as its own name so map code
     // reads as intended (a projectile isn't a unit conceptually).
     lua["TriggerRegisterProjectileEvent"] = [&](sol::table t, simulation::Projectile proj, sol::object event_obj) {
-        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
-            log::warn(TAG, "TriggerRegisterProjectileEvent: event name is nil or empty");
-            return;
-        }
-        if (!sim.world().contains(proj) || !sim.world().projectiles.has(proj.id)) return;
-        std::string event_name = event_obj.as<std::string>();
-        u32 id = t["_id"].get<u32>();
-        auto it = m_triggers.find(id);
-        if (it != m_triggers.end()) {
-            Trigger::EventBinding eb;
-            eb.event_name = event_name;
-            eb.unit_id = proj.id;
-            it->second.events.push_back(std::move(eb));
-        }
+        bool ok = sim.world().contains(proj) && sim.world().projectiles.has(proj.id);
+        register_trigger_event(m_triggers, t, event_obj, "TriggerRegisterProjectileEvent",
+                               ok, {.unit_id = proj.id});
     };
 
     // Mutate a modifier value on every active instance of an ability and
@@ -1768,9 +1776,12 @@ void ScriptEngine::bind_api() {
     // per-player targeting. Omit for broadcast (default). Ground effects (no
     // attached entity) snap Z up to the terrain surface — a spell target's Z is
     // 0 — while max() leaves callers passing a real world-Z (rune bursts) alone.
-    lua["CreateEffect"] = [this, &terrain_ref](const std::string& name,
-                                  f32 x, f32 y, f32 z,
-                                  sol::optional<sol::table> opts) -> u32 {
+    // Effect construction shared by Create*/Play*. spawn_effect_at places a
+    // free-position effect (z clamped to terrain); spawn_effect_on_unit
+    // attaches to a unit's transform (0 if the handle is stale). Both honor
+    // opts.players. The Play* variants spawn then immediately DestroyEffect.
+    auto spawn_effect_at = [this, &terrain_ref](const std::string& name, f32 x, f32 y, f32 z,
+                                                sol::optional<sol::table> opts) -> u32 {
         ActiveEffect e;
         e.server_id = m_next_effect_id++;
         e.name      = name;
@@ -1780,11 +1791,9 @@ void ScriptEngine::bind_api() {
         m_active_effects.push_back(std::move(e));
         return m_active_effects.back().server_id;
     };
-
-    lua["CreateEffectOnUnit"] = [this, &sim](
-            const std::string& name, simulation::Unit unit,
-            sol::optional<std::string> attach_point,
-            sol::optional<sol::table> opts) -> u32 {
+    auto spawn_effect_on_unit = [this, &sim](const std::string& name, simulation::Unit unit,
+                                             sol::optional<std::string> attach_point,
+                                             sol::optional<sol::table> opts) -> u32 {
         if (!sim.world().contains(unit)) return 0;
         auto* t = sim.world().transforms.get(unit.id);
         if (!t) return 0;
@@ -1797,6 +1806,18 @@ void ScriptEngine::bind_api() {
         if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
         m_active_effects.push_back(std::move(e));
         return m_active_effects.back().server_id;
+    };
+
+    lua["CreateEffect"] = [spawn_effect_at](const std::string& name, f32 x, f32 y, f32 z,
+                                            sol::optional<sol::table> opts) -> u32 {
+        return spawn_effect_at(name, x, y, z, std::move(opts));
+    };
+
+    lua["CreateEffectOnUnit"] = [spawn_effect_on_unit](
+            const std::string& name, simulation::Unit unit,
+            sol::optional<std::string> attach_point,
+            sol::optional<sol::table> opts) -> u32 {
+        return spawn_effect_on_unit(name, unit, std::move(attach_point), std::move(opts));
     };
 
     auto destroy_effect_impl = [this](u32 id) {
@@ -1829,36 +1850,17 @@ void ScriptEngine::bind_api() {
 
     // Convenience: one-shot semantics via Create + immediate Destroy.
     // Functionally identical to `DestroyEffect(CreateEffect(...))`.
-    lua["PlayEffect"] = [this, destroy_effect_impl, &terrain_ref](
+    lua["PlayEffect"] = [spawn_effect_at, destroy_effect_impl](
             const std::string& name, f32 x, f32 y, f32 z,
             sol::optional<sol::table> opts) {
-        ActiveEffect e;
-        e.server_id = m_next_effect_id++;
-        e.name      = name;
-        e.position  = {x, y, std::max(z, ::uldum::map::sample_height(terrain_ref, x, y))};
-        e.entity    = {};
-        if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
-        u32 id = e.server_id;
-        m_active_effects.push_back(std::move(e));
-        destroy_effect_impl(id);
+        destroy_effect_impl(spawn_effect_at(name, x, y, z, std::move(opts)));
     };
-    lua["PlayEffectOnUnit"] = [this, &sim, destroy_effect_impl](
+    lua["PlayEffectOnUnit"] = [spawn_effect_on_unit, destroy_effect_impl](
             const std::string& name, simulation::Unit unit,
             sol::optional<std::string> attach_point,
             sol::optional<sol::table> opts) {
-        if (!sim.world().contains(unit)) return;
-        auto* t = sim.world().transforms.get(unit.id);
-        if (!t) return;
-        ActiveEffect e;
-        e.server_id    = m_next_effect_id++;
-        e.name         = name;
-        e.position     = t->position;
-        e.entity       = unit;
-        e.attach_point = attach_point ? *attach_point : std::string{};
-        if (opts) e.target_mask = parse_players_mask((*opts)["players"]);
-        u32 id = e.server_id;
-        m_active_effects.push_back(std::move(e));
-        destroy_effect_impl(id);
+        u32 id = spawn_effect_on_unit(name, unit, std::move(attach_point), std::move(opts));
+        if (id) destroy_effect_impl(id);
     };
     // ── Audio API ──────────────────────────────────────────────────────
 
@@ -2137,8 +2139,7 @@ void ScriptEngine::bind_api() {
     // Map Lua drives consumption / level-up / merge / drop-on-death.
 
     auto item_or_nil = [&](simulation::Item it) -> sol::object {
-        return sim.world().contains(it) ? sol::make_object(*m_lua, it)
-                                        : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, sim.world().contains(it), it);
     };
 
     lua["CreateItem"] = [&, item_or_nil](const std::string& type_id, f32 x, f32 y) -> sol::object {
@@ -2321,66 +2322,22 @@ void ScriptEngine::bind_trigger_api() {
     };
 
     lua["TriggerRegisterEvent"] = [&](sol::table t, sol::object event_obj) {
-        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
-            log::warn(TAG, "TriggerRegisterEvent: event name is nil or empty");
-            return;
-        }
-        std::string event_name = event_obj.as<std::string>();
-        u32 id = t["_id"].get<u32>();
-        auto it = m_triggers.find(id);
-        if (it != m_triggers.end()) {
-            it->second.events.push_back({event_name});
-        }
+        register_trigger_event(m_triggers, t, event_obj, "TriggerRegisterEvent", true, {});
     };
 
     lua["TriggerRegisterUnitEvent"] = [&](sol::table t, simulation::Unit unit, sol::object event_obj) {
-        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
-            log::warn(TAG, "TriggerRegisterUnitEvent: event name is nil or empty");
-            return;
-        }
-        if (!m_sim || !m_sim->world().contains(unit)) return;
-        std::string event_name = event_obj.as<std::string>();
-        u32 id = t["_id"].get<u32>();
-        auto it = m_triggers.find(id);
-        if (it != m_triggers.end()) {
-            Trigger::EventBinding eb;
-            eb.event_name = event_name;
-            eb.unit_id = unit.id;
-            it->second.events.push_back(std::move(eb));
-        }
+        register_trigger_event(m_triggers, t, event_obj, "TriggerRegisterUnitEvent",
+                               m_sim && m_sim->world().contains(unit), {.unit_id = unit.id});
     };
 
     lua["TriggerRegisterDestructableEvent"] = [&](sol::table t, simulation::Destructable dest, sol::object event_obj) {
-        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
-            log::warn(TAG, "TriggerRegisterDestructableEvent: event name is nil or empty");
-            return;
-        }
-        if (!m_sim || !m_sim->world().contains(dest)) return;
-        std::string event_name = event_obj.as<std::string>();
-        u32 id = t["_id"].get<u32>();
-        auto it = m_triggers.find(id);
-        if (it != m_triggers.end()) {
-            Trigger::EventBinding eb;
-            eb.event_name = event_name;
-            eb.unit_id = dest.id;
-            it->second.events.push_back(std::move(eb));
-        }
+        register_trigger_event(m_triggers, t, event_obj, "TriggerRegisterDestructableEvent",
+                               m_sim && m_sim->world().contains(dest), {.unit_id = dest.id});
     };
 
     lua["TriggerRegisterPlayerEvent"] = [&](sol::table t, simulation::Player player, sol::object event_obj) {
-        if (!event_obj.is<std::string>() || event_obj.as<std::string>().empty()) {
-            log::warn(TAG, "TriggerRegisterPlayerEvent: event name is nil or empty");
-            return;
-        }
-        std::string event_name = event_obj.as<std::string>();
-        u32 id = t["_id"].get<u32>();
-        auto it = m_triggers.find(id);
-        if (it != m_triggers.end()) {
-            Trigger::EventBinding eb;
-            eb.event_name = event_name;
-            eb.player_id = player.id;
-            it->second.events.push_back(std::move(eb));
-        }
+        register_trigger_event(m_triggers, t, event_obj, "TriggerRegisterPlayerEvent",
+                               true, {.player_id = player.id});
     };
 
     lua["TriggerRegisterTimerEvent"] = [&](sol::table t, f32 interval, bool repeating) {
@@ -2456,12 +2413,11 @@ void ScriptEngine::bind_trigger_api() {
     auto& sim = *m_sim;
 
     auto unit_or_nil = [&](simulation::Unit u) -> sol::object {
-        return sim.world().contains(u) ? sol::make_object(*m_lua, u)
-                                       : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, sim.world().contains(u), u);
     };
 
     auto player_or_nil = [&](simulation::Player p) -> sol::object {
-        return p.is_valid() ? sol::make_object(*m_lua, p) : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, p.is_valid(), p);
     };
 
     // Context validation helper
@@ -2478,39 +2434,32 @@ void ScriptEngine::bind_trigger_api() {
     lua["GetTriggerEvent"] = [this]() -> std::string {
         return m_event_frame ? m_event_frame->event : std::string{};
     };
-    lua["GetTriggerUnit"] = [&, unit_or_nil]() -> sol::object {
-        if (!m_event_frame || !sim.world().contains(m_event_frame->entity)) {
-            return sol::make_object(*m_lua, sol::nil);
-        }
-        const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
-        if (!info || info->category != simulation::Category::Unit) {
-            return sol::make_object(*m_lua, sol::nil);
-        }
-        return unit_or_nil(as_unit(m_event_frame->entity));
-    };
-    lua["GetTriggerDestructable"] = [&]() -> sol::object {
-        if (!m_event_frame || !sim.world().contains(m_event_frame->entity)) {
-            return sol::make_object(*m_lua, sol::nil);
-        }
-        const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
-        if (!info || info->category != simulation::Category::Destructable) {
-            return sol::make_object(*m_lua, sol::nil);
-        }
-        return sol::make_object(*m_lua, as_destructable(m_event_frame->entity));
-    };
-    lua["GetTriggerWidget"] = [&]() -> sol::object {
+    // Resolve the current frame's entity to a Lua object when it exists and
+    // its category is one of `cats`; nil otherwise. Backs GetTriggerUnit /
+    // GetTriggerDestructable / GetTriggerWidget.
+    auto frame_entity_as = [&](std::initializer_list<simulation::Category> cats) -> sol::object {
         if (!m_event_frame || !sim.world().contains(m_event_frame->entity)) {
             return sol::make_object(*m_lua, sol::nil);
         }
         const auto* info = sim.world().handle_infos.get(m_event_frame->entity.id);
         if (!info) return sol::make_object(*m_lua, sol::nil);
-        if (info->category == simulation::Category::Destructable) {
-            return sol::make_object(*m_lua, as_destructable(m_event_frame->entity));
-        }
-        if (info->category == simulation::Category::Unit) {
-            return sol::make_object(*m_lua, as_unit(m_event_frame->entity));
+        for (auto c : cats) {
+            if (info->category != c) continue;
+            if (c == simulation::Category::Unit)
+                return sol::make_object(*m_lua, as_unit(m_event_frame->entity));
+            if (c == simulation::Category::Destructable)
+                return sol::make_object(*m_lua, as_destructable(m_event_frame->entity));
         }
         return sol::make_object(*m_lua, sol::nil);
+    };
+    lua["GetTriggerUnit"] = [&, frame_entity_as]() -> sol::object {
+        return frame_entity_as({simulation::Category::Unit});
+    };
+    lua["GetTriggerDestructable"] = [&, frame_entity_as]() -> sol::object {
+        return frame_entity_as({simulation::Category::Destructable});
+    };
+    lua["GetTriggerWidget"] = [&, frame_entity_as]() -> sol::object {
+        return frame_entity_as({simulation::Category::Destructable, simulation::Category::Unit});
     };
     lua["GetTriggerPlayer"] = [&, player_or_nil]() -> sol::object {
         return player_or_nil(simulation::Player{
@@ -2523,8 +2472,7 @@ void ScriptEngine::bind_trigger_api() {
         return m_event_frame ? m_event_frame->node_id : std::string{};
     };
     lua["GetTriggerItem"] = [&, item_or_nil = [&](simulation::Item item) -> sol::object {
-        return sim.world().contains(item) ? sol::make_object(*m_lua, item)
-                                          : sol::make_object(*m_lua, sol::nil);
+        return obj_or_nil(*m_lua, sim.world().contains(item), item);
     }]() -> sol::object {
         if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
         if (auto* event = std::get_if<ItemEvent>(&m_event_frame->payload)) {
