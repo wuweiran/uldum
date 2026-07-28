@@ -627,10 +627,8 @@ bool Engine::start_session() {
         };
         apply(TexId::SelectionRing, s.selection_texture);
         apply(TexId::RangeRing,     s.range_texture);
-        apply(TexId::TargetUnit,    s.target_unit_texture);
         apply(TexId::SnapTarget,    s.snap_target_texture);
         apply(TexId::CastCurve,     s.arrow_texture);
-        apply(TexId::Reticle,       s.reticle_texture);
         apply(TexId::AoeCircle,     s.area_texture);
         apply(TexId::AoeCone,       s.area_cone_texture);
         apply(TexId::AoeLine,       s.area_line_texture);

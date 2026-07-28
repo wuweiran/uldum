@@ -947,19 +947,6 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 cfg.style.area_line_texture = v->get<std::string>();
         }
 
-        // Entity ping (post-commit ring on the targeted unit / item).
-        // Color is always the runtime intent — no JSON knob.
-        if (auto ep = tg->find("entity_ping"); ep != tg->end() && ep->is_object()) {
-            if (auto v = ep->find("texture"); v != ep->end() && v->is_string())
-                cfg.style.entity_ping_texture = v->get<std::string>();
-            if (auto v = ep->find("thickness_anim"); v != ep->end() && v->is_array() && v->size() == 2) {
-                cfg.style.entity_ping_thickness_start = (*v)[0].get<f32>();
-                cfg.style.entity_ping_thickness_end   = (*v)[1].get<f32>();
-            }
-            if (auto v = ep->find("lifespan"); v != ep->end() && v->is_number())
-                cfg.style.entity_ping_lifespan = v->get<f32>();
-        }
-
         // Unified aim-phase palette. Drives the AoE shapes + the mobile
         // snap-target pillar (normal = resting; out_of_range / cancelling
         // = global warnings every phase-colored visual obeys).

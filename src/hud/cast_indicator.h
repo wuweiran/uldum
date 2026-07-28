@@ -48,17 +48,6 @@ struct CastIndicatorStyle {
     f32   head_height     = 0.0f;
     f32   arc_height      = 100.0f;
 
-    // Reticle (filled circle with radial-alpha falloff). Drawn at the
-    // drag point when the ability is unsnapped point-target / unit-
-    // target, replaced by the snapped-unit ring otherwise.
-    Color reticle_color  = rgba(180, 220, 255, 220);
-    f32   reticle_radius = 18.0f;
-
-    // Snapped target-unit ring color (around the unit when unit-snap
-    // is engaged).
-    Color target_unit_color     = rgba(255, 255, 255, 180);
-    f32   target_unit_thickness = 5.0f;
-
     // Unified aim-phase palette (hud.json `targeting.colors`). The aim
     // visuals that read "will this gesture succeed?" — the AoE shape
     // decals and the mobile snap-target pillar — are colored from these
@@ -84,7 +73,6 @@ struct CastIndicatorStyle {
     // and pointing the slot here.
     std::string range_texture;
     std::string arrow_texture;
-    std::string reticle_texture;
     // AoE preview decals — one per shape. The renderer keeps three
     // distinct slots (AoeCircle / AoeLine / AoeCone) so authors can
     // give each shape its own art (e.g. radial fade for circle,
@@ -95,7 +83,6 @@ struct CastIndicatorStyle {
     std::string area_texture;
     std::string area_cone_texture;
     std::string area_line_texture;
-    std::string target_unit_texture;
     // Mobile snap-target indicator — vertical light column rooted at
     // the snapped target's feet during drag-cast. Visual is a
     // camera-yaw-aligned billboard pillar; the texture supplies the
@@ -129,15 +116,6 @@ struct CastIndicatorStyle {
     std::string cursor_default_path;   // "" → keep OS cursor in idle
     std::string cursor_target_path;    // "" → keep OS cursor in targeting
     f32         cursor_size         = 20.0f;
-
-    // Entity ping (post-commit ring on the targeted unit / item).
-    // The ring's color is *always* the runtime intent (enemy / ally /
-    // item) for the click that fired it — no JSON `color` knob.
-    // Authors customize the texture and the animation envelope only.
-    std::string entity_ping_texture;             // empty → SelectionRing fallback
-    f32         entity_ping_thickness_start = 8.0f;
-    f32         entity_ping_thickness_end   = 4.0f;
-    f32         entity_ping_lifespan        = 0.45f;
 };
 
 struct CastIndicatorConfig {
