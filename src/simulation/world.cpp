@@ -1347,6 +1347,23 @@ void clear_all_unit_status(World& world, Unit unit) {
     }
 }
 
+u32 parse_status_flag_name(std::string_view s) {
+    if (s == "stunned")      return status::Stunned;
+    if (s == "silenced")     return status::Silenced;
+    if (s == "muted")        return status::Muted;
+    if (s == "disarmed")     return status::Disarmed;
+    if (s == "rooted")       return status::Rooted;
+    if (s == "invulnerable") return status::Invulnerable;
+    if (s == "magic_immune") return status::MagicImmune;
+    if (s == "untargetable") return status::Untargetable;
+    if (s == "unattackable") return status::Unattackable;
+    if (s == "paused")       return status::Paused;
+    if (s == "invisible")    return status::Invisible;
+    if (s == "no_acquire")   return status::NoAcquire;
+    if (s == "phased")       return status::Phased;
+    return 0;
+}
+
 // Increment / decrement refcount for each flag named in `flag_names`.
 // Unknown names are logged and ignored. Adds a StatusFlags component on
 // first touch.
@@ -1360,24 +1377,8 @@ void flag_refcount_delta(World& world, u32 id,
         sf = world.status_flags.get(id);
         if (!sf) return;
     }
-    auto parse = [](std::string_view s) -> u32 {
-        if (s == "stunned")      return status::Stunned;
-        if (s == "silenced")     return status::Silenced;
-        if (s == "muted")        return status::Muted;
-        if (s == "disarmed")     return status::Disarmed;
-        if (s == "rooted")       return status::Rooted;
-        if (s == "invulnerable") return status::Invulnerable;
-        if (s == "magic_immune") return status::MagicImmune;
-        if (s == "untargetable") return status::Untargetable;
-        if (s == "unattackable") return status::Unattackable;
-        if (s == "paused")       return status::Paused;
-        if (s == "invisible")    return status::Invisible;
-        if (s == "no_acquire")   return status::NoAcquire;
-        if (s == "phased")       return status::Phased;
-        return 0;
-    };
     for (auto& name : flag_names) {
-        u32 bit = parse(name);
+        u32 bit = parse_status_flag_name(name);
         if (!bit) {
             log::warn(TAG, "flag_refcount: unknown flag '{}'", name);
             continue;

@@ -1243,25 +1243,11 @@ void ScriptEngine::bind_api() {
         }
     };
 
-    // Status flags. The flag arg is a lowercase string ("stunned",
-    // "silenced", "muted", "disarmed", "rooted", "invulnerable",
-    // "magic_immune", "untargetable", "paused"). Unknown strings are
-    // logged and ignored. The bitmask lives on a per-unit StatusFlags
-    // component; sim systems gate per-tick processing on these.
-    auto parse_status_flag = [](std::string_view s) -> u32 {
-        if (s == "stunned")      return simulation::status::Stunned;
-        if (s == "silenced")     return simulation::status::Silenced;
-        if (s == "muted")        return simulation::status::Muted;
-        if (s == "disarmed")     return simulation::status::Disarmed;
-        if (s == "rooted")       return simulation::status::Rooted;
-        if (s == "invulnerable") return simulation::status::Invulnerable;
-        if (s == "magic_immune") return simulation::status::MagicImmune;
-        if (s == "untargetable") return simulation::status::Untargetable;
-        if (s == "unattackable") return simulation::status::Unattackable;
-        if (s == "paused")       return simulation::status::Paused;
-        if (s == "invisible")    return simulation::status::Invisible;
-        return 0;
-    };
+    // Status flags. The flag arg is a lowercase status:: key ("stunned",
+    // "silenced", "no_acquire", "phased", ...); see parse_status_flag_name
+    // for the full set. Unknown strings are logged and ignored. The bitmask
+    // lives on a per-unit StatusFlags component; sim systems gate per-tick
+    // processing on these.
 
     // Status flags are READ-ONLY from Lua. Mutation flows exclusively
     // through the ability system: author a `passive_flag` ability whose
@@ -1271,9 +1257,9 @@ void ScriptEngine::bind_api() {
     // ids it wants to strip and calls RemoveAbility on each. The
     // engine never exposes a generic "clear all status" — authors
     // know their buff catalog.
-    lua["GetUnitStatus"] = [&, parse_status_flag](simulation::Unit unit,
-                                                   const std::string& flag) -> bool {
-        u32 bit = parse_status_flag(flag);
+    lua["GetUnitStatus"] = [&](simulation::Unit unit,
+                               const std::string& flag) -> bool {
+        u32 bit = simulation::parse_status_flag_name(flag);
         if (bit == 0) {
             log::warn(TAG, "GetUnitStatus: unknown flag '{}'", flag);
             return false;
