@@ -95,9 +95,9 @@ public:
 };
 
 struct Shell::Impl {
-    RenderInterface* render     = nullptr;
-    SystemInterface* system     = nullptr;
-    FileInterface*   file       = nullptr;
+    std::unique_ptr<RenderInterface> render;
+    std::unique_ptr<SystemInterface> system;
+    std::unique_ptr<FileInterface>   file;
     Rml::Context*    context    = nullptr;
     Rml::ElementDocument* document = nullptr;
     std::unique_ptr<ShellClickListener> click_listener;
@@ -116,19 +116,19 @@ bool Shell::init(rhi::Rhi& rhi, u32 window_w, u32 window_h) {
     if (impl.initialized) return true;
 
     // Interfaces must outlive Rml::Initialise(). RmlUi stores raw pointers
-    // to them and dispatches across its static globals, so we own them and
-    // release in shutdown after Rml::Shutdown().
-    impl.render = new RenderInterface(rhi);
-    impl.system = new SystemInterface();
-    impl.file   = new FileInterface();
+    // to them and dispatches across its static globals, so we own them (via
+    // unique_ptr on Impl) and release in shutdown after Rml::Shutdown().
+    impl.render = std::make_unique<RenderInterface>(rhi);
+    impl.system = std::make_unique<SystemInterface>();
+    impl.file   = std::make_unique<FileInterface>();
 
     if (!impl.render->init()) {
         log::error(TAG, "UI RenderInterface::init failed");
         return false;
     }
-    Rml::SetRenderInterface(impl.render);
-    Rml::SetSystemInterface(impl.system);
-    Rml::SetFileInterface(impl.file);
+    Rml::SetRenderInterface(impl.render.get());
+    Rml::SetSystemInterface(impl.system.get());
+    Rml::SetFileInterface(impl.file.get());
 
     if (!Rml::Initialise()) {
         log::error(TAG, "Rml::Initialise() failed");
@@ -192,9 +192,11 @@ void Shell::shutdown() {
 
     Rml::Shutdown();
 
-    delete impl.render; impl.render = nullptr;
-    delete impl.system; impl.system = nullptr;
-    delete impl.file;   impl.file   = nullptr;
+    // Reset AFTER Rml::Shutdown() — RmlUi may still dispatch to the
+    // interfaces during its own teardown. Order matches the original.
+    impl.render.reset();
+    impl.system.reset();
+    impl.file.reset();
     impl.context = nullptr;
     impl.initialized = false;
 }
