@@ -12,9 +12,28 @@
 #include <vector>
 
 namespace uldum::asset { class AssetManager; }
-namespace uldum::map { struct TerrainData; }
+namespace uldum::map { struct TerrainData; struct SceneData; }
 
 namespace uldum::simulation {
+
+class Simulation;
+
+// Authored map data ↔ live ECS translation. These own the direction that used
+// to make map depend on simulation; they live here so map stays a pure data
+// module (map <- simulation, no cycle).
+
+// Load <map_root>/types/*.json into the sim's type + ability registries.
+bool register_map_types(Simulation& sim, asset::AssetManager& assets,
+                        const std::string& map_root);
+
+// Spawn a scene's placements (units, destructables, items, doodads) and
+// register its regions into the world. Snaps building/cell footprints, so
+// `scene` is mutated in place. Terrain must already be set on `sim`.
+void apply_scene_data(Simulation& sim, map::SceneData& scene);
+
+// Snapshot live entities into placement records (editor save). Regions and
+// cameras are authored data and stay with the caller's SceneData.
+void export_scene_data(const World& world, map::SceneData& out);
 
 // True for entities that persist in fog-of-war Explored tiles (WC3-style:
 // trees, doodads, and structure-classified units stay visible to a player

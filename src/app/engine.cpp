@@ -552,13 +552,21 @@ bool Engine::start_session() {
 
     bool is_client = this->is_client();
 
-    // The mirror was already set in enter_lobby (client only). load_content builds
-    // preplaced into active_sim()'s world — on the client that IS the mirror, so it
+    // The mirror was already set in enter_lobby (client only). We build preplaced
+    // into active_sim()'s world — on the client that IS the mirror, so it
     // materializes the host's preplaced set at deterministic ids [0, N).
-    if (!m_map.load_content(m_asset, active_sim())) {
+    auto& sim = active_sim();
+    sim.world().clear_entities();
+    if (!m_map.load_content(m_asset)) {
         log::error(TAG, "Failed to load map content for '{}'", m_args.map_path);
         return false;
     }
+    if (!simulation::register_map_types(sim, m_asset, m_map.map_root())) {
+        log::error(TAG, "Failed to load map types for '{}'", m_args.map_path);
+        return false;
+    }
+    sim.set_terrain(&m_map.terrain());
+    simulation::apply_scene_data(sim, m_map.mutable_scene());
 
     // Preplaced/dynamic id boundary: after load_content (before Lua main()), next_id
     // == N marks where dynamic ids begin. Host ships N to clients in S_WELCOME.
@@ -1366,12 +1374,13 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     // On a client this is where the new scene's preplaced entities rebuild.
     auto& sim = active_sim();
 
-    // Terrain swap (and entity wipe → allocator reset to 0). On host's
-    // offline + post-barrier paths we then call load_scene_placements; on
-    // host's pre-barrier we leave the world empty. On CLIENTS we build the
-    // new scene's preplaced entities locally here — same as the initial load —
+    // Entity wipe (allocator reset to 0) + terrain-data swap. On host's
+    // offline + post-barrier paths we then apply placements; on host's
+    // pre-barrier we leave the world empty. On CLIENTS we build the new
+    // scene's preplaced entities locally here — same as the initial load —
     // so ids [0, N) match the host and only dynamic entities cross the wire.
-    if (!m_map.switch_scene_terrain_only(scene_name, m_asset, sim)) {
+    sim.world().clear_entities();
+    if (!m_map.switch_scene_terrain_only(scene_name, m_asset)) {
         log::error(TAG, "scene switch teardown failed for '{}'", scene_name);
         return;
     }
@@ -1379,15 +1388,13 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     // Wipe the local player's view-world in lockstep with the authoritative
     // entity wipe above (H4) — its ids/discovered must not leak across scenes.
     m_network.reset_local_view();
-    if (is_session_active() && is_client()) {
-        if (!m_map.load_scene_placements(scene_name, m_asset, sim)) {
-            log::warn(TAG, "Scene '{}': no client placements loaded", scene_name);
-        }
-    }
-
     if (m_map.terrain().is_valid()) {
         sim.set_terrain(&m_map.terrain());
     }
+    if (is_session_active() && is_client()) {
+        simulation::apply_scene_data(sim, m_map.mutable_scene());
+    }
+
     sim.sync_pathing_blockers();
     sim.spatial_grid().update(sim.world());
 

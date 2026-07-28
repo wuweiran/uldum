@@ -178,14 +178,24 @@ int main(int argc, char* argv[]) {
         uldum::log::error(TAG, "Failed to init map manager");
         return 1;
     }
-    if (!map.load_map(args.map_path, assets, server.simulation())) {
+    if (!map.load_map(args.map_path, assets)) {
         uldum::log::error(TAG, "Failed to load map '{}'", args.map_path);
         return 1;
     }
+    {
+        auto& sim = server.simulation();
+        sim.world().clear_entities();
+        if (!uldum::simulation::register_map_types(sim, assets, map.map_root())) {
+            uldum::log::error(TAG, "Failed to load map types for '{}'", args.map_path);
+            return 1;
+        }
+        sim.set_terrain(&map.terrain());
+        uldum::simulation::apply_scene_data(sim, map.mutable_scene());
+    }
 
     // Preplaced/dynamic id boundary — mirror of Engine::start_session (engine.cpp).
-    // load_map → load_content → load_placements just built the initial scene's
-    // preplaced entities (ids [0,N) from placements.bin); init_game's main() (run
+    // load_map + apply_scene_data just built the initial scene's preplaced
+    // entities (ids [0,N) from placements.bin); init_game's main() (run
     // below) then creates DYNAMIC entities starting at N. The worker MUST ship N
     // in S_WELCOME so the client — which builds the same preplaced set locally —
     // agrees on the boundary. Without this m_placement_count stayed 0, the client
@@ -411,8 +421,9 @@ int main(int argc, char* argv[]) {
             network.host_broadcast_scene_switch(scene);
             // Local server teardown: wipe entities + swap terrain so the world
             // is empty across the barrier. switch_scene re-wipes idempotently in
-            // phase 2, so this just gets us to the empty state now.
-            map.switch_scene_terrain_only(scene, assets, server.simulation());
+            // phase 2, so this just gets us to the empty state now (no placements).
+            server.simulation().world().clear_entities();
+            map.switch_scene_terrain_only(scene, assets);
             network.reset_local_view();
             // Reset the headless HUD model too — mirror of the host's
             // scene_switch_local_teardown (m_hud.reset_scene_state()). Without

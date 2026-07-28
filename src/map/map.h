@@ -13,7 +13,6 @@
 #include <vector>
 
 namespace uldum::asset { class AssetManager; }
-namespace uldum::simulation { class Simulation; struct World; }
 
 namespace uldum::map {
 
@@ -213,30 +212,31 @@ public:
     bool init();
     void shutdown();
 
-    // Load a map. Loads manifest, types, and start scene via AssetManager.
+    // Load a map's DATA (manifest, tileset, start-scene terrain + placements +
+    // regions/cameras) into this MapManager. Does NOT touch the simulation —
+    // the caller registers types (simulation::register_map_types), sets terrain,
+    // and spawns placements (simulation::apply_scene_data). See the callers.
     //
-    // `path` is the map root (e.g. "maps/test_map.uldmap"). It is also the
-    // virtual asset prefix. The backing storage is chosen by `allow_directory`:
-    //   - false (default): `path` must be a packaged `.uldmap` file on disk.
-    //     This is what uldum_dev / uldum_game / uldum_worker use — they only
-    //     consume shipped packages.
-    //   - true:            `path` may also be a directory on disk (loose files).
-    //     Only uldum_editor uses this, so it can edit the source tree live.
+    // `path` is the map root (e.g. "maps/test_map.uldmap"), also the virtual
+    // asset prefix. `allow_directory`:
+    //   - false (default): `path` must be a packaged `.uldmap` file. Used by
+    //     uldum_dev / uldum_game / uldum_worker.
+    //   - true:            `path` may also be a loose-file directory. Editor only.
     //
     // Equivalent to `load_manifest_only(...) && load_content(...)`.
-    bool load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim,
+    bool load_map(std::string_view path, asset::AssetManager& assets,
                   bool allow_directory = false);
 
     // Lobby-phase load: mounts the map and parses only `manifest.json`. Fast
-    // enough to run on Menu → Lobby transition without a loading screen. Does
-    // not populate the simulation or load terrain. Call `load_content` later
-    // (on Start / Loading state) to actually bring the map online.
+    // enough to run on Menu → Lobby transition without a loading screen. Call
+    // `load_content` later (on Start / Loading) to bring the rest online.
     bool load_manifest_only(std::string_view path, asset::AssetManager& assets,
                             bool allow_directory = false);
 
-    // Loading-phase load: tileset, types, terrain, preplaced objects. Assumes
-    // `load_manifest_only` (or `load_map`) has already mounted the map.
-    bool load_content(asset::AssetManager& assets, simulation::Simulation& sim);
+    // Loading-phase load: tileset + start-scene data (terrain, placements,
+    // regions, cameras). Assumes `load_manifest_only`/`load_map` already mounted
+    // the map. Data only — no simulation side effects.
+    bool load_content(asset::AssetManager& assets);
 
     void unload_map();
     bool is_loaded() const { return m_loaded; }
@@ -255,65 +255,55 @@ public:
     std::array<uldum::u8, 32> compute_script_hash(asset::AssetManager& assets) const;
 
     // Mutable region list — the editor is the only legitimate caller.
-    // m_scene.regions is the canonical authored data; save_objects
-    // serializes from this vector and runtime registration in
-    // load_placements reads from it.
+    // m_scene.regions is the canonical authored data; save + runtime
+    // region registration both read from it.
     std::vector<Region>& mutable_regions() { return m_scene.regions; }
+
+    // Mutable scene — the caller passes this to simulation::apply_scene_data,
+    // which snaps placement footprints in place before spawning.
+    SceneData& mutable_scene() { return m_scene; }
 
     const std::string& map_root() const { return m_map_root; }
 
     // List scene directories found under the map root.
     std::vector<std::string> list_scenes() const;
 
-    // Switch to a different scene (reloads terrain + placements).
-    bool switch_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
+    // Switch to a different scene's DATA (terrain + placements + regions +
+    // cameras). Caller wipes the world and re-applies terrain/placements.
+    bool switch_scene(std::string_view scene_name, asset::AssetManager& assets);
 
-    // Write the live simulation state back to <map_root>/scenes/<scene>/objects.json.
-    // Iterates world entities (units, destructables, items) and emits
-    // their placement records; regions + cameras pass through from
-    // the authored scene data. Requires the map to be a source-folder
-    // mount (not a packed .uldmap) — packed maps go through the
-    // unpack → modify → repack flow in the editor.
-    bool save_objects(const simulation::World& world, std::string_view scene_name) const;
+    // Write placement data back to <map_root>/scenes/<scene>/placements.bin.
+    // `snapshot` carries the entities (built by simulation::export_scene_data);
+    // regions + cameras pass through from the authored scene data. Requires a
+    // source-folder mount (not a packed .uldmap) — packed maps go through the
+    // editor's unpack → modify → repack flow.
+    bool save_scene(const SceneData& snapshot, std::string_view scene_name) const;
 
-    // Editor helper: temporarily redirect save_objects to a staging
+    // Editor helper: temporarily redirect save_scene to a staging
     // directory (used by the packed-.uldmap save flow that unpacks
     // into a temp folder, writes there, then repacks). Caller is
     // responsible for restoring the original root afterward.
     void set_map_root_for_save(std::string root) { m_map_root = std::move(root); }
 
-    // Switch to a different scene's terrain only — does NOT spawn the
-    // scene's placement entities. Used by client-side scene switch
-    // (host re-spawns entities via S_SPAWN) and by the host's MP
-    // path which defers placement instantiation until after the
-    // client-load barrier so spawn deltas don't fire before clients
-    // have torn down the previous scene.
+    // Switch to a different scene's terrain + metadata only — loads placement
+    // DATA into m_scene but does not spawn entities. Used by the MP scene-switch
+    // path which defers spawning until after the client-load barrier, and by
+    // clients (which rebuild placements locally). Caller spawns via
+    // simulation::apply_scene_data(sim, mutable_scene()) when ready.
     bool switch_scene_terrain_only(std::string_view scene_name,
-                                   asset::AssetManager& assets,
-                                   simulation::Simulation& sim);
-
-    // Public entry to load placements for the current scene. Pairs
-    // with switch_scene_terrain_only on the host's MP path.
-    bool load_scene_placements(std::string_view scene_name,
-                               asset::AssetManager& assets,
-                               simulation::Simulation& sim) {
-        return load_placements(scene_name, assets, sim);
-    }
+                                   asset::AssetManager& assets);
 
 private:
     bool load_manifest(asset::AssetManager& assets);
     bool load_tileset(asset::AssetManager& assets);
-    bool load_types(asset::AssetManager& assets, simulation::Simulation& sim);
-    bool load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
+    // Terrain + metadata + config for a scene. Data only — no entity creation.
+    bool load_scene_data(std::string_view scene_name, asset::AssetManager& assets);
     bool load_scene_terrain(std::string_view scene_name, asset::AssetManager& assets);
-    // Pure data — regions + cameras from objects.json. No entity
-    // creation, so safe to call in MP scene-switch teardown before
-    // the barrier closes.
+    // Pure data — placements + regions + cameras from placements.bin/objects.json.
     bool load_scene_metadata(std::string_view scene_name, asset::AssetManager& assets);
     // Optional `scene.json` per-scene config (camera bounds, future
     // ambient/environment overrides). Absent file is a no-op.
     void load_scene_config(std::string_view scene_name, asset::AssetManager& assets);
-    bool load_placements(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim);
 
     bool                  m_loaded = false;
     std::string           m_map_root;

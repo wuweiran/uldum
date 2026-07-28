@@ -26,7 +26,7 @@ Uldum is a game engine for map-based, unit-centric games with Lua scripting, mul
 | `platform` | Window, input, filesystem (Win32 / GameActivity) | core |
 | `rhi` | Vulkan 1.3 abstraction (device, swapchain, commands) | core, platform |
 | `render` | Render graph, materials, terrain, animation, particles | core, rhi, asset |
-| `simulation` | ECS, units, abilities, pathfinding, collision, AI | core, script |
+| `simulation` | ECS, units, abilities, pathfinding, collision, AI | core, script, map |
 | `script` | Lua 5.4 VM, engine API bindings, trigger system | core |
 | `map` | Map format, terrain data, object placement, overrides | core, asset |
 | `network` | Server-authoritative sim, client prediction, state sync | core, simulation |

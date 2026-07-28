@@ -168,10 +168,12 @@ bool Editor::init(const std::string& map_path) {
     m_map_path = std::string(ULDUM_SOURCE_DIR) + "/" + m_map_path;
 #endif
 
-    if (m_map.load_map(m_map_path, m_asset, m_simulation, /*allow_directory=*/true)) {
+    if (m_map.load_map(m_map_path, m_asset, /*allow_directory=*/true)) {
         m_map_loaded = true;
         m_scenes = m_map.list_scenes();
         m_current_scene = m_map.manifest().start_scene;
+        m_simulation.world().clear_entities();
+        simulation::register_map_types(m_simulation, m_asset, m_map.map_root());
         m_renderer.set_map_root(m_map.map_root());
         m_renderer.load_tileset_textures(m_map.tileset());
         m_renderer.set_environment(m_map.manifest().environment);
@@ -181,13 +183,14 @@ bool Editor::init(const std::string& map_path) {
             m_map.terrain().set_water_layers(shallow, deep);
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
+            simulation::apply_scene_data(m_simulation, m_map.mutable_scene());
             // Apply pre-placed building / destructable footprints to the
             // runtime pathing bitmap. set_terrain clears it, and
-            // load_map's load_placements only adds PathingBlocker
-            // components — sync_pathing_blockers stamps them into the
-            // cell grid that footprint_clear_at / can_place_at read.
-            // Without this the editor can't see existing footprints and
-            // lets you stack a new building on a pre-placed one.
+            // apply_scene_data only adds PathingBlocker components —
+            // sync_pathing_blockers stamps them into the cell grid that
+            // footprint_clear_at / can_place_at read. Without this the editor
+            // can't see existing footprints and lets you stack a new building
+            // on a pre-placed one.
             m_simulation.sync_pathing_blockers();
         }
         log::info(TAG, "Map loaded: {} ({} scenes)", m_map_path, m_scenes.size());
@@ -1849,11 +1852,13 @@ void Editor::switch_scene(const std::string& scene_name) {
     reset_editing_state();
     m_renderer.clear_animations();
 
-    if (m_map.switch_scene(scene_name, m_asset, m_simulation)) {
+    m_simulation.world().clear_entities();
+    if (m_map.switch_scene(scene_name, m_asset)) {
         m_current_scene = scene_name;
         if (m_map.terrain().is_valid()) {
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
+            simulation::apply_scene_data(m_simulation, m_map.mutable_scene());
             // New scene's pre-placed footprints → runtime pathing bitmap.
             m_simulation.sync_pathing_blockers();
         }
@@ -1895,10 +1900,12 @@ void Editor::open_map(const std::string& path) {
     m_current_scene.clear();
 
     m_map_path = path;
-    if (m_map.load_map(m_map_path, m_asset, m_simulation, /*allow_directory=*/true)) {
+    if (m_map.load_map(m_map_path, m_asset, /*allow_directory=*/true)) {
         m_map_loaded = true;
         m_scenes = m_map.list_scenes();
         m_current_scene = m_map.manifest().start_scene;
+        m_simulation.world().clear_entities();
+        simulation::register_map_types(m_simulation, m_asset, m_map.map_root());
         m_renderer.set_map_root(m_map.map_root());
         m_renderer.load_tileset_textures(m_map.tileset());
         m_renderer.set_environment(m_map.manifest().environment);
@@ -1913,6 +1920,7 @@ void Editor::open_map(const std::string& path) {
             m_map.terrain().set_water_layers(shallow, deep);
             m_renderer.set_terrain(&m_map.terrain());
             m_simulation.set_terrain(&m_map.terrain());
+            simulation::apply_scene_data(m_simulation, m_map.mutable_scene());
             // Pre-placed footprints → runtime pathing bitmap (see the
             // matching call in the initial map-load path above).
             m_simulation.sync_pathing_blockers();
@@ -2518,7 +2526,9 @@ void Editor::draw_ui() {
                         m_current_scene + "/terrain.bin";
                     map::save_terrain(m_map.terrain(), terrain_path);
                     log::info(TAG, "Saved terrain to {}", terrain_path);
-                    m_map.save_objects(m_simulation.world(), m_current_scene);
+                    map::SceneData snapshot;
+                    simulation::export_scene_data(m_simulation.world(), snapshot);
+                    m_map.save_scene(snapshot, m_current_scene);
                 } else {
                     // Normal mode (packed .uldmap): unpack → overwrite terrain.bin
                     // + objects.json → repack → reload.
@@ -2537,11 +2547,13 @@ void Editor::draw_ui() {
                         if (!ok) {
                             log::error(TAG, "Save: failed to write terrain to '{}'", terrain_path);
                         } else {
-                            // Temporarily point map_root at the staging dir so save_objects
+                            // Temporarily point map_root at the staging dir so save_scene
                             // writes into the unpacked folder rather than the .uldmap path.
                             std::string original_root = m_map.map_root();
                             m_map.set_map_root_for_save(staging.string());
-                            m_map.save_objects(m_simulation.world(), m_current_scene);
+                            map::SceneData snapshot;
+                            simulation::export_scene_data(m_simulation.world(), snapshot);
+                            m_map.save_scene(snapshot, m_current_scene);
                             m_map.set_map_root_for_save(original_root);
 
                             rc = run_uldum_pack("pack \"" + staging.string() + "\" \"" + map_root_abs + "\"");

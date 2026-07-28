@@ -2,10 +2,6 @@
 #include "map/placements_bin.h"
 #include "asset/asset.h"
 #include "asset/upk.h"  // upk_normalize_path (mount-prefix strip in compute_script_hash)
-#include "simulation/simulation.h"
-#include "simulation/world.h"
-#include "simulation/entity_types.h"
-#include "simulation/pathfinding.h"  // PATHING_SUBDIV
 #include "core/hash.h"
 #include "core/log.h"
 
@@ -82,25 +78,23 @@ bool MapManager::load_manifest_only(std::string_view path, asset::AssetManager& 
     return true;
 }
 
-bool MapManager::load_content(asset::AssetManager& assets, simulation::Simulation& sim) {
+bool MapManager::load_content(asset::AssetManager& assets) {
     if (m_map_root.empty()) {
         log::error(TAG, "load_content called before load_manifest_only");
         return false;
     }
-    sim.world().clear_entities();
     if (!load_tileset(assets)) return false;
-    if (!load_types(assets, sim)) return false;
-    if (!load_scene(m_manifest.start_scene, assets, sim)) return false;
+    if (!load_scene_data(m_manifest.start_scene, assets)) return false;
 
     m_loaded = true;
     log::info(TAG, "Map '{}' content loaded — scene '{}'", m_manifest.name, m_manifest.start_scene);
     return true;
 }
 
-bool MapManager::load_map(std::string_view path, asset::AssetManager& assets, simulation::Simulation& sim,
+bool MapManager::load_map(std::string_view path, asset::AssetManager& assets,
                           bool allow_directory) {
     return load_manifest_only(path, assets, allow_directory)
-        && load_content(assets, sim);
+        && load_content(assets);
 }
 
 void MapManager::unload_map() {
@@ -135,24 +129,20 @@ std::vector<std::string> MapManager::list_scenes() const {
     return scenes;
 }
 
-bool MapManager::switch_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
-    sim.world().clear_entities();
+bool MapManager::switch_scene(std::string_view scene_name, asset::AssetManager& assets) {
     m_scene = {};
-    if (!load_scene(scene_name, assets, sim)) return false;
+    if (!load_scene_data(scene_name, assets)) return false;
     log::info(TAG, "Switched to scene '{}'", scene_name);
     return true;
 }
 
 bool MapManager::switch_scene_terrain_only(std::string_view scene_name,
-                                           asset::AssetManager& assets,
-                                           simulation::Simulation& sim) {
-    sim.world().clear_entities();
+                                           asset::AssetManager& assets) {
     m_scene = {};
     if (!load_scene_terrain(scene_name, assets)) return false;
-    // Pure-data scene metadata (regions, cameras) belongs to the new
-    // scene's terrain swap — App reads m_scene.cameras to re-pose the
-    // camera right after this returns, and Lua scripts read regions.
-    // Doesn't touch the world, so safe before the MP barrier closes.
+    // Pure-data scene metadata (placements, regions, cameras). App reads
+    // m_scene.cameras to re-pose the camera right after this returns, and
+    // apply_scene_data spawns the placements when the caller is ready.
     if (!load_scene_metadata(scene_name, assets)) {
         log::warn(TAG, "Scene '{}': no metadata loaded", scene_name);
     }
@@ -347,36 +337,6 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
     return true;
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────
-
-bool MapManager::load_types(asset::AssetManager& assets, simulation::Simulation& sim) {
-    auto& types = sim.types();
-    std::string types_dir = m_map_root + "/types/";
-
-    try {
-        std::string unit_path = types_dir + "units.json";
-        std::string dest_path = types_dir + "destructables.json";
-        std::string item_path = types_dir + "items.json";
-        std::string dood_path = types_dir + "doodads.json";
-
-        types.load_unit_types_absolute(assets, unit_path);
-        types.load_destructable_types_absolute(assets, dest_path);
-        types.load_item_types_absolute(assets, item_path);
-        types.load_doodad_types_absolute(assets, dood_path);
-
-        std::string ability_path = types_dir + "abilities.json";
-        sim.abilities().load(assets, ability_path);
-    } catch (const nlohmann::json::exception& e) {
-        log::error(TAG, "Map type data under '{}' has a malformed field: {}", types_dir, e.what());
-        return false;
-    }
-
-    log::info(TAG, "Types loaded — {} units, {} destructables, {} doodads, {} items",
-              types.unit_type_count(), types.destructable_type_count(),
-              types.doodad_type_count(), types.item_type_count());
-    return true;
-}
-
 // ── Scene ─────────────────────────────────────────────────────────────────
 
 bool MapManager::load_scene_terrain(std::string_view scene_name, asset::AssetManager& assets) {
@@ -408,23 +368,12 @@ bool MapManager::load_scene_terrain(std::string_view scene_name, asset::AssetMan
     return true;
 }
 
-bool MapManager::load_scene(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
+bool MapManager::load_scene_data(std::string_view scene_name, asset::AssetManager& assets) {
     if (!load_scene_terrain(scene_name, assets)) return false;
-    // Wire the sim's world terrain BEFORE placements so create_* can sample ground
-    // height for preplaced entities. sim.world() is the client's mirror world (its
-    // GameClient Simulation) on a client, or the host's authoritative world
-    // otherwise — both need world.terrain set. (Also refreshes the pathfinder/grid
-    // via set_terrain.)
-    // load_scene_terrain already guaranteed terrain is valid (returns false else).
-    sim.set_terrain(&m_scene.terrain);
     if (!load_scene_metadata(scene_name, assets)) {
         log::warn(TAG, "Scene '{}': no metadata loaded", scene_name);
     }
     load_scene_config(scene_name, assets);
-    if (!load_placements(scene_name, assets, sim)) {
-        log::warn(TAG, "Scene '{}': no placements loaded", scene_name);
-    }
-
     return true;
 }
 
@@ -462,7 +411,7 @@ void MapManager::load_scene_config(std::string_view scene_name, asset::AssetMana
 // not-yet-migrated source maps and, in that case, writes a freshly-
 // serialized `placements.bin` next to it and deletes the json so the
 // next load uses the binary path. Does NOT spawn simulation entities —
-// `load_placements` does that as a second pass.
+// simulation::apply_scene_data does that as a second pass.
 bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetManager& assets) {
     namespace fs = std::filesystem;
     std::string scene_dir = m_map_root + "/scenes/" + std::string(scene_name);
@@ -629,251 +578,39 @@ bool MapManager::load_scene_metadata(std::string_view scene_name, asset::AssetMa
     return true;
 }
 
-bool MapManager::load_placements(std::string_view scene_name, asset::AssetManager& assets, simulation::Simulation& sim) {
-    // Placement data is already in `m_scene` (populated by
-    // load_scene_metadata, which reads placements.bin or the legacy
-    // objects.json). This pass just spawns simulation entities from
-    // those vectors and registers authored regions into the world.
-    (void)scene_name;
-    (void)assets;
-    auto& world = sim.world();
-
-    // Helper: sample terrain height (bilinear, using world_z_at)
-    auto sample_height = [&](f32 x, f32 y) -> f32 {
-        auto& td = m_scene.terrain;
-        if (!td.is_valid()) return 0.0f;
-        u32 ix = std::min(static_cast<u32>((x - td.origin_x()) / td.tile_size), td.tiles_x);
-        u32 iy = std::min(static_cast<u32>((y - td.origin_y()) / td.tile_size), td.tiles_y);
-        return td.world_z_at(ix, iy);
-    };
-
-    // Units. Apply footprint snap before spawn — buildings need to
-    // line up on the WC3-style placement grid. Authored coords that
-    // already align are no-ops; mis-aligned ones are silently
-    // corrected (matches the editor's snap behavior so round-trips
-    // are stable).
-    u32 unit_count = 0;
-    for (auto& pu : m_scene.units) {
-        const auto* type_def = sim.types().get_unit_type(pu.type);
-        u32 fw = type_def ? type_def->pathing_footprint_w : 0u;
-        u32 fh = type_def ? type_def->pathing_footprint_h : 0u;
-        if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
-            pu.x = snap_building_x(m_scene.terrain, pu.x, fw);
-            pu.y = snap_building_y(m_scene.terrain, pu.y, fh);
-        }
-
-        simulation::Player owner{pu.owner};
-        auto unit = simulation::create_unit(world, pu.type, owner, pu.x, pu.y, pu.facing);
-        if (simulation::is_null_handle(unit)) continue;
-
-        // Preplaced units are authored map state — they existed before any
-        // player was watching, so they never play birth (no "born in sight"
-        // moment). Set it explicitly here rather than leaning on
-        // spawn_visible_to_viewer, which is null on the client and only
-        // incidentally false on the host during load. Without this, a client
-        // reveals a preplaced enemy and it wrongly plays its birth clip.
-        if (auto* r = world.renderables.get(unit.id)) r->skip_birth = true;
-
-        auto* t = world.transforms.get(unit.id);
-        if (t) t->position.z = sample_height(pu.x, pu.y);
-        auto* pth = world.pathings.get(unit.id);
-        if (pth) {
-            auto& td = m_scene.terrain;
-            u32 vx = std::min(static_cast<u32>(std::round((pu.x - td.origin_x()) / td.tile_size)), td.tiles_x);
-            u32 vy = std::min(static_cast<u32>(std::round((pu.y - td.origin_y()) / td.tile_size)), td.tiles_y);
-            pth->cliff_level = td.cliff_at(vx, vy);
-        }
-
-        // PathingBlocker from the type's footprint. Buildings author
-        // in TILES; expand to cells (×PATHING_SUBDIV) to match the
-        // pathfinder's native cell grid.
-        if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
-            auto& td = m_scene.terrain;
-            f32 left_tx_f   = (pu.x - td.origin_x()) / td.tile_size - 0.5f * static_cast<f32>(fw);
-            f32 bottom_ty_f = (pu.y - td.origin_y()) / td.tile_size - 0.5f * static_cast<f32>(fh);
-            i32 tx0 = static_cast<i32>(std::round(left_tx_f));
-            i32 ty0 = static_cast<i32>(std::round(bottom_ty_f));
-            simulation::PathingBlocker blocker;
-            blocker.cx = tx0 * static_cast<i32>(simulation::PATHING_SUBDIV);
-            blocker.cy = ty0 * static_cast<i32>(simulation::PATHING_SUBDIV);
-            blocker.w  = fw * simulation::PATHING_SUBDIV;
-            blocker.h  = fh * simulation::PATHING_SUBDIV;
-            log::info(TAG,
-                "Placed building '{}' at ({:.0f},{:.0f}) "
-                "[footprint {}x{} tiles, blocking cells x={}..{} y={}..{}]",
-                pu.type, pu.x, pu.y, fw, fh,
-                blocker.cx, blocker.cx + static_cast<i32>(blocker.w) - 1,
-                blocker.cy, blocker.cy + static_cast<i32>(blocker.h) - 1);
-            world.pathing_blockers.add(unit.id, std::move(blocker));
-        }
-        unit_count++;
-    }
-
-    // Destructables.
-    u32 dest_count = 0;
-    for (auto& pd : m_scene.destructables) {
-        const auto* def = sim.types().get_destructable_type(pd.type);
-        u32 fw = def ? def->pathing_footprint_w : 0u;
-        u32 fh = def ? def->pathing_footprint_h : 0u;
-        if (m_scene.terrain.is_valid()) {
-            pd.x = snap_cell_x(m_scene.terrain, pd.x);
-            pd.y = snap_cell_y(m_scene.terrain, pd.y);
-        }
-
-        auto dest = simulation::create_destructable(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
-        if (simulation::is_null_handle(dest)) continue;
-
-        if (auto* t = world.transforms.get(dest.id)) {
-            t->position.z = sample_height(pd.x, pd.y);
-            t->prev_position.z = t->position.z;
-        }
-        if (fw > 0 && fh > 0 && m_scene.terrain.is_valid()) {
-            auto& td = m_scene.terrain;
-            f32 cs = td.tile_size / static_cast<f32>(simulation::PATHING_SUBDIV);
-            f32 left_cx_f   = (pd.x - td.origin_x()) / cs - 0.5f * static_cast<f32>(fw);
-            f32 bottom_cy_f = (pd.y - td.origin_y()) / cs - 0.5f * static_cast<f32>(fh);
-            simulation::PathingBlocker blocker;
-            blocker.cx = static_cast<i32>(std::round(left_cx_f));
-            blocker.cy = static_cast<i32>(std::round(bottom_cy_f));
-            blocker.w  = fw;
-            blocker.h  = fh;
-            world.pathing_blockers.add(dest.id, std::move(blocker));
-        }
-        dest_count++;
-    }
-
-    // Items.
-    u32 item_count = 0;
-    for (const auto& pi : m_scene.items) {
-        auto item = simulation::create_item(world, pi.type, pi.x, pi.y);
-        if (simulation::is_null_handle(item)) continue;
-        if (auto* t = world.transforms.get(item.id)) {
-            t->position.z      = sample_height(pi.x, pi.y);
-            t->prev_position.z = t->position.z;
-        }
-        item_count++;
-    }
-
-    // Doodads (pure decoration — no health, no collision, no pathing).
-    u32 dood_count = 0;
-    for (const auto& pd : m_scene.doodads) {
-        auto dood = simulation::create_doodad(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
-        if (simulation::is_null_entity(dood)) continue;
-        if (auto* t = world.transforms.get(dood.id)) {
-            t->position.z = sample_height(pd.x, pd.y);
-            t->prev_position.z = t->position.z;
-        }
-        dood_count++;
-    }
-
-    // Register authored regions into the runtime world so scripts
-    // can pick them up by id via GetRegion(). Lua-created regions
-    // (CreateRegion()) continue to live in the same world.regions
-    // map; the difference is just whether `id_str` is set.
-    for (const auto& r : m_scene.regions) {
-        u32 rid = ++world.next_region_id;
-        simulation::World::Region wr;
-        wr.id     = rid;
-        wr.id_str = r.id;
-        for (const auto& rect : r.rects) {
-            wr.rects.push_back({rect.x0, rect.y0, rect.x1, rect.y1});
-        }
-        for (const auto& c : r.circles) {
-            wr.circles.push_back({c.cx, c.cy, c.r});
-        }
-        world.regions[rid] = std::move(wr);
-    }
-
-    log::info(TAG, "Placements: {} units, {} destructables, {} doodads, {} items, {} regions",
-              unit_count, dest_count, dood_count, item_count, m_scene.regions.size());
-    return true;
-}
-
-// Save the scene's placement state back to placements.bin. Iterates
-// the live simulation world (single source of truth) for entities;
+// Save the scene's placement state back to placements.bin. `snapshot`
+// carries the entity placements (built by simulation::export_scene_data);
 // regions and cameras pass through from `m_scene` since they aren't
 // represented as entities yet. Requires the map to be mounted as a
 // source folder (can't write into a packed .uldmap).
-bool MapManager::save_objects(const simulation::World& world, std::string_view scene_name) const {
+bool MapManager::save_scene(const SceneData& snapshot, std::string_view scene_name) const {
     namespace fs = std::filesystem;
     if (!fs::is_directory(m_map_root)) {
-        log::error(TAG, "save_objects: map_root '{}' is not a directory; packed-map save path "
+        log::error(TAG, "save_scene: map_root '{}' is not a directory; packed-map save path "
                         "goes through the unpack → modify → repack flow", m_map_root);
         return false;
     }
 
-    // Build a fresh SceneData from the live world (entities) +
-    // m_scene's authored region/camera data, then serialize. Facings
-    // stay in radians here; write_placements does rad→deg at the
+    // Facings stay in radians here; write_placements does rad→deg at the
     // file boundary.
-    SceneData snapshot;
-    snapshot.regions = m_scene.regions;
-    snapshot.cameras = m_scene.cameras;
+    SceneData out = snapshot;
+    out.regions = m_scene.regions;
+    out.cameras = m_scene.cameras;
 
-    for (u32 i = 0; i < world.handle_infos.count(); ++i) {
-        u32 id = world.handle_infos.ids()[i];
-        const auto& info = world.handle_infos.data()[i];
-        const auto* t = world.transforms.get(id);
-        if (!t) continue;
-
-        switch (info.category) {
-        case simulation::Category::Unit: {
-            PlacedUnit pu;
-            pu.type   = info.type_id;
-            pu.x      = t->position.x;
-            pu.y      = t->position.y;
-            pu.facing = t->facing;
-            if (const auto* owner = world.owners.get(id)) pu.owner = owner->id;
-            snapshot.units.push_back(std::move(pu));
-            break;
-        }
-        case simulation::Category::Destructable: {
-            PlacedDestructable pd;
-            pd.type   = info.type_id;
-            pd.x      = t->position.x;
-            pd.y      = t->position.y;
-            pd.facing = t->facing;
-            if (const auto* dc = world.destructables.get(id)) pd.variation = dc->variation;
-            snapshot.destructables.push_back(std::move(pd));
-            break;
-        }
-        case simulation::Category::Item: {
-            PlacedItem pi;
-            pi.type = info.type_id;
-            pi.x    = t->position.x;
-            pi.y    = t->position.y;
-            snapshot.items.push_back(std::move(pi));
-            break;
-        }
-        case simulation::Category::Doodad: {
-            PlacedDoodad pd;
-            pd.type   = info.type_id;
-            pd.x      = t->position.x;
-            pd.y      = t->position.y;
-            pd.facing = t->facing;
-            if (const auto* dc = world.doodads.get(id)) pd.variation = dc->variation;
-            snapshot.doodads.push_back(std::move(pd));
-            break;
-        }
-        default:
-            break;
-        }
-    }
-
-    auto bytes = write_placements(snapshot);
+    auto bytes = write_placements(out);
 
     std::string path = m_map_root + "/scenes/" + std::string(scene_name) + "/placements.bin";
     std::ofstream file(path, std::ios::binary);
     if (!file) {
-        log::error(TAG, "save_objects: failed to open '{}' for writing", path);
+        log::error(TAG, "save_scene: failed to open '{}' for writing", path);
         return false;
     }
     file.write(reinterpret_cast<const char*>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
     file.close();
-    log::info(TAG, "save_objects: wrote {} units / {} destructables / {} doodads / {} items to {}",
-              snapshot.units.size(), snapshot.destructables.size(),
-              snapshot.doodads.size(), snapshot.items.size(), path);
+    log::info(TAG, "save_scene: wrote {} units / {} destructables / {} doodads / {} items to {}",
+              out.units.size(), out.destructables.size(),
+              out.doodads.size(), out.items.size(), path);
     return file.good();
 }
 

@@ -178,19 +178,18 @@ u32 GameServer::switch_scene(map::MapManager& map, asset::AssetManager& assets,
                              std::string_view scene_name, PreMainHook pre_main) {
     log::info(TAG, "Scene switch → '{}'", scene_name);
 
-    // Wipe the old scene's entities + swap terrain (allocator resets to 0).
-    if (!map.switch_scene_terrain_only(scene_name, assets, m_simulation)) {
+    // Wipe the old scene's entities + swap terrain data (allocator resets to 0).
+    m_simulation.world().clear_entities();
+    if (!map.switch_scene_terrain_only(scene_name, assets)) {
         log::error(TAG, "switch_scene: terrain swap failed for '{}'", scene_name);
         return UINT32_MAX;
-    }
-    // Instantiate the new scene's placements — must exist before the spawn
-    // burst the caller fires afterward.
-    if (!map.load_scene_placements(scene_name, assets, m_simulation)) {
-        log::warn(TAG, "switch_scene: no placements for '{}'", scene_name);
     }
     if (map.terrain().is_valid()) {
         m_simulation.set_terrain(&map.terrain());
     }
+    // Instantiate the new scene's placements — must exist before the spawn
+    // burst the caller fires afterward.
+    simulation::apply_scene_data(m_simulation, map.mutable_scene());
     u32 new_boundary = m_simulation.world().entities.next_id();
 
     // Full Lua VM reset — per the design contract, Lua state does not survive a

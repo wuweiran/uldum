@@ -1,12 +1,195 @@
 #include "simulation/simulation.h"
 #include "simulation/systems.h"
 #include "asset/asset.h"
+#include "map/map.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
+
+#include <nlohmann/json.hpp>
+#include <cmath>
 
 namespace uldum::simulation {
 
 static constexpr const char* TAG = "Simulation";
+
+bool register_map_types(Simulation& sim, asset::AssetManager& assets,
+                        const std::string& map_root) {
+    auto& types = sim.types();
+    std::string types_dir = map_root + "/types/";
+    try {
+        types.load_unit_types_absolute(assets, types_dir + "units.json");
+        types.load_destructable_types_absolute(assets, types_dir + "destructables.json");
+        types.load_item_types_absolute(assets, types_dir + "items.json");
+        types.load_doodad_types_absolute(assets, types_dir + "doodads.json");
+        sim.abilities().load(assets, types_dir + "abilities.json");
+    } catch (const nlohmann::json::exception& e) {
+        log::error(TAG, "Map type data under '{}' has a malformed field: {}", types_dir, e.what());
+        return false;
+    }
+    log::info(TAG, "Types loaded — {} units, {} destructables, {} doodads, {} items",
+              types.unit_type_count(), types.destructable_type_count(),
+              types.doodad_type_count(), types.item_type_count());
+    return true;
+}
+
+void apply_scene_data(Simulation& sim, map::SceneData& scene) {
+    auto& world = sim.world();
+    auto& td = scene.terrain;
+
+    auto sample_height = [&](f32 x, f32 y) -> f32 {
+        if (!td.is_valid()) return 0.0f;
+        u32 ix = std::min(static_cast<u32>((x - td.origin_x()) / td.tile_size), td.tiles_x);
+        u32 iy = std::min(static_cast<u32>((y - td.origin_y()) / td.tile_size), td.tiles_y);
+        return td.world_z_at(ix, iy);
+    };
+
+    u32 unit_count = 0;
+    for (auto& pu : scene.units) {
+        const auto* type_def = sim.types().get_unit_type(pu.type);
+        u32 fw = type_def ? type_def->pathing_footprint_w : 0u;
+        u32 fh = type_def ? type_def->pathing_footprint_h : 0u;
+        if (fw > 0 && fh > 0 && td.is_valid()) {
+            pu.x = map::snap_building_x(td, pu.x, fw);
+            pu.y = map::snap_building_y(td, pu.y, fh);
+        }
+
+        Player owner{pu.owner};
+        auto unit = create_unit(world, pu.type, owner, pu.x, pu.y, pu.facing);
+        if (is_null_handle(unit)) continue;
+
+        // Preplaced units are authored map state — they existed before any
+        // player was watching, so they never play birth.
+        if (auto* r = world.renderables.get(unit.id)) r->skip_birth = true;
+
+        if (auto* t = world.transforms.get(unit.id)) t->position.z = sample_height(pu.x, pu.y);
+        if (auto* pth = world.pathings.get(unit.id)) {
+            u32 vx = std::min(static_cast<u32>(std::round((pu.x - td.origin_x()) / td.tile_size)), td.tiles_x);
+            u32 vy = std::min(static_cast<u32>(std::round((pu.y - td.origin_y()) / td.tile_size)), td.tiles_y);
+            pth->cliff_level = td.cliff_at(vx, vy);
+        }
+
+        if (fw > 0 && fh > 0 && td.is_valid()) {
+            f32 left_tx_f   = (pu.x - td.origin_x()) / td.tile_size - 0.5f * static_cast<f32>(fw);
+            f32 bottom_ty_f = (pu.y - td.origin_y()) / td.tile_size - 0.5f * static_cast<f32>(fh);
+            i32 tx0 = static_cast<i32>(std::round(left_tx_f));
+            i32 ty0 = static_cast<i32>(std::round(bottom_ty_f));
+            PathingBlocker blocker;
+            blocker.cx = tx0 * static_cast<i32>(PATHING_SUBDIV);
+            blocker.cy = ty0 * static_cast<i32>(PATHING_SUBDIV);
+            blocker.w  = fw * PATHING_SUBDIV;
+            blocker.h  = fh * PATHING_SUBDIV;
+            world.pathing_blockers.add(unit.id, std::move(blocker));
+        }
+        unit_count++;
+    }
+
+    u32 dest_count = 0;
+    for (auto& pd : scene.destructables) {
+        const auto* def = sim.types().get_destructable_type(pd.type);
+        u32 fw = def ? def->pathing_footprint_w : 0u;
+        u32 fh = def ? def->pathing_footprint_h : 0u;
+        if (td.is_valid()) {
+            pd.x = map::snap_cell_x(td, pd.x);
+            pd.y = map::snap_cell_y(td, pd.y);
+        }
+
+        auto dest = create_destructable(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
+        if (is_null_handle(dest)) continue;
+
+        if (auto* t = world.transforms.get(dest.id)) {
+            t->position.z = sample_height(pd.x, pd.y);
+            t->prev_position.z = t->position.z;
+        }
+        if (fw > 0 && fh > 0 && td.is_valid()) {
+            f32 cs = td.tile_size / static_cast<f32>(PATHING_SUBDIV);
+            f32 left_cx_f   = (pd.x - td.origin_x()) / cs - 0.5f * static_cast<f32>(fw);
+            f32 bottom_cy_f = (pd.y - td.origin_y()) / cs - 0.5f * static_cast<f32>(fh);
+            PathingBlocker blocker;
+            blocker.cx = static_cast<i32>(std::round(left_cx_f));
+            blocker.cy = static_cast<i32>(std::round(bottom_cy_f));
+            blocker.w  = fw;
+            blocker.h  = fh;
+            world.pathing_blockers.add(dest.id, std::move(blocker));
+        }
+        dest_count++;
+    }
+
+    u32 item_count = 0;
+    for (const auto& pi : scene.items) {
+        auto item = create_item(world, pi.type, pi.x, pi.y);
+        if (is_null_handle(item)) continue;
+        if (auto* t = world.transforms.get(item.id)) {
+            t->position.z      = sample_height(pi.x, pi.y);
+            t->prev_position.z = t->position.z;
+        }
+        item_count++;
+    }
+
+    u32 dood_count = 0;
+    for (const auto& pd : scene.doodads) {
+        auto dood = create_doodad(world, pd.type, pd.x, pd.y, pd.facing, pd.variation);
+        if (is_null_entity(dood)) continue;
+        if (auto* t = world.transforms.get(dood.id)) {
+            t->position.z = sample_height(pd.x, pd.y);
+            t->prev_position.z = t->position.z;
+        }
+        dood_count++;
+    }
+
+    for (const auto& r : scene.regions) {
+        u32 rid = ++world.next_region_id;
+        World::Region wr;
+        wr.id     = rid;
+        wr.id_str = r.id;
+        for (const auto& rect : r.rects) wr.rects.push_back({rect.x0, rect.y0, rect.x1, rect.y1});
+        for (const auto& c : r.circles) wr.circles.push_back({c.cx, c.cy, c.r});
+        world.regions[rid] = std::move(wr);
+    }
+
+    log::info(TAG, "Placements: {} units, {} destructables, {} doodads, {} items, {} regions",
+              unit_count, dest_count, dood_count, item_count, scene.regions.size());
+}
+
+void export_scene_data(const World& world, map::SceneData& out) {
+    for (u32 i = 0; i < world.handle_infos.count(); ++i) {
+        u32 id = world.handle_infos.ids()[i];
+        const auto& info = world.handle_infos.data()[i];
+        const auto* t = world.transforms.get(id);
+        if (!t) continue;
+
+        switch (info.category) {
+        case Category::Unit: {
+            map::PlacedUnit pu;
+            pu.type = info.type_id; pu.x = t->position.x; pu.y = t->position.y; pu.facing = t->facing;
+            if (const auto* owner = world.owners.get(id)) pu.owner = owner->id;
+            out.units.push_back(std::move(pu));
+            break;
+        }
+        case Category::Destructable: {
+            map::PlacedDestructable pd;
+            pd.type = info.type_id; pd.x = t->position.x; pd.y = t->position.y; pd.facing = t->facing;
+            if (const auto* dc = world.destructables.get(id)) pd.variation = dc->variation;
+            out.destructables.push_back(std::move(pd));
+            break;
+        }
+        case Category::Item: {
+            map::PlacedItem pi;
+            pi.type = info.type_id; pi.x = t->position.x; pi.y = t->position.y;
+            out.items.push_back(std::move(pi));
+            break;
+        }
+        case Category::Doodad: {
+            map::PlacedDoodad pd;
+            pd.type = info.type_id; pd.x = t->position.x; pd.y = t->position.y; pd.facing = t->facing;
+            if (const auto* dc = world.doodads.get(id)) pd.variation = dc->variation;
+            out.doodads.push_back(std::move(pd));
+            break;
+        }
+        default:
+            break;
+        }
+    }
+}
 
 bool is_static_remembered_entity(const World& world, u32 entity_id) {
     const auto* info = world.handle_infos.get(entity_id);

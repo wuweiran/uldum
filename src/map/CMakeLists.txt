@@ -6,7 +6,7 @@ add_library(uldum_map STATIC
 )
 
 target_include_directories(uldum_map PUBLIC ${ULDUM_SRC})
-target_link_libraries(uldum_map PUBLIC uldum_core uldum_asset uldum_simulation)
+target_link_libraries(uldum_map PUBLIC uldum_core uldum_asset)
 
 # Map-format policy (see map_format.cpp). The game build tree is configured
 # with ULDUM_GAME_PROJECT_DIR (build_game.ps1 / Android game flavor); there the
