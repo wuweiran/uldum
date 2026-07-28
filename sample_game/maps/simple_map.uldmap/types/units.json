@@ -9,7 +9,7 @@
         "weapon": { "damage": 45, "range": 128, "cooldown": 1.7, "dmg_time": 0.4, "backsw_time": 0.3 },
         "acquire_range": 600,
         "vision": { "range": 1800 },
-        "abilities": ["attack", "move", "stop"],
+        "abilities": [],
         "classifications": ["ground", "hero"],
         "selection": { "radius": 48, "priority": 10 }
     }
