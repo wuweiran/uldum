@@ -48,6 +48,21 @@ static f32 angle_diff(f32 from, f32 to) {
     return normalize_angle(to - from);
 }
 
+// Turn `facing` toward `desired` by at most `turn_rate * dt`, then normalize.
+// Returns the signed error BEFORE turning, so callers can gate on how far off
+// they were this tick (e.g. only step when roughly aligned).
+static f32 turn_toward(f32& facing, f32 desired, f32 turn_rate, f32 dt) {
+    f32 diff = angle_diff(facing, desired);
+    f32 max_turn = turn_rate * dt;
+    if (std::abs(diff) > max_turn) {
+        facing += (diff > 0 ? max_turn : -max_turn);
+    } else {
+        facing = desired;
+    }
+    facing = normalize_angle(facing);
+    return diff;
+}
+
 // ── Movement system ───────────────────────────────────────────────────────
 
 // Move-time hard block against OTHER PLAYERS' units. Units are transient
@@ -213,15 +228,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     if (mag > 1.0f) dir /= mag;   // clamp speed multiplier at 1
                     // Face the movement direction — turn rate applies so
                     // the hero doesn't snap instantly.
-                    f32 desired = std::atan2(dir.y, dir.x);
-                    f32 diff    = angle_diff(transform->facing, desired);
-                    f32 max_turn = mov.turn_rate * dt;
-                    if (std::abs(diff) > max_turn) {
-                        transform->facing += (diff > 0 ? max_turn : -max_turn);
-                    } else {
-                        transform->facing = desired;
-                    }
-                    transform->facing = normalize_angle(transform->facing);
+                    turn_toward(transform->facing, std::atan2(dir.y, dir.x), mov.turn_rate, dt);
 
                     f32 step  = mov.speed * dt;
                     f32 new_x = transform->position.x + dir.x * step;
@@ -451,15 +458,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             glm::vec2 to_goal = goal2d - pos2d;
             f32 dist = glm::length(to_goal);
             if (dist > 1.0f) {
-                f32 desired = std::atan2(to_goal.y, to_goal.x);
-                f32 diff = angle_diff(transform->facing, desired);
-                f32 max_turn = mov.turn_rate * dt;
-                if (std::abs(diff) > max_turn) {
-                    transform->facing += (diff > 0 ? max_turn : -max_turn);
-                } else {
-                    transform->facing = desired;
-                }
-                transform->facing = normalize_angle(transform->facing);
+                turn_toward(transform->facing, std::atan2(to_goal.y, to_goal.x), mov.turn_rate, dt);
             }
             continue;
         }
@@ -487,15 +486,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     glm::vec2 to_goal = goal2d - pos2d;
                     f32 d = glm::length(to_goal);
                     if (d > 1.0f) {
-                        f32 desired = std::atan2(to_goal.y, to_goal.x);
-                        f32 diff = angle_diff(transform->facing, desired);
-                        f32 max_turn = mov.turn_rate * dt;
-                        if (std::abs(diff) > max_turn) {
-                            transform->facing += (diff > 0 ? max_turn : -max_turn);
-                        } else {
-                            transform->facing = desired;
-                        }
-                        transform->facing = normalize_angle(transform->facing);
+                        turn_toward(transform->facing, std::atan2(to_goal.y, to_goal.x), mov.turn_rate, dt);
                     }
                 }
                 continue;
@@ -612,15 +603,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             : forward;
 
         f32 desired_facing = std::atan2(dir.y, dir.x);
-        f32 face_diff = angle_diff(transform->facing, desired_facing);
-        f32 max_turn = mov.turn_rate * dt;
-
-        if (std::abs(face_diff) > max_turn) {
-            transform->facing += (face_diff > 0 ? max_turn : -max_turn);
-        } else {
-            transform->facing = desired_facing;
-        }
-        transform->facing = normalize_angle(transform->facing);
+        f32 face_diff = turn_toward(transform->facing, desired_facing, mov.turn_rate, dt);
 
         // Step forward (only if roughly facing the right direction)
         if (std::abs(face_diff) < glm::half_pi<f32>()) {
