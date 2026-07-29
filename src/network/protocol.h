@@ -302,12 +302,10 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
     w.write_bool(cmd.queued);
     w.write_u8(static_cast<u8>(cmd.units.size()));
     for (auto& u : cmd.units) w.write_u32(u.id);
-    // Serialize the variant index + payload
-    u8 order_idx = static_cast<u8>(cmd.order.index());
-    w.write_u8(order_idx);
 
     std::visit([&](auto& payload) {
         using T = std::decay_t<decltype(payload)>;
+        w.write_u16(static_cast<u16>(T::ID));   // stable per-order wire tag
         if constexpr (std::is_same_v<T, simulation::orders::Move>) {
             w.write_vec3(payload.target);
             w.write_u32(payload.target_widget.id);
@@ -327,10 +325,6 @@ inline std::vector<u8> build_order(const simulation::GameCommand& cmd) {
             w.write_u32(payload.target_unit.id);
             w.write_vec3(payload.target_pos);
             w.write_u32(payload.source_item.id);   // item-slot cast → GetTriggerItem + charge spend
-        } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
-            w.write_string(payload.unit_type_id);
-        } else if constexpr (std::is_same_v<T, simulation::orders::Research>) {
-            w.write_string(payload.research_id);
         } else if constexpr (std::is_same_v<T, simulation::orders::Build>) {
             w.write_string(payload.building_type_id);
             w.write_vec3(payload.pos);
@@ -665,31 +659,31 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
         cmd.units.push_back(simulation::Unit{r.read_u32()});
     }
 
-    u8 order_idx = r.read_u8();
-    switch (order_idx) {
-    case 0: {
+    switch (static_cast<simulation::orders::OrderId>(r.read_u16())) {
+    using enum simulation::orders::OrderId;
+    case Move: {
         glm::vec3 t = r.read_vec3();
         simulation::Unit tu{r.read_u32()};
         f32 range = r.read_f32();
         cmd.order = simulation::orders::Move{t, tu, range};
         break;
     }
-    case 1: {
+    case Attack: {
         glm::vec3 pt = r.read_vec3();
         simulation::Unit w{r.read_u32()};
         cmd.order = simulation::orders::Attack{pt, w};
         break;
     }
-    case 2: cmd.order = simulation::orders::Stop{}; break;
-    case 3: cmd.order = simulation::orders::HoldPosition{}; break;
-    case 4: {
+    case Stop: cmd.order = simulation::orders::Stop{}; break;
+    case HoldPosition: cmd.order = simulation::orders::HoldPosition{}; break;
+    case Patrol: {
         simulation::orders::Patrol p;
         u8 wpc = r.read_u8();
         for (u8 i = 0; i < wpc; ++i) p.waypoints.push_back(r.read_vec3());
         cmd.order = std::move(p);
         break;
     }
-    case 5: {
+    case Cast: {
         std::string ability = r.read_string();
         simulation::Unit tu{r.read_u32()};
         glm::vec3 tp = r.read_vec3();
@@ -697,40 +691,38 @@ inline std::optional<simulation::GameCommand> parse_order(std::span<const u8> da
         cmd.order = simulation::orders::Cast{std::move(ability), tu, tp, src};
         break;
     }
-    case 6: cmd.order = simulation::orders::Train{r.read_string()}; break;
-    case 7: cmd.order = simulation::orders::Research{r.read_string()}; break;
-    case 8: {
+    case Build: {
         std::string bt = r.read_string();
         glm::vec3 p = r.read_vec3();
         cmd.order = simulation::orders::Build{std::move(bt), p};
         break;
     }
-    case 9: {
+    case PickupItem: {
         cmd.order = simulation::orders::PickupItem{
             simulation::Item{r.read_u32()}};
         break;
     }
-    case 10: {
+    case DropItem: {
         simulation::Item item{r.read_u32()};
         glm::vec3 p = r.read_vec3();
         cmd.order = simulation::orders::DropItem{item, p};
         break;
     }
-    case 11: {
+    case SwapInventorySlot: {
         i32 a = static_cast<i32>(r.read_u32());
         i32 b = static_cast<i32>(r.read_u32());
         cmd.order = simulation::orders::SwapInventorySlot{a, b};
         break;
     }
-    case 12: {
+    case MoveDirection: {
         f32 dx = r.read_f32();
         f32 dy = r.read_f32();
         cmd.order = simulation::orders::MoveDirection{{dx, dy}};
         break;
     }
     default:
-        // Unknown order index — a corrupt or hostile C_ORDER. Reject
-        // rather than fall through to the variant's default alternative.
+        // Unknown order ID — a corrupt or hostile C_ORDER, or a retired
+        // tag. Reject rather than fall through to a variant alternative.
         return std::nullopt;
     }
     // Drop packets that ran off the end mid-decode (truncated / malformed).

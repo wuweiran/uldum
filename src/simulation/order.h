@@ -12,11 +12,26 @@
 namespace uldum::simulation {
 
 namespace orders {
+    enum class OrderId : u16 {
+        Move = 49152,
+        Attack = 49153,
+        Stop = 49154,
+        HoldPosition = 49155,
+        Patrol = 49156,
+        Cast = 49157,
+        Build = 49158,
+        PickupItem = 49159,
+        DropItem = 49160,
+        SwapInventorySlot = 49161,
+        MoveDirection = 49162,
+    };
+
     // Move / Follow. target_widget invalid → move to `target` point. Valid →
     // follow it while visible (host refreshes `target` to its live pos); on
     // fog/removal, seek that last-seen point and end on arrival (anti-leak:
     // never read a hidden entity's live transform). range: 0 = exact arrival.
     struct Move          {
+        static constexpr OrderId ID = OrderId::Move;
         glm::vec3 target;
         Widget    target_widget;
         f32       range = 0.0f;
@@ -25,16 +40,19 @@ namespace orders {
     // last-seen seek on fog/death. target_widget is a Widget (a crate is a
     // first-class attack target).
     struct Attack {
+        static constexpr OrderId ID = OrderId::Attack;
         glm::vec3 target{0.0f};
         Widget    target_widget;
         Attack() = default;
         Attack(glm::vec3 pt, Widget w = {}) : target(pt), target_widget(w) {}
         explicit Attack(Widget w) : target_widget(w) {}
     };
-    struct Stop          {};
-    struct HoldPosition  {};
-    struct Patrol        { std::vector<glm::vec3> waypoints; u32 current = 0; };
-    struct Cast          { std::string ability_id; Unit target_unit; glm::vec3 target_pos;
+    struct Stop          { static constexpr OrderId ID = OrderId::Stop; };
+    struct HoldPosition  { static constexpr OrderId ID = OrderId::HoldPosition; };
+    struct Patrol        { static constexpr OrderId ID = OrderId::Patrol;
+                           std::vector<glm::vec3> waypoints; u32 current = 0; };
+    struct Cast          { static constexpr OrderId ID = OrderId::Cast;
+                           std::string ability_id; Unit target_unit; glm::vec3 target_pos;
                            // If the cast originated from an item slot,
                            // this carries the item handle so the
                            // simulation can surface it via the
@@ -42,23 +60,23 @@ namespace orders {
                            // GetTriggerItem). Default-constructed
                            // (invalid) for non-item casts.
                            Item source_item; };
-    struct Train         { std::string unit_type_id; };
-    struct Research      { std::string research_id; };
-    struct Build         { std::string building_type_id; glm::vec3 pos; };
-    struct PickupItem    { Item item; };
-    struct DropItem      { Item item; glm::vec3 pos; };
+    struct Build         { static constexpr OrderId ID = OrderId::Build;
+                           std::string building_type_id; glm::vec3 pos; };
+    struct PickupItem    { static constexpr OrderId ID = OrderId::PickupItem; Item item; };
+    struct DropItem      { static constexpr OrderId ID = OrderId::DropItem; Item item; glm::vec3 pos; };
     // Swap two inventory slots on a single carrier. No-op if either
     // index is out of range. Used by the HUD inventory composite to
     // commit drag-swap reorders through the order pipeline so MP
     // clients route the change through the host.
-    struct SwapInventorySlot { i32 slot_a; i32 slot_b; };
+    struct SwapInventorySlot { static constexpr OrderId ID = OrderId::SwapInventorySlot;
+                               i32 slot_a; i32 slot_b; };
     // Action-preset continuous directional move. `dir` is a 2D vector
     // (usually normalized; magnitude <= 1 clamps speed). The unit keeps
     // trying to move along `dir` every tick until the order is replaced
     // or cleared — no pathfinding, no destination. Collisions slide
     // axis-aligned: into a vertical wall only the Y component applies,
     // into a horizontal wall only X applies, into a corner neither.
-    struct MoveDirection { glm::vec2 dir; };
+    struct MoveDirection { static constexpr OrderId ID = OrderId::MoveDirection; glm::vec2 dir; };
 }
 
 using OrderPayload = std::variant<
@@ -68,8 +86,6 @@ using OrderPayload = std::variant<
     orders::HoldPosition,
     orders::Patrol,
     orders::Cast,
-    orders::Train,
-    orders::Research,
     orders::Build,
     orders::PickupItem,
     orders::DropItem,

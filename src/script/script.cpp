@@ -181,10 +181,6 @@ ScriptEngine::OrderEvent ScriptEngine::order_to_event_data(
             ev.ability_id = p.ability_id;
             if (simulation::is_non_null_handle(p.target_unit)) ev.target_unit = p.target_unit;
             ev.target_x = p.target_pos.x; ev.target_y = p.target_pos.y;
-        } else if constexpr (std::is_same_v<T, simulation::orders::Train>) {
-            ev.type = "train";
-        } else if constexpr (std::is_same_v<T, simulation::orders::Research>) {
-            ev.type = "research";
         } else if constexpr (std::is_same_v<T, simulation::orders::Build>) {
             ev.type = "build";
             ev.target_x = p.pos.x; ev.target_y = p.pos.y;
