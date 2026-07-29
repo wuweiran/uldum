@@ -185,13 +185,12 @@ private:
     std::string m_pending_scene_switch;
     void perform_scene_switch(const std::string& scene_name);
 
-    // Host MP path: scene name being switched to, held while the host
-    // waits for every peer to ack C_LOAD_DONE. Empty when no swap is
-    // mid-barrier. finalize_scene_switch consumes it.
-    std::string m_pending_scene_switch_finalize;
     void scene_switch_local_teardown(const std::string& scene_name);
     void scene_switch_run_main(const std::string& scene_name);
-    void finalize_scene_switch();
+    // App/render VM re-wiring installed before a switched scene's main() runs
+    // (the VM reset clears every callback). Shared by the offline run_main and
+    // the host MP finalize (GameServer::try_finish_scene_switch's pre_main).
+    network::GameServer::PreMainHook scene_pre_main();
 
     // Host-side server→client wiring: calls GameServer::wire_to_network (the
     // shared sends the worker also installs) then chains the host's own

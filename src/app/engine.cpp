@@ -1082,10 +1082,10 @@ void Engine::end_session() {
     m_world_overlays.reset_session_state();
     m_target_ping = TargetPing{};   // drop any in-flight right-click ping (starts expired)
 
-    // A pending LoadScene request that hadn't fired yet (or a host-side
-    // barrier in progress) is meaningless after the session ends.
+    // A pending LoadScene request that hadn't fired yet is meaningless after
+    // the session ends. The host-side finalize barrier state lives in
+    // GameServer now and is cleared by its shutdown() above.
     m_pending_scene_switch.clear();
-    m_pending_scene_switch_finalize.clear();
 
     // I18n: drop the map's strings pool. Shell pool persists.
     m_i18n.unload_map();
@@ -1451,14 +1451,8 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     }
 }
 
-// Host second half — instantiate the new scene's placements, reset the Lua VM,
-// re-wire callbacks, and run main(). The server-authoritative work (terrain +
-// placements + VM reset + run main) now lives in GameServer::switch_scene,
-// shared with the headless worker; this wrapper supplies the host's App/render
-// re-wiring via the pre_main hook (the VM reset clears every callback, so it
-// must be re-installed before main() runs).
-void Engine::scene_switch_run_main(const std::string& scene_name) {
-    auto pre_main = [this](script::ScriptEngine& script) {
+network::GameServer::PreMainHook Engine::scene_pre_main() {
+    return [this](script::ScriptEngine& script) {
         // App-owned wiring (mirrors start_session). Pre-init bindings (input +
         // hud) first so the script's main() can use them at scene init time.
         script.set_input(&m_selection, &m_commands);
@@ -1483,8 +1477,16 @@ void Engine::scene_switch_run_main(const std::string& scene_name) {
             m_pending_scene_switch.assign(scene);
         });
     };
+}
 
-    u32 boundary = m_server.switch_scene(m_map, m_asset, scene_name, pre_main);
+// Host second half — instantiate the new scene's placements, reset the Lua VM,
+// re-wire callbacks, and run main(). The server-authoritative work (terrain +
+// placements + VM reset + run main) now lives in GameServer::switch_scene,
+// shared with the headless worker; this wrapper supplies the host's App/render
+// re-wiring via the pre_main hook (the VM reset clears every callback, so it
+// must be re-installed before main() runs).
+void Engine::scene_switch_run_main(const std::string& scene_name) {
+    u32 boundary = m_server.switch_scene(m_map, m_asset, scene_name, scene_pre_main());
     if (boundary == UINT32_MAX) {
         log::error(TAG, "scene_switch_run_main: switch_scene failed for '{}'", scene_name);
         return;
@@ -1495,8 +1497,9 @@ void Engine::scene_switch_run_main(const std::string& scene_name) {
 }
 
 // Orchestrator. Offline: teardown + run_main back-to-back. Host MP:
-// broadcast the swap and run teardown locally, then defer run_main +
-// the entity-spawn burst until every client has acked C_LOAD_DONE.
+// GameServer::begin_scene_switch broadcasts the swap + marks self loaded, with
+// the host's local teardown injected; phase 2 (run_main + spawn burst) is
+// deferred to GameServer::try_finish_scene_switch when all peers ack C_LOAD_DONE.
 // Clients never call this directly — they react to S_SCENE_SWITCH
 // via the recv_fn registered in start_session.
 void Engine::perform_scene_switch(const std::string& scene_name) {
@@ -1510,30 +1513,8 @@ void Engine::perform_scene_switch(const std::string& scene_name) {
         return;
     }
 
-    // Host MP path. Tell clients first (reliable-ordered ENet
-    // guarantees they process this before any later S_SPAWN /
-    // S_HUD_* delta), then do the host's own teardown, then mark
-    // self-loaded so the barrier closes once peers ack. Phase-2
-    // (run_main + spawn burst) is fired from finalize_scene_switch
-    // when m_network.all_peers_loaded() goes true.
-    m_network.host_broadcast_scene_switch(scene_name);
-    scene_switch_local_teardown(scene_name);
-    m_pending_scene_switch_finalize = scene_name;
-    m_network.mark_self_loaded();
-}
-
-// Host MP only. Called from the main loop once every peer has acked
-// C_LOAD_DONE for the in-flight scene swap.
-void Engine::finalize_scene_switch() {
-    std::string scene = std::move(m_pending_scene_switch_finalize);
-    m_pending_scene_switch_finalize.clear();
-
-    scene_switch_run_main(scene);
-
-    // Burst spawns to each peer for the new scene's entities + flip
-    // network phase back to Playing so ticks resume.
-    m_network.host_finish_scene_switch();
-    log::info(TAG, "Scene switch '{}' complete — sim resuming", scene);
+    m_server.begin_scene_switch(m_network, scene_name,
+        [this](const std::string& scene) { scene_switch_local_teardown(scene); });
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────
@@ -1692,8 +1673,7 @@ void Engine::run() {
             if (is_offline()) {
                 ready_to_play = true;
             } else if (is_host()) {
-                if (m_network.all_peers_loaded()) {
-                    m_network.host_finish_start();  // sends S_WELCOME + S_SPAWN + S_START
+                if (m_network.try_host_finish_start()) {  // sends S_WELCOME + S_SPAWN + S_START
                     ready_to_play = true;
                 }
             } else {  // Client
@@ -1762,12 +1742,11 @@ void Engine::run() {
 
             // Host MP: close the scene-switch barrier once every peer
             // has acked C_LOAD_DONE. Runs the new scene's main() and
-            // bursts spawns to clients before resuming ticks.
-            if (!is_client &&
-                m_network.is_scene_switching() &&
-                !m_pending_scene_switch_finalize.empty() &&
-                m_network.all_peers_loaded()) {
-                finalize_scene_switch();
+            // bursts spawns to clients before resuming ticks. Self-guards
+            // on the barrier state inside GameServer.
+            if (!is_client && m_server.scene_switch_pending()) {
+                m_server.try_finish_scene_switch(m_network, m_map, m_asset,
+                                                 scene_pre_main());
             }
 
             bool should_tick = !is_client &&

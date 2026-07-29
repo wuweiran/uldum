@@ -393,52 +393,33 @@ int main(int argc, char* argv[]) {
         }
 
         // Transition Loading → Playing once every peer has sent C_LOAD_DONE.
-        if (network.phase() == uldum::network::Phase::Loading &&
-            network.all_peers_loaded()) {
+        if (network.try_host_finish_start()) {
             uldum::log::info(TAG, "All peers loaded — finishing start");
-            network.host_finish_start();
         }
 
-        // Scene switch (Lua LoadScene). Two-phase barrier mirroring the host:
-        //   Phase 1: a pending switch → tell clients (reliable-ordered, they
-        //            react first), wipe our terrain/entities locally, mark self
-        //            loaded, and stash the target for phase 2.
-        //   Phase 2: once every peer acked C_LOAD_DONE → reload the scene +
-        //            re-run main (GameServer::switch_scene, re-wiring via
-        //            wire_server as pre_main), refresh the placement boundary,
-        //            then burst spawns + resume ticks (host_finish_scene_switch).
-        static std::string finalize_scene;
+        // Scene switch (Lua LoadScene). Two-phase host barrier, driven by
+        // GameServer (shared with uldum_dev). Phase 1: drain the pending target
+        // → begin_scene_switch broadcasts + tears down our headless scene state
+        // + stashes it. Phase 2: try_finish_scene_switch closes the barrier once
+        // every peer acked, re-running the scene with wire_server as pre_main.
         if (!pending_scene.empty() && !network.is_scene_switching()) {
             std::string scene = std::move(pending_scene);
             pending_scene.clear();
-            network.host_broadcast_scene_switch(scene);
-            // Local server teardown: wipe entities + swap terrain so the world
-            // is empty across the barrier. switch_scene re-wipes idempotently in
-            // phase 2, so this just gets us to the empty state now (no placements).
-            server.simulation().world().clear_entities();
-            map.switch_scene_terrain_only(scene, assets);
-            network.reset_local_view();
-            // Reset the headless HUD model too — mirror of the host's
-            // scene_switch_local_teardown (m_hud.reset_scene_state()). Without
-            // this the previous scene's Lua-created nodes (e.g. the "N waves"
-            // composite) and text tags linger in the worker's Hud and get
-            // resurrected on clients by the phase-2 spawn-burst emit_state_to
-            // replay — even though each client cleared them in its own teardown.
-            hud.reset_scene_state();
-            finalize_scene = std::move(scene);
-            network.mark_self_loaded();
+            server.begin_scene_switch(network, scene,
+                [&](const std::string& s) {
+                    // Wipe entities + swap terrain so the world is empty across
+                    // the barrier. switch_scene re-wipes idempotently in phase 2.
+                    server.simulation().world().clear_entities();
+                    map.switch_scene_terrain_only(s, assets);
+                    network.reset_local_view();
+                    // Reset the headless HUD model too, or the previous scene's
+                    // Lua-created nodes / text tags linger in the worker's Hud
+                    // and get resurrected on clients by the phase-2 spawn-burst
+                    // replay — even though each client cleared them in teardown.
+                    hud.reset_scene_state();
+                });
         }
-        if (network.is_scene_switching() && !finalize_scene.empty() &&
-            network.all_peers_loaded()) {
-            std::string scene = std::move(finalize_scene);
-            finalize_scene.clear();
-            uldum::u32 boundary = server.switch_scene(map, assets, scene, wire_server);
-            if (boundary != UINT32_MAX) {
-                network.set_placement_count(boundary);
-            }
-            network.host_finish_scene_switch();
-            uldum::log::info(TAG, "Scene switch '{}' complete — sim resuming", scene);
-        }
+        server.try_finish_scene_switch(network, map, assets, wire_server);
 
         // Tick simulation (paused while a scene switch is in flight).
         if (network.is_game_started() && !network.is_paused() &&

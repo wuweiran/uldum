@@ -260,6 +260,13 @@ public:
     // S_WELCOME + S_SPAWN burst per peer, then S_START. Phase → Playing.
     void host_finish_start();
 
+    // Host loading barrier, poll form: finish the start once every peer has
+    // acked (Loading, not mid-scene-switch, all_peers_loaded). Safe to call
+    // every frame — self-guards on phase. Returns true only on the frame the
+    // transition fires. Shared by uldum_dev and uldum_worker so the barrier
+    // condition lives in one place.
+    bool try_host_finish_start();
+
     // Host: enter the scene-switch barrier. Resets self_loaded + every
     // peer's loaded flag, sets phase → Loading, and broadcasts
     // S_SCENE_SWITCH(name) so each client tears down its scene state

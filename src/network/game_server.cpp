@@ -205,7 +205,40 @@ u32 GameServer::switch_scene(map::MapManager& map, asset::AssetManager& assets,
     return new_boundary;
 }
 
+void GameServer::begin_scene_switch(NetworkManager& net,
+                                    std::string_view scene_name,
+                                    const TeardownHook& local_teardown) {
+    // Tell clients first (reliable-ordered ENet guarantees they process this
+    // before any later S_SPAWN / S_HUD_* delta), then tear down the caller's own
+    // scene state, then mark self loaded so the barrier closes once peers ack.
+    std::string scene(scene_name);
+    net.host_broadcast_scene_switch(scene);
+    if (local_teardown) local_teardown(scene);
+    m_pending_finalize_scene = scene;
+    net.mark_self_loaded();
+}
+
+bool GameServer::try_finish_scene_switch(NetworkManager& net, map::MapManager& map,
+                                         asset::AssetManager& assets,
+                                         const PreMainHook& pre_main) {
+    if (m_pending_finalize_scene.empty() || !net.is_scene_switching() ||
+        !net.all_peers_loaded()) {
+        return false;
+    }
+    std::string scene = std::move(m_pending_finalize_scene);
+    m_pending_finalize_scene.clear();
+
+    u32 boundary = switch_scene(map, assets, scene, pre_main);
+    if (boundary != UINT32_MAX) {
+        net.set_placement_count(boundary);
+    }
+    net.host_finish_scene_switch();
+    log::info(TAG, "Scene switch '{}' complete — sim resuming", scene);
+    return true;
+}
+
 void GameServer::shutdown() {
+    m_pending_finalize_scene.clear();
     m_script.shutdown();
     m_simulation.shutdown();
     log::info(TAG, "GameServer shut down");

@@ -45,6 +45,33 @@ public:
     u32 switch_scene(map::MapManager& map, asset::AssetManager& assets,
                      std::string_view scene_name, PreMainHook pre_main = {});
 
+    // Host scene-switch barrier, shared by uldum_dev and uldum_worker. The
+    // network transitions (broadcast, mark_self_loaded, finish) and the
+    // finalize-scene bookkeeping live here; the caller injects only the two
+    // parts that genuinely differ between host and worker.
+    //
+    // `local_teardown` wipes the caller's own scene state after the barrier
+    // opens (host: sim + terrain + renderer/camera/HUD; worker: sim + terrain
+    // + headless HUD model). `pre_main` re-installs the caller's VM callbacks
+    // before the new scene's main() runs (see switch_scene).
+    using TeardownHook = std::function<void(const std::string& scene_name)>;
+
+    // Phase 1: broadcast S_SCENE_SWITCH, run `local_teardown`, stash the target,
+    // and mark self loaded. Call once when a LoadScene request is drained.
+    void begin_scene_switch(NetworkManager& net, std::string_view scene_name,
+                            const TeardownHook& local_teardown);
+
+    // Phase 2, poll form: once every peer has acked, re-run the new scene
+    // (switch_scene + set_placement_count) and close the barrier. Safe to call
+    // every frame — self-guards on is_scene_switching + all_peers_loaded + a
+    // stashed target. Returns true only on the frame the switch completes.
+    bool try_finish_scene_switch(NetworkManager& net, map::MapManager& map,
+                                 asset::AssetManager& assets,
+                                 const PreMainHook& pre_main = {});
+
+    // True between begin_scene_switch and try_finish_scene_switch's completion.
+    bool scene_switch_pending() const { return !m_pending_finalize_scene.empty(); }
+
     void shutdown();
 
     // Run one simulation tick (fixed dt). Ticks simulation then scripts.
@@ -92,6 +119,11 @@ private:
     script::ScriptEngine    m_script;
     EndGameCallback         m_on_end_game;
     audio::AudioEngine*     m_audio = nullptr;   // retained from init_game for switch_scene's VM re-init
+
+    // Set in begin_scene_switch (phase 1), consumed in try_finish_scene_switch
+    // (phase 2). Non-empty == a scene switch is mid-barrier. Replaces the copies
+    // the host loop and worker loop each kept, so the two can't drift.
+    std::string             m_pending_finalize_scene;
 };
 
 } // namespace uldum::network

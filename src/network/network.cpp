@@ -343,6 +343,13 @@ void NetworkManager::mark_self_loaded() {
     m_self_loaded = true;
 }
 
+bool NetworkManager::try_host_finish_start() {
+    if (m_mode != Mode::Host || m_phase != Phase::Loading || m_scene_switching) return false;
+    if (!all_peers_loaded()) return false;
+    host_finish_start();
+    return true;
+}
+
 void NetworkManager::host_broadcast_scene_switch(std::string_view scene_name) {
     if (m_mode != Mode::Host || !m_transport) return;
     if (m_phase != Phase::Playing) {
