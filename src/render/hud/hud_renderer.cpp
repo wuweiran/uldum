@@ -959,7 +959,10 @@ static void draw_action_bar_classic_rts(HudRenderer::Impl& r, Hud::Impl& s) {
             emit_rect(r, { rc.x + rc.w - border_w, rc.y, border_w, rc.h }, border_color);
         }
 
-        bool show_hotkey = def && is_castable_form(def->form);
+        // Build form isn't "castable" but its key still triggers (opens the
+        // build sub-panel), so show its badge too.
+        bool show_hotkey = def && (is_castable_form(def->form)
+                                   || def->form == simulation::AbilityForm::Build);
         std::string_view badge_key;
         if (show_hotkey) {
             badge_key = (rt.hotkey_mode == ActionBarHotkeyMode::Ability)
@@ -1083,7 +1086,10 @@ static void draw_action_bar_moba(HudRenderer::Impl& r, Hud::Impl& s) {
             draw_ring(r, cx, cy, button_r, button_r - border_w, border_color);
         }
 
-        bool show_hotkey = def && is_castable_form(def->form);
+        // Build form isn't "castable" but its key still triggers (opens the
+        // build sub-panel), so show its badge too.
+        bool show_hotkey = def && (is_castable_form(def->form)
+                                   || def->form == simulation::AbilityForm::Build);
         std::string_view badge_key;
         if (show_hotkey) {
             badge_key = (rt.hotkey_mode == ActionBarHotkeyMode::Ability)

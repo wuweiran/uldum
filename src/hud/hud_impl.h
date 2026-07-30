@@ -343,6 +343,14 @@ inline bool is_castable_form(simulation::AbilityForm f) {
     return f == F::Instant || f == F::Target;
 }
 
+// True when a slot for this form triggers *something* on key/click — the
+// castable forms plus Build (which opens the build sub-panel, not a cast).
+// Drives the action-bar hotkey-badge visibility so a bound key that does
+// something always shows its letter.
+inline bool triggers_from_action_bar(simulation::AbilityForm f) {
+    return is_castable_form(f) || f == simulation::AbilityForm::Build;
+}
+
 // WC3-style command card. The bar always draws; each slot self-gates on
 // `command_bar_slot_applies`. It's false when the selection isn't a unit the
 // local player owns, or when the lead unit lacks the capability the command
