@@ -34,6 +34,9 @@
         "error.target.ally":  "Can't target allies",
         "error.target.dead":  "Target must be alive",
         "error.attack":       "Can't attack that",
-        "error.attack.air":   "Can't attack air units"
+        "error.attack.air":   "Can't attack air units",
+        "error.build":          "Can't build there",
+        "error.build.blocked":  "Can't build there — the ground is blocked",
+        "error.build.no_space": "Not enough room to build here"
     }
 }

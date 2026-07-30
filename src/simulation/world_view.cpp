@@ -12,6 +12,7 @@ const Player*                 WorldView::owner(u32 id)          const { return m
 const HandleInfo*             WorldView::handle_info(u32 id)    const { return m_world->handle_infos.get(id); }
 const Movement*               WorldView::movement(u32 id)       const { return m_world->movements.get(id); }
 const Combat*                 WorldView::combat(u32 id)         const { return m_world->combats.get(id); }
+const Construction*           WorldView::construction(u32 id)   const { return m_world->constructions.get(id); }
 const Selectable*             WorldView::selectable(u32 id)     const { return m_world->selectables.get(id); }
 bool                          WorldView::is_dead(u32 id)        const { return health_is_dead(m_world->healths.get(id)); }
 const StatusFlags*            WorldView::status(u32 id)         const { return m_world->status_flags.get(id); }
@@ -77,6 +78,9 @@ const Movement* LocalView::movement(u32 id) const {
 }
 const Combat* LocalView::combat(u32 id) const {
     return resolve<Combat>(*this, id, nullptr, source->combats);
+}
+const Construction* LocalView::construction(u32 id) const {
+    return resolve<Construction>(*this, id, nullptr, source->constructions);
 }
 bool LocalView::is_dead(u32 id) const {
     return health_is_dead(health(id));

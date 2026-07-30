@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace uldum::platform { struct InputState; }
 namespace uldum::i18n     { class LocaleManager; }
@@ -26,6 +27,7 @@ struct ActionBarConfig;        // action_bar.h
 enum class ActionBarHotkeyMode : u8;  // action_bar.h
 struct MinimapConfig;          // minimap.h
 struct CommandBarConfig;       // command_bar.h
+struct BuildBarConfig;         // build_bar.h
 struct JoystickConfig;         // joystick.h
 struct CastIndicatorConfig;    // cast_indicator.h
 struct CastIndicatorStyle;     // cast_indicator.h
@@ -333,6 +335,38 @@ public:
     // render path can render the matching slot "armed" (press_bg) while
     // the player picks a target.
     void action_bar_set_targeting_ability(std::string_view ability_id);
+
+    // ── Build sub-panel (build_bar composite) ───────────────────────
+    // A Build-form ability opens a local sub-panel: the `build_bar`
+    // composite (its OWN slot grid authored in hud.json — action_bar is
+    // never touched) shows the ability's `builds` structure types. Clicking
+    // a structure slot arms placement (via build_panel_fn → preset.queue_build)
+    // and closes the panel; a structure that no longer fits, a right-click,
+    // Escape, or a selection that loses the opening ability closes it too.
+    // No networked order is issued by opening/closing — local UI state.
+    void set_build_bar_config(const BuildBarConfig& cfg);
+    void open_build_panel(std::string_view source_ability_id,
+                          std::vector<std::string> structure_type_ids);
+    void close_build_panel();
+    bool build_panel_active() const;
+
+    // Fired when a build-panel slot resolves to a structure type. App
+    // wires this to the input preset's queue_build (arms build placement).
+    using BuildPanelPickFn = std::function<void(const std::string& structure_type_id)>;
+    void set_build_panel_fn(BuildPanelPickFn fn);
+
+    // Mobile build drag-cast commit — fired when a press-drag-release gesture
+    // that started on a build_bar structure slot lifts on the map. The app
+    // wires this to submit an orders::Build at (x,y) (snapping + validity done
+    // app-side, mirroring the desktop confirm). Mobile-only path; desktop uses
+    // set_build_panel_fn (arm → click) instead.
+    using BuildAtTargetFn = std::function<void(const std::string& type, f32 x, f32 y)>;
+    void set_build_at_target_fn(BuildAtTargetFn fn);
+
+    // True while a mobile build drag is active (a structure slot is being
+    // dragged onto the map). Fills `type` + world (x,y) of the current drag
+    // point so the app can render the footprint/ghost there. False otherwise.
+    bool active_build_drag(std::string& type, f32& wx, f32& wy) const;
 
     // Callback fired when a slot click OR slot hotkey press resolves to
     // an ability. The HUD performs hit-testing, keyboard scanning, and

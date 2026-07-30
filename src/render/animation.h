@@ -66,6 +66,12 @@ struct AnimationInstance {
     f32 attack_phase1_speed = 1.0f; // playback speed for [0, dmg_time]
     f32 attack_phase2_speed = 1.0f; // playback speed for [dmg_time, clip_end]
 
+    // Set once the construction Birth clip has been time-scaled to the
+    // structure's build_time, so derive_anim_state forces the restart that
+    // applies that speed exactly once (not every frame, which would freeze
+    // the clip at time 0).
+    bool construction_scaled = false;
+
     // Mapping from AnimState to clip index (-1 = no clip, use bind pose)
     std::array<i32, static_cast<usize>(AnimState::Count)> state_to_clip{};
 

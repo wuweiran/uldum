@@ -1,5 +1,6 @@
 #include "app/engine.h"
 #include "simulation/world_view.h"
+#include "simulation/placement.h"
 #include "core/log.h"
 #include "hud/node.h"
 #include "hud/hud_loader.h"
@@ -653,6 +654,30 @@ bool Engine::start_session() {
         if (m_input_preset) m_input_preset->queue_ability(ability_id);
     });
 
+    // Build sub-panel: picking a structure slot arms build placement on
+    // the preset. Same zero-latency queue path as ability casts; the
+    // next world click commits an orders::Build at the snapped point.
+    m_hud.set_build_panel_fn([this](const std::string& structure_type_id) {
+        if (m_input_preset) m_input_preset->queue_build(structure_type_id);
+    });
+
+    // Mobile build drag-cast: a press-drag-release on a structure slot lifts
+    // on the map → place there directly. Snap + validity via the shared
+    // evaluate_building_placement (same rule as desktop confirm); on an
+    // invalid spot, error instead of submitting.
+    m_hud.set_build_at_target_fn([this](const std::string& type, f32 x, f32 y) {
+        auto place = simulation::evaluate_building_placement(active_sim(), type, x, y);
+        if (!place.valid) {
+            m_hud.emit_order_error("build", "blocked");
+            return;
+        }
+        simulation::GameCommand cmd;
+        cmd.player = m_selection.player();
+        cmd.units  = m_selection.selected_units(active_sim().world());
+        cmd.order  = simulation::orders::Build{type, place.snapped};
+        m_commands.submit(cmd);
+    });
+
     // Mobile drag-cast commit. HUD has already collected the target
     // (snapped unit or ground point), so we bypass the preset's
     // targeting-mode entry path and submit a Cast command directly.
@@ -944,6 +969,25 @@ bool Engine::start_session() {
         m_server.simulation().world().on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
         };
+        // Build failed (worker walked to the site but couldn't build) → surface
+        // the reason on the owning player's HUD error line, same channel the
+        // click-time "can't build there" uses. Chains onto any prior handler
+        // (script's Lua fan-out) so both fire. Local-player only for now — a
+        // remote client's failure would need a network HUD route (deferred MP).
+        {
+            auto& w = m_server.simulation().world();
+            auto prior = std::move(w.on_construction_failed);
+            w.on_construction_failed =
+                [this, prior = std::move(prior)](simulation::Unit builder,
+                                                 std::string_view reason) {
+                    if (prior) prior(builder, reason);
+                    const auto& world = m_server.simulation().world();
+                    const auto* o = world.owners.get(builder.id);
+                    if (o && o->id == m_args.local_slot) {
+                        m_hud.emit_order_error("build", reason);
+                    }
+                };
+        }
         // Birth-clip gate: a unit plays its birth animation only when
         // spawned in the local player's sight. Mirrors the network
         // client, which derives the same from the S_SPAWN newly_created
@@ -2140,6 +2184,14 @@ void Engine::run() {
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
 
+                // Build-placement ghost params, filled by the footprint block
+                // below and consumed by draw_ghost_model AFTER m_renderer.draw
+                // (so the translucent ghost composites over opaque units).
+                std::string ghost_model;
+                glm::vec3   ghost_pos{0.0f};
+                f32         ghost_scale = 1.0f;
+                bool        ghost_valid = false;
+
                 // World overlays — selection rings, ability indicators,
                 // future build-placement ghosts. We BUILD the overlay
                 // batch up front, then hand its draw call to
@@ -2337,6 +2389,77 @@ void Engine::run() {
                         }
                     }
 
+                    // ── Build placement footprint ─────────────────────
+                    // Per-tile footprint tint under the armed/dragged build
+                    // point (green = legal, red = blocked). The ghost model is
+                    // a separate deferred draw.
+                    if (terrain) {
+                        // Two sources feed the footprint/ghost:
+                        //  • mobile build drag — a structure slot dragged onto
+                        //    the map; type + world point come from the HUD drag.
+                        //  • desktop armed placement — TargetingMode::Build; type
+                        //    from the preset, point from the cursor.
+                        std::string btype;
+                        glm::vec3 wp{0.0f};
+                        bool have = false;
+                        f32 dwx = 0.0f, dwy = 0.0f;
+                        if (m_hud.active_build_drag(btype, dwx, dwy)) {
+                            wp = { dwx, dwy, 0.0f };
+                            have = true;
+                        } else if (m_input_preset) {
+                            std::string_view bt = m_input_preset->build_type_id();
+                            if (!bt.empty()) {
+                                const auto& in = m_platform->input();
+                                if (m_picker.screen_to_world(in.mouse_x, in.mouse_y, wp)) {
+                                    btype.assign(bt);
+                                    have = true;
+                                }
+                            }
+                        }
+                        if (have) {
+                            auto place = simulation::evaluate_building_placement(
+                                active_sim(), btype, wp.x, wp.y);
+                            const glm::vec4 ok_color { 0.30f, 0.90f, 0.40f, 0.45f };
+                            const glm::vec4 bad_color{ 0.92f, 0.28f, 0.28f, 0.45f };
+                            f32 ts = terrain->tile_size;
+                            if (place.fw > 0 && place.fh > 0) {
+                                f32 x0 = place.snapped.x - 0.5f * static_cast<f32>(place.fw) * ts;
+                                f32 y0 = place.snapped.y - 0.5f * static_cast<f32>(place.fh) * ts;
+                                // Each corner drapes to its own terrain height so the
+                                // flush edge-to-edge quad fits the slope.
+                                auto corner = [&](f32 x, f32 y) {
+                                    return glm::vec3{ x, y, map::sample_height(*terrain, x, y) };
+                                };
+                                for (u32 j = 0; j < place.fh; ++j) {
+                                    for (u32 i = 0; i < place.fw; ++i) {
+                                        f32 xl = x0 + static_cast<f32>(i) * ts;
+                                        f32 xr = x0 + static_cast<f32>(i + 1) * ts;
+                                        f32 yb = y0 + static_cast<f32>(j) * ts;
+                                        f32 yt = y0 + static_cast<f32>(j + 1) * ts;
+                                        usize idx = static_cast<usize>(j) * place.fw + i;
+                                        bool tok = idx < place.tile_ok.size() && place.tile_ok[idx];
+                                        m_world_overlays.add_quad_corners(
+                                            corner(xl, yb), corner(xr, yb),
+                                            corner(xr, yt), corner(xl, yt),
+                                            tok ? ok_color : bad_color, TexId::BuildPlacement);
+                                    }
+                                }
+                            } else {
+                                m_world_overlays.add_quad(place.snapped, ts * 0.5f,
+                                                          place.valid ? ok_color : bad_color,
+                                                          TexId::BuildPlacement);
+                            }
+                            // Stash the mesh ghost for the post-draw pass.
+                            if (const auto* def = active_sim().types().get_unit_type(btype);
+                                def && !def->model_path.empty()) {
+                                ghost_model = def->model_path;
+                                ghost_pos   = place.snapped;
+                                ghost_scale = def->model_scale;
+                                ghost_valid = place.valid;
+                            }
+                        }
+                    }
+
                     // ── Ability targeting indicators ──────────────────
                     // Drawn after selection rings so a snapped target's
                     // ring sits on top of its selection ring.
@@ -2506,6 +2629,16 @@ void Engine::run() {
                 m_renderer.draw(cmd, m_rhi.extent(), world, alpha, [&]() {
                     m_world_overlays.draw(cmd, m_renderer.camera().view_projection());
                 });
+                // Translucent building ghost over the placed footprint — after
+                // draw() so it composites atop opaque units. Green=valid tint,
+                // red=blocked. Render-only (no sim entity), so it's MP-safe.
+                if (!ghost_model.empty()) {
+                    glm::vec4 tint = ghost_valid ? glm::vec4{0.55f, 1.0f, 0.6f, 1.0f}
+                                                 : glm::vec4{1.0f, 0.5f, 0.5f, 1.0f};
+                    m_renderer.draw_ghost_model(cmd, ghost_model,
+                                                m_renderer.camera().view_projection(),
+                                                ghost_pos, 0.0f, ghost_scale, tint, 0.5f);
+                }
                 // HUD overlay. Pointer is already dispatched earlier in
                 // the frame (before input preset update) so its captured
                 // state gates gameplay input correctly — here we just

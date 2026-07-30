@@ -273,20 +273,22 @@ private:
                             simulation::MoveType move_type) const;
 
     // Ghost-entity preview rendered at the cursor while in Object/Place.
-    // A real entity in the sim (the editor never ticks, so gameplay
-    // components are inert) with its transform overwritten each frame
-    // to track the snapped cursor position. Used for both Unit and
-    // Destructable categories — Unit/Destructable handles share layout,
-    // and simulation::destroy() dispatches the same component cleanup.
-    // Destroyed before save_objects so it doesn't leak into objects.json.
-    simulation::Unit m_preview_handle{};
+    // Render-only placement preview: a translucent ghost drawn each frame at
+    // the snapped cursor via Renderer::draw_ghost_model — NOT a sim entity
+    // (matches the in-game build ghost; nothing to leak into objects.json).
+    // update_object_preview fills these from the current tool + cursor.
     ObjectCategory   m_preview_category = ObjectCategory::Unit;
     std::string      m_preview_type_id;
-    // The variation the preview entity was built with — used to detect
-    // staleness when the user changes Random / Fixed. Shared by
-    // Destructable and Doodad previews (active one is selected by
-    // m_preview_category).
+    // The variation the preview was built with — used to detect staleness
+    // when the user changes Random / Fixed. Shared by Destructable and Doodad
+    // previews (active one selected by m_preview_category).
     u8               m_preview_variation = 0;
+    // Ghost draw params, valid this frame only when m_ghost_active.
+    bool             m_ghost_active = false;
+    std::string      m_ghost_model;
+    glm::vec3        m_ghost_pos{0.0f};
+    f32              m_ghost_facing = 0.0f;
+    f32              m_ghost_scale  = 1.0f;
     void update_object_preview();
     void destroy_preview();
     void roll_destructable_variation();

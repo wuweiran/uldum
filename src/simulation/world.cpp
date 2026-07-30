@@ -734,6 +734,14 @@ void issue_order(World& world, Unit unit, Order order) {
         if (is_non_null_handle(mv->target_widget) && mv->target_widget.id == unit.id) return;
     } else if (auto* atk = std::get_if<orders::Attack>(&order.payload)) {
         if (is_non_null_handle(atk->target_widget) && atk->target_widget.id == unit.id) return;
+    } else if (auto* bld = std::get_if<orders::Build>(&order.payload)) {
+        // Reject a Build for an unknown type or a non-structure — the
+        // order would otherwise walk the worker to the site and then fail
+        // to spawn anything, silently eating whatever it was doing. Most
+        // placement legality (footprint clear) is a client-side gate; this
+        // is the sim-level invariant that the target IS a building type.
+        const auto* def = world.types ? world.types->get_unit_type(bld->building_type_id) : nullptr;
+        if (!def || !has_classification(def->classifications, "structure")) return;
     }
 
     if (order.queued && oq->current && oq->queued.size() >= MAX_QUEUED_ORDERS) return;

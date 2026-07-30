@@ -10,7 +10,7 @@
         "weapon": { "damage": 85, "range": 128, "cooldown": 1.3, "dmg_time": 0.3, "backsw_time": 0.4 },
         "acquire_range": 600,
         "vision": { "range": 1400 },
-        "abilities": [],
+        "abilities": ["build_structures"],
         "classifications": ["ground"],
         "sounds": { "attack": "sounds/chop.ogg" },
         "selection": { "priority": 5 }
@@ -83,14 +83,15 @@
     "barracks": {
         "display_name": "Barracks",
         "model": "models/barracks.glb",
-        "model_scale": 1.2,
-        "health": { "max": 1500, "regen": 0.5 },
+        "icon": "textures/icons/barracks.ktx2",
+        "model_scale": 2.4,
+        "health": { "max": 1500, "regen": 0 },
         "attributes": { "armor": 5, "armor_type": "fortified" },
-        "movement": { "speed": 0, "turn_rate": 0, "collision_radius": 192, "type": "ground" },
+        "movement": { "turn_rate": 0, "collision_radius": 192, "type": "none" },
         "pathing_footprint": [3, 3],
         "vision": { "range": 900 },
         "abilities": [],
-        "building": { "build_time": 60 },
+        "building": { "build_time": 20 },
         "classifications": ["ground", "structure"],
         "selection": { "priority": 2 }
     },

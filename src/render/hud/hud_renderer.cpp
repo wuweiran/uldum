@@ -1164,6 +1164,14 @@ static void draw_action_bar(HudRenderer::Impl& r, Hud::Impl& s) {
             break;
     }
 
+    // While the build sub-panel is open the action bar is DISABLED — dim it
+    // with a scrim so it reads as inactive (input is already gated in
+    // action_bar_hit_test / handle_hotkeys). The build_bar is its own panel
+    // elsewhere on screen, so this scrim doesn't cover it.
+    if (s.build_panel_open) {
+        emit_rect(r, cfg.rect, rgba(0, 0, 0, 150));
+    }
+
     draw_action_bar_cancel_zone(r, s);
 }
 
@@ -1292,7 +1300,99 @@ static void draw_command_bar(HudRenderer::Impl& r, Hud::Impl& s) {
     }
 }
 
-// ── Joystick ─────────────────────────────────────────────────────────────
+// ── Build bar ────────────────────────────────────────────────────────────
+
+// Structure sub-panel — its own composite. Slot layout/style are authored;
+// slot content (structure icon) is engine-filled from build_structures, whose
+// icons come from each unit type's icon_path.
+static void draw_build_bar(HudRenderer::Impl& r, Hud::Impl& s) {
+    const auto& cfg = s.build_bar_cfg;
+    if (!cfg.enabled || !s.build_bar_rt.visible) return;
+
+    u32 n = std::min(static_cast<u32>(cfg.slots.size()),
+                     static_cast<u32>(s.build_structures.size()));
+
+    // Background hugs only the USED slots (structures + the authored Cancel
+    // button), so a panel with one structure isn't a big empty box. Bounding
+    // box + padding.
+    if ((cfg.style.bg.rgba >> 24) != 0 && (n > 0 || cfg.has_cancel)) {
+        f32 x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        bool any = false;
+        auto grow = [&](const Rect& rc) {
+            x0 = std::min(x0, rc.x);        y0 = std::min(y0, rc.y);
+            x1 = std::max(x1, rc.x + rc.w); y1 = std::max(y1, rc.y + rc.h);
+            any = true;
+        };
+        for (u32 i = 0; i < n; ++i) {
+            if (cfg.slots[i].visible) grow(cfg.slots[i].rect);
+        }
+        if (cfg.has_cancel && cfg.cancel.visible) grow(cfg.cancel.rect);
+        if (any) {
+            constexpr f32 PAD = 6.0f;
+            emit_rect(r, { x0 - PAD, y0 - PAD, (x1 - x0) + PAD * 2.0f, (y1 - y0) + PAD * 2.0f },
+                      cfg.style.bg);
+        }
+    }
+
+    for (u32 i = 0; i < n; ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+
+        Color bg = slot.style.bg;
+        if (slot.pressed)      bg = slot.style.press_bg;
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        emit_rect(r, slot.rect, bg);
+
+        f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
+        if (s.world_ctx && s.world_ctx->types) {
+            const auto* udef = s.world_ctx->types->get_unit_type(s.build_structures[i]);
+            if (udef && !udef->icon_path.empty()) {
+                Rect icon_rect{ slot.rect.x + bw, slot.rect.y + bw,
+                                slot.rect.w - bw * 2.0f, slot.rect.h - bw * 2.0f };
+                emit_image(r, icon_rect, udef->icon_path, rgba(255, 255, 255, 255));
+            }
+        }
+
+        Color bc = slot.style.border_color;
+        if (bw > 0.0f && (bc.rgba >> 24) != 0) {
+            Rect rc = slot.rect;
+            emit_rect(r, { rc.x, rc.y, rc.w, bw }, bc);
+            emit_rect(r, { rc.x, rc.y + rc.h - bw, rc.w, bw }, bc);
+            emit_rect(r, { rc.x, rc.y, bw, rc.h }, bc);
+            emit_rect(r, { rc.x + rc.w - bw, rc.y, bw, rc.h }, bc);
+        }
+    }
+
+    // Authored Cancel (dismiss) button — an "X" that closes the panel.
+    // Placed wherever the map declared it (not auto-appended). Click / tap.
+    if (cfg.has_cancel && cfg.cancel.visible) {
+        const auto& slot = cfg.cancel;
+        Color bg = slot.style.bg;
+        if (slot.pressed)      bg = slot.style.press_bg;
+        else if (slot.hovered) bg = slot.style.hover_bg;
+        emit_rect(r, slot.rect, bg);
+
+        f32 cx = slot.rect.x + slot.rect.w * 0.5f;
+        f32 px = slot.rect.h * 0.5f;
+        if (px < 16.0f) px = 16.0f;
+        std::string_view glyph = "X";
+        f32 tw = measure_text(r, glyph, px);
+        f32 asc = measure_ascent(r, px);
+        f32 lh = measure_line_height(r, px);
+        emit_text(r, cx - tw * 0.5f, slot.rect.y + slot.rect.h * 0.5f + asc - lh * 0.5f,
+                  glyph, rgba(240, 200, 200, 255), px);
+
+        f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
+        Color bc = slot.style.border_color;
+        if (bw > 0.0f && (bc.rgba >> 24) != 0) {
+            Rect rc = slot.rect;
+            emit_rect(r, { rc.x, rc.y, rc.w, bw }, bc);
+            emit_rect(r, { rc.x, rc.y + rc.h - bw, rc.w, bw }, bc);
+            emit_rect(r, { rc.x, rc.y, bw, rc.h }, bc);
+            emit_rect(r, { rc.x + rc.w - bw, rc.y, bw, rc.h }, bc);
+        }
+    }
+}
 
 static void draw_joystick(HudRenderer::Impl& r, Hud::Impl& s) {
     const auto& cfg = s.joystick_cfg;
@@ -2280,6 +2380,10 @@ void HudRenderer::draw_tree() {
     draw_command_bar(r, s);
     draw_inventory(r, s);
     draw_pickup_bar(r, s);
+    // build_bar is a modal popup — draw it AFTER the other bars so it sits on
+    // top (its Cancel button overlaps the inventory in some layouts). Hit-test
+    // priority matches (build_bar is tested before inventory when open).
+    draw_build_bar(r, s);
     draw_display_message(r, s);
     draw_minimap(r, s);
     draw_joystick(r, s);

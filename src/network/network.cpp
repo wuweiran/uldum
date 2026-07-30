@@ -874,6 +874,15 @@ static std::vector<network::ColdRecord> collect_cold_records(
         recs.push_back(network::cold_anim_rec(clips, aq->looping));
     }
 
+    // Construction (render-sticky) — a building materialized/revealed mid-build
+    // needs its progress so the client plays the time-scaled birth clip from the
+    // right phase. A finished building has no Construction component → nothing
+    // sent, and the on-change record at completion clears it client-side.
+    if (const auto* c = world.constructions.get(entity_id); c && c->under_construction) {
+        recs.push_back(network::cold_construction_rec(
+            c->under_construction, c->build_time_total, c->build_progress));
+    }
+
     return recs;
 }
 
@@ -2094,6 +2103,23 @@ static void apply_cold_record(simulation::World& world, u32 entity_id,
         aq.looping = rec.bool_value;
         if (auto* q = world.anim_queues.get(entity_id)) *q = std::move(aq);
         else world.anim_queues.add(entity_id, std::move(aq));
+        break;
+    }
+    case ColdKind::Construction: {
+        // Under-construction state for the client's time-scaled birth clip. While
+        // building, add/update the mirror Construction so derive_anim_state plays
+        // the stretched birth (seeded to build_progress on materialize). On finish
+        // (under_construction=false) drop it → the building falls through to Idle.
+        if (rec.bool_value) {
+            simulation::Construction c;
+            c.under_construction = true;
+            c.build_time_total   = rec.value;
+            c.build_progress     = rec.value2;
+            if (auto* existing = world.constructions.get(entity_id)) *existing = c;
+            else world.constructions.add(entity_id, std::move(c));
+        } else {
+            world.constructions.remove(entity_id);
+        }
         break;
     }
     }

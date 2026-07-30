@@ -42,6 +42,7 @@ struct IWorldView {
     virtual const HandleInfo*             handle_info(u32 id)    const = 0;
     virtual const Movement*               movement(u32 id)       const = 0;
     virtual const Combat*                 combat(u32 id)         const = 0;
+    virtual const Construction*           construction(u32 id)   const = 0;
     virtual const Selectable*             selectable(u32 id)     const = 0;
     // Death is a derived view of health (see health_is_dead) — NOT a component.
     // The client only ever receives health, so this is the one predicate that
@@ -106,6 +107,7 @@ struct WorldView final : IWorldView {
     const HandleInfo*             handle_info(u32 id)    const override;
     const Movement*               movement(u32 id)       const override;
     const Combat*                 combat(u32 id)         const override;
+    const Construction*           construction(u32 id)   const override;
     const Selectable*             selectable(u32 id)     const override;
     bool                          is_dead(u32 id)        const override;
     const StatusFlags*            status(u32 id)         const override;
@@ -207,6 +209,7 @@ struct LocalView final : IWorldView {
     const HandleInfo*             handle_info(u32 id)    const override;
     const Movement*               movement(u32 id)       const override;
     const Combat*                 combat(u32 id)         const override;
+    const Construction*           construction(u32 id)   const override;
     const Selectable*             selectable(u32 id)     const override;
     bool                          is_dead(u32 id)        const override;
     const StatusFlags*            status(u32 id)         const override;

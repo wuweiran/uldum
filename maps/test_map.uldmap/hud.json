@@ -58,6 +58,32 @@
       "cancel_zone": { "anchor": "mr", "x": -16, "y": -96, "w": 64, "h": 64 }
     },
 
+    "build_bar": {
+      "anchor": "br", "x": -199, "y": -10, "w": 179, "h": 93,
+
+      "style_params": {
+        "bg": "#16241AE0"
+      },
+      "slot_style": {
+        "bg":           "#2A3A2EF0",
+        "hover_bg":     "#3C543CFA",
+        "press_bg":     "#5A7A5AFF",
+        "border_color": "#00000080",
+        "border_width": 1
+      },
+
+      "slots": [
+        { "anchor": "tl", "x":   5, "y": 48, "w": 40, "h": 40 },
+        { "anchor": "tl", "x":  48, "y": 48, "w": 40, "h": 40 },
+        { "anchor": "tl", "x":  91, "y": 48, "w": 40, "h": 40 },
+        { "anchor": "tl", "x": 134, "y": 48, "w": 40, "h": 40 },
+        { "anchor": "tl", "x":  48, "y":  5, "w": 40, "h": 40 },
+        { "anchor": "tl", "x":  91, "y":  5, "w": 40, "h": 40 }
+      ],
+
+      "cancel": { "anchor": "tl", "x": 134, "y":  5, "w": 40, "h": 40 }
+    },
+
     "inventory": {
       "anchor": "br", "x": -199, "y": -10, "w": 90, "h": 132,
       "style": "classic_rts",

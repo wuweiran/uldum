@@ -47,6 +47,15 @@ public:
     void add_polyline(std::span<const glm::vec3> samples, glm::vec4 color,
                       bool closed = false);
 
+    // Filled quad (two triangles) spanning the four corners in winding
+    // order a→b→c→d. Uses a second triangle-list pipeline that shares
+    // this overlay's shader / layout / vertex format / depth setup, so
+    // build footprints match the in-game filled tiles exactly. The full
+    // EditorOverlays→WorldOverlays merge (one renderer for lines + fills)
+    // is deferred to its own commit.
+    void add_filled_quad(glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+                         glm::vec4 color);
+
     // Emit the batched lines into `cmd` against `view_projection`.
     // Call inside the active render pass; safe to call when nothing
     // has been queued (no-op).

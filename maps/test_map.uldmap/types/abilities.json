@@ -1,4 +1,12 @@
 {
+    "build_structures": {
+        "name": "Build Structures",
+        "tooltip": "Construct a building.",
+        "icon": "textures/icons/build.ktx2",
+        "hotkey": "B",
+        "form": "build",
+        "builds": ["barracks"]
+    },
     "devotion_aura": {
         "name": "Devotion Aura",
         "tooltip": "Gives nearby friendly units a bonus to their armor.",

@@ -3,6 +3,7 @@
 #include "map/map.h"
 #include "map/terrain_data.h"
 #include "simulation/pathfinding.h"  // PATHING_SUBDIV
+#include "simulation/placement.h"    // shared footprint/collision placement checks
 #include "script/script_check.h"     // Tier-1 Lua syntax validation (dev/editor only)
 #include "core/log.h"
 
@@ -515,6 +516,16 @@ void Editor::run() {
             m_renderer.render_model_viewer(cmd, frame_dt);
             m_rhi.begin_rendering();
             m_renderer.draw(cmd, m_rhi.extent(), view);
+            // Render-only placement ghost (translucent building/object preview
+            // following the cursor). Drawn after the world so it composites over
+            // opaque geometry; neutral tint (the green/red footprint grid below
+            // conveys validity).
+            if (m_ghost_active && !m_ghost_model.empty()) {
+                m_renderer.draw_ghost_model(cmd, m_ghost_model,
+                                            m_renderer.camera().view_projection(),
+                                            m_ghost_pos, m_ghost_facing, m_ghost_scale,
+                                            glm::vec4{1.0f}, 0.5f);
+            }
             m_overlays.draw(cmd, m_renderer.camera().view_projection());
             imgui_render(cmd);
             m_rhi.end_frame();
@@ -904,12 +915,10 @@ void Editor::brush_ramp_clear() {
 // ── Place mode ───────────────────────────────────────────────────────────
 
 void Editor::destroy_preview() {
-    if (m_preview_type_id.empty()) return;
-    auto& world = m_simulation.world();
-    if (world.contains(m_preview_handle)) {
-        simulation::destroy(world, m_preview_handle);
-    }
-    m_preview_handle = {};
+    // Render-only ghost — no sim entity to tear down; just clear the params
+    // so no ghost draws this frame.
+    m_ghost_active = false;
+    m_ghost_model.clear();
     m_preview_type_id.clear();
 }
 
@@ -985,6 +994,7 @@ void Editor::roll_doodad_variation() {
 // inert — it just renders. Used for Unit and Destructable categories
 // alike (Item is left as a 2D ring; no static-model preview yet).
 void Editor::update_object_preview() {
+    m_ghost_active = false;
     if (!m_map_loaded) { destroy_preview(); return; }
 
     bool over_ui      = ImGui::GetIO().WantCaptureMouse;
@@ -997,109 +1007,53 @@ void Editor::update_object_preview() {
                         category_ok;
     if (!want_preview) { destroy_preview(); return; }
 
-    auto& world = m_simulation.world();
-    auto& td    = m_map.terrain();
+    auto& td = m_map.terrain();
     if (!td.is_valid()) { destroy_preview(); return; }
 
+    // Render-only ghost — no sim entity; drawn by Renderer::draw_ghost_model.
     if (m_object_category == ObjectCategory::Unit) {
-        // Recreate when category or type changes.
-        if (m_preview_category != ObjectCategory::Unit || m_preview_type_id != m_place_unit_type) {
-            destroy_preview();
-            f32 facing_rad = m_place_unit_facing_deg * (glm::pi<f32>() / 180.0f);
-            m_preview_handle = simulation::create_unit(
-                world, m_place_unit_type,
-                simulation::Player{m_place_unit_owner},
-                m_cursor_pos.x, m_cursor_pos.y, facing_rad);
-            if (simulation::is_null_handle(m_preview_handle)) return;
-            m_preview_type_id = m_place_unit_type;
-            m_preview_category = ObjectCategory::Unit;
-            // Suppress the birth animation so the preview unit doesn't
-            // pop out of the ground every time you switch type. Also
-            // half-alpha so the preview reads as a placement ghost
-            // rather than a real unit (skinned-mesh path only —
-            // static-mesh previews stay opaque until the static
-            // pipeline plumbs alpha through InstanceData).
-            if (auto* r = world.renderables.get(m_preview_handle.id)) {
-                r->skip_birth   = true;
-                r->visual_alpha = 0.5f;
-            }
-        }
-
-        // Move the preview to follow the cursor (snapped if a building).
-        const auto* def = m_simulation.types().get_unit_type(m_preview_type_id);
-        if (!def) return;
+        const auto* def = m_simulation.types().get_unit_type(m_place_unit_type);
+        if (!def || def->model_path.empty()) { destroy_preview(); return; }
         f32 wx = m_cursor_pos.x, wy = m_cursor_pos.y;
         if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0) {
             wx = map::snap_building_x(td, wx, def->pathing_footprint_w);
             wy = map::snap_building_y(td, wy, def->pathing_footprint_h);
         }
-        if (auto* t = world.transforms.get(m_preview_handle.id)) {
-            t->position.x = wx;
-            t->position.y = wy;
-            t->position.z = map::sample_height(td, wx, wy);
-            t->facing     = m_place_unit_facing_deg * (glm::pi<f32>() / 180.0f);
-        }
+        m_ghost_model  = def->model_path;
+        m_ghost_pos    = { wx, wy, map::sample_height(td, wx, wy) };
+        m_ghost_facing = m_place_unit_facing_deg * (glm::pi<f32>() / 180.0f);
+        m_ghost_scale  = def->model_scale;
+        m_preview_category = ObjectCategory::Unit;
+        m_preview_type_id  = m_place_unit_type;
+        m_ghost_active = true;
     } else if (m_object_category == ObjectCategory::Destructable) {
-        // Destructable. Recreate when category, type, or variation changes.
-        bool stale = m_preview_category != ObjectCategory::Destructable ||
-                     m_preview_type_id  != m_place_destructable_type ||
-                     m_preview_variation != m_place_destructable_var;
-        if (stale) {
-            destroy_preview();
-            auto h = simulation::create_destructable(
-                world, m_place_destructable_type,
-                m_cursor_pos.x, m_cursor_pos.y, /*facing=*/0,
-                m_place_destructable_var);
-            if (simulation::is_null_handle(h)) return;
-            m_preview_handle.id = h.id;
-            m_preview_type_id           = m_place_destructable_type;
-            m_preview_category          = ObjectCategory::Destructable;
-            m_preview_variation         = m_place_destructable_var;
-            if (auto* r = world.renderables.get(m_preview_handle.id)) {
-                r->visual_alpha = 0.5f;
-            }
-        }
-
-        // Move the preview to follow the cursor (cell-snap regardless
-        // of footprint size — destructables visually land on 1/4-tile
-        // positions, finer than buildings).
-        const auto* def = m_simulation.types().get_destructable_type(m_preview_type_id);
-        if (!def) return;
+        const auto* def = m_simulation.types().get_destructable_type(m_place_destructable_type);
+        if (!def || def->models.empty()) { destroy_preview(); return; }
+        u8 var = m_place_destructable_var < def->models.size()
+                     ? m_place_destructable_var : 0;
         f32 wx = map::snap_cell_x(td, m_cursor_pos.x);
         f32 wy = map::snap_cell_y(td, m_cursor_pos.y);
-        if (auto* t = world.transforms.get(m_preview_handle.id)) {
-            t->position.x = wx;
-            t->position.y = wy;
-            t->position.z = map::sample_height(td, wx, wy);
-            t->prev_position = t->position;
-        }
-    } else {
-        // Doodad. Same model+variation pattern as destructable, but no
-        // footprint snap and no collision check at all.
-        bool stale = m_preview_category != ObjectCategory::Doodad ||
-                     m_preview_type_id  != m_place_doodad_type ||
-                     m_preview_variation != m_place_doodad_var;
-        if (stale) {
-            destroy_preview();
-            auto h = simulation::create_doodad(
-                world, m_place_doodad_type,
-                m_cursor_pos.x, m_cursor_pos.y, /*facing=*/0,
-                m_place_doodad_var);
-            if (simulation::is_null_handle(h)) return;
-            m_preview_handle.id = h.id;
-            m_preview_type_id           = m_place_doodad_type;
-            m_preview_category          = ObjectCategory::Doodad;
-            m_preview_variation         = m_place_doodad_var;
-            if (auto* r = world.renderables.get(m_preview_handle.id)) {
-                r->visual_alpha = 0.5f;
-            }
-        }
-        if (auto* t = world.transforms.get(m_preview_handle.id)) {
-            t->position.x = m_cursor_pos.x;
-            t->position.y = m_cursor_pos.y;
-            t->position.z = map::sample_height(td, m_cursor_pos.x, m_cursor_pos.y);
-            t->prev_position = t->position;
-        }
+        m_ghost_model  = def->models[var];
+        m_ghost_pos    = { wx, wy, map::sample_height(td, wx, wy) };
+        m_ghost_facing = 0.0f;
+        m_ghost_scale  = def->model_scale;
+        m_preview_category  = ObjectCategory::Destructable;
+        m_preview_type_id   = m_place_destructable_type;
+        m_preview_variation = var;
+        m_ghost_active = true;
+    } else {  // Doodad
+        const auto* def = m_simulation.types().get_doodad_type(m_place_doodad_type);
+        if (!def || def->models.empty()) { destroy_preview(); return; }
+        u8 var = m_place_doodad_var < def->models.size() ? m_place_doodad_var : 0;
+        m_ghost_model  = def->models[var];
+        m_ghost_pos    = { m_cursor_pos.x, m_cursor_pos.y,
+                           map::sample_height(td, m_cursor_pos.x, m_cursor_pos.y) };
+        m_ghost_facing = 0.0f;
+        m_ghost_scale  = def->model_scale;
+        m_preview_category  = ObjectCategory::Doodad;
+        m_preview_type_id   = m_place_doodad_type;
+        m_preview_variation = var;
+        m_ghost_active = true;
     }
 }
 
@@ -1116,39 +1070,8 @@ void Editor::clear_selection() {
 // PATHING_SUBDIV first.
 bool Editor::footprint_clear_at(f32 wx, f32 wy, u32 fw, u32 fh, bool in_cells,
                                 simulation::MoveType move_type) const {
-    if (fw == 0 || fh == 0) return true;
-    const auto& td = m_map.terrain();
-    if (!td.is_valid()) return true;
-    f32 step = in_cells
-        ? td.tile_size / static_cast<f32>(simulation::PATHING_SUBDIV)
-        : td.tile_size;
-    f32 left_f   = (wx - td.origin_x()) / step - 0.5f * static_cast<f32>(fw);
-    f32 bottom_f = (wy - td.origin_y()) / step - 0.5f * static_cast<f32>(fh);
-    i32 c0x = static_cast<i32>(std::round(left_f));
-    i32 c0y = static_cast<i32>(std::round(bottom_f));
-    // Iterate at cell granularity. Tile mode multiplies coords + extents.
-    i32 step_cells = in_cells ? 1 : static_cast<i32>(simulation::PATHING_SUBDIV);
-    i32 cw = static_cast<i32>(fw) * step_cells;
-    i32 ch = static_cast<i32>(fh) * step_cells;
-    i32 cx0 = c0x * step_cells;
-    i32 cy0 = c0y * step_cells;
-    for (i32 dy = 0; dy < ch; ++dy) {
-        for (i32 dx = 0; dx < cw; ++dx) {
-            i32 cx = cx0 + dx;
-            i32 cy = cy0 + dy;
-            // can_occupy_cell rejects out-of-range cells (both the -X/-Y
-            // AND +X/+Y edges — the old `cx<0||cy<0` guard only caught
-            // the former, letting footprints hang off the east/north
-            // border), terrain the move type can't traverse, and runtime
-            // blocks in one call. A footprint is clear only if every cell
-            // it covers is a valid, unblocked cell for this move type
-            // (ground stays out of deep water; water stays in it).
-            if (!m_simulation.pathfinder().can_occupy_cell(cx, cy, move_type)) {
-                return false;
-            }
-        }
-    }
-    return true;
+    return simulation::footprint_clear(m_simulation.pathfinder(), m_map.terrain(),
+                                       wx, wy, fw, fh, in_cells, move_type);
 }
 
 bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
@@ -1178,13 +1101,19 @@ bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
     const auto& td = m_map.terrain();
     if (!td.is_valid()) return false;
 
-    // Footprint clearance. Buildings (Unit category) author in TILES;
-    // destructables author in CELLS. Both check against the pathfinder's
-    // cell grid — the helper handles the unit conversion. Move type picks
-    // the terrain rule (ground rejects deep water, water requires it).
+    // Footprint clearance. Buildings (Unit category) author in TILES and
+    // require FLAT ground (footprint_buildable rejects ramps/cliffs — same
+    // rule the in-game build path uses). Destructables author in CELLS and
+    // may sit on ramps, so they keep the looser cell-clearance check.
     if (fw > 0 && fh > 0) {
-        bool in_cells = (cat == ObjectCategory::Destructable);
-        if (!footprint_clear_at(wx, wy, fw, fh, in_cells, move_type)) return false;
+        if (cat == ObjectCategory::Unit) {
+            if (!simulation::footprint_buildable(m_simulation.pathfinder(), td,
+                                                 wx, wy, fw, fh, move_type)) {
+                return false;
+            }
+        } else if (!footprint_clear_at(wx, wy, fw, fh, /*in_cells=*/true, move_type)) {
+            return false;
+        }
     } else if (my_radius > 0) {
         // Non-footprint mobile object: the tile must be occupiable by this
         // move type (deep water for ships, land for ground, anywhere for
@@ -1204,20 +1133,9 @@ bool Editor::can_place_at(ObjectCategory cat, std::string_view type,
     // surface↔surface) can't share a spot. Skip the preview entity (it sits at
     // the cursor and would always fail).
     if (my_radius > 0) {
-        bool my_air = (move_type == simulation::MoveType::Fly);
-        const auto& world = m_simulation.world();
-        for (u32 i = 0; i < world.movements.count(); ++i) {
-            u32 id = world.movements.ids()[i];
-            if (id == m_preview_handle.id) continue;
-            const auto& other = world.movements.data()[i];
-            // Different collision layer (air vs surface) → no overlap.
-            if ((other.type == simulation::MoveType::Fly) != my_air) continue;
-            const auto* t = world.transforms.get(id);
-            if (!t) continue;
-            f32 dx = t->position.x - wx;
-            f32 dy = t->position.y - wy;
-            f32 min_dist = my_radius + other.collision_radius;
-            if (dx * dx + dy * dy < min_dist * min_dist) return false;
+        if (simulation::collision_overlaps(m_simulation.world(), wx, wy, my_radius,
+                                           move_type, /*ignore_id=*/0)) {
+            return false;
         }
     }
 
@@ -2332,6 +2250,37 @@ void Editor::draw_overlays() {
             }
         };
 
+        // Per-tile building footprint: each tile is a flush filled quad in its
+        // own color (green = buildable, red = ramp/cliff/blocked), so the user
+        // sees exactly which tiles fail — same rule and look the in-game build
+        // uses (simulation::tile_buildable + the flat BuildPlacement decal).
+        auto add_building_footprint_pertile = [&](f32 cx, f32 cy, u32 fw, u32 fh,
+                                                  glm::vec4 ok_c, glm::vec4 bad_c) {
+            const f32 tsz = td.tile_size;
+            const f32 x0 = cx - 0.5f * fw * tsz;
+            const f32 y0 = cy - 0.5f * fh * tsz;
+            i32 tx0 = static_cast<i32>(std::round((x0 - td.origin_x()) / tsz));
+            i32 ty0 = static_cast<i32>(std::round((y0 - td.origin_y()) / tsz));
+            auto corner = [&](f32 x, f32 y) {
+                return glm::vec3{ x, y, map::sample_height(td, x, y) };
+            };
+            for (u32 j = 0; j < fh; ++j) {
+                for (u32 i = 0; i < fw; ++i) {
+                    bool b = simulation::tile_buildable(m_simulation.pathfinder(), td,
+                                                        tx0 + static_cast<i32>(i),
+                                                        ty0 + static_cast<i32>(j),
+                                                        simulation::MoveType::Ground);
+                    glm::vec4 col = b ? ok_c : bad_c;
+                    f32 xl = x0 + static_cast<f32>(i) * tsz;
+                    f32 xr = xl + tsz;
+                    f32 yb = y0 + static_cast<f32>(j) * tsz;
+                    f32 yt = yb + tsz;
+                    m_overlays.add_filled_quad(corner(xl, yb), corner(xr, yb),
+                                               corner(xr, yt), corner(xl, yt), col);
+                }
+            }
+        };
+
         f32 px = m_cursor_pos.x, py = m_cursor_pos.y;
         // Footprint grid colors: green = placement valid, red = blocked.
         // Items don't have footprints; pink ring stays neutral.
@@ -2350,8 +2299,12 @@ void Editor::draw_overlays() {
             }
             bool ok = can_place_at(ObjectCategory::Unit, m_place_unit_type, sx, sy);
             if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0) {
-                add_footprint_grid(sx, sy, def->pathing_footprint_w, def->pathing_footprint_h,
-                                   ok ? ok_color : bad_color, td.tile_size);
+                // Filled tiles read best translucent so terrain shows through
+                // (wire draws below keep the opaque colors).
+                add_building_footprint_pertile(sx, sy, def->pathing_footprint_w,
+                                               def->pathing_footprint_h,
+                                               { ok_color.r,  ok_color.g,  ok_color.b,  0.45f },
+                                               { bad_color.r, bad_color.g, bad_color.b, 0.45f });
             } else if (!ok && def->collision_radius > 0) {
                 add_world_circle({ sx, sy, 0 }, def->collision_radius, bad_color);
             }

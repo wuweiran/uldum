@@ -14,6 +14,7 @@ AbilityForm parse_ability_form(const std::string& s) {
     if (s == "aura")             return AbilityForm::Aura;
     if (s == "instant")          return AbilityForm::Instant;
     if (s == "target")           return AbilityForm::Target;
+    if (s == "build")            return AbilityForm::Build;
     return AbilityForm::PassiveModifier;
 }
 
@@ -135,6 +136,16 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
             }
             if (val.contains("accept_point")) {
                 def.accept_point = val["accept_point"].get<bool>();
+            }
+        }
+
+        // Build-form metadata: the structure type ids offered in the
+        // sub-panel. Parsed only for Build so a stray "builds" on another
+        // form is ignored.
+        if (def.form == AbilityForm::Build && val.contains("builds")
+            && val["builds"].is_array()) {
+            for (auto& b : val["builds"]) {
+                if (b.is_string()) def.builds.push_back(b.get<std::string>());
             }
         }
 

@@ -59,6 +59,7 @@ public:
         AoeCircle,           // quad   — AoE preview circle
         AoeLine,             // ribbon — AoE preview line
         AoeCone,             // fan    — AoE preview cone
+        BuildPlacement,      // quad   — build footprint tile (engine-generated default, tinted green/red)
 
         kCount
     };
@@ -115,6 +116,14 @@ public:
     // at `center`. UV spans [0,1]² across the quad.
     void add_quad(glm::vec3 center, f32 half_extent,
                   glm::vec4 color, TextureId tex);
+
+    // Arbitrary ground quad from four explicit corners (SW, SE, NE, NW —
+    // CCW winding, XY layout). Unlike add_quad, each corner carries its own
+    // Z, so the quad drapes over sloped terrain as a proper quadrilateral
+    // (sample terrain height per corner before calling). UV spans [0,1]²:
+    // sw=(0,0) se=(1,0) ne=(1,1) nw=(0,1).
+    void add_quad_corners(glm::vec3 sw, glm::vec3 se, glm::vec3 ne, glm::vec3 nw,
+                          glm::vec4 color, TextureId tex);
 
     // Variable-angle wedge fan from `origin` along `dir` (normalized
     // XY direction), spanning ±`half_angle` radians, with radial extent

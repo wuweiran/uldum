@@ -13,8 +13,14 @@ public:
     void update(const InputContext& ctx, f32 dt) override;
     void queue_ability(std::string_view ability_id) override;
     void queue_command(std::string_view command_id) override;
+    void queue_build(std::string_view building_type_id) override;
     std::string_view targeting_ability_id() const override {
         return m_target_mode == TargetingMode::Ability
+                 ? std::string_view{m_target_ability_id}
+                 : std::string_view{};
+    }
+    std::string_view build_type_id() const override {
+        return m_target_mode == TargetingMode::Build
                  ? std::string_view{m_target_ability_id}
                  : std::string_view{};
     }
@@ -74,6 +80,13 @@ private:
     void dispatch_command(const InputContext& ctx,
                           std::string_view command_id);
 
+    // Build sub-panel dispatch. Verifies the selection's lead unit owns a
+    // build ability offering this structure type, then arms
+    // TargetingMode::Build so the next world click places it. Unknown /
+    // unowned types are ignored.
+    void dispatch_build(const InputContext& ctx,
+                        std::string_view building_type_id);
+
     // The single local-input commit point: submit the order AND fire the
     // target ping derived from it (derive_target_ping). Every order this
     // preset issues from a player gesture goes through here, so the ping
@@ -106,19 +119,23 @@ private:
         Ability     = 1,   // hotkey / slot click → next world click commits Cast
         Move        = 2,   // command_bar "move"  → next ground click commits Move
         AttackMove  = 3,   // 'A' or attack cmd   → next click commits Attack/AttackMove
+        Build       = 4,   // build sub-panel slot → next click commits Build at snapped point
     };
     TargetingMode m_target_mode        = TargetingMode::None;
-    std::string   m_target_ability_id;   // meaningful only when m_target_mode == Ability
+    std::string   m_target_ability_id;   // ability id (Ability mode) or building type id (Build mode)
 
     // Enter a targeting mode, replacing whatever was active before.
-    // Calling with `Ability` requires a non-empty `ability_id`; other
-    // modes ignore it. Reduces the four-line "set this true / clear
-    // these three" pattern to a single function call so future modes
-    // (build placement, etc.) don't have to re-edit every call site.
+    // Calling with `Ability` or `Build` requires a non-empty `ability_id`
+    // (the ability id, or the building type id for Build); other modes
+    // ignore it. Reduces the four-line "set this true / clear these three"
+    // pattern to a single function call so future modes don't have to
+    // re-edit every call site.
     void set_target_mode(TargetingMode m, std::string_view ability_id = {}) {
         m_target_mode = m;
-        if (m == TargetingMode::Ability) m_target_ability_id.assign(ability_id);
-        else                              m_target_ability_id.clear();
+        if (m == TargetingMode::Ability || m == TargetingMode::Build)
+            m_target_ability_id.assign(ability_id);
+        else
+            m_target_ability_id.clear();
     }
 
     // Edge pan
@@ -136,6 +153,11 @@ private:
     // Queued command request from the command_bar (tap on a command
     // slot). Processed alongside m_pending_ability in update().
     std::string m_pending_command;
+
+    // Queued build request from the build sub-panel (tap on a structure
+    // slot). Processed alongside m_pending_ability in update(); arms
+    // TargetingMode::Build for the next world click.
+    std::string m_pending_build;
 
     // Two-finger gesture state (mobile camera pan + pinch zoom). Held
     // across frames so deltas are well-defined; reset whenever the

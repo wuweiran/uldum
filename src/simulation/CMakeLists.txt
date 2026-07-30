@@ -5,6 +5,7 @@ add_library(uldum_simulation STATIC
     type_registry.cpp
     ability_def.cpp
     systems.cpp
+    placement.cpp
     pathfinding.cpp
     spatial_query.cpp
     vision.cpp

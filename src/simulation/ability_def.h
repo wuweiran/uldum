@@ -27,6 +27,8 @@ enum class AbilityForm : u8 {
     Aura,             // scan radius, apply/remove a passive_* buff to nearby units
     Instant,          // cast_time → fire → backsw_time, no target
     Target,           // cast on a widget and/or a point — see widget_kinds + accept_point
+    Build,            // opens a local build sub-panel listing `builds`; each entry
+                      // places an orders::Build at a footprint-snapped point
 };
 
 AbilityForm parse_ability_form(const std::string& s);
@@ -154,6 +156,12 @@ struct AbilityDef {
     // Ignored when `form` isn't Target.
     u32  widget_kinds = 0;
     bool accept_point = false;
+
+    // Build-form metadata. The structure type ids this ability offers in
+    // its build sub-panel (WC3's "Structures Built"). Ignored when `form`
+    // isn't Build. A unit may carry several Build abilities (e.g. basic vs.
+    // advanced) — each surfaces its own list.
+    std::vector<std::string> builds;
 
     std::vector<AbilityLevelDef> levels;
 

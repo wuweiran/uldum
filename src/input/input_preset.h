@@ -122,11 +122,24 @@ public:
     // processing as queue_ability.
     virtual void queue_command(std::string_view /*command_id*/) {}
 
+    // Ask the preset to enter build-placement mode for a structure type.
+    // Fired from the build sub-panel (a structure slot click). The next
+    // world-click commits an orders::Build at the footprint-snapped point
+    // if placement is legal there; an illegal click keeps the mode armed
+    // (like a widget-only ability's miss). Default impl no-ops.
+    virtual void queue_build(std::string_view /*building_type_id*/) {}
+
     // Id of the ability currently in "pick a target" mode, or empty
     // when the preset isn't waiting for a cast target. Used by the HUD
     // to highlight the armed slot so the player knows which ability
     // is about to fire. Default: never armed.
     virtual std::string_view targeting_ability_id() const { return {}; }
+
+    // Structure type currently in build-placement mode, or empty when the
+    // preset isn't placing a building. The app reads this each frame to
+    // render the footprint/ghost preview at the snapped cursor. Default:
+    // never placing.
+    virtual std::string_view build_type_id() const { return {}; }
 
     // Command id currently in targeting mode — mirror of the above,
     // for the command_bar composite. Empty when no command is armed.

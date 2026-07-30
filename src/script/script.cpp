@@ -466,6 +466,20 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         fan_out(unit, ItemEvent{item}, "global_item_dropped", "unit_item_dropped");
     };
 
+    // Construction events fired by system_build. The registered entity is
+    // the structure (so GetTriggerUnit() returns it); GetConstructionBuilder()
+    // exposes the worker (invalid on finish).
+    sim.world().on_construction_start = [fan_out](simulation::Unit structure,
+                                                  simulation::Unit builder) {
+        fan_out(structure, ConstructionEvent{builder},
+                "global_construction_start", "unit_construction_start");
+    };
+    sim.world().on_construction_finish = [fan_out](simulation::Unit structure,
+                                                   simulation::Unit builder) {
+        fan_out(structure, ConstructionEvent{builder},
+                "global_construction_finish", "unit_construction_finish");
+    };
+
     // Region events fired by system_regions per tick. Region id is
     // passed both as the event filter (so a trigger registered for one
     // specific region fires only for it) and via the context, so the
@@ -1350,6 +1364,12 @@ void ScriptEngine::bind_api() {
                 }
             }
             order.payload = std::move(cast);
+        } else if (order_type == "build" && va.size() >= 3) {
+            // build(type_id, x, y) — place a structure at a ground point.
+            simulation::orders::Build build;
+            build.building_type_id = va[0].as<std::string>();
+            build.pos = glm::vec3{va[1].as<f32>(), va[2].as<f32>(), 0};
+            order.payload = std::move(build);
         } else {
             return;
         }
@@ -2488,6 +2508,16 @@ void ScriptEngine::bind_trigger_api() {
             return event->ability_id;
         }
         return {};
+    };
+
+    // Construction events: the worker that placed the structure. Invalid
+    // (nil) on the finish event, where GetTriggerUnit() is the structure.
+    lua["GetConstructionBuilder"] = [&, unit_or_nil]() -> sol::object {
+        if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
+        if (auto* event = std::get_if<ConstructionEvent>(&m_event_frame->payload)) {
+            return unit_or_nil(event->builder);
+        }
+        return sol::make_object(*m_lua, sol::nil);
     };
 
     auto order_event = [this]() -> OrderEvent* {

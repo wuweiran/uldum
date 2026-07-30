@@ -28,5 +28,5 @@ void main() {
               + 0.25 * max(dot(n, FILL), 0.0);
 
     vec3 rgb = tex.rgb * pc.base_color.rgb * lit;
-    out_color = vec4(rgb, 1.0);
+    out_color = vec4(rgb, pc.base_color.a);   // a=1 for the opaque viewer; <1 for the translucent build ghost
 }

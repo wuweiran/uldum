@@ -382,6 +382,10 @@ void Simulation::tick(float dt) {
     // stop it (combat.target still cleared by issue_order).
     system_combat(m_world, dt, m_spatial_grid);
     system_movement(m_world, dt, m_pathfinder, m_spatial_grid, m_terrain);
+    // Build after movement: movement consumes the approach fields system_build
+    // sets to walk the worker to its site; on arrival system_build spawns the
+    // structure and advances construction.
+    system_build(m_world, dt, m_pathfinder, m_terrain);
     system_ability(m_world, dt, m_abilities, m_spatial_grid);
     system_items(m_world, dt);
     system_projectile(m_world, dt);

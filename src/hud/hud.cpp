@@ -179,6 +179,17 @@ void Hud::on_viewport_resized(u32 screen_w, u32 screen_h) {
         }
     }
 
+    // Build bar — same structure (its own composite; slot contents are
+    // engine-filled at open time, but the rects resolve here like any bar).
+    auto& bb = m_impl->build_bar_cfg;
+    if (bb.enabled) {
+        bb.rect = resolve(viewport, bb.placement);
+        for (auto& slot : bb.slots) {
+            slot.rect = resolve(bb.rect, slot.placement);
+        }
+        if (bb.has_cancel) bb.cancel.rect = resolve(bb.rect, bb.cancel.placement);
+    }
+
     // Joystick — base rect + optional larger activation rect. Both
     // anchor against the viewport.
     auto& js = m_impl->joystick_cfg;
@@ -374,6 +385,11 @@ void Hud::reset_session_state() {
     s.button_event_fn = {};
     s.action_bar_cast_fn = {};
     s.action_bar_cast_at_target_fn = {};
+    s.build_panel_fn = {};
+    s.build_at_target_fn = {};
+    s.build_panel_open = false;
+    s.build_source_ability.clear();
+    s.build_structures.clear();
     s.minimap_jump_fn = {};
     s.command_bar_fn = {};
     s.inventory_use_fn           = {};
@@ -964,6 +980,57 @@ void Hud::action_bar_set_targeting_ability(std::string_view ability_id) {
     m_impl->action_bar_targeting_ability.assign(ability_id);
 }
 
+void Hud::set_build_bar_config(const BuildBarConfig& cfg) {
+    if (!m_impl) return;
+    m_impl->build_bar_cfg = cfg;
+    m_impl->build_bar_rt = {};   // starts hidden
+    m_impl->build_bar_hover_slot = -1;
+    m_impl->build_bar_pressed_slot = -1;
+}
+
+void Hud::open_build_panel(std::string_view source_ability_id,
+                           std::vector<std::string> structure_type_ids) {
+    if (!m_impl) return;
+    if (structure_type_ids.empty()) return;   // nothing to offer → no-op
+    m_impl->build_panel_open      = true;
+    m_impl->build_bar_rt.visible  = true;
+    m_impl->build_source_ability.assign(source_ability_id);
+    m_impl->build_structures      = std::move(structure_type_ids);
+}
+
+void Hud::close_build_panel() {
+    if (!m_impl) return;
+    m_impl->build_panel_open = false;
+    m_impl->build_bar_rt.visible = false;
+    m_impl->build_bar_hover_slot = -1;
+    m_impl->build_bar_pressed_slot = -1;
+    m_impl->build_bar_cfg.cancel.hovered = false;
+    m_impl->build_bar_cfg.cancel.pressed = false;
+    m_impl->build_source_ability.clear();
+    m_impl->build_structures.clear();
+}
+
+bool Hud::build_panel_active() const {
+    return m_impl && m_impl->build_panel_open;
+}
+
+void Hud::set_build_panel_fn(BuildPanelPickFn fn) {
+    if (m_impl) m_impl->build_panel_fn = std::move(fn);
+}
+
+void Hud::set_build_at_target_fn(BuildAtTargetFn fn) {
+    if (m_impl) m_impl->build_at_target_fn = std::move(fn);
+}
+
+bool Hud::active_build_drag(std::string& type, f32& wx, f32& wy) const {
+    if (!m_impl || m_impl->drag_cast.build_type.empty()) return false;
+    if (m_impl->drag_cast.phase == Impl::DragCastPhase::Idle) return false;
+    type = m_impl->drag_cast.build_type;
+    wx = m_impl->drag_cast.drag_world_x;
+    wy = m_impl->drag_cast.drag_world_y;
+    return true;
+}
+
 // ── Minimap composite ────────────────────────────────────────────────────
 
 void Hud::set_minimap_config(const MinimapConfig& cfg) {
@@ -1305,6 +1372,13 @@ bool Hud::handle_right_click(f32 x, f32 y) {
     f32 inv_s = 1.0f / s.ui_scale;  // ui_scale clamped > 0 at its sole writer (set_ui_scale)
     f32 dpx = x * inv_s, dpy = y * inv_s;
 
+    // Build sub-panel open → right-click anywhere backs out of it (WC3
+    // command-card cancel), returning the bar to the unit's abilities.
+    if (s.build_panel_open) {
+        close_build_panel();
+        return true;
+    }
+
     // Already holding → right-click anywhere cancels the hold (WC3 UX).
     if (s.held_item_slot >= 0) {
         s.held_item_slot = -1;
@@ -1356,7 +1430,9 @@ bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
     if (!own || own->id != s.world_ctx->local_player.id) return false;
 
     const auto* mv  = world.movement(lead.id);
-    bool can_move   = mv && mv->speed > 0.0f;
+    // MoveType::None is the authoritative "cannot move" signal (WC3 Movement
+    // Type = None); speed alone is insufficient for a mis-authored None unit.
+    bool can_move   = mv && mv->type != simulation::MoveType::None && mv->speed > 0.0f;
     // Combat is opt-in (create_unit only adds the component when the type
     // declares a `combat` block), so presence IS the capability — a
     // barracks has no Combat component and thus no attack command.
@@ -1379,6 +1455,33 @@ static i32 command_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
         const Rect& r = slot.rect;
         if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
             return static_cast<i32>(i);
+        }
+    }
+    return -1;
+}
+
+// Sentinel returned by build_bar_hit_test when the pointer is over the
+// authored Cancel (dismiss) button rather than a structure slot.
+static constexpr i32 BUILD_CANCEL_HIT = -2;
+
+// Build-bar hit test — the structure slots (0..n) plus the authored Cancel
+// button. Cancel returns BUILD_CANCEL_HIT; a structure returns its index.
+static i32 build_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
+    const auto& cfg = s.build_bar_cfg;
+    if (!cfg.enabled || !s.build_bar_rt.visible) return -1;
+    u32 n = s.build_structure_count();
+    for (u32 i = 0; i < n; ++i) {
+        const auto& slot = cfg.slots[i];
+        if (!slot.visible) continue;
+        const Rect& r = slot.rect;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+            return static_cast<i32>(i);
+        }
+    }
+    if (cfg.has_cancel && cfg.cancel.visible) {
+        const Rect& r = cfg.cancel.rect;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+            return BUILD_CANCEL_HIT;
         }
     }
     return -1;
@@ -1987,8 +2090,20 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
         return;
     }
 
-    // Release. Three commit paths — inventory, command, ability —
-    // each with their own cancel rules.
+    // Release. Commit paths — build, inventory, command, ability — each
+    // with their own cancel rules.
+    if (!s.drag_cast.build_type.empty()) {
+        // Build drag: place at the drag point on Aiming release (or a genuine
+        // tap that stayed on the slot — rare, places at the caster). Cancel
+        // zone or a slide-off tap aborts. Validity + snapping is app-side.
+        bool place = (s.drag_cast.phase == Phase::Aiming);
+        if (place && s.build_at_target_fn) {
+            s.build_at_target_fn(s.drag_cast.build_type,
+                                 s.drag_cast.drag_world_x, s.drag_cast.drag_world_y);
+        }
+        s.drag_cast = Impl::DragCastState{};
+        return;
+    }
     if (is_inventory) {
         // Inventory release branches:
         //   Pressed + over_slot  → quick tap, fire no-target use.
@@ -2408,6 +2523,31 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
     if (!m_impl) return;
     auto& s = *m_impl;
 
+    // Build sub-panel owns the keyboard while open. Auto-close if the
+    // selected unit no longer owns the Build ability that opened it (e.g.
+    // selection changed, unit died) so the panel never strands a stale
+    // structure list over an unrelated unit. Escape also closes it.
+    // While open, the normal command/ability hotkey passes are skipped —
+    // the slots mean structures now, driven by pointer clicks.
+    if (s.build_panel_open) {
+        bool still_owned = false;
+        if (s.world_ctx && s.world_ctx->world && s.world_ctx->selection) {
+            const auto& sel = s.world_ctx->selection->selected();
+            if (!sel.empty()) {
+                const auto* aset = s.world_ctx->world->ability_set(sel.front().id);
+                if (aset) {
+                    for (const auto& a : aset->abilities) {
+                        if (a.ability_id == s.build_source_ability) { still_owned = true; break; }
+                    }
+                }
+            }
+        }
+        if (!still_owned || input.key_escape) {
+            close_build_panel();
+        }
+        return;
+    }
+
     // Priority walk. A key letter fires at most one source per frame,
     // even if it appears in multiple places. Order: command_bar ↓
     // action_bar (declaration order) ↓ hidden abilities. Non-rising
@@ -2535,6 +2675,11 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
 static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     const auto& cfg = s.action_bar_cfg;
     if (!cfg.enabled || !s.action_bar_rt.visible) return -1;
+    // While the build sub-panel is open the action bar is DISABLED (WC3
+    // command-card behavior): no hover / press / click. The build_bar takes
+    // over input; right-click / Esc / selection-change close it and restore
+    // the action bar. Hotkeys are already gated in handle_hotkeys.
+    if (s.build_panel_open) return -1;
     for (u32 i = 0; i < cfg.slots.size(); ++i) {
         const auto& slot = cfg.slots[i];
         if (!slot.visible) continue;
@@ -2789,14 +2934,21 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // the release frame itself so the lift-fixup above can still
     // resolve "released over this slot" for click-firing.
     const bool allow_hit_test = !s.is_mobile || button_down || s.pointer_down_prev;
-    i32  pickup_slot = allow_hit_test ? pickup_bar_hit_test(s, x, y) : -1;
-    i32  inv_slot    = (allow_hit_test && pickup_slot < 0) ? inventory_hit_test(s, x, y) : -1;
-    i32  cmd_slot    = (allow_hit_test && pickup_slot < 0 && inv_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
-    i32  bar_slot    = (allow_hit_test && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0)
+    // build_bar is a modal popup drawn on TOP of the other bars while open, so
+    // it claims the click first (matches draw order). It returns -1 when the
+    // panel is closed, so this is a no-op otherwise. Note: build_bar_hit_test
+    // can return BUILD_CANCEL_HIT (-2) for the dismiss button, so "hit" is
+    // `!= -1`, not `>= 0`.
+    i32  build_slot  = allow_hit_test ? build_bar_hit_test(s, x, y) : -1;
+    bool build_hit   = (build_slot != -1);
+    i32  pickup_slot = (allow_hit_test && !build_hit) ? pickup_bar_hit_test(s, x, y) : -1;
+    i32  inv_slot    = (allow_hit_test && !build_hit && pickup_slot < 0) ? inventory_hit_test(s, x, y) : -1;
+    i32  cmd_slot    = (allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
+    i32  bar_slot    = (allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0)
                          ? action_bar_hit_test(s, x, y) : -1;
-    bool on_minimap  = allow_hit_test && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
+    bool on_minimap  = allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
                         bar_slot < 0 && minimap_hit_test(s, x, y);
-    bool on_joystick = allow_hit_test && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
+    bool on_joystick = allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
                        bar_slot < 0 && !on_minimap &&
                        (s.joystick_rt.captured_slot == 0
                         || joystick_hit_test_point(s.joystick_cfg, x, y));
@@ -2823,6 +2975,22 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             s.command_bar_cfg.slots[cmd_slot].hovered = true;
         }
         s.command_bar_hover_slot = cmd_slot;
+    }
+    if (build_slot != s.build_bar_hover_slot) {
+        // Clear the previously-hovered target (structure slot OR cancel).
+        if (s.build_bar_hover_slot == BUILD_CANCEL_HIT) {
+            s.build_bar_cfg.cancel.hovered = false;
+        } else if (s.build_bar_hover_slot >= 0 &&
+                   static_cast<u32>(s.build_bar_hover_slot) < s.build_bar_cfg.slots.size()) {
+            s.build_bar_cfg.slots[s.build_bar_hover_slot].hovered = false;
+        }
+        // Set the new one.
+        if (build_slot == BUILD_CANCEL_HIT) {
+            s.build_bar_cfg.cancel.hovered = true;
+        } else if (build_slot >= 0) {
+            s.build_bar_cfg.slots[build_slot].hovered = true;
+        }
+        s.build_bar_hover_slot = build_slot;
     }
     if (inv_slot != s.inventory_hover_slot) {
         if (s.inventory_hover_slot >= 0 &&
@@ -2913,7 +3081,54 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             s.pointer_down_prev = button_down;
             return;
         }
-        if (bar_slot >= 0) {
+        if (build_slot == BUILD_CANCEL_HIT) {
+            // Cancel (dismiss) button press — closes the panel on release.
+            s.build_bar_pressed_slot = BUILD_CANCEL_HIT;
+            s.build_bar_cfg.cancel.pressed = true;
+        } else if (build_slot >= 0) {
+            // Mobile: press-hold a structure slot starts a drag-cast — drag
+            // onto the map (footprint follows the finger), release to place.
+            // Choosing the structure closes build_bar; the drag now owns the
+            // gesture. Desktop keeps the simple tap→arm path below.
+            bool build_drag_started = false;
+            if (s.is_mobile && s.world_ctx && s.build_at_target_fn
+                && static_cast<u32>(build_slot) < s.build_structures.size()) {
+                u32 caster_id = s.world_ctx->selection &&
+                                !s.world_ctx->selection->selected().empty()
+                                  ? s.world_ctx->selection->selected().front().id
+                                  : UINT32_MAX;
+                auto* tf = (caster_id != UINT32_MAX && s.world_ctx->world)
+                             ? s.world_ctx->world->transform(caster_id) : nullptr;
+                if (tf) {
+                    s.drag_cast = Impl::DragCastState{};   // clear any prior source tags
+                    s.drag_cast.phase      = Impl::DragCastPhase::Pressed;
+                    s.drag_cast.slot_index = build_slot;
+                    s.drag_cast.press_x    = x;  s.drag_cast.press_y   = y;
+                    s.drag_cast.current_x  = x;  s.drag_cast.current_y = y;
+                    s.drag_cast.caster.id  = caster_id;
+                    s.drag_cast.caster_x = tf->position.x;
+                    s.drag_cast.caster_y = tf->position.y;
+                    s.drag_cast.caster_z = tf->position.z;
+                    s.drag_cast.press_caster_x = tf->position.x;
+                    s.drag_cast.press_caster_y = tf->position.y;
+                    s.drag_cast.press_caster_z = tf->position.z;
+                    s.drag_cast.world_anchored = (s.preset != "action");
+                    s.drag_cast.drag_world_x = tf->position.x;
+                    s.drag_cast.drag_world_y = tf->position.y;
+                    s.drag_cast.drag_world_z = tf->position.z;
+                    s.drag_cast.build_type = s.build_structures[build_slot];
+                    s.drag_cast.press_time = std::chrono::steady_clock::now();
+                    close_build_panel();   // structure chosen — the drag takes over
+                    build_drag_started = true;
+                }
+            }
+            if (!build_drag_started) {
+                // Desktop (or mobile fallback): tap → build_panel_fn arms
+                // TargetingMode::Build; the next world click commits.
+                s.build_bar_pressed_slot = build_slot;
+                s.build_bar_cfg.slots[build_slot].pressed = true;
+            }
+        } else if (bar_slot >= 0) {
             // On mobile, a press on a *targetable* and *castable-now*
             // slot starts a drag-cast gesture instead of the normal
             // press-and-release click flow. Drag-cast owns the slot
@@ -2922,7 +3137,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
             // targeting mode) doesn't fire here. Desktop falls through
             // to the existing path.
             bool drag_cast_started = false;
-            if (s.is_mobile && s.world_ctx && s.action_bar_cast_at_target_fn) {
+            if (!s.build_panel_open && s.is_mobile && s.world_ctx && s.action_bar_cast_at_target_fn) {
                 const simulation::AbilityDef* def = nullptr;
                 const simulation::AbilityInstance* inst =
                     resolve_slot_ability(static_cast<u32>(bar_slot),
@@ -3226,6 +3441,25 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 }
             }
             s.action_bar_pressed_slot = -1;
+        } else if (s.build_bar_pressed_slot == BUILD_CANCEL_HIT) {
+            // Cancel (dismiss) button release → close the panel if still over it.
+            s.build_bar_cfg.cancel.pressed = false;
+            if (build_slot == BUILD_CANCEL_HIT) close_build_panel();
+            s.build_bar_pressed_slot = -1;
+        } else if (s.build_bar_pressed_slot >= 0) {
+            // Build-bar structure slot click → pick it (fire build_panel_fn →
+            // arm placement) and close.
+            u32 idx = static_cast<u32>(s.build_bar_pressed_slot);
+            bool over = (build_slot == s.build_bar_pressed_slot);
+            if (idx < s.build_bar_cfg.slots.size()) {
+                s.build_bar_cfg.slots[idx].pressed = false;
+                if (over && idx < s.build_structures.size() && s.build_panel_fn) {
+                    std::string type = s.build_structures[idx];
+                    close_build_panel();
+                    s.build_panel_fn(type);
+                }
+            }
+            s.build_bar_pressed_slot = -1;
         } else if (s.command_bar_pressed_slot >= 0) {
             // Click on a command-bar slot → fire the command callback
             // with the slot's command id. App routes to the input
@@ -3337,6 +3571,8 @@ bool Hud::input_captured() const {
         || m_impl->action_bar_pressed_slot  >= 0
         || m_impl->command_bar_hover_slot   >= 0
         || m_impl->command_bar_pressed_slot >= 0
+        || m_impl->build_bar_hover_slot     != -1
+        || m_impl->build_bar_pressed_slot   != -1
         || m_impl->inventory_hover_slot     >= 0
         || m_impl->inventory_pressed_slot   >= 0
         || m_impl->pickup_bar_hover_slot    >= 0

@@ -372,6 +372,9 @@ private:
         simulation::Projectile projectile;
         simulation::Unit hit_unit;
     };
+    // Construction lifecycle (system_build). `entity` is the structure;
+    // `builder` is the worker that placed it (invalid on finish).
+    struct ConstructionEvent { simulation::Unit builder; };
     struct GenericEvent {};
 
     struct EventFrame {
@@ -382,7 +385,8 @@ private:
         u32 region_id = UINT32_MAX;
         std::string node_id;
         std::variant<GenericEvent, DamageEvent, HealEvent, DeathEvent,
-                     AbilityEvent, OrderEvent, ItemEvent, ProjectileEvent> payload;
+                     AbilityEvent, OrderEvent, ItemEvent, ProjectileEvent,
+                     ConstructionEvent> payload;
     };
 
     class EventScope {

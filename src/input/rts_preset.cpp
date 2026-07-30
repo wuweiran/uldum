@@ -3,6 +3,7 @@
 #include "simulation/ability_def.h"
 #include "simulation/world.h"
 #include "simulation/world_view.h"
+#include "simulation/placement.h"
 #include "hud/hud.h"
 #include "core/log.h"
 
@@ -55,6 +56,11 @@ void RtsPreset::update(const InputContext& ctx, f32 dt) {
         m_pending_command.clear();
         dispatch_command(ctx, id);
     }
+    if (!m_pending_build.empty()) {
+        std::string id = std::move(m_pending_build);
+        m_pending_build.clear();
+        dispatch_build(ctx, id);
+    }
     handle_camera(ctx, dt);
 }
 
@@ -64,6 +70,10 @@ void RtsPreset::queue_ability(std::string_view ability_id) {
 
 void RtsPreset::queue_command(std::string_view command_id) {
     m_pending_command.assign(command_id);
+}
+
+void RtsPreset::queue_build(std::string_view building_type_id) {
+    m_pending_build.assign(building_type_id);
 }
 
 // ── Selection ────────────────────────────────────────────────────────────
@@ -400,6 +410,36 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
         return;
     }
 
+    // Build placement: a structure slot armed TargetingMode::Build. The
+    // next left-click commits an orders::Build at the footprint-snapped
+    // point — but only if placement is legal there (footprint clear +
+    // no collision overlap). An illegal click keeps the mode armed and
+    // pings an error, matching a widget-only ability's missed click.
+    if (m_target_mode == TargetingMode::Build && input.mouse_left_pressed) {
+        if (!sel.empty()) {
+            glm::vec3 world_pos;
+            if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
+                auto place = simulation::evaluate_building_placement(
+                    ctx.simulation, m_target_ability_id, world_pos.x, world_pos.y);
+                if (place.valid) {
+                    GameCommand cmd;
+                    cmd.player = sel.player();
+                    cmd.units  = sel.selected_units(ctx.simulation.world());
+                    cmd.order  = simulation::orders::Build{m_target_ability_id, place.snapped};
+                    cmd.queued = input.key_shift;
+                    ctx.commands.submit(cmd);
+                    cancel_targeting();
+                    return;
+                }
+                // Illegal spot → stay armed, explain (WC3 "can't build there").
+                if (ctx.hud) ctx.hud->emit_order_error("build", "blocked");
+                return;
+            }
+        }
+        cancel_targeting();
+        return;
+    }
+
     // Right-click while in any targeting mode = cancel; no smart order
     // is issued. Matches WC3 / SC2 behavior where a stray right-click
     // bails out of targeting rather than firing a Move at the mouse
@@ -631,6 +671,10 @@ void RtsPreset::dispatch_ability(const InputContext& ctx,
         ctx.commands.submit(cmd);
     } else if (def->form == simulation::AbilityForm::Target) {
         set_target_mode(TargetingMode::Ability, ability_id);
+    } else if (def->form == simulation::AbilityForm::Build) {
+        // Build ability: open the local build sub-panel (no order issued).
+        // Picking a structure there calls queue_build → arms placement.
+        if (ctx.hud) ctx.hud->open_build_panel(ability_id, def->builds);
     }
     // Passive / Aura / Channel: not directly triggerable from here.
 }
@@ -673,6 +717,16 @@ void RtsPreset::dispatch_command(const InputContext& ctx,
     }
     // `patrol` deferred — needs a Patrol order path plus an alternating
     // waypoint-collection mode.
+}
+
+void RtsPreset::dispatch_build(const InputContext& ctx,
+                               std::string_view building_type_id) {
+    auto& sel = ctx.selection;
+    if (sel.empty() || building_type_id.empty()) return;
+    // Arm build placement. Ownership (which build ability offers this
+    // structure) is enforced by the sub-panel that surfaced the slot;
+    // the placement legality check runs at confirm time in handle_orders.
+    set_target_mode(TargetingMode::Build, building_type_id);
 }
 
 // ── Camera ───────────────────────────────────────────────────────────────

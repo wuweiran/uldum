@@ -235,6 +235,26 @@ struct World {
     using ItemChargesChangedCallback = std::function<void(Item item, i32 charges)>;
     ItemChargesChangedCallback on_item_charges_changed;
 
+    // Construction events — fired by system_build. `on_construction_start`
+    // when a worker reaches the site and the structure spawns (the builder
+    // is passed so map Lua can decide worker fate: keep, consume, free).
+    // `on_construction_finish` when build_progress reaches 1. `builder` may
+    // be invalid on finish (the worker could have died / moved on). Map Lua
+    // hooks these via the trigger system; the engine takes no further action.
+    using ConstructionCallback =
+        std::function<void(Unit structure, Unit builder)>;
+    ConstructionCallback on_construction_start;
+    ConstructionCallback on_construction_finish;
+
+    // Fired when a Build order is abandoned before the structure spawns —
+    // the worker walked to the site but couldn't build (no standable side,
+    // or the footprint became unbuildable). Carries the worker (the structure
+    // never existed) + a short reason ("blocked" / "no_space"). The app routes
+    // it to the owning player's HUD error line; map Lua can also hook it.
+    using ConstructionFailedCallback =
+        std::function<void(Unit builder, std::string_view reason)>;
+    ConstructionFailedCallback on_construction_failed;
+
     // Region events — fired by system_regions each tick when a unit
     // crosses into / out of a region's shape. Map Lua hooks these via
     // TriggerRegisterEnterRegion / LeaveRegion. Engine takes no

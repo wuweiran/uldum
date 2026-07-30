@@ -419,8 +419,35 @@ void GameServer::wire_to_network(NetworkManager& net) {
             };
     }
 
-    // Player leave events → fire the map's Lua handlers (pure script, no
-    // client-side apply; safe on the worker).
+    // Construction start / finish → S_COLD, chained onto the script callbacks
+    // (init_game installed on_construction_* to fire the map's triggers). Start
+    // syncs the under-construction state + progress so the client plays the
+    // time-scaled birth clip; finish clears it so the client transitions to Idle.
+    {
+        auto script_start = std::move(world.on_construction_start);
+        world.on_construction_start =
+            [this, &net, script_start = std::move(script_start)](
+                simulation::Unit structure, simulation::Unit builder) {
+                if (script_start) script_start(structure, builder);
+                const auto* c = m_simulation.world().constructions.get(structure.id);
+                if (!c) return;
+                auto pkt = build_cold_construction(structure.id, c->under_construction,
+                                                   c->build_time_total, c->build_progress);
+                net.host_broadcast_update(structure.id, pkt);
+            };
+    }
+    {
+        auto script_finish = std::move(world.on_construction_finish);
+        world.on_construction_finish =
+            [&net, script_finish = std::move(script_finish)](
+                simulation::Unit structure, simulation::Unit builder) {
+                if (script_finish) script_finish(structure, builder);
+                // under_construction=false → client stops the stretched birth clip.
+                auto pkt = build_cold_construction(structure.id, false, 0.0f, 1.0f);
+                net.host_broadcast_update(structure.id, pkt);
+            };
+    }
+
     net.on_player_disconnected = [this](u32 player_id) {
         m_script.fire_player_event("global_disconnect", player_id);
         m_script.fire_player_event("player_disconnect", player_id);

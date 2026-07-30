@@ -397,6 +397,10 @@ void Renderer::shutdown() {
     destroy_model_viewer();
     m_particles.shutdown();
     destroy_terrain_mesh(*m_rhi, m_terrain);
+    if (m_ghost_bone_descriptor.is_valid()) m_rhi->free_descriptor_set(m_ghost_bone_descriptor);
+    m_rhi->destroy_buffer(m_ghost_bone_buffer);
+    if (m_ghost_static_pipeline.is_valid()) m_rhi->destroy_pipeline(m_ghost_static_pipeline);
+    if (m_ghost_static_layout.is_valid()) m_rhi->destroy_pipeline_layout(m_ghost_static_layout);
     for (auto& [eid, anim] : m_anim_instances) {
         // Descriptor sets freed implicitly when pools are destroyed below
         for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
@@ -577,6 +581,7 @@ struct AnimStateInfo {
     bool           force_restart;  // true = restart animation (new attack swing)
     AttackAnimInfo attack_info;    // only used when state == Attack
     bool           has_attack_info = false;
+    f32            seek_fraction = -1.0f;  // >=0: after a restart, seed the clip to this fraction (mid-construction reveal)
 };
 
 // Pick the animation state for a unit this frame. Priority order:
@@ -656,6 +661,23 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
         f32 ratio = (mov && mov->speed > 0 && ref > 0) ? mov->speed / ref : 1.0f;
         return {AnimState::Walk, -ratio, false};
     }
+
+    // Construction — a structure under construction plays its Birth clip
+    // stretched to build_time_total, so it visibly assembles over the whole
+    // build and snaps to Idle on completion. force_restart fires once (the
+    // first frame the stretch applies) so set_anim_state actually adopts the
+    // scaled speed; subsequent frames keep playing. When under_construction
+    // clears, this arm stops matching and the unit falls through to Idle.
+    if (auto* c = world.construction(id); c && c->under_construction) {
+        bool restart = !anim.construction_scaled;
+        anim.construction_scaled = true;
+        AnimStateInfo info{AnimState::Birth, c->build_time_total, restart};
+        // On the restart frame, seed the clip to the current progress so a
+        // building revealed mid-build starts partway through (not from 0).
+        if (restart) info.seek_fraction = c->build_progress;
+        return info;
+    }
+    anim.construction_scaled = false;
 
     // Birth — only relevant when nothing else is happening. Once
     // interrupted (we returned Spell/Attack/Walk above on a previous
@@ -2992,6 +3014,7 @@ void Renderer::render_model_viewer(rhi::CommandList& cmd, f32 dt) {
         if (!diffuse.is_valid()) continue;
         cmd.bind_descriptor_set(layout, 0, diffuse);
         glm::vec4 base = sm.base_color_factor;
+        base.a = 1.0f;   // viewer is opaque; frag now emits base_color.a (the ghost uses <1)
         cmd.push_constants(layout, rhi::ShaderStage::Fragment, 128, sizeof(base), &base);
         // Index/vertex offsets differ by type: skinned indices are rebased into
         // the merged buffer (vertexOffset 0); static submeshes keep 0-based
@@ -3008,6 +3031,179 @@ void Renderer::render_model_viewer(rhi::CommandList& cmd, f32 dt) {
     cr.old_layout = rhi::ImageLayout::ColorAttachmentOptimal; cr.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
     cr.aspect = rhi::ImageAspect::Color;
     cmd.image_barrier(cr);
+}
+
+bool Renderer::ensure_ghost_static_pipeline() {
+    if (m_ghost_static_pipeline.is_valid()) return true;
+    if (!m_rhi) return false;
+
+    auto vert_h = load_shader(*m_rhi, "engine/shaders/model_view.vert.spv");
+    auto frag_h = load_shader(*m_rhi, "engine/shaders/model_view.frag.spv");
+    if (!vert_h.is_valid() || !frag_h.is_valid()) {
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
+        return false;
+    }
+
+    rhi::PushConstantRange pcs[2]{};
+    pcs[0].stages = rhi::ShaderStage::Vertex;   pcs[0].offset = 0;   pcs[0].size = 2 * sizeof(glm::mat4);
+    pcs[1].stages = rhi::ShaderStage::Fragment; pcs[1].offset = 128; pcs[1].size = sizeof(glm::vec4);
+
+    rhi::DescriptorSetLayoutHandle sets[1] = { m_mesh_desc_layout };
+    rhi::PipelineLayoutDesc pl{};
+    pl.set_layouts    = std::span{sets, 1};
+    pl.push_constants = std::span{pcs, 2};
+    m_ghost_static_layout = m_rhi->create_pipeline_layout(pl);
+    if (!m_ghost_static_layout.is_valid()) {
+        m_rhi->destroy_shader_module(vert_h);
+        m_rhi->destroy_shader_module(frag_h);
+        return false;
+    }
+
+    rhi::ShaderStageDesc stages[2]{};
+    stages[0].stage = rhi::ShaderStage::Vertex;   stages[0].module = vert_h;
+    stages[1].stage = rhi::ShaderStage::Fragment; stages[1].module = frag_h;
+
+    rhi::VertexBindingDesc binding{ 0, static_cast<u32>(sizeof(asset::Vertex)), false };
+    rhi::VertexAttributeDesc attrs[3]{
+        { 0, 0, offsetof(asset::Vertex, position), rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 1, 0, offsetof(asset::Vertex, normal),   rhi::TextureFormat::R32G32B32_SFLOAT },
+        { 2, 0, offsetof(asset::Vertex, texcoord), rhi::TextureFormat::R32G32_SFLOAT },
+    };
+    rhi::VertexInputDesc vi{};
+    vi.bindings   = std::span{&binding, 1};
+    vi.attributes = std::span{attrs, 3};
+
+    rhi::RasterizerState rs{};
+    rs.cull_mode  = rhi::CullMode::Back;
+    rs.front_face = rhi::FrontFace::CounterClockwise;
+
+    rhi::DepthStencilState ds{};
+    ds.depth_test_enable  = true;
+    ds.depth_write_enable = false;   // translucent — test against scene, don't occlude
+    ds.depth_compare      = rhi::CompareOp::LessEqual;
+
+    rhi::BlendAttachmentState ba{};
+    ba.blend_enable     = true;
+    ba.src_color_factor = rhi::BlendFactor::SrcAlpha;
+    ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
+    ba.src_alpha_factor = rhi::BlendFactor::One;
+    ba.dst_alpha_factor = rhi::BlendFactor::Zero;
+
+    rhi::MultisampleState ms{};
+    ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());
+
+    rhi::TextureFormat color_fmt = m_rhi->swapchain_format();
+    rhi::TextureFormat depth_fmt = m_rhi->depth_format();
+
+    rhi::GraphicsPipelineDesc desc{};
+    desc.layout            = m_ghost_static_layout;
+    desc.stages            = std::span{stages, 2};
+    desc.vertex_input      = vi;
+    desc.topology          = rhi::PrimitiveTopology::TriangleList;
+    desc.rasterizer        = rs;
+    desc.depth_stencil     = ds;
+    desc.blend_attachments = std::span{&ba, 1};
+    desc.multisample       = ms;
+    desc.render.color_formats = std::span{&color_fmt, 1};
+    desc.render.depth_format  = depth_fmt;
+
+    m_ghost_static_pipeline = m_rhi->create_graphics_pipeline(desc);
+    m_rhi->destroy_shader_module(vert_h);
+    m_rhi->destroy_shader_module(frag_h);
+    return m_ghost_static_pipeline.is_valid();
+}
+
+void Renderer::draw_ghost_model(rhi::CommandList& cmd, std::string_view model_path,
+                                const glm::mat4& view_projection, glm::vec3 position,
+                                f32 facing, f32 scale, glm::vec4 tint, f32 alpha) {
+    if (model_path.empty()) return;
+    auto* lm = get_or_load_model(std::string(model_path));
+    if (!lm) return;
+
+    bool skinned = lm->is_skinned && !lm->data.skeleton.bones.empty();
+
+    // Model matrix: translate + slope tilt + facing + scale + Y-up→Z-up flip,
+    // mirroring build_entity_model_matrix for a static placement.
+    glm::mat4 model = glm::translate(glm::mat4{1.0f}, position);
+    if (m_terrain_data) {
+        glm::vec3 n = map::sample_normal(*m_terrain_data, position.x, position.y);
+        model = model * slope_tilt_matrix(n);
+    }
+    bool native = lm->mesh.native_z_up;
+    f32 yaw = native ? facing : facing + glm::half_pi<f32>();
+    model = glm::rotate(model, yaw, glm::vec3{0.0f, 0.0f, 1.0f});
+    model = glm::scale(model, glm::vec3{scale});
+    if (!native)
+        model = model * glm::rotate(glm::mat4{1.0f}, glm::radians(90.0f), glm::vec3{1.0f, 0.0f, 0.0f});
+    glm::mat4 mvp = view_projection * model;
+    struct { glm::mat4 mvp; glm::mat4 model; } vpush{mvp, model};
+
+    cmd.bind_vertex_buffer(0, lm->mesh.vertex_buffer);
+    cmd.bind_index_buffer(lm->mesh.index_buffer, 0, rhi::IndexType::U32);
+
+    if (skinned) {
+        if (!m_skinned_mesh_pipeline.is_valid() || !m_shadow_desc_set.is_valid()) return;
+
+        // Bind-pose bone buffer, rebuilt on model change. Identity skinning =
+        // the model at rest (fully assembled). Computed once, read-only during
+        // draw → single buffer is hazard-free (same as the model viewer).
+        if (m_ghost_path != model_path) {
+            u32 bones = static_cast<u32>(lm->data.skeleton.bones.size());
+            if (!m_ghost_bone_buffer.is_valid()) {
+                rhi::BufferDesc bd{};
+                bd.size   = 128 * sizeof(glm::mat4);
+                bd.usage  = rhi::BufferUsage::Storage;
+                bd.memory = rhi::MemoryUsage::HostSequential;
+                m_ghost_bone_buffer     = m_rhi->create_buffer(bd);
+                m_ghost_bone_descriptor = allocate_bone_descriptor(m_ghost_bone_buffer, 128 * sizeof(glm::mat4));
+            }
+            if (auto* dst = static_cast<glm::mat4*>(m_rhi->mapped_ptr(m_ghost_bone_buffer)))
+                for (u32 i = 0; i < bones && i < 128; ++i) dst[i] = glm::mat4{1.0f};
+            m_ghost_path.assign(model_path);
+        }
+        if (!m_ghost_bone_descriptor.is_valid()) return;
+
+        cmd.bind_pipeline(m_skinned_mesh_pipeline);
+        cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Vertex,
+                           0, sizeof(vpush), &vpush);
+        for (const auto& sm : lm->submeshes) {
+            if (!sm.descriptor_set.is_valid()) continue;
+            rhi::DescriptorSetHandle sets[] = { sm.descriptor_set, m_shadow_desc_set, m_ghost_bone_descriptor };
+            cmd.bind_descriptor_sets(m_skinned_mesh_pipeline_layout, 0, std::span{sets, 3});
+            struct { glm::vec4 visual; glm::vec4 factor; } fpush{
+                {alpha, 0.0f, 0.0f, 0.0f},
+                { sm.base_color_factor.r * tint.r,
+                  sm.base_color_factor.g * tint.g,
+                  sm.base_color_factor.b * tint.b,
+                  sm.base_color_factor.a } };
+            cmd.push_constants(m_skinned_mesh_pipeline_layout, rhi::ShaderStage::Fragment,
+                               sizeof(vpush), sizeof(fpush), &fpush);
+            cmd.draw_indexed(sm.mesh.index_count, 1, sm.mesh.first_index, 0, 0);
+        }
+        return;
+    }
+
+    // Static ghost: scene-pass pipeline with a push-constant model matrix
+    // (the main static path is SSBO-instanced, unusable for a one-off).
+    if (!ensure_ghost_static_pipeline()) return;
+    cmd.bind_pipeline(m_ghost_static_pipeline);
+    cmd.push_constants(m_ghost_static_layout, rhi::ShaderStage::Vertex,
+                       0, sizeof(vpush), &vpush);
+    for (const auto& sm : lm->submeshes) {
+        rhi::DescriptorSetHandle diffuse = sm.descriptor_set.is_valid()
+                                             ? sm.descriptor_set : lm->material.descriptor_set;
+        if (!diffuse.is_valid()) continue;
+        cmd.bind_descriptor_set(m_ghost_static_layout, 0, diffuse);
+        glm::vec4 base{ sm.base_color_factor.r * tint.r,
+                        sm.base_color_factor.g * tint.g,
+                        sm.base_color_factor.b * tint.b,
+                        alpha };
+        cmd.push_constants(m_ghost_static_layout, rhi::ShaderStage::Fragment,
+                           sizeof(vpush), sizeof(base), &base);
+        i32 vtx_off = static_cast<i32>(sm.mesh.first_vertex);
+        cmd.draw_indexed(sm.mesh.index_count, 1, sm.mesh.first_index, vtx_off, 0);
+    }
 }
 
 void Renderer::destroy_model_viewer() {
@@ -3697,8 +3893,19 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             //   * server world (host / single-player) — create_unit set
             //     skip_birth from the spawn_visible_to_viewer predicate.
             // Either way the decision is made at spawn; here we just honor
-            // it. (The Birth→Idle decay still lives in derive_anim_state.)
-            const bool play_birth = !renderable.skip_birth;
+            // Birth plays for a unit spawned in this viewer's sight (skip_birth
+            // false), AND for any construction site — even one revealed via
+            // S_SHOW (skip_birth true): the `birth` clip IS the construction
+            // animation, so it must play. Seeding into Idle there and letting
+            // the construction arm switch to Birth would crossfade from the
+            // finished pose = a one-frame flash of the built structure.
+            bool play_birth;
+            if (!renderable.skip_birth) {
+                play_birth = true;   // common: born in sight, no construction() lookup
+            } else {
+                const auto* c = world.construction(id);
+                play_birth = (c && c->under_construction);
+            }
             bool created = false;
             auto& anim = get_or_create_anim(id, *lm, play_birth, &created);
 
@@ -3760,6 +3967,16 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
                                anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
 
+                // Mid-construction reveal: after set_anim_state reset the clip to
+                // time 0, advance it to the current build fraction so the ghost/
+                // building comes up partway assembled instead of restarting.
+                if (anim_info.seek_fraction >= 0.0f) {
+                    i32 ci = anim.state_to_clip[static_cast<u8>(anim.current_state)];
+                    if (ci >= 0 && ci < static_cast<i32>(anim.model->animations.size())) {
+                        anim.time = anim_info.seek_fraction * anim.model->animations[ci].duration;
+                    }
+                }
+
                 // First-sight reveal rule (per-animation, by loop-ness). On the
                 // frame this instance was CREATED, the derived state started at
                 // time 0 — but if the state's clip is NON-looping (death, and
@@ -3771,7 +3988,10 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 // get_or_create_anim (Birth), so `created` here is already past
                 // it and Birth plays normally. This drops all death-specific
                 // special-casing — the `looping` flag IS the decision.
-                if (created && !anim.looping) {
+                // EXCEPTION: a construction site (seek_fraction >= 0) is born in
+                // view and driven by build_progress — it must play FROM that
+                // point, not snap to the finished frame, so we skip the rule.
+                if (created && !anim.looping && anim_info.seek_fraction < 0.0f) {
                     i32 ci = anim.state_to_clip[static_cast<u8>(anim.current_state)];
                     if (ci >= 0 && ci < static_cast<i32>(anim.model->animations.size())) {
                         anim.time         = anim.model->animations[ci].duration;

@@ -76,6 +76,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         def.id = key;
         def.display_name = val.value("display_name", key);
         def.model_path   = val.value("model", "");
+        def.icon_path    = val.value("icon", "");
         def.model_scale  = val.value("model_scale", 1.0f);
 
         if (val.contains("health")) {
@@ -92,6 +93,12 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.collision_radius  = m.value("collision_radius", 32.0f);
             def.move_type         = parse_move_type(m.value("type", "ground"));
             def.fly_height        = m.value("fly_height", 0.0f);
+            // MoveType::None means "cannot move" (WC3 Movement Type = None) —
+            // it's the authoritative immobility signal, independent of any
+            // authored/default speed. Force speed to 0 so every speed-keyed
+            // path (movement step, collision "static" test, command-bar gate)
+            // agrees the unit is immobile without special-casing the type.
+            if (def.move_type == MoveType::None) def.move_speed = 0.0f;
         }
 
         // Pathing footprint — either a 2-element array `[w, h]` or
@@ -161,6 +168,12 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         if (val.contains("vision")) {
             auto& v = val["vision"];
             def.sight_range = v.value("range", 1400.0f);
+        }
+
+        // Building block — construction time (seconds). Drives system_build's
+        // progress ramp and the time-scaled birth clip. 0 = instant.
+        if (val.contains("building")) {
+            def.build_time = val["building"].value("build_time", 0.0f);
         }
 
         if (val.contains("selection")) {

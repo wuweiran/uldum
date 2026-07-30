@@ -1129,6 +1129,7 @@ enum class ColdKind : u8 {
     Inventory       = 13,  // item entered/left a carrier's inventory slot (pickup/drop)
     // render-sticky
     Anim            = 14,  // scripted animation queue (SetUnitAnimation/Queue/Reset); empty list = reset
+    Construction    = 15,  // building under-construction state (drives the time-scaled birth clip on the client)
 };
 
 struct ColdRecord {
@@ -1199,6 +1200,11 @@ inline void write_cold_record(ByteWriter& w, const ColdRecord& rec) {
         w.write_bool(rec.bool_value);  // looping
         break;
     }
+    case ColdKind::Construction:
+        w.write_bool(rec.bool_value);  // under_construction
+        w.write_f32(rec.value);        // build_time_total
+        w.write_f32(rec.value2);       // build_progress
+        break;
     }
 }
 
@@ -1254,6 +1260,11 @@ inline ColdRecord read_cold_record(ByteReader& r) {
         rec.bool_value = r.read_bool();  // looping
         break;
     }
+    case ColdKind::Construction:
+        rec.bool_value = r.read_bool();  // under_construction
+        rec.value      = r.read_f32();   // build_time_total
+        rec.value2     = r.read_f32();   // build_progress
+        break;
     }
     return rec;
 }
@@ -1345,6 +1356,11 @@ inline ColdRecord cold_inventory_rec(u32 slot, u32 item_id, f32 x, f32 y, f32 z)
 inline ColdRecord cold_anim_rec(const std::vector<std::string>& clips, bool looping) {
     ColdRecord r; r.kind = ColdKind::Anim; r.clips = clips; r.bool_value = looping; return r;
 }
+inline ColdRecord cold_construction_rec(bool under_construction, f32 build_time_total, f32 build_progress) {
+    ColdRecord r; r.kind = ColdKind::Construction;
+    r.bool_value = under_construction; r.value = build_time_total; r.value2 = build_progress;
+    return r;
+}
 
 // Single on-change message builders (rename of the old build_update_* — same
 // arg lists, so call sites are a pure rename). Each wraps a record maker.
@@ -1394,6 +1410,10 @@ inline std::vector<u8> build_cold_inventory(u32 carrier_id, u32 slot, u32 item_i
 }
 inline std::vector<u8> build_cold_anim(u32 entity_id, const std::vector<std::string>& clips, bool looping) {
     return build_cold(entity_id, cold_anim_rec(clips, looping));
+}
+inline std::vector<u8> build_cold_construction(u32 entity_id, bool under_construction,
+                                               f32 build_time_total, f32 build_progress) {
+    return build_cold(entity_id, cold_construction_rec(under_construction, build_time_total, build_progress));
 }
 
 // ── HUD sync builders + parsers (16c-v) ──────────────────────────────────

@@ -4,6 +4,7 @@
 #include "simulation/ability_def.h"
 #include "simulation/pathfinding.h"
 #include "simulation/spatial_query.h"
+#include "simulation/placement.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 
@@ -786,6 +787,14 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         if (!combat_comp || !transform || !oq) continue;
         auto& combat = *combat_comp;
 
+        // Under construction: not operational yet, so it can't fight (WC3
+        // disables unit functions until the build completes).
+        if (auto* c = world.constructions.get(id); c && c->under_construction) {
+            combat.target = Unit{};
+            combat.attack_state = AttackState::Idle;
+            continue;
+        }
+
         // Status-flag gates. Stunned / Paused skip the unit entirely;
         // Disarmed prevents auto-attack target acquisition AND active
         // attack swings — the unit can still take orders and cast, it
@@ -817,7 +826,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             (std::get_if<orders::Move>(&oq->current->payload) ||
              std::get_if<orders::Cast>(&oq->current->payload) ||
              std::get_if<orders::PickupItem>(&oq->current->payload) ||
-             std::get_if<orders::DropItem>(&oq->current->payload))) {
+             std::get_if<orders::DropItem>(&oq->current->payload) ||
+             std::get_if<orders::Build>(&oq->current->payload))) {
             combat.target = Unit{};
             combat.attack_state = AttackState::Idle;
             continue;
@@ -1039,6 +1049,19 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             f32 diff = angle_diff(transform->facing, desired);
             auto* mov = world.movements.get(id);
             f32 turn_rate = mov ? mov->turn_rate : 3.0f;
+
+            // turn_rate == 0 → a FIXED structure (WC3 arrow tower): it never
+            // rotates its model but still fires in any direction. Skip the
+            // facing requirement entirely, else max_turn is 0, `diff` never
+            // shrinks, the tolerance gate never passes, and it's stuck here
+            // forever (never attacks). turn_rate > 0 → turns to face first
+            // (WC3 ancient protector), then fires.
+            if (turn_rate <= 0.0f) {
+                combat.attack_state = AttackState::WindUp;
+                combat.attack_timer = combat.dmg_time;
+                break;
+            }
+
             f32 max_turn = turn_rate * dt;
 
             constexpr f32 ATTACK_FACING_TOLERANCE = 0.1745f;  // ~10 degrees
@@ -1234,6 +1257,22 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             }
         }
 
+        // Under construction: not operational yet — no casting or autocast
+        // until the build finishes. Cooldowns/durations above still tick; only
+        // the cast state machine is frozen, mirroring the status gate.
+        if (auto* c = world.constructions.get(id); c && c->under_construction) {
+            if (aset->cast_state != CastState::None) {
+                aset->cast_state = CastState::None;
+                aset->cast_timer = 0;
+                aset->casting_id.clear();
+                aset->cast_target_unit = Unit{};
+                aset->cast_target_pos  = glm::vec3{0};
+                aset->cast_source_item = Item{};
+                if (auto* oq2 = world.order_queues.get(id)) oq2->current.reset();
+            }
+            continue;
+        }
+
         // ── Cast order processing ────────────────────────────────────────
         auto* oq = world.order_queues.get(id);
         auto* transform = world.transforms.get(id);
@@ -1344,13 +1383,17 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                             f32 diff = angle_diff(transform->facing, desired);
                             auto* mov = world.movements.get(id);
                             f32 turn_rate = mov ? mov->turn_rate : 3.0f;
-                            f32 max_turn = turn_rate * dt;
-                            if (std::abs(diff) > max_turn) {
-                                transform->facing += (diff > 0 ? max_turn : -max_turn);
-                                transform->facing = normalize_angle(transform->facing);
-                                break;
+                            // turn_rate == 0 (fixed structure): don't turn, cast
+                            // as-is — else it never aligns and never casts.
+                            if (turn_rate > 0.0f) {
+                                f32 max_turn = turn_rate * dt;
+                                if (std::abs(diff) > max_turn) {
+                                    transform->facing += (diff > 0 ? max_turn : -max_turn);
+                                    transform->facing = normalize_angle(transform->facing);
+                                    break;
+                                }
+                                transform->facing = desired;
                             }
-                            transform->facing = desired;
                         }
                         aset->cast_state = CastState::Foreswing;
                         aset->cast_timer = lvl.cast_time;
@@ -1676,7 +1719,241 @@ void system_items(World& world, float /*dt*/) {
     }
 }
 
-// ── Projectile system ─────────────────────────────────────────────────────
+// ── Build / construction system ───────────────────────────────────────────
+//
+// Two responsibilities in one pass, both host-only:
+//   1. Build orders — walk the worker to its site (via the shared approach
+//      machinery movement consumes), then on arrival spawn the structure
+//      under construction, reserve its footprint, release the worker, and
+//      fire on_construction_start.
+//   2. Construction progress — advance every under-construction structure's
+//      build_progress toward 1, ramping HP as it rises; on completion clear
+//      the flag and fire on_construction_finish.
+//
+// The worker and the site are decoupled after spawn: the structure self-
+// completes even if the worker walks away or dies (map Lua decides the
+// worker's fate via on_construction_start).
+
+static constexpr f32 BUILD_MIN_HP_FRACTION = 0.10f;  // structures start at 10% HP
+
+void system_build(World& world, float dt, Pathfinder& pathfinder,
+                  const map::TerrainData* terrain) {
+    if (!world.types) return;
+
+    // ── 1. Build orders: walk to site, then spawn the structure ──────────
+    std::vector<Unit> workers;
+    workers.reserve(world.order_queues.count());
+    for (u32 id : world.order_queues.ids()) workers.push_back(world.unit(id));
+
+    for (Unit worker : workers) {
+        if (!world.contains(worker)) continue;
+        u32 id = worker.id;
+        auto* oq = world.order_queues.get(id);
+        if (!oq || !oq->current) continue;
+
+        auto* bo = std::get_if<orders::Build>(&oq->current->payload);
+        if (!bo) continue;
+
+        // Copy the type id out of the order NOW — `bo` points into
+        // oq->current, which we reset() on arrival below, so reading
+        // bo->building_type_id after that is a use-after-free (reads empty).
+        const std::string building_type = bo->building_type_id;
+
+        const auto* def = world.types->get_unit_type(building_type);
+        if (!def) { oq->current.reset(); continue; }
+
+        const auto* wt = world.transforms.get(id);
+        if (!wt) { oq->current.reset(); continue; }
+
+        // Snap the site to the footprint grid (defensive — the client
+        // already snaps, but a Lua IssueOrder may pass a raw point).
+        f32 sx = bo->pos.x, sy = bo->pos.y;
+        if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0
+            && terrain && terrain->is_valid()) {
+            sx = map::snap_building_x(*terrain, sx, def->pathing_footprint_w);
+            sy = map::snap_building_y(*terrain, sy, def->pathing_footprint_h);
+        }
+
+        // SC1-style build: the worker walks to a STANDING POINT just outside
+        // the footprint edge, not to the center — so once the building spawns
+        // and blocks the footprint cells, the worker is already clear and can
+        // path away instead of trapping itself inside. We want the NEAREST
+        // standable point on the footprint's clearance ring: start from the
+        // side the worker is already on (the ray from the site center toward
+        // it), and if that's blocked (terrain / another building / cliff) fan
+        // outward in both directions until a standable side is found.
+        f32 ts = (terrain && terrain->is_valid()) ? terrain->tile_size : 128.0f;
+        f32 half_w = 0.5f * static_cast<f32>(def->pathing_footprint_w) * ts;
+        f32 half_h = 0.5f * static_cast<f32>(def->pathing_footprint_h) * ts;
+        f32 worker_r = 32.0f;
+        if (auto* mv = world.movements.get(id)) worker_r = mv->collision_radius;
+        f32 clearance = worker_r + 8.0f;   // stand a hair outside the footprint
+
+        // Standing point where a ray from the site center at angle `ang` exits
+        // the footprint AABB, pushed out by `clearance`. Hugs the actual
+        // rectangle edge (not a circle), so short sides don't over-shoot.
+        auto stand_at = [&](f32 ang) -> glm::vec2 {
+            f32 cx = std::cos(ang), cy = std::sin(ang);
+            f32 tx = (std::abs(cx) > 1e-4f) ? half_w / std::abs(cx) : 1e9f;
+            f32 ty = (std::abs(cy) > 1e-4f) ? half_h / std::abs(cy) : 1e9f;
+            f32 t = std::min(tx, ty);
+            return { sx + cx * (t + clearance), sy + cy * (t + clearance) };
+        };
+
+        f32 base_ang = std::atan2(wt->position.y - sy, wt->position.x - sx);
+        // Fan out from base_ang: 0, +step, -step, +2step, -2step, … a full
+        // sweep so every side gets a chance; first standable wins = nearest.
+        constexpr i32 N_SWEEP = 24;
+        const f32 step = glm::two_pi<f32>() / static_cast<f32>(N_SWEEP);
+        bool have_stand = false;
+        glm::vec2 stand{0.0f};
+        for (i32 k = 0; k <= N_SWEEP && !have_stand; ++k) {
+            f32 off = static_cast<f32>((k + 1) / 2) * step * ((k & 1) ? 1.0f : -1.0f);
+            if (k == 0) off = 0.0f;
+            glm::vec2 p = stand_at(base_ang + off);
+            if (pathfinder.pos_clear_for_radius(p.x, p.y, worker_r, def->move_type)) {
+                stand = p; have_stand = true;
+            }
+        }
+        if (!have_stand) {
+            oq->current.reset();
+            if (world.on_construction_failed) world.on_construction_failed(worker, "no_space");
+            continue;   // no standable side → abandon
+        }
+
+        f32 dx = stand.x - wt->position.x;
+        f32 dy = stand.y - wt->position.y;
+        constexpr f32 ARRIVE_R = 24.0f;
+        if (dx * dx + dy * dy > ARRIVE_R * ARRIVE_R) {
+            if (auto* pth = world.pathings.get(id)) {
+                pth->approach_target = Unit{};
+                pth->approach_goal = {stand.x, stand.y};
+                pth->approach_range = ARRIVE_R;
+            }
+            continue;   // still walking to the standing point
+        }
+
+        // At the standing point — now TURN to face the building before it
+        // spawns. Rotate at turn_rate and only proceed once roughly aligned
+        // (same tolerance the attack windup uses), so the worker doesn't build
+        // with its back to the structure. The Build order stays current while
+        // turning (no reset yet).
+        {
+            auto* wtm = world.transforms.get(id);
+            auto* mv  = world.movements.get(id);
+            if (wtm) {
+                f32 desired = std::atan2(sy - wtm->position.y, sx - wtm->position.x);
+                f32 turn_rate = mv ? mv->turn_rate : 3.0f;
+                // A turn_rate==0 builder (unusual) can't turn — don't gate on
+                // alignment or it would never start building.
+                if (turn_rate > 0.0f) {
+                    f32 diff = turn_toward(wtm->facing, desired, turn_rate, dt);
+                    constexpr f32 FACE_TOLERANCE = 0.1745f;  // ~10° — same as attack windup
+                    if (std::abs(diff) > FACE_TOLERANCE) continue;   // still turning
+                }
+            }
+        }
+
+        // Arrived. Clear the walk state and end the order regardless of
+        // whether the spawn succeeds (a blocked site just cancels).
+        oq->current.reset();
+        if (auto* pth = world.pathings.get(id)) {
+            pth->approach_range = 0;
+            pth->approach_target = Unit{};
+        }
+
+        // Re-check the whole footprint is still buildable — flat, passable,
+        // unblocked (a unit may have walked onto it, or it's a ramp the client
+        // shouldn't have offered). Ramps/cliffs are rejected here too.
+        if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0
+            && terrain && terrain->is_valid()) {
+            if (!footprint_buildable(pathfinder, *terrain, sx, sy,
+                                     def->pathing_footprint_w, def->pathing_footprint_h,
+                                     def->move_type)) {
+                if (world.on_construction_failed) world.on_construction_failed(worker, "blocked");
+                continue;   // footprint no longer buildable → abandon
+            }
+        }
+
+        Player owner{0};
+        if (auto* o = world.owners.get(id)) owner = *o;
+
+        // Structures spawn at a fixed default facing, NOT the worker's heading
+        // (which varies with the direction it walked in from). WC3-style: a
+        // building always faces the same way regardless of who built it or how
+        // they approached. 270° (same deg→rad convention as authored facings).
+        constexpr f32 BUILDING_FACING = 1.5f * glm::pi<f32>();   // 270 degrees
+        Unit site = create_unit(world, building_type, owner, sx, sy, BUILDING_FACING);
+        if (is_null_handle(site)) continue;
+
+        // Structure spawned in view → let it play its Birth clip as the
+        // construction animation (Phase 4 time-scales it). Reserve the
+        // footprint so units path around the site immediately.
+        if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0
+            && terrain && terrain->is_valid()) {
+            f32 left_tx_f   = (sx - terrain->origin_x()) / ts
+                              - 0.5f * static_cast<f32>(def->pathing_footprint_w);
+            f32 bottom_ty_f = (sy - terrain->origin_y()) / ts
+                              - 0.5f * static_cast<f32>(def->pathing_footprint_h);
+            i32 tx0 = static_cast<i32>(std::round(left_tx_f));
+            i32 ty0 = static_cast<i32>(std::round(bottom_ty_f));
+            PathingBlocker blocker;
+            blocker.cx = tx0 * static_cast<i32>(PATHING_SUBDIV);
+            blocker.cy = ty0 * static_cast<i32>(PATHING_SUBDIV);
+            blocker.w  = def->pathing_footprint_w * PATHING_SUBDIV;
+            blocker.h  = def->pathing_footprint_h * PATHING_SUBDIV;
+            pathfinder.block_cells(blocker.cx, blocker.cy, blocker.w, blocker.h);
+            world.pathing_blockers.add(site.id, std::move(blocker));
+        }
+
+        // Under construction: progress 0 → 1 over build_time. build_time 0
+        // → instant (progress stays 0 but under_construction=false below).
+        Construction c;
+        c.build_time_total   = std::max(def->build_time, 0.0f);
+        c.under_construction = c.build_time_total > 0.0f;
+        c.build_progress     = c.under_construction ? 0.0f : 1.0f;
+        world.constructions.add(site.id, std::move(c));
+
+        // Start HP low and ramp with progress (finished if instant).
+        if (auto* hp = world.healths.get(site.id)) {
+            hp->current = c.under_construction
+                ? std::max(hp->max * BUILD_MIN_HP_FRACTION, 1.0f)
+                : hp->max;
+        }
+
+        if (world.on_construction_start) world.on_construction_start(site, worker);
+    }
+
+    // ── 2. Construction progress: advance every under-construction site ──
+    for (u32 i = 0; i < world.constructions.count(); ++i) {
+        u32 site_id = world.constructions.ids()[i];
+        auto& c = world.constructions.data()[i];
+        if (!c.under_construction) continue;
+        if (c.build_time_total <= 0.0f) { c.under_construction = false; continue; }
+
+        c.build_progress += dt / c.build_time_total;
+
+        // Ramp HP ADDITIVELY — construction adds HP at a fixed rate; damage
+        // taken mid-build subtracts independently and is never clobbered, so a
+        // site attacked during construction finishes hurt (not full). Progress
+        // is tracked by build_progress, NOT by health, precisely so the two
+        // don't fight. On completion we do NOT snap to max.
+        auto* hp = world.healths.get(site_id);
+        if (hp) {
+            f32 gain = hp->max * (1.0f - BUILD_MIN_HP_FRACTION);   // total HP added over the build
+            hp->current = std::min(hp->current + gain * (dt / c.build_time_total), hp->max);
+        }
+
+        if (c.build_progress >= 1.0f) {
+            c.build_progress = 1.0f;
+            c.under_construction = false;
+            if (world.on_construction_finish)
+                world.on_construction_finish(world.unit(site_id), Unit{});
+        }
+    }
+}
+
+
 //
 // Two paths share the same per-tick loop:
 //   • Homing  — re-aim at target each tick; on proximity, fire hit +

@@ -170,6 +170,18 @@ public:
     rhi::TextureHandle viewer_color_texture() const { return m_mv_color; }
     rhi::SamplerHandle viewer_sampler() const { return m_mv_sampler; }
     bool viewer_has_model() const { return !m_mv_path.empty(); }
+
+    // Draw a translucent building "ghost" into the current scene pass — a
+    // render-only placement preview that follows the cursor during build
+    // mode. Not a world entity (no sim / vision / selection / network), so
+    // it never desyncs the mirror. `tint` multiplies the model color (green
+    // = valid, red = blocked); `alpha` is the ghost transparency. Buildings
+    // with a birth clip load skinned and draw at bind pose. Must be called
+    // inside the same begin_rendering pair as draw(), after draw() so the
+    // ghost composites over opaque units.
+    void draw_ghost_model(rhi::CommandList& cmd, std::string_view model_path,
+                          const glm::mat4& view_projection, glm::vec3 position,
+                          f32 facing, f32 scale, glm::vec4 tint, f32 alpha);
     // Animation clip selection for the previewed model.
     const std::vector<std::string>& viewer_clips() const { return m_mv_clips; }
     i32  viewer_clip() const { return m_mv_clip; }
@@ -193,6 +205,10 @@ private:
     rhi::DescriptorSetHandle allocate_terrain_descriptor(const TerrainMaterial& mat);
     rhi::DescriptorSetHandle allocate_shadow_descriptor();
     rhi::DescriptorSetHandle allocate_bone_descriptor(rhi::BufferHandle bone_buffer, usize size);
+
+    // Lazily build the static-mesh ghost pipeline (draw_ghost_model). Returns
+    // false if creation failed (ghost is then skipped, not fatal).
+    bool ensure_ghost_static_pipeline();
 
     // Model viewer (editor): lazily builds the offscreen target + 1x pipelines.
     bool ensure_model_viewer();
@@ -477,6 +493,21 @@ private:
     f32                       m_mv_dist_min     = 30.0f;
     f32                       m_mv_dist_max     = 3000.0f;
     glm::vec3                 m_mv_target{0.0f};
+
+    // Build-placement ghost (draw_ghost_model). Bone matrices are computed
+    // once when the model path changes (bind pose from clip frame 0) and
+    // only read during draw — no per-frame rewrite, so a single buffer is
+    // hazard-free. Empty path = nothing bound yet.
+    std::string               m_ghost_path;
+    rhi::BufferHandle         m_ghost_bone_buffer{};
+    rhi::DescriptorSetHandle  m_ghost_bone_descriptor{};
+    // Static-mesh ghost pipeline — scene-pass twin of the model viewer's
+    // static pipeline (push-constant model matrix + alpha blend), built
+    // lazily on first static ghost draw. Skinned ghosts reuse the main
+    // m_skinned_mesh_pipeline (already alpha-blended); the static path needs
+    // its own since the main static path is SSBO-instanced and opaque.
+    rhi::PipelineHandle       m_ghost_static_pipeline{};
+    rhi::PipelineLayoutHandle m_ghost_static_layout{};
 
     // Particle system + glow system + effect system
     ParticleSystem  m_particles;

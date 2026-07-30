@@ -18,6 +18,10 @@ struct UnitTypeDef {
     std::string id;
     std::string display_name;
     std::string model_path;
+    // HUD slot icon (KTX2). Used by the build sub-panel: a structure a
+    // worker can build shows this icon in its build slot. Empty = no icon
+    // (the slot renders blank). Optional for non-buildable units.
+    std::string icon_path;
     f32 model_scale = 1.0f;
 
     // Health (engine built-in state)

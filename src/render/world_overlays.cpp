@@ -210,6 +210,44 @@ static bool create_buffers(WorldOverlays::Impl& s) {
     return true;
 }
 
+// Bind an already-uploaded GpuTexture into slot `id`: (re)allocate the
+// slot's descriptor set and point it at the image. Shared by set_texture
+// (map override) and the engine-generated defaults below.
+static bool bind_decal(WorldOverlays::Impl& s, WorldOverlays::TextureId id,
+                       GpuTexture tex) {
+    auto& d = s.decals[static_cast<usize>(id)];
+    destroy_texture(*s.rhi, d.tex);
+    d.tex = tex;
+    if (!d.set.is_valid()) {
+        d.set = s.rhi->allocate_descriptor_set(s.desc_layout);
+        if (!d.set.is_valid()) { destroy_texture(*s.rhi, d.tex); d.tex = {}; return false; }
+    }
+    rhi::WriteDescriptor w{};
+    w.binding = 0;
+    w.type    = rhi::DescriptorType::CombinedImageSampler;
+    w.texture = d.tex.texture;
+    w.sampler = d.tex.sampler;
+    s.rhi->update_descriptor_set(d.set, std::span{&w, 1});
+    return true;
+}
+
+// Engine-owned default decals — generated procedurally so build placement
+// works with zero map art. Currently just BuildPlacement: a flat solid fill,
+// tinted per-draw (green = valid, red = blocked). No per-tile border — the
+// footprint reads as flush edge-to-edge patches, blocked tiles as red patches
+// in a green field. Called at init and after each reset_session_state (which
+// frees all decals), so the default outlives session resets.
+static void generate_default_decals(WorldOverlays::Impl& s) {
+    // Solid white 1×1 — the whole quad takes the per-call tint color/alpha.
+    constexpr u32 N = 1;
+    std::array<u8, N * N * 4> px{ 255, 255, 255, 255 };
+    GpuTexture tex = upload_texture_rgba(*s.rhi, px.data(), N, N,
+                                         /*srgb=*/false, /*clamp=*/true);
+    if (tex.texture.is_valid()) {
+        bind_decal(s, WorldOverlays::TextureId::BuildPlacement, tex);
+    }
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 
 WorldOverlays::WorldOverlays() = default;
@@ -221,11 +259,11 @@ bool WorldOverlays::init(rhi::Rhi& rhi) {
     if (!create_descriptor_layout(*m_impl)) { log::error(TAG, "desc layout failed"); return false; }
     if (!create_pipeline(*m_impl))          { log::error(TAG, "pipeline failed");    return false; }
     if (!create_buffers(*m_impl))           { log::error(TAG, "buffers failed");     return false; }
-    // No engine-side default decals. Each slot is unbound until a
-    // map's hud.json calls set_texture(); add_* calls referencing an
-    // unbound slot are silently dropped. The engine's own
-    // default-texture / map-override merging mechanism will fill the
-    // gap once it lands.
+    // Map-supplied decals stay unbound until hud.json calls set_texture();
+    // add_* on an unbound slot is silently dropped. The engine-owned
+    // defaults (build placement) are generated here so build works with
+    // zero map art.
+    generate_default_decals(*m_impl);
     log::info(TAG, "world overlays initialized");
     return true;
 }
@@ -244,6 +282,9 @@ void WorldOverlays::reset_session_state() {
     }
     m_impl->next_vertex = 0;
     m_impl->cmds.clear();
+    // Re-generate engine-owned defaults freed by the loop above so the
+    // next session still has a build-placement decal without map art.
+    generate_default_decals(*m_impl);
 }
 
 void WorldOverlays::shutdown() {
@@ -320,29 +361,11 @@ bool WorldOverlays::set_texture(TextureId id, std::string_view path) {
     // before destroying it. This is rare (called once per session at
     // map load), so the stall is acceptable.
     m_impl->rhi->wait_idle();
-    auto& d = m_impl->decals[static_cast<usize>(id)];
-    destroy_texture(*m_impl->rhi, d.tex);
-    d.tex = new_tex;
-
-    // Allocate the slot's descriptor set on first use; on subsequent
-    // calls we just re-point the existing set at the new image.
-    if (!d.set.is_valid()) {
-        d.set = m_impl->rhi->allocate_descriptor_set(m_impl->desc_layout);
-        if (!d.set.is_valid()) {
-            log::warn(TAG, "set_texture: descriptor set alloc failed for slot {}",
-                      static_cast<u32>(id));
-            destroy_texture(*m_impl->rhi, d.tex);
-            d.tex = {};
-            return false;
-        }
+    if (!bind_decal(*m_impl, id, new_tex)) {
+        log::warn(TAG, "set_texture: descriptor set alloc failed for slot {}",
+                  static_cast<u32>(id));
+        return false;
     }
-
-    rhi::WriteDescriptor w{};
-    w.binding = 0;
-    w.type    = rhi::DescriptorType::CombinedImageSampler;
-    w.texture = d.tex.texture;
-    w.sampler = d.tex.sampler;
-    m_impl->rhi->update_descriptor_set(d.set, std::span{&w, 1});
 
     log::info(TAG, "set_texture[{}] = '{}' ({}x{})",
               static_cast<u32>(id), path, decoded->width, decoded->height);
@@ -462,6 +485,28 @@ void WorldOverlays::add_quad(glm::vec3 center, f32 half_extent,
     write_v(*m_impl, slot, cursor++, a, 0.0f, 0.0f, rgba);
     write_v(*m_impl, slot, cursor++, c, 1.0f, 1.0f, rgba);
     write_v(*m_impl, slot, cursor++, d, 0.0f, 1.0f, rgba);
+    m_impl->cmds.push_back({first, vert_count,
+                            m_impl->decals[(usize)tex].set, glm::vec4(1.0f)});
+}
+
+void WorldOverlays::add_quad_corners(glm::vec3 sw, glm::vec3 se, glm::vec3 ne, glm::vec3 nw,
+                                     glm::vec4 color, TextureId tex) {
+    if (!m_impl || !m_impl->pipeline.is_valid()) return;
+    if (!m_impl->decals[(usize)tex].set.is_valid()) return;  // unbound slot
+    u32 slot = m_impl->rhi->frame_index();
+    u32 vert_count = 6;
+    u32 first = append(*m_impl, vert_count);
+    if (first == UINT32_MAX) return;
+    if (m_impl->cmds.size() >= kMaxDraws) return;
+
+    u32 rgba = pack_premul_rgba(color.r, color.g, color.b, color.a);
+    u32 cursor = first;
+    write_v(*m_impl, slot, cursor++, sw, 0.0f, 0.0f, rgba);
+    write_v(*m_impl, slot, cursor++, se, 1.0f, 0.0f, rgba);
+    write_v(*m_impl, slot, cursor++, ne, 1.0f, 1.0f, rgba);
+    write_v(*m_impl, slot, cursor++, sw, 0.0f, 0.0f, rgba);
+    write_v(*m_impl, slot, cursor++, ne, 1.0f, 1.0f, rgba);
+    write_v(*m_impl, slot, cursor++, nw, 0.0f, 1.0f, rgba);
     m_impl->cmds.push_back({first, vert_count,
                             m_impl->decals[(usize)tex].set, glm::vec4(1.0f)});
 }

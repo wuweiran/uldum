@@ -26,6 +26,7 @@ constexpr const char* kVertSpv = "engine/shaders/world_overlay.vert.spv";
 constexpr const char* kFragSpv = "engine/shaders/world_overlay.frag.spv";
 
 constexpr u32 kMaxVerts = 8 * 1024;   // 4096 line segments per frame
+constexpr u32 kMaxFillVerts = 4 * 1024;  // 682 filled quads (6 verts each) per frame
 constexpr f32 kZBias    = 1.0f;       // small lift so wires don't z-fight terrain
 
 struct Vertex {
@@ -58,7 +59,8 @@ struct EditorOverlays::Impl {
     rhi::Rhi* rhi = nullptr;
 
     rhi::PipelineLayoutHandle      pipeline_layout{};
-    rhi::PipelineHandle            pipeline{};
+    rhi::PipelineHandle            pipeline{};        // line list
+    rhi::PipelineHandle            fill_pipeline{};   // triangle list (filled quads)
     rhi::DescriptorSetLayoutHandle desc_layout{};
     rhi::DescriptorSetHandle       desc_set{};
 
@@ -69,10 +71,13 @@ struct EditorOverlays::Impl {
     struct Frame {
         rhi::BufferHandle vb{};
         Vertex*           mapped = nullptr;
+        rhi::BufferHandle fill_vb{};
+        Vertex*           fill_mapped = nullptr;
     };
     std::array<Frame, rhi::MAX_FRAMES_IN_FLIGHT> frames{};
 
     u32 next_vertex = 0;
+    u32 next_fill_vertex = 0;
 };
 
 // ── Pipeline ─────────────────────────────────────────────────────────────
@@ -197,9 +202,14 @@ static bool create_pipeline(EditorOverlays::Impl& s) {
 
     s.pipeline = s.rhi->create_graphics_pipeline(desc);
 
+    // Second pipeline: identical state, triangle-list topology, for the
+    // filled build-footprint quads. Shares layout, descriptors and shaders.
+    desc.topology = rhi::PrimitiveTopology::TriangleList;
+    s.fill_pipeline = s.rhi->create_graphics_pipeline(desc);
+
     s.rhi->destroy_shader_module(vert_h);
     s.rhi->destroy_shader_module(frag_h);
-    return s.pipeline.is_valid();
+    return s.pipeline.is_valid() && s.fill_pipeline.is_valid();
 }
 
 static bool create_buffers(EditorOverlays::Impl& s) {
@@ -213,6 +223,15 @@ static bool create_buffers(EditorOverlays::Impl& s) {
         if (!f.vb.is_valid()) return false;
         f.mapped = static_cast<Vertex*>(s.rhi->mapped_ptr(f.vb));
         if (!f.mapped) return false;
+
+        rhi::BufferDesc fd{};
+        fd.size   = static_cast<VkDeviceSize>(kMaxFillVerts) * sizeof(Vertex);
+        fd.usage  = rhi::BufferUsage::Vertex;
+        fd.memory = rhi::MemoryUsage::HostSequential;
+        f.fill_vb = s.rhi->create_buffer(fd);
+        if (!f.fill_vb.is_valid()) return false;
+        f.fill_mapped = static_cast<Vertex*>(s.rhi->mapped_ptr(f.fill_vb));
+        if (!f.fill_mapped) return false;
     }
     return true;
 }
@@ -240,8 +259,10 @@ void EditorOverlays::shutdown() {
         render::destroy_texture(*m_impl->rhi, m_impl->white_tex);
         for (auto& f : m_impl->frames) {
             m_impl->rhi->destroy_buffer(f.vb);
+            m_impl->rhi->destroy_buffer(f.fill_vb);
         }
         m_impl->rhi->destroy_pipeline(m_impl->pipeline);
+        m_impl->rhi->destroy_pipeline(m_impl->fill_pipeline);
         m_impl->rhi->destroy_pipeline_layout(m_impl->pipeline_layout);
         m_impl->rhi->free_descriptor_set(m_impl->desc_set);
         m_impl->rhi->destroy_descriptor_set_layout(m_impl->desc_layout);
@@ -255,6 +276,7 @@ void EditorOverlays::shutdown() {
 void EditorOverlays::begin_frame() {
     if (!m_impl) return;
     m_impl->next_vertex = 0;
+    m_impl->next_fill_vertex = 0;
 }
 
 void EditorOverlays::add_line(glm::vec3 a, glm::vec3 b, glm::vec4 color) {
@@ -288,24 +310,56 @@ void EditorOverlays::add_polyline(std::span<const glm::vec3> samples,
     m_impl->next_vertex = cursor;
 }
 
+void EditorOverlays::add_filled_quad(glm::vec3 a, glm::vec3 b, glm::vec3 c,
+                                     glm::vec3 d, glm::vec4 color) {
+    if (!m_impl || !m_impl->fill_pipeline.is_valid()) return;
+    if (m_impl->next_fill_vertex + 6 > kMaxFillVerts) return;
+    Vertex* mapped = m_impl->frames[m_impl->rhi->frame_index()].fill_mapped;
+    u32 rgba = pack_premul_rgba(color);
+    u32 cursor = m_impl->next_fill_vertex;
+    auto write = [&](glm::vec3 p) {
+        mapped[cursor++] = { p.x, p.y, p.z + kZBias, 0.0f, 0.0f, rgba };
+    };
+    write(a); write(b); write(c);   // two triangles: a-b-c, a-c-d
+    write(a); write(c); write(d);
+    m_impl->next_fill_vertex = cursor;
+}
+
 // ── Draw ─────────────────────────────────────────────────────────────────
 
 void EditorOverlays::draw(rhi::CommandList& cmd, const glm::mat4& view_projection) {
-    if (!m_impl || !m_impl->pipeline.is_valid() || m_impl->next_vertex == 0) return;
+    if (!m_impl || !m_impl->pipeline.is_valid()) return;
+    if (m_impl->next_vertex == 0 && m_impl->next_fill_vertex == 0) return;
     u32 slot = m_impl->rhi->frame_index();
     auto& f = m_impl->frames[slot];
     if (!f.vb.is_valid()) return;
 
-    cmd.bind_pipeline(m_impl->pipeline);
     rhi::Extent2D ex = m_impl->rhi->extent();
-    cmd.set_viewport(0, 0, static_cast<f32>(ex.width), static_cast<f32>(ex.height));
-    cmd.set_scissor(0, 0, ex.width, ex.height);
-    cmd.bind_descriptor_set(m_impl->pipeline_layout, 0, m_impl->desc_set);
-    cmd.bind_vertex_buffer(0, f.vb);
 
     PushConstants pc{};
     pc.mvp  = view_projection;
     pc.tint = glm::vec4(1.0f);
+
+    // Filled quads first so the wire overlays draw on top of them.
+    if (m_impl->next_fill_vertex > 0 && m_impl->fill_pipeline.is_valid() &&
+        f.fill_vb.is_valid()) {
+        cmd.bind_pipeline(m_impl->fill_pipeline);
+        cmd.set_viewport(0, 0, static_cast<f32>(ex.width), static_cast<f32>(ex.height));
+        cmd.set_scissor(0, 0, ex.width, ex.height);
+        cmd.bind_descriptor_set(m_impl->pipeline_layout, 0, m_impl->desc_set);
+        cmd.bind_vertex_buffer(0, f.fill_vb);
+        cmd.push_constants(m_impl->pipeline_layout, rhi::ShaderStage::Vertex,
+                           0, sizeof(PushConstants), &pc);
+        cmd.draw(m_impl->next_fill_vertex);
+    }
+
+    if (m_impl->next_vertex == 0) return;
+
+    cmd.bind_pipeline(m_impl->pipeline);
+    cmd.set_viewport(0, 0, static_cast<f32>(ex.width), static_cast<f32>(ex.height));
+    cmd.set_scissor(0, 0, ex.width, ex.height);
+    cmd.bind_descriptor_set(m_impl->pipeline_layout, 0, m_impl->desc_set);
+    cmd.bind_vertex_buffer(0, f.vb);
     cmd.push_constants(m_impl->pipeline_layout, rhi::ShaderStage::Vertex,
                        0, sizeof(PushConstants), &pc);
     cmd.draw(m_impl->next_vertex);

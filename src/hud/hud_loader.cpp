@@ -6,6 +6,7 @@
 #include "hud/action_bar.h"
 #include "hud/minimap.h"
 #include "hud/command_bar.h"
+#include "hud/build_bar.h"
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
 #include "hud/inventory.h"
@@ -479,6 +480,89 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
 
             hud.set_command_bar_config(cfg);
             log::info(TAG, "command_bar: {} slots", cfg.slots.size());
+        }
+
+        // build_bar — the structure sub-panel grid. Author declares slot
+        // positions + style; slot CONTENTS come from the opened Build
+        // ability's `builds` list at runtime (engine-filled). Own composite,
+        // separate from action_bar.
+        if (auto bb = comps->find("build_bar"); bb != comps->end() && bb->is_object()) {
+            BuildBarConfig cfg{};
+            cfg.enabled = true;
+
+            cfg.placement.anchor = parse_anchor(bb->value("anchor", "br"));
+            cfg.placement.x      = bb->value("x", 0.0f);
+            cfg.placement.y      = bb->value("y", 0.0f);
+            cfg.placement.w      = bb->value("w", 0.0f);
+            cfg.placement.h      = bb->value("h", 0.0f);
+            cfg.rect = resolve(viewport_rect, cfg.placement);
+
+            if (auto sp = bb->find("style_params"); sp != bb->end() && sp->is_object()) {
+                if (auto v = sp->find("bg");              v != sp->end()) cfg.style.bg              = parse_color(*v);
+                if (auto v = sp->find("hotkey_color");    v != sp->end()) cfg.style.hotkey_color    = parse_color(*v);
+                if (auto v = sp->find("hotkey_badge_bg"); v != sp->end()) cfg.style.hotkey_badge_bg = parse_color(*v);
+            }
+
+            BuildBarSlotStyle default_slot_style{};
+            if (auto ss = bb->find("slot_style"); ss != bb->end() && ss->is_object()) {
+                if (auto v = ss->find("bg");           v != ss->end()) default_slot_style.bg           = parse_color(*v);
+                if (auto v = ss->find("hover_bg");     v != ss->end()) default_slot_style.hover_bg     = parse_color(*v);
+                if (auto v = ss->find("press_bg");     v != ss->end()) default_slot_style.press_bg     = parse_color(*v);
+                if (auto v = ss->find("border_color"); v != ss->end()) default_slot_style.border_color = parse_color(*v);
+                if (auto v = ss->find("border_width"); v != ss->end() && v->is_number())
+                    default_slot_style.border_width = v->get<f32>();
+            }
+
+            if (auto slots = bb->find("slots"); slots != bb->end() && slots->is_array()) {
+                for (const auto& js : *slots) {
+                    if (!js.is_object()) continue;
+                    BuildBarSlot slot{};
+                    slot.style = default_slot_style;
+                    slot.placement.anchor = parse_anchor(js.value("anchor", "tl"));
+                    slot.placement.x      = js.value("x", 0.0f);
+                    slot.placement.y      = js.value("y", 0.0f);
+                    slot.placement.w      = js.value("w", 48.0f);
+                    slot.placement.h      = js.value("h", 48.0f);
+                    slot.rect = resolve(cfg.rect, slot.placement);
+                    if (auto st = js.find("style"); st != js.end() && st->is_object()) {
+                        if (auto v = st->find("bg");           v != st->end()) slot.style.bg           = parse_color(*v);
+                        if (auto v = st->find("hover_bg");     v != st->end()) slot.style.hover_bg     = parse_color(*v);
+                        if (auto v = st->find("press_bg");     v != st->end()) slot.style.press_bg     = parse_color(*v);
+                        if (auto v = st->find("border_color"); v != st->end()) slot.style.border_color = parse_color(*v);
+                        if (auto v = st->find("border_width"); v != st->end() && v->is_number())
+                            slot.style.border_width = v->get<f32>();
+                    }
+                    cfg.slots.push_back(std::move(slot));
+                }
+            }
+
+            // Authored dismiss (Cancel) button — placed wherever the map wants,
+            // anchored against the build_bar rect like a slot. Draws an "X";
+            // tap/click closes the panel. Optional.
+            if (auto cx = bb->find("cancel"); cx != bb->end() && cx->is_object()) {
+                BuildBarSlot cs{};
+                cs.style = default_slot_style;
+                cs.placement.anchor = parse_anchor(cx->value("anchor", "tl"));
+                cs.placement.x      = cx->value("x", 0.0f);
+                cs.placement.y      = cx->value("y", 0.0f);
+                cs.placement.w      = cx->value("w", 48.0f);
+                cs.placement.h      = cx->value("h", 48.0f);
+                cs.rect = resolve(cfg.rect, cs.placement);
+                if (auto st = cx->find("style"); st != cx->end() && st->is_object()) {
+                    if (auto v = st->find("bg");           v != st->end()) cs.style.bg           = parse_color(*v);
+                    if (auto v = st->find("hover_bg");     v != st->end()) cs.style.hover_bg     = parse_color(*v);
+                    if (auto v = st->find("press_bg");     v != st->end()) cs.style.press_bg     = parse_color(*v);
+                    if (auto v = st->find("border_color"); v != st->end()) cs.style.border_color = parse_color(*v);
+                    if (auto v = st->find("border_width"); v != st->end() && v->is_number())
+                        cs.style.border_width = v->get<f32>();
+                }
+                cfg.cancel = std::move(cs);
+                cfg.has_cancel = true;
+            }
+
+            hud.set_build_bar_config(cfg);
+            log::info(TAG, "build_bar: {} slots{}", cfg.slots.size(),
+                      cfg.has_cancel ? " + cancel" : "");
         }
 
         if (auto jy = comps->find("joystick"); jy != comps->end() && jy->is_object()) {

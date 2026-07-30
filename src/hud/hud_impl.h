@@ -15,6 +15,7 @@
 #include "hud/action_bar.h"
 #include "hud/minimap.h"
 #include "hud/command_bar.h"
+#include "hud/build_bar.h"
 #include "hud/joystick.h"
 #include "hud/cast_indicator.h"
 #include "hud/inventory.h"
@@ -107,6 +108,27 @@ struct Hud::Impl {
     Hud::ActionBarCastFn action_bar_cast_fn;
     Hud::ActionBarCastAtTargetFn action_bar_cast_at_target_fn;
 
+    // Build sub-panel state. `build_panel_open` gates visibility;
+    // `build_source_ability` is the ability that opened it — if the selected
+    // unit stops owning it, the panel closes. `build_structures` is the opened
+    // ability's `builds` list, filled into the slots.
+    BuildBarConfig           build_bar_cfg{};
+    BuildBarRuntime          build_bar_rt{};
+    i32                      build_bar_hover_slot   = -1;
+    i32                      build_bar_pressed_slot = -1;
+    bool                     build_panel_open = false;
+    std::string              build_source_ability;
+    std::vector<std::string> build_structures;
+    Hud::BuildPanelPickFn    build_panel_fn;
+    Hud::BuildAtTargetFn     build_at_target_fn;   // mobile drag-place commit
+
+    // Number of structure slots the build panel shows this open (clamped to
+    // the authored slot count).
+    u32 build_structure_count() const {
+        return std::min(static_cast<u32>(build_bar_cfg.slots.size()),
+                        static_cast<u32>(build_structures.size()));
+    }
+
     // Mobile drag-cast gesture state. One slot owns the gesture at a
     // time (mobile = single-finger drag). All fields meaningful only
     // while phase != Idle. Coordinates are in dp (HUD logical space).
@@ -161,6 +183,13 @@ struct Hud::Impl {
         u32          inventory_item_id = UINT32_MAX;
         std::string  inventory_item_icon;
         bool         inventory_targetable = false;
+        // Build drag (mobile structure placement). When non-empty, the drag
+        // started from a build_bar slot — release commits an orders::Build at
+        // the drag point (build_at_target_fn) instead of a cast/command.
+        // Mutually exclusive with ability_id / command_id / inventory_slot.
+        // No range ring / snap (buildings use a fixed range); the footprint
+        // ghost follows drag_world_* each frame.
+        std::string  build_type;
         std::chrono::steady_clock::time_point press_time{};
     };
     DragCastState drag_cast;
