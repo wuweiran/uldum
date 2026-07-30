@@ -1,7 +1,6 @@
 add_executable(uldum_editor
     main.cpp
     editor.cpp
-    editor_overlays.cpp
     file_explorer.cpp
 )
 

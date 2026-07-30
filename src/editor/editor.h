@@ -5,7 +5,7 @@
 #include "asset/asset.h"
 #include "audio/audio.h"
 #include "render/renderer.h"
-#include "editor/editor_overlays.h"
+#include "render/world_overlays.h"
 #include "editor/file_explorer.h"
 #include "simulation/simulation.h"
 #include "map/map.h"
@@ -110,7 +110,7 @@ private:
     asset::AssetManager     m_asset;
     audio::AudioEngine      m_audio;
     render::Renderer        m_renderer;
-    EditorOverlays          m_overlays;
+    render::WorldOverlays   m_overlays;
     simulation::Simulation  m_simulation;
     map::MapManager         m_map;
 

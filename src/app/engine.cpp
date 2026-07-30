@@ -2441,13 +2441,13 @@ void Engine::run() {
                                         m_world_overlays.add_quad_corners(
                                             corner(xl, yb), corner(xr, yb),
                                             corner(xr, yt), corner(xl, yt),
-                                            tok ? ok_color : bad_color, TexId::BuildPlacement);
+                                            tok ? ok_color : bad_color, TexId::Placement);
                                     }
                                 }
                             } else {
                                 m_world_overlays.add_quad(place.snapped, ts * 0.5f,
                                                           place.valid ? ok_color : bad_color,
-                                                          TexId::BuildPlacement);
+                                                          TexId::Placement);
                             }
                             // Stash the mesh ghost for the post-draw pass.
                             if (const auto* def = active_sim().types().get_unit_type(btype);

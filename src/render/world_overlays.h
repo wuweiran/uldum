@@ -50,7 +50,14 @@ public:
     // The engine-default / map-override merging mechanism (planned)
     // will populate every slot at app init from a known engine path.
     enum class TextureId : u32 {
-        SelectionRing  = 0,  // ribbon — under selected units
+        // Engine-generated defaults — bound procedurally at init, so overlays
+        // work with zero map art.
+        Solid  = 0,          // untextured white; fills / rings / ribbons take the per-draw tint. NOT map-overridable.
+        Placement,           // object-placement footprint (build/editor), tinted green/red; map-overridable.
+
+        // Map-overridable slots — unbound until hud.json calls set_texture();
+        // add_* on an unbound slot is silently dropped.
+        SelectionRing,       // ribbon — under selected units
         RangeRing,           // ribbon — caster's cast range
         TargetUnit,          // ribbon — snapped target unit (legacy ring; desktop targeting no longer uses snap)
         SnapTarget,          // pillar — vertical light column over snapped target (mobile drag-cast)
@@ -59,7 +66,6 @@ public:
         AoeCircle,           // quad   — AoE preview circle
         AoeLine,             // ribbon — AoE preview line
         AoeCone,             // fan    — AoE preview cone
-        BuildPlacement,      // quad   — build footprint tile (engine-generated default, tinted green/red)
 
         kCount
     };

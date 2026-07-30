@@ -132,7 +132,6 @@ static bool create_pipeline(WorldOverlays::Impl& s) {
     rhi::PushConstantRange pc{};
     pc.stages = rhi::ShaderStage::Vertex;
     pc.size   = sizeof(PushConstants);
-
     rhi::PipelineLayoutDesc pl_desc{};
     pl_desc.set_layouts    = std::span{&s.desc_layout, 1};
     pl_desc.push_constants = std::span{&pc, 1};
@@ -231,20 +230,22 @@ static bool bind_decal(WorldOverlays::Impl& s, WorldOverlays::TextureId id,
     return true;
 }
 
-// Engine-owned default decals — generated procedurally so build placement
-// works with zero map art. Currently just BuildPlacement: a flat solid fill,
-// tinted per-draw (green = valid, red = blocked). No per-tile border — the
-// footprint reads as flush edge-to-edge patches, blocked tiles as red patches
-// in a green field. Called at init and after each reset_session_state (which
-// frees all decals), so the default outlives session resets.
+// Engine-owned default decals — generated procedurally so overlays work with
+// zero map art. Two 1×1 solid-white slots, each tinted per-draw:
+//   • Solid — untextured fills / rings / ribbons (editor grid & circles, game
+//     footprint); NOT meant to be overridden.
+//   • Placement — object-placement footprint (green = valid, red = blocked);
+//     map-overridable via set_texture. Kept separate from Solid so a map's
+//     Placement art can't accidentally texture untextured fills.
+// Called at init and after each reset_session_state (which frees all decals).
 static void generate_default_decals(WorldOverlays::Impl& s) {
-    // Solid white 1×1 — the whole quad takes the per-call tint color/alpha.
     constexpr u32 N = 1;
-    std::array<u8, N * N * 4> px{ 255, 255, 255, 255 };
-    GpuTexture tex = upload_texture_rgba(*s.rhi, px.data(), N, N,
-                                         /*srgb=*/false, /*clamp=*/true);
-    if (tex.texture.is_valid()) {
-        bind_decal(s, WorldOverlays::TextureId::BuildPlacement, tex);
+    for (auto id : { WorldOverlays::TextureId::Solid,
+                     WorldOverlays::TextureId::Placement }) {
+        std::array<u8, N * N * 4> px{ 255, 255, 255, 255 };
+        GpuTexture tex = upload_texture_rgba(*s.rhi, px.data(), N, N,
+                                             /*srgb=*/false, /*clamp=*/true);
+        if (tex.texture.is_valid()) bind_decal(s, id, tex);
     }
 }
 
@@ -260,9 +261,8 @@ bool WorldOverlays::init(rhi::Rhi& rhi) {
     if (!create_pipeline(*m_impl))          { log::error(TAG, "pipeline failed");    return false; }
     if (!create_buffers(*m_impl))           { log::error(TAG, "buffers failed");     return false; }
     // Map-supplied decals stay unbound until hud.json calls set_texture();
-    // add_* on an unbound slot is silently dropped. The engine-owned
-    // defaults (build placement) are generated here so build works with
-    // zero map art.
+    // add_* on an unbound slot is silently dropped. The engine-owned defaults
+    // (Solid, Placement) are generated here so overlays work with zero map art.
     generate_default_decals(*m_impl);
     log::info(TAG, "world overlays initialized");
     return true;

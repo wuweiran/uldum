@@ -143,10 +143,9 @@ bool Editor::init(const std::string& map_path) {
         return false;
     }
 
-    // Editor-side depth-tested line renderer — used by placement
-    // footprints, selection circles, and (eventually) brush + region
-    // wireframes. Owns its own pipeline so the editor's overlay
-    // language stays line-art independent of the runtime HUD.
+    // Ground-overlay renderer, shared with the game — placement footprints,
+    // selection circles, brush + region wireframes. WorldOverlays draws both
+    // filled decals and (lazily) depth-tested line art.
     if (!m_overlays.init(m_rhi)) {
         log::error(TAG, "Editor overlays init failed");
         return false;
@@ -2133,49 +2132,53 @@ void Editor::draw_overlays() {
     auto* draw_list = ImGui::GetForegroundDrawList();
     auto& td = m_map.terrain();
 
-    // Helper: closed polyline that traces a horizontal circle, sampled
-    // along terrain so it hugs hills. Emitted through EditorOverlays
-    // (depth-tested 3D lines) — terrain, units, and destructable
-    // models all occlude it properly.
+    // Overlay stroke width (world units) for ring/outline ribbons — matches
+    // the game's selection-ring weight.
+    constexpr f32 kOverlayStroke = 4.0f;
+
+    // Helper: draped ribbon tracing a horizontal circle, sampled along terrain
+    // so it hugs hills. Reuses the game's add_path (filled ribbon on the Solid
+    // slot) — terrain, units, and destructable models occlude it properly.
     auto add_world_circle = [&](glm::vec3 center, f32 radius, glm::vec4 color) {
         constexpr u32 SEG = 48;
         std::vector<glm::vec3> samples;
-        samples.reserve(SEG);
-        for (u32 i = 0; i < SEG; ++i) {
-            f32 a = (static_cast<f32>(i) / SEG) * 2.0f * glm::pi<f32>();
+        samples.reserve(SEG + 1);
+        for (u32 i = 0; i <= SEG; ++i) {   // +1 closes the loop
+            f32 a = (static_cast<f32>(i % SEG) / SEG) * 2.0f * glm::pi<f32>();
             f32 wx = center.x + std::cos(a) * radius;
             f32 wy = center.y + std::sin(a) * radius;
             samples.push_back({ wx, wy, map::sample_height(td, wx, wy) });
         }
-        m_overlays.add_polyline(samples, color, /*closed=*/true);
+        m_overlays.add_path(samples, kOverlayStroke, color,
+                            render::WorldOverlays::TextureId::Solid);
     };
 
     // Brush overlays: only when mouse is not over UI
     if (m_cursor_valid && !ImGui::GetIO().WantCaptureMouse && m_mode == EditMode::Terrain) {
         auto br = compute_brush_range(td, m_cursor_vx, m_cursor_vy, m_brush_size);
 
-        const glm::vec4 grid_color{ 1.0f, 1.0f, 1.0f, 0.35f };
+        const glm::vec4 grid_color{ 1.0f, 1.0f, 1.0f, 0.20f };
 
-        // Grid: tile grid centered on cursor vertex — drawn through
-        // EditorOverlays so the wires hide behind hills correctly.
+        // Filled tiles covering the brush footprint — each tile is a quad on
+        // the four shared grid vertices at their real heights, so it sits flush
+        // on the terrain mesh (same corners the mesh triangulates from). Drawn
+        // through WorldOverlays so terrain occludes it correctly.
         i32 brush_r = m_brush_size - 1;
         i32 grid_min_x = std::max(0, m_cursor_vx - brush_r);
         i32 grid_max_x = std::min(static_cast<i32>(td.tiles_x), m_cursor_vx + brush_r);
         i32 grid_min_y = std::max(0, m_cursor_vy - brush_r);
         i32 grid_max_y = std::min(static_cast<i32>(td.tiles_y), m_cursor_vy + brush_r);
 
-        for (i32 iy = grid_min_y; iy <= grid_max_y; ++iy) {
+        auto gvert = [&](i32 ix, i32 iy) {
+            return glm::vec3{ td.vertex_world_x(ix), td.vertex_world_y(iy),
+                              td.world_z_at(ix, iy) };
+        };
+        for (i32 iy = grid_min_y; iy < grid_max_y; ++iy) {
             for (i32 ix = grid_min_x; ix < grid_max_x; ++ix) {
-                glm::vec3 a{td.vertex_world_x(ix),     td.vertex_world_y(iy), td.world_z_at(ix, iy)};
-                glm::vec3 b{td.vertex_world_x(ix + 1), td.vertex_world_y(iy), td.world_z_at(ix + 1, iy)};
-                m_overlays.add_line(a, b, grid_color);
-            }
-        }
-        for (i32 ix = grid_min_x; ix <= grid_max_x; ++ix) {
-            for (i32 iy = grid_min_y; iy < grid_max_y; ++iy) {
-                glm::vec3 a{td.vertex_world_x(ix), td.vertex_world_y(iy),     td.world_z_at(ix, iy)};
-                glm::vec3 b{td.vertex_world_x(ix), td.vertex_world_y(iy + 1), td.world_z_at(ix, iy + 1)};
-                m_overlays.add_line(a, b, grid_color);
+                m_overlays.add_quad_corners(gvert(ix, iy), gvert(ix + 1, iy),
+                                            gvert(ix + 1, iy + 1), gvert(ix, iy + 1),
+                                            grid_color,
+                                            render::WorldOverlays::TextureId::Solid);
             }
         }
 
@@ -2218,42 +2221,34 @@ void Editor::draw_overlays() {
     if (m_cursor_valid && !ImGui::GetIO().WantCaptureMouse &&
         m_mode == EditMode::Object && m_object_tool == ObjectTool::Place) {
 
-        // Tile-aligned grid covering a (fw × fh) footprint at (cx, cy).
-        // Each line is subdivided so it hugs terrain curvature. step =
-        // tile_size for buildings, cell_size for destructables.
+        // Filled footprint covering fw × fh cells at (cx, cy) — one flush quad
+        // per cell, corners draped to terrain. step = cell_size for
+        // destructables (the building path uses add_building_footprint_pertile).
         auto add_footprint_grid = [&](f32 cx, f32 cy, u32 fw, u32 fh, glm::vec4 color, f32 step) {
             const f32 ts = step;
             const f32 x0 = cx - 0.5f * fw * ts;
             const f32 y0 = cy - 0.5f * fh * ts;
-            constexpr u32 SUB = 4;
-
-            std::vector<glm::vec3> samples;
-            for (u32 i = 0; i <= fw; ++i) {
-                f32 x = x0 + static_cast<f32>(i) * ts;
-                samples.clear();
-                samples.reserve(fh * SUB + 1);
-                for (u32 j = 0; j <= fh * SUB; ++j) {
-                    f32 y = y0 + (static_cast<f32>(j) / SUB) * ts;
-                    samples.push_back({ x, y, map::sample_height(td, x, y) });
+            auto corner = [&](f32 x, f32 y) {
+                return glm::vec3{ x, y, map::sample_height(td, x, y) };
+            };
+            for (u32 j = 0; j < fh; ++j) {
+                for (u32 i = 0; i < fw; ++i) {
+                    f32 xl = x0 + static_cast<f32>(i) * ts;
+                    f32 xr = xl + ts;
+                    f32 yb = y0 + static_cast<f32>(j) * ts;
+                    f32 yt = yb + ts;
+                    m_overlays.add_quad_corners(corner(xl, yb), corner(xr, yb),
+                                                corner(xr, yt), corner(xl, yt),
+                                                color,
+                                                render::WorldOverlays::TextureId::Solid);
                 }
-                m_overlays.add_polyline(samples, color);
-            }
-            for (u32 j = 0; j <= fh; ++j) {
-                f32 y = y0 + static_cast<f32>(j) * ts;
-                samples.clear();
-                samples.reserve(fw * SUB + 1);
-                for (u32 i = 0; i <= fw * SUB; ++i) {
-                    f32 x = x0 + (static_cast<f32>(i) / SUB) * ts;
-                    samples.push_back({ x, y, map::sample_height(td, x, y) });
-                }
-                m_overlays.add_polyline(samples, color);
             }
         };
 
         // Per-tile building footprint: each tile is a flush filled quad in its
         // own color (green = buildable, red = ramp/cliff/blocked), so the user
         // sees exactly which tiles fail — same rule and look the in-game build
-        // uses (simulation::tile_buildable + the flat BuildPlacement decal).
+        // uses (simulation::tile_buildable + the flat Placement decal).
         auto add_building_footprint_pertile = [&](f32 cx, f32 cy, u32 fw, u32 fh,
                                                   glm::vec4 ok_c, glm::vec4 bad_c) {
             const f32 tsz = td.tile_size;
@@ -2275,8 +2270,9 @@ void Editor::draw_overlays() {
                     f32 xr = xl + tsz;
                     f32 yb = y0 + static_cast<f32>(j) * tsz;
                     f32 yt = yb + tsz;
-                    m_overlays.add_filled_quad(corner(xl, yb), corner(xr, yb),
-                                               corner(xr, yt), corner(xl, yt), col);
+                    m_overlays.add_quad_corners(corner(xl, yb), corner(xr, yb),
+                                                corner(xr, yt), corner(xl, yt), col,
+                                                render::WorldOverlays::TextureId::Solid);
                 }
             }
         };
@@ -2391,7 +2387,9 @@ void Editor::draw_overlays() {
                 edge(rc.x1, rc.y0, rc.x1, rc.y1);
                 edge(rc.x1, rc.y1, rc.x0, rc.y1);
                 edge(rc.x0, rc.y1, rc.x0, rc.y0);
-                m_overlays.add_polyline(samples, c, /*closed=*/true);
+                samples.push_back(samples.front());   // close the loop for add_path
+                m_overlays.add_path(samples, kOverlayStroke, c,
+                                    render::WorldOverlays::TextureId::Solid);
             }
             for (const auto& circ : regions[i].circles) {
                 add_world_circle({ circ.cx, circ.cy, 0 }, circ.r, c);
@@ -2421,7 +2419,9 @@ void Editor::draw_overlays() {
                 edge(x1, y0, x1, y1);
                 edge(x1, y1, x0, y1);
                 edge(x0, y1, x0, y0);
-                m_overlays.add_polyline(samples, col_preview, /*closed=*/true);
+                samples.push_back(samples.front());   // close the loop for add_path
+                m_overlays.add_path(samples, kOverlayStroke, col_preview,
+                                    render::WorldOverlays::TextureId::Solid);
             } else if (m_region_tool == RegionTool::AddCircle) {
                 f32 dx = b.x - a.x, dy = b.y - a.y;
                 f32 r = std::sqrt(dx * dx + dy * dy);
