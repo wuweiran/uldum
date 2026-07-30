@@ -46,9 +46,14 @@ static TargetFilter parse_target_filter(const nlohmann::json& j) {
     f.self_  = j.value("self", false);
     f.alive  = j.value("alive", true);
     f.dead   = j.value("dead", false);
-    if (j.contains("classifications")) {
-        for (auto& c : j["classifications"]) {
-            f.classifications.push_back(c.get<std::string>());
+    if (j.contains("any")) {
+        for (auto& c : j["any"]) {
+            f.any.push_back(c.get<std::string>());
+        }
+    }
+    if (j.contains("not_any")) {
+        for (auto& c : j["not_any"]) {
+            f.not_any.push_back(c.get<std::string>());
         }
     }
     return f;

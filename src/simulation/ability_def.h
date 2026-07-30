@@ -72,7 +72,9 @@ struct TargetFilter {
     bool self_  = false;  // self_ to avoid keyword
     bool alive  = true;
     bool dead   = false;
-    std::vector<std::string> classifications;
+    // Classification-tag selectors over the target's `classifications` labels.
+    std::vector<std::string> any;      // target must have ≥1 of these (empty = match all)
+    std::vector<std::string> not_any;  // target must have NONE of these
 };
 
 struct AbilityLevelDef {

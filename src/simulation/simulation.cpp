@@ -344,21 +344,32 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
         }
     }
 
-    // Optional classification list. If non-empty, the target's
-    // classification set must contain at least one of the listed tags.
-    if (!filter.classifications.empty()) {
+    // `any`: if non-empty, the target must carry at least one listed tag.
+    if (!filter.any.empty()) {
         const auto* cls = w.classifications.get(target.id);
         if (!cls) return reject("");
-        bool any = false;
-        for (const auto& want : filter.classifications) {
+        bool matched = false;
+        for (const auto& want : filter.any) {
             for (const auto& have : cls->flags) {
-                if (have == want) { any = true; break; }
+                if (have == want) { matched = true; break; }
             }
-            if (any) break;
+            if (matched) break;
         }
         // Report the target's own first flag as the specifier — the
         // simplest path and what ui.error.target.<flag> expects.
-        if (!any) return reject(cls->flags.empty() ? std::string{} : cls->flags[0]);
+        if (!matched) return reject(cls->flags.empty() ? std::string{} : cls->flags[0]);
+    }
+
+    // `not_any`: if the target carries any listed tag, reject and report it
+    // (e.g. ui.error.target.structure).
+    if (!filter.not_any.empty()) {
+        if (const auto* cls = w.classifications.get(target.id)) {
+            for (const auto& banned : filter.not_any) {
+                for (const auto& have : cls->flags) {
+                    if (have == banned) return reject(banned);
+                }
+            }
+        }
     }
 
     return true;
