@@ -255,6 +255,8 @@ struct LocalView final : IWorldView {
 // picks these — the split is by type, not preference.)
 bool is_static_remembered_entity(const IWorldView& world, u32 entity_id);
 f32  unit_fly_height(const IWorldView& world, u32 id);
+// Per-type slope-tilt clamps in radians: {max_pitch, max_roll}.
+glm::vec2 unit_slope_tilt(const IWorldView& world, u32 id);
 bool ability_can_afford(const IWorldView& world, u32 unit_id,
                         const std::map<std::string, f32>& cost,
                         std::string* out_lacking = nullptr);

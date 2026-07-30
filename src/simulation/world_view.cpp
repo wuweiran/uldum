@@ -210,6 +210,14 @@ f32 unit_fly_height(const IWorldView& world, u32 id) {
     return def ? def->fly_height : 0.0f;
 }
 
+glm::vec2 unit_slope_tilt(const IWorldView& world, u32 id) {
+    const auto* types = world.type_registry();
+    const auto* hi = types ? world.handle_info(id) : nullptr;
+    const auto* def = hi ? types->get_unit_type(hi->type_id) : nullptr;
+    if (!def) return { glm::radians(180.0f), glm::radians(180.0f) };  // 180° = no clamp
+    return { def->max_pitch, def->max_roll };
+}
+
 bool ability_can_afford(const IWorldView& world, u32 unit_id,
                         const std::map<std::string, f32>& cost,
                         std::string* out_lacking) {

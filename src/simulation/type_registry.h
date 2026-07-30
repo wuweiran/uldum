@@ -3,6 +3,8 @@
 #include "simulation/entity_types.h"
 #include "simulation/components.h"
 
+#include <glm/trigonometric.hpp>   // glm::radians for orientation defaults
+
 #include <map>
 #include <optional>
 #include <string>
@@ -23,6 +25,11 @@ struct UnitTypeDef {
     // (the slot renders blank). Optional for non-buildable units.
     std::string icon_path;
     f32 model_scale = 1.0f;
+
+    // Orientation — slope-conform tilt clamps (WC3 "Orientation" Art group).
+    // Radians; 0 = stay upright (structures). Default 180° = no clamp.
+    f32 max_pitch = glm::radians(180.0f);
+    f32 max_roll  = glm::radians(180.0f);
 
     // Health (engine built-in state)
     f32 max_health = 100;

@@ -101,6 +101,13 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             if (def.move_type == MoveType::None) def.move_speed = 0.0f;
         }
 
+        // Orientation — model attitude on terrain (authored in degrees).
+        if (val.contains("orientation")) {
+            auto& o = val["orientation"];
+            def.max_pitch = glm::radians(o.value("max_pitch", 180.0f));
+            def.max_roll  = glm::radians(o.value("max_roll",  180.0f));
+        }
+
         // Pathing footprint — either a 2-element array `[w, h]` or
         // separate `pathing_footprint_w` / `pathing_footprint_h` fields
         // on the unit type. Buildings should set this; mobile units

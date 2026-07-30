@@ -111,21 +111,30 @@ static f32       lerp_facing  (const simulation::Transform& t, f32 alpha) { retu
 
 // ── Terrain slope tilt helper ──────────────────────────────────────────────
 
-// Build a rotation matrix that tilts an entity to match the terrain slope.
-// terrain_normal is the surface normal at the entity position (Z-up).
-static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal) {
-    glm::vec3 up{0.0f, 0.0f, 1.0f};
+// Build a rotation that tilts an entity to match the terrain slope, clamped
+// per-axis (WC3 Max Pitch / Max Roll). `terrain_normal` is the Z-up surface
+// normal; `facing` is the unit's yaw so the normal can be split into pitch
+// (tilt about the side axis — nose up/down along the slope) and roll (tilt
+// about the forward axis — lean L/R across it). Each is clamped to its cap
+// before recomposition, so max_pitch=max_roll=0 stays bolt-upright. Applied in
+// world space before the yaw, matching how the model matrix composes.
+static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal, f32 facing,
+                                   f32 max_pitch, f32 max_roll) {
+    if (max_pitch <= 0.0f && max_roll <= 0.0f) return glm::mat4{1.0f};
     glm::vec3 n = glm::normalize(terrain_normal);
-    f32 dot = glm::dot(up, n);
-    if (dot > 0.999f) return glm::mat4{1.0f};  // flat terrain, no tilt
+    if (n.z > 0.9999f) return glm::mat4{1.0f};  // flat terrain, no tilt
 
-    glm::vec3 axis = glm::cross(up, n);
-    f32 axis_len = glm::length(axis);
-    if (axis_len < 0.001f) return glm::mat4{1.0f};
-    axis /= axis_len;
+    // Forward / side axes in the XY plane from the unit's facing.
+    glm::vec3 fwd  { std::cos(facing),  std::sin(facing), 0.0f };
+    glm::vec3 side { std::sin(facing), -std::cos(facing), 0.0f };
 
-    f32 angle = std::acos(std::clamp(dot, -1.0f, 1.0f));
-    return glm::rotate(glm::mat4{1.0f}, angle, axis);
+    // Decompose the normal onto those axes. n·fwd > 0 means the ground drops
+    // ahead → nose pitches down; n·side likewise drives the roll lean.
+    f32 pitch = std::clamp(std::atan2(-glm::dot(n, fwd), n.z), -max_pitch, max_pitch);
+    f32 roll  = std::clamp(std::atan2(-glm::dot(n, side), n.z), -max_roll,  max_roll);
+
+    glm::mat4 m = glm::rotate(glm::mat4{1.0f}, pitch, side);
+    return glm::rotate(m, roll, fwd);
 }
 
 // Projectiles are airborne: they don't hug the ground slope, and an arcing
@@ -172,7 +181,8 @@ static glm::mat4 build_entity_model_matrix(const map::TerrainData* terrain,
     glm::mat4 model = glm::translate(glm::mat4{1.0f}, vis_pos);
     if (terrain && !is_projectile(world, id)) {
         glm::vec3 normal = map::sample_normal(*terrain, vis_pos.x, vis_pos.y);
-        model = model * slope_tilt_matrix(normal);
+        glm::vec2 tilt = simulation::unit_slope_tilt(world, id);
+        model = model * slope_tilt_matrix(normal, vis_facing, tilt.x, tilt.y);
     }
     model = model * projectile_pitch_matrix(world, id, transform, vis_facing);
     f32 facing = native_z_up ? vis_facing : vis_facing + glm::half_pi<f32>();
@@ -3128,7 +3138,8 @@ void Renderer::draw_ghost_model(rhi::CommandList& cmd, std::string_view model_pa
     glm::mat4 model = glm::translate(glm::mat4{1.0f}, position);
     if (m_terrain_data) {
         glm::vec3 n = map::sample_normal(*m_terrain_data, position.x, position.y);
-        model = model * slope_tilt_matrix(n);
+        f32 no_clamp = glm::radians(180.0f);   // ghost has no type → conform fully
+        model = model * slope_tilt_matrix(n, facing, no_clamp, no_clamp);
     }
     bool native = lm->mesh.native_z_up;
     f32 yaw = native ? facing : facing + glm::half_pi<f32>();
