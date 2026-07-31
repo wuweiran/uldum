@@ -1430,9 +1430,9 @@ bool command_bar_slot_applies(const Hud::Impl& s, const std::string& command) {
     if (!own || own->id != s.world_ctx->local_player.id) return false;
 
     const auto* mv  = world.movement(lead.id);
-    // MoveType::None is the authoritative "cannot move" signal (WC3 Movement
-    // Type = None); speed alone is insufficient for a mis-authored None unit.
-    bool can_move   = mv && mv->type != simulation::MoveType::None && mv->speed > 0.0f;
+    // Keyed on capability, not speed: MoveType::None can't move; a unit slowed
+    // to 0 still shows its Move button (temporarily debuffed, not immobile).
+    bool can_move   = mv && mv->type != simulation::MoveType::None;
     // Combat is opt-in (create_unit only adds the component when the type
     // declares a `combat` block), so presence IS the capability — a
     // barracks has no Combat component and thus no attack command.

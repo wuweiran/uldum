@@ -152,6 +152,19 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
             }
         }
 
+        // Immobility gate — accept the order (Cancel/Stop/Rally still queue)
+        // but never translate. Keyed on capability, not speed (a unit slowed to
+        // 0 still moves, just 0/tick):
+        //   • MoveType::None    — the type can't move
+        //   • building          — footprint-reserved; moving desyncs its blocker
+        //   • under_construction — not operational yet; also keeps Birth playing
+        //                          (Walk out-ranks it in derive_anim_state)
+        if (mov.type == MoveType::None || world.buildings.has(id) ||
+            (world.constructions.get(id) && world.constructions.get(id)->under_construction)) {
+            mov.moving = false;
+            continue;
+        }
+
         // A step is permitted only if terrain/buildings allow it (cell
         // pathing) AND it doesn't drive the unit into a different player's
         // unit (foreign collision circle). Same-player crowding is allowed
@@ -2285,6 +2298,11 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
         // next tick once the flag drops.
         if (auto* sf = world.status_flags.get(id); sf && (sf->flags & status::Phased)) continue;
 
+        // Static = obstructs but never pushed: buildings and MoveType::None.
+        // Keyed on capability, not speed (a unit slowed to 0 stays pushable).
+        // Loop-invariant for self — computed once here; `mov` is always set.
+        bool self_static = mov->type == MoveType::None || world.buildings.has(id);
+
         for (auto& other : nearby) {
             if (other.id <= id) continue;
             if (world.corpses.has(other.id)) continue;
@@ -2330,15 +2348,9 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
                     return true;
                 };
 
-                // Static colliders (speed 0 — buildings and any rooted/
-                // immobile unit) are immovable: they obstruct but are never
-                // repositioned. The dynamic partner absorbs the FULL overlap
-                // instead of half. speed is set once at create time and never
-                // mutated at runtime, so it's a stable "is this thing
-                // pushable" flag. (Destructables have no Movement at all and
-                // never reach this loop — their footprint blocks pathing.)
-                bool self_static  = mov->speed <= 0.0f;
-                bool other_static = !other_mov || other_mov->speed <= 0.0f;
+                // `other` static too? (nearby excludes buildings, but a non-unit
+                // widget has no Movement and a MoveType::None unit can appear.)
+                bool other_static = !other_mov || other_mov->type == MoveType::None;
                 if (self_static && other_static) continue;   // two obstacles — nothing to resolve
 
                 f32 self_share  = self_static ? 0.0f : (other_static ? 1.0f : 0.5f);
