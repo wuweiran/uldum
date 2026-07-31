@@ -744,7 +744,11 @@ void issue_order(World& world, Unit unit, Order order) {
         if (!def || !has_classification(def->classifications, "structure")) return;
     }
 
-    if (order.queued && oq->current && oq->queued.size() >= MAX_QUEUED_ORDERS) return;
+    // Stop is a verb, not a state (unlike HoldPosition): flush the queue and go
+    // idle NOW — never queued, never persists as `current`.
+    const bool is_stop = std::holds_alternative<orders::Stop>(order.payload);
+
+    if (order.queued && oq->current && !is_stop && oq->queued.size() >= MAX_QUEUED_ORDERS) return;
 
     // EVENT_UNIT_ISSUED_ORDER fires here — after admission, before the
     // order takes effect on the queue. Lua may inspect / count / chain.
@@ -756,16 +760,15 @@ void issue_order(World& world, Unit unit, Order order) {
     oq = world.order_queues.get(unit.id);
     if (!oq) return;
 
-    if (order.queued && oq->current) {
+    if (order.queued && oq->current && !is_stop) {
         oq->queued.push_back(std::move(order));
     } else {
-        // Fresh (non-shift) order, OR a shift-order onto an IDLE unit (no
-        // current order). The idle-shift case lands here so it starts NOW —
-        // in WC3, shift-queuing an idle unit executes immediately; it doesn't
-        // leave the unit standing still. Only a non-shift order wipes the
-        // pending queue; the idle-shift case keeps it (empty anyway).
-        if (!order.queued) oq->queued.clear();
-        oq->current = std::move(order);
+        // Fresh (non-shift) order, a shift-order onto an IDLE unit, or any Stop.
+        // Idle-shift starts NOW (WC3 executes it immediately). A non-shift order
+        // or a Stop wipes the pending queue; idle-shift keeps it (empty anyway).
+        if (!order.queued || is_stop) oq->queued.clear();
+        if (is_stop) oq->current.reset();          // become idle — never install Stop
+        else         oq->current = std::move(order);
 
         // Clear pathfinding + approach state and force a fresh repath
         // on the next system_movement tick. Setting repath_timer = 0 is
