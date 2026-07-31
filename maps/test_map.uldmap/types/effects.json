@@ -60,5 +60,17 @@
         "count": 36, "speed": 320, "life": 0.6, "size": 13,
         "gravity": -260, "spread": 0.5,
         "color": { "r": 1.0, "g": 0.55, "b": 0.15, "a": 1.0 }
+    },
+    "shock_wave": {
+        "type": "spark",
+        "count": 26, "speed": 300, "life": 0.4, "size": 22,
+        "gravity": -80, "spread": 0.45,
+        "color": { "r": 1.0, "g": 0.85, "b": 0.3, "a": 1.0 }
+    },
+    "shock_wave_hit": {
+        "type": "spark",
+        "count": 14, "speed": 200, "life": 0.32, "size": 14,
+        "gravity": -100, "spread": 0.5,
+        "color": { "r": 1.0, "g": 0.9, "b": 0.45, "a": 1.0 }
     }
 }

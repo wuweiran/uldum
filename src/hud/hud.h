@@ -434,8 +434,8 @@ public:
     enum class AimAreaShape : u8 {
         None   = 0,   // no AoE indicator
         Circle = 1,   // disc at the cast/snap point — uses area_radius
-        Line   = 2,   // rectangle from caster toward drag — uses area_width + range as length
-        Cone   = 3,   // wedge from caster toward drag — uses area_angle (degrees) + range as radius
+        Line   = 2,   // rectangle from caster toward drag — uses area_width + area_length (else range)
+        Cone   = 3,   // wedge from caster toward drag — uses area_angle (degrees) + area_length (else range)
     };
 
     // Where the active targeting session originated. Drives both the
@@ -492,6 +492,7 @@ public:
         f32         area_radius = 0;   // Circle (and target_unit-around-target)
         f32         area_width  = 0;   // Line
         f32         area_angle  = 0;   // Cone, degrees
+        f32         area_length = 0;   // Line/Cone reach along aim (0 = fall back to range)
         // Unit-targeted snap state. snapped_id == UINT32_MAX when not
         // snapped (or form != target_unit).
         u32  snapped_id     = 0xFFFFFFFFu;

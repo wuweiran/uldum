@@ -2398,10 +2398,12 @@ void HudRenderer::draw_tree() {
         const auto& style = s.cast_indicator_cfg.style;
         const auto aim = m_hud->aim_state();
         bool targeting = aim.active;
-        // When an AoE indicator is on screen, it already shows where the
-        // cast lands — the target cursor on top is redundant clutter, so
-        // suppress it. The plain (non-targeting) cursor is unaffected.
-        bool suppress_for_aoe = targeting && aim.has_area;
+        // A CIRCLE AoE is centered on the cursor — the disc already marks the
+        // aim point, so the target cursor on top is redundant; suppress it.
+        // Line/Cone are anchored at the caster and only ROTATE toward the
+        // cursor, so the cursor is the player's only aim-point marker — keep it.
+        bool suppress_for_aoe = targeting && aim.has_area
+            && aim.area_shape == Hud::AimAreaShape::Circle;
         const std::string& path = targeting ? style.cursor_target_path
                                             : style.cursor_default_path;
         if (!path.empty() && !suppress_for_aoe) {

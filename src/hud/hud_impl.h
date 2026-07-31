@@ -168,6 +168,7 @@ struct Hud::Impl {
         f32          area_radius = 0;
         f32          area_width  = 0;   // Line
         f32          area_angle  = 0;   // Cone, degrees
+        f32          area_length = 0;   // Line/Cone reach (0 = fall back to range)
         // Snapped target unit (target_unit form only). Invalid when
         // not snapped.
         simulation::Unit snapped_target{};

@@ -2307,6 +2307,7 @@ Hud::AbilityAimState Hud::aim_state() const {
         out.area_radius = dc.area_radius;
         out.area_width  = dc.area_width;
         out.area_angle  = dc.area_angle;
+        out.area_length = dc.area_length;
         out.has_area    = (out.area_shape != AimAreaShape::None);
 
         if (simulation::is_non_null_handle(dc.snapped_target) && m_impl->world_ctx &&
@@ -2431,6 +2432,7 @@ Hud::AbilityAimState Hud::aim_state() const {
     out.area_radius = lvl.area.radius;
     out.area_width  = lvl.area.width;
     out.area_angle  = lvl.area.angle;
+    out.area_length = lvl.area.length;
     out.has_area    = (out.area_shape != AimAreaShape::None);
 
     // Pointer is stored in dp; Picker expects physical px.
@@ -3179,6 +3181,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.area_radius = lvl.area.radius;
                         s.drag_cast.area_width  = lvl.area.width;
                         s.drag_cast.area_angle  = lvl.area.angle;
+                        s.drag_cast.area_length = lvl.area.length;
                         s.drag_cast.snapped_target = simulation::Unit{};
                         s.action_bar_cfg.slots[bar_slot].pressed = true;
                         drag_cast_started = true;
@@ -3245,6 +3248,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.area_radius = 0;
                         s.drag_cast.area_width  = 0;
                         s.drag_cast.area_angle  = 0;
+                        s.drag_cast.area_length = 0;
                         s.drag_cast.snapped_target = simulation::Unit{};
                         s.command_bar_cfg.slots[cmd_slot].pressed = true;
                         s.command_bar_cfg.slots[cmd_slot].press_pulse_until =
@@ -3294,7 +3298,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                     auto shape = simulation::IndicatorShape::Point;
                     u32  widget_kinds = 0;
                     bool accept_point = false;
-                    f32  area_radius = 0, area_width = 0, area_angle = 0;
+                    f32  area_radius = 0, area_width = 0, area_angle = 0, area_length = 0;
                     bool castable_now = false;
                     if (tdef && !tdef->abilities.empty()) {
                         first_ability = tdef->abilities[0];
@@ -3318,6 +3322,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                             area_radius  = lvl.area.radius;
                             area_width   = lvl.area.width;
                             area_angle   = lvl.area.angle;
+                            area_length  = lvl.area.length;
                             castable_now = is_castable_form(abil_def->form) &&
                                 slot_castable_now(*s.world_ctx, carrier_id,
                                                   *inst, *abil_def);
@@ -3353,6 +3358,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                         s.drag_cast.area_radius = area_radius;
                         s.drag_cast.area_width  = area_width;
                         s.drag_cast.area_angle  = area_angle;
+                        s.drag_cast.area_length = area_length;
                         s.drag_cast.snapped_target  = simulation::Unit{};
                         s.drag_cast.command_id.clear();
                         s.drag_cast.inventory_slot      = inv_slot;

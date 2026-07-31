@@ -96,6 +96,7 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
         lvl.area.radius = a.value("radius", 0.0f);
         lvl.area.width  = a.value("width",  0.0f);
         lvl.area.angle  = a.value("angle",  0.0f);
+        lvl.area.length = a.value("length", 0.0f);
         lvl.has_area    = true;
     }
 

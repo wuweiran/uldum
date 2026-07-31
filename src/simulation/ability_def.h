@@ -50,8 +50,8 @@ namespace widget_kind {
 enum class IndicatorShape : u8 {
     Point = 0,    // no AoE; the drag-point reticle is the indicator
     Area,         // filled disc at the drag point; uses level.area.radius
-    Line,         // rectangle from caster toward drag direction; uses level.area.width, length = level.range
-    Cone,         // sector at caster toward drag direction; uses level.area.angle, length = level.range
+    Line,         // rectangle from caster toward drag direction; uses level.area.width, reach = level.area.length (else level.range)
+    Cone,         // sector at caster toward drag direction; uses level.area.angle, reach = level.area.length (else level.range)
 };
 
 IndicatorShape parse_indicator_shape(const std::string& s);
@@ -64,6 +64,7 @@ struct AbilityArea {
     f32 radius = 0;
     f32 width  = 0;
     f32 angle  = 0;   // degrees
+    f32 length = 0;   // Line/Cone reach along the aim direction (0 = fall back to level.range)
 };
 
 struct TargetFilter {

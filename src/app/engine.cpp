@@ -2520,20 +2520,21 @@ void Engine::run() {
                                     break;
                                 }
                                 case Shape::Line: {
-                                    // Strip from caster, in caster→drag
-                                    // direction, length = aim.range,
-                                    // width = aim.area_width. Two-sample
-                                    // path is enough since the line is
-                                    // straight in XY (terrain z is
-                                    // sampled per endpoint).
+                                    // Strip from caster in the caster→drag
+                                    // direction, width = aim.area_width. Reach =
+                                    // aim.area_length (the effect's travel/length,
+                                    // decoupled from cast range); falls back to
+                                    // aim.range when unset. Two-sample path is
+                                    // enough since the line is straight in XY.
+                                    f32 reach = aim.area_length > 0 ? aim.area_length : aim.range;
                                     f32 dx = drag.x - caster.x;
                                     f32 dy = drag.y - caster.y;
                                     f32 d  = std::sqrt(dx*dx + dy*dy);
-                                    if (d > 1e-3f && aim.range > 0) {
+                                    if (d > 1e-3f && reach > 0) {
                                         f32 inv = 1.0f / d;
                                         glm::vec3 end{
-                                            caster.x + dx * inv * aim.range,
-                                            caster.y + dy * inv * aim.range,
+                                            caster.x + dx * inv * reach,
+                                            caster.y + dy * inv * reach,
                                             drag.z   // approximate; flat path is fine for v1
                                         };
                                         std::vector<glm::vec3> samples = { caster, end };
@@ -2544,18 +2545,19 @@ void Engine::run() {
                                     break;
                                 }
                                 case Shape::Cone: {
-                                    // Wedge from caster, oriented toward
-                                    // drag, half-angle from area_angle
-                                    // (degrees → radians), radius = range.
+                                    // Wedge from caster toward drag, half-angle
+                                    // from area_angle (deg→rad). Radius = reach =
+                                    // aim.area_length (else aim.range).
+                                    f32 reach = aim.area_length > 0 ? aim.area_length : aim.range;
                                     f32 dx = drag.x - caster.x;
                                     f32 dy = drag.y - caster.y;
                                     f32 d  = std::sqrt(dx*dx + dy*dy);
-                                    if (d > 1e-3f && aim.range > 0 && aim.area_angle > 0) {
+                                    if (d > 1e-3f && reach > 0 && aim.area_angle > 0) {
                                         glm::vec3 dir{ dx / d, dy / d, 0.0f };
                                         f32 half_angle_rad = aim.area_angle * 0.5f
                                                              * 3.14159265358979323846f / 180.0f;
                                         m_world_overlays.add_cone(caster, dir, half_angle_rad,
-                                                                  aim.range,
+                                                                  reach,
                                                                   phase_color(s.phase_normal),
                                                                   TexId::AoeCone);
                                     }

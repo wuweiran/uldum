@@ -372,4 +372,60 @@ function M.register_chain_frost()
     end)
 end
 
+-- Shock Wave: a point-target wave that travels in a straight line from the
+-- caster toward the target point, damaging each enemy ONCE as it passes near
+-- to far. Driven by a repeating timer that steps a "wave front" outward; each
+-- step queries units within half-width of the front and damages the un-hit
+-- ones (dedup via a shared `hit` table keyed by unit .id). No projectile.
+function M.register_shock_wave(opts)
+    opts = opts or {}
+    local length = opts.length or 700    -- match the ability's `range`
+    local width  = opts.width  or 180    -- match `area.width`
+    local speed  = opts.speed  or 900    -- world units/sec (length/speed ≈ 0.8s)
+    local damage = opts.damage or 120
+    local step   = opts.step   or 60     -- front advance per tick
+
+    local trig = CreateTrigger()
+    TriggerRegisterEvent(trig, EVENT_GLOBAL_ABILITY_EFFECT)
+    TriggerAddCondition(trig, function()
+        return GetTriggerAbilityId() == "shock_wave"
+    end)
+    TriggerAddAction(trig, function()
+        local caster = GetTriggerUnit()
+        if not caster then return end
+        local cx, cy = GetUnitX(caster), GetUnitY(caster)
+        local tx, ty = GetSpellTargetX(), GetSpellTargetY()
+        local dx, dy = tx - cx, ty - cy
+        local dist = math.sqrt(dx*dx + dy*dy)
+        if dist < 1e-3 then return end
+        local ux, uy = dx / dist, dy / dist   -- unit direction, caster→point
+
+        local owner    = GetUnitOwner(caster)
+        local hit       = {}                  -- dedup: unit.id → true
+        local traveled  = 0
+        local interval  = step / speed
+
+        local timer
+        timer = CreateTimer(interval, true, function()
+            traveled = traveled + step
+            if traveled > length then traveled = length end
+            local fx, fy = cx + ux * traveled, cy + uy * traveled
+
+            PlayEffect("shock_wave", fx, fy, 0)
+
+            local nearby = GetUnitsInRange(fx, fy, width * 0.5,
+                { enemy_of = owner, alive_only = true })
+            for _, u in ipairs(nearby) do
+                if not hit[u.id] then
+                    hit[u.id] = true
+                    DamageUnit(caster, u, damage, "magic")
+                    PlayEffectOnUnit("shock_wave_hit", u, "overhead")
+                end
+            end
+
+            if traveled >= length then DestroyTimer(timer) end
+        end)
+    end)
+end
+
 return M

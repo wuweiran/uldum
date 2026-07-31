@@ -117,10 +117,13 @@ function main()
     -- footman's gameplay role differs per scene — scene_01's footman
     -- doesn't need it.
     AddAbility(footman, "wind_walk")
-    -- Chain Frost on the paladin — proof-of-life for the projectile
+    -- Chain Frost on the footman — proof-of-life for the projectile
     -- chain pattern (each jump is a fresh CreateProjectile bouncing
     -- to the nearest unhit enemy via PROJECTILE_HIT).
-    AddAbility(paladin, "chain_frost")
+    AddAbility(footman, "chain_frost")
+    -- Shock Wave on the paladin — a point-target line wave that damages
+    -- each enemy once as it travels near→far (Lua timer sweep, no projectile).
+    AddAbility(paladin, "shock_wave")
 
     -- Register standard combat systems (shared)
     combat.register_armor_system()
@@ -137,7 +140,8 @@ function main()
     abilities.register_holy_light_effect()
     abilities.register_wind_walk()
     abilities.register_chain_frost()
-    Log("[Scene02] Hero abilities registered (cleave, consecration, aura, holy light, wind walk, chain frost)")
+    abilities.register_shock_wave()
+    Log("[Scene02] Hero abilities registered (cleave, consecration, aura, holy light, wind walk, chain frost, shock wave)")
 
     -- Auto-cast Holy Light: paladin heals footman whenever footman drops
     -- below 80% HP. Scene-specific because the caster→target binding

@@ -83,6 +83,25 @@
             }
         ]
     },
+    "shock_wave": {
+        "name": "Shock Wave",
+        "tooltip": "Sends a wave of force in a line, damaging each enemy it passes over.",
+        "icon": "textures/icons/shock_wave.ktx2",
+        "hotkey": "W",
+        "form": "target",
+        "accept_point": true,
+        "shape": "line",
+        "max_level": 1,
+        "levels": [
+            { "range": 700,
+              "area":  { "width": 180, "length": 700 },
+              "damage": 120,
+              "cooldown": 8.0,
+              "cost":  { "mana": 65 },
+              "cast_time": 0.4
+            }
+        ]
+    },
     "wind_walk": {
         "name": "Wind Walk",
         "tooltip": "Vanish from sight for 10 seconds. Acquiring a target or attacking ends the effect early.",
