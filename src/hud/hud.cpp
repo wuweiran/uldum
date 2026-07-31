@@ -3573,6 +3573,8 @@ bool Hud::input_captured() const {
         || m_impl->command_bar_pressed_slot >= 0
         || m_impl->build_bar_hover_slot     != -1
         || m_impl->build_bar_pressed_slot   != -1
+        || (m_impl->drag_cast.phase != Impl::DragCastPhase::Idle
+            && !m_impl->drag_cast.build_type.empty())
         || m_impl->inventory_hover_slot     >= 0
         || m_impl->inventory_pressed_slot   >= 0
         || m_impl->pickup_bar_hover_slot    >= 0
