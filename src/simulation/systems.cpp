@@ -1748,6 +1748,7 @@ void system_items(World& world, float /*dt*/) {
 // worker's fate via on_construction_start).
 
 static constexpr f32 BUILD_MIN_HP_FRACTION = 0.10f;  // structures start at 10% HP
+static constexpr f32 BUILD_CLEAR_TIMEOUT   = 3.0f;   // s to wait for displaced units to vacate
 
 void system_build(World& world, float dt, Pathfinder& pathfinder,
                   const map::TerrainData* terrain) {
@@ -1834,6 +1835,55 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
             continue;   // no standable side → abandon
         }
 
+        // Owner — needed to decide which occupants are "own" units to displace.
+        const Player* owner = world.owners.get(id);
+
+        // Footprint clearing starts AT COMMIT, not on arrival: every tick the
+        // Build order is active (worker still walking, or waiting at the edge),
+        // push idle own units off the footprint. Gathered once; the arrival
+        // poll below reuses it to test whether the region is constructable yet.
+        std::vector<u32> occupants;
+        if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0
+            && terrain && terrain->is_valid()) {
+            occupants = footprint_occupants(world, *terrain, sx, sy,
+                                            def->pathing_footprint_w,
+                                            def->pathing_footprint_h,
+                                            def->move_type, /*ignore*/ id);
+            for (u32 iid : occupants) {
+                if (!owner || !is_displaceable(world, iid, owner->id)) continue;
+                auto* it = world.transforms.get(iid);
+                auto* im = world.movements.get(iid);
+                if (!it || !im) continue;
+                // Target: exit the footprint AABB expanded by the unit's radius
+                // PLUS the Move arrival tolerance. A point-Move ends within
+                // stop_dist = max(range, tile_size*0.5) of its goal (see
+                // system_movement), and this displace Move uses range 0 → the unit
+                // stops up to a half-tile SHORT. So the target must sit
+                // radius + margin + half_tile beyond the footprint edge, or the
+                // unit halts still overlapping it and the poll never clears.
+                f32 R = im->collision_radius + 8.0f + ts * 0.5f;
+                auto exit_at = [&](f32 ang) -> glm::vec2 {
+                    f32 cx = std::cos(ang), cy = std::sin(ang);
+                    f32 ehw = half_w + R, ehh = half_h + R;
+                    f32 tx = (std::abs(cx) > 1e-4f) ? ehw / std::abs(cx) : 1e9f;
+                    f32 ty = (std::abs(cy) > 1e-4f) ? ehh / std::abs(cy) : 1e9f;
+                    f32 t = std::min(tx, ty);
+                    return { sx + cx * t, sy + cy * t };
+                };
+                f32 base = std::atan2(it->position.y - sy, it->position.x - sx);
+                glm::vec2 tgt = exit_at(base);
+                for (i32 k = 0; k <= N_SWEEP; ++k) {
+                    f32 off = (k == 0) ? 0.0f
+                        : static_cast<f32>((k + 1) / 2) * step * ((k & 1) ? 1.0f : -1.0f);
+                    glm::vec2 p = exit_at(base + off);
+                    if (pathfinder.pos_clear_for_radius(p.x, p.y, im->collision_radius, im->type)) {
+                        tgt = p; break;
+                    }
+                }
+                issue_order(world, Unit{iid}, Order{orders::Move{glm::vec3{tgt.x, tgt.y, 0.0f}}});
+            }
+        }
+
         f32 dx = stand.x - wt->position.x;
         f32 dy = stand.y - wt->position.y;
         constexpr f32 ARRIVE_R = 24.0f;
@@ -1867,36 +1917,51 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
             }
         }
 
-        // Arrived. Clear the walk state and end the order regardless of
-        // whether the spawn succeeds (a blocked site just cancels).
-        oq->current.reset();
-        if (auto* pth = world.pathings.get(id)) {
-            pth->approach_range = 0;
-            pth->approach_target = Unit{};
-        }
+        // Arrived + facing. The Build order stays CURRENT through the footprint-
+        // clearing phase (so the worker re-enters this branch each tick); it's
+        // only reset at a terminal outcome — abandon or spawn. Stop the walk.
+        auto* wpth = world.pathings.get(id);
+        if (wpth) { wpth->approach_range = 0; wpth->approach_target = Unit{}; }
 
-        // Re-check the whole footprint is still buildable — flat, passable,
-        // unblocked (a unit may have walked onto it, or it's a ramp the client
-        // shouldn't have offered). Ramps/cliffs are rejected here too.
-        if (def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0
-            && terrain && terrain->is_valid()) {
-            if (!footprint_buildable(pathfinder, *terrain, sx, sy,
-                                     def->pathing_footprint_w, def->pathing_footprint_h,
-                                     def->move_type)) {
-                if (world.on_construction_failed) world.on_construction_failed(worker, "blocked");
-                continue;   // footprint no longer buildable → abandon
+        // Poll whether the footprint is CONSTRUCTABLE right now — flat/passable
+        // terrain (footprint_buildable) AND no unit occupying it (occupants,
+        // gathered + pushed off above this tick). Whenever it's clear, the building
+        // is placed. Until then, wait — the idle own units are being displaced;
+        // give them BUILD_CLEAR_TIMEOUT to vacate, then give up. This is NOT the
+        // "can this be ordered" gate (enemy/busy/immobile) — that lives in
+        // evaluate_building_placement at cast time; here we only ask "is the
+        // ground actually clear yet".
+        bool terrain_ok =
+            !(def->pathing_footprint_w > 0 && def->pathing_footprint_h > 0
+              && terrain && terrain->is_valid())
+            || footprint_buildable(pathfinder, *terrain, sx, sy,
+                                   def->pathing_footprint_w, def->pathing_footprint_h,
+                                   def->move_type);
+        if (!terrain_ok || !occupants.empty()) {
+            if (wpth) {
+                wpth->build_clear_timer += dt;
+                if (wpth->build_clear_timer > BUILD_CLEAR_TIMEOUT) {
+                    oq->current.reset();
+                    wpth->build_clear_timer = 0;
+                    if (world.on_construction_failed) world.on_construction_failed(worker, "blocked");
+                }
             }
+            continue;   // not constructable yet → wait (or abandoned on timeout)
         }
 
-        Player owner{0};
-        if (auto* o = world.owners.get(id)) owner = *o;
+        // Constructable → spawn. Terminal: reset the worker's order now
+        // (building_type / sx / sy / owner are local copies), so even a failed
+        // spawn ends the order instead of retrying forever.
+        if (wpth) wpth->build_clear_timer = 0;
+        oq->current.reset();
 
         // Structures spawn at a fixed default facing, NOT the worker's heading
         // (which varies with the direction it walked in from). WC3-style: a
         // building always faces the same way regardless of who built it or how
         // they approached. 270° (same deg→rad convention as authored facings).
         constexpr f32 BUILDING_FACING = 1.5f * glm::pi<f32>();   // 270 degrees
-        Unit site = create_unit(world, building_type, owner, sx, sy, BUILDING_FACING);
+        Unit site = create_unit(world, building_type, owner ? *owner : Player{},
+                                sx, sy, BUILDING_FACING);
         if (is_null_handle(site)) continue;
 
         // Structure spawned in view → let it play its Birth clip as the

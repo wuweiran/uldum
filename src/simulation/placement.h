@@ -58,14 +58,29 @@ bool footprint_clear(const Pathfinder& pf, const map::TerrainData& td,
 bool collision_overlaps(const World& world, f32 wx, f32 wy, f32 radius,
                         MoveType move_type, u32 ignore_id);
 
+// A footprint occupant that can be pushed aside (vs. a hard blocker): owned by
+// `builder_owner_id`, movable (not MoveType::None, not a building), and idle
+// (no current order, not in combat, not casting). Shared policy used by both
+// the placement preview and the arrival-time displace/abandon logic.
+bool is_displaceable(const World& world, u32 unit_id, u32 builder_owner_id);
+
+// Ids of units whose collision disc overlaps the fw×fh tile-footprint centered
+// at (wx,wy), same movement layer as `move_type`, excluding `ignore_id`.
+std::vector<u32> footprint_occupants(const World& world, const map::TerrainData& td,
+                                     f32 wx, f32 wy, u32 fw, u32 fh,
+                                     MoveType move_type, u32 ignore_id = 0);
+
 // Evaluate a building type at a cursor world position: snap to the
 // footprint grid, test footprint clearance + collision overlap, and
 // sample terrain height. `ignore_id` skips a preview entity in the
 // overlap sweep. Types with no footprint fall back to a collision-radius
-// occupiability test, matching the editor's can_place_at.
+// occupiability test, matching the editor's can_place_at. `owner_id` is the
+// placing player: a footprint tile under a *displaceable* own unit stays valid
+// (it'll be pushed off on build); UINT32_MAX = treat every occupant as a blocker.
 BuildingPlacement evaluate_building_placement(const Simulation& sim,
                                               std::string_view type_id,
                                               f32 cursor_x, f32 cursor_y,
-                                              u32 ignore_id = 0);
+                                              u32 ignore_id = 0,
+                                              u32 owner_id = UINT32_MAX);
 
 } // namespace uldum::simulation

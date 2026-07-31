@@ -164,6 +164,11 @@ struct Pathing {
     static constexpr f32 STUCK_TIMEOUT     = 3.0f;   // seconds without progress → give up
                                                      // (3s = two repath attempts at 1.5s interval before quitting)
     static constexpr f32 STUCK_PROGRESS_EPS = 4.0f;  // world units of motion that count as progress
+
+    // Build clearing (host-only, worker scratch): time the worker has spent
+    // waiting for its build footprint to be vacated by displaced own units. Reset
+    // to 0 when not clearing; system_build abandons the build past BUILD_CLEAR_TIMEOUT.
+    f32       build_clear_timer = 0;
 };
 
 enum class AttackState : u8 { Idle, MovingToTarget, TurningToFace, WindUp, Backswing, Cooldown };

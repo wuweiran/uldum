@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
 
 namespace uldum::simulation {
 
@@ -99,10 +100,64 @@ bool collision_overlaps(const World& world, f32 wx, f32 wy, f32 radius,
     return false;
 }
 
+bool is_displaceable(const World& world, u32 unit_id, u32 builder_owner_id) {
+    // Own unit.
+    const auto* owner = world.owners.get(unit_id);
+    if (!owner || owner->id != builder_owner_id) return false;
+    // Movable — not a fixed structure.
+    const auto* mv = world.movements.get(unit_id);
+    if (!mv || mv->type == MoveType::None) return false;
+    if (world.buildings.has(unit_id)) return false;
+    // Idle — not carrying out an order, fighting, or casting.
+    if (const auto* oq = world.order_queues.get(unit_id); oq && oq->current) return false;
+    if (const auto* cb = world.combats.get(unit_id);
+        cb && cb->attack_state != AttackState::Idle) return false;
+    if (const auto* as = world.ability_sets.get(unit_id);
+        as && as->cast_state != CastState::None) return false;
+    return true;
+}
+
+std::vector<u32> footprint_occupants(const World& world, const map::TerrainData& td,
+                                     f32 wx, f32 wy, u32 fw, u32 fh,
+                                     MoveType move_type, u32 ignore_id) {
+    std::vector<u32> out;
+    if (fw == 0 || fh == 0 || !td.is_valid()) return out;
+    // Footprint tile-rect in world space (SW corner + extent), same snap math
+    // as evaluate_building_placement's tile mask.
+    f32 left_tx_f   = (wx - td.origin_x()) / td.tile_size - 0.5f * static_cast<f32>(fw);
+    f32 bottom_ty_f = (wy - td.origin_y()) / td.tile_size - 0.5f * static_cast<f32>(fh);
+    i32 tx0 = static_cast<i32>(std::round(left_tx_f));
+    i32 ty0 = static_cast<i32>(std::round(bottom_ty_f));
+    f32 xl = td.origin_x() + static_cast<f32>(tx0) * td.tile_size;
+    f32 yb = td.origin_y() + static_cast<f32>(ty0) * td.tile_size;
+    f32 xr = xl + static_cast<f32>(fw) * td.tile_size;
+    f32 yt = yb + static_cast<f32>(fh) * td.tile_size;
+
+    const bool my_air = (move_type == MoveType::Fly);
+    for (u32 i = 0; i < world.movements.count(); ++i) {
+        u32 id = world.movements.ids()[i];
+        if (id == ignore_id) continue;
+        const auto& mv = world.movements.data()[i];
+        if ((mv.type == MoveType::Fly) != my_air) continue;
+        if (mv.collision_radius <= 0.0f) continue;
+        const auto* t = world.transforms.get(id);
+        if (!t) continue;
+        // Circle (unit) vs. AABB (whole footprint): clamp the center into the
+        // rect, compare squared distance to radius².
+        f32 nx = std::clamp(t->position.x, xl, xr);
+        f32 ny = std::clamp(t->position.y, yb, yt);
+        f32 ddx = t->position.x - nx, ddy = t->position.y - ny;
+        if (ddx * ddx + ddy * ddy < mv.collision_radius * mv.collision_radius) {
+            out.push_back(id);
+        }
+    }
+    return out;
+}
+
 BuildingPlacement evaluate_building_placement(const Simulation& sim,
                                               std::string_view type_id,
                                               f32 cursor_x, f32 cursor_y,
-                                              u32 ignore_id) {
+                                              u32 ignore_id, u32 owner_id) {
     BuildingPlacement out;
     const map::TerrainData* td = sim.terrain();
     if (!td || !td->is_valid()) return out;
@@ -151,6 +206,9 @@ BuildingPlacement evaluate_building_placement(const Simulation& sim,
             const auto& mv = w.movements.data()[mi];
             if ((mv.type == MoveType::Fly) != my_air) continue;
             if (mv.collision_radius <= 0.0f) continue;
+            // Displaceable own units don't block placement — they'll be pushed
+            // off when the build lands, so their tiles stay green.
+            if (is_displaceable(w, uid, owner_id)) continue;
             const auto* t = w.transforms.get(uid);
             if (!t) continue;
             const f32 ux = t->position.x, uy = t->position.y;

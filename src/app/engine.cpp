@@ -666,7 +666,8 @@ bool Engine::start_session() {
     // evaluate_building_placement (same rule as desktop confirm); on an
     // invalid spot, error instead of submitting.
     m_hud.set_build_at_target_fn([this](const std::string& type, f32 x, f32 y) {
-        auto place = simulation::evaluate_building_placement(active_sim(), type, x, y);
+        auto place = simulation::evaluate_building_placement(
+            active_sim(), type, x, y, /*ignore_id*/ 0, /*owner_id*/ m_args.local_slot);
         if (!place.valid) {
             m_hud.emit_order_error("build", "blocked");
             return;
@@ -2418,7 +2419,8 @@ void Engine::run() {
                         }
                         if (have) {
                             auto place = simulation::evaluate_building_placement(
-                                active_sim(), btype, wp.x, wp.y);
+                                active_sim(), btype, wp.x, wp.y,
+                                /*ignore_id*/ 0, /*owner_id*/ m_args.local_slot);
                             const glm::vec4 ok_color { 0.30f, 0.90f, 0.40f, 0.45f };
                             const glm::vec4 bad_color{ 0.92f, 0.28f, 0.28f, 0.45f };
                             f32 ts = terrain->tile_size;

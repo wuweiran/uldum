@@ -420,7 +420,8 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             glm::vec3 world_pos;
             if (ctx.picker.screen_to_world(input.mouse_x, input.mouse_y, world_pos)) {
                 auto place = simulation::evaluate_building_placement(
-                    ctx.simulation, m_target_ability_id, world_pos.x, world_pos.y);
+                    ctx.simulation, m_target_ability_id, world_pos.x, world_pos.y,
+                    /*ignore_id*/ 0, /*owner_id*/ sel.player().id);
                 if (place.valid) {
                     GameCommand cmd;
                     cmd.player = sel.player();
