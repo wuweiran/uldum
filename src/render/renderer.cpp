@@ -1865,10 +1865,13 @@ bool Renderer::create_particle_pipeline() {
 
     rhi::BlendAttachmentState ba{};
     ba.blend_enable     = true;
-    ba.src_color_factor = rhi::BlendFactor::SrcAlpha;
+    // Premultiplied alpha: the shader outputs rgb already scaled by coverage.
+    // Sparks emit a=0 (overlaps ADD → glow); spray/ripple emit a=coverage
+    // (normal alpha-over). One pipeline, two looks.
+    ba.src_color_factor = rhi::BlendFactor::One;
     ba.dst_color_factor = rhi::BlendFactor::OneMinusSrcAlpha;
     ba.src_alpha_factor = rhi::BlendFactor::One;
-    ba.dst_alpha_factor = rhi::BlendFactor::Zero;
+    ba.dst_alpha_factor = rhi::BlendFactor::OneMinusSrcAlpha;
 
     rhi::MultisampleState ms{};
     ms.sample_count = static_cast<u32>(m_rhi->msaa_samples());

@@ -8,35 +8,41 @@ layout(location = 2) flat in uint frag_texture_id;
 
 layout(location = 0) out vec4 out_color;
 
-// Two procedural particle sprites, no textures. The engine maps effect types
-// to these (effect.cpp shape_for): orb = sparks, droplet = spray / water.
+// Procedural particle sprites, no textures. Output is PREMULTIPLIED alpha
+// (rgb already multiplied by coverage) so one pipeline serves two looks with
+// blend One/OneMinusSrcAlpha:
+//   • additive (a=0): overlaps ADD → hot glowy sparks.
+//   • alpha-over (a=coverage): normal transparency → spray / water.
 void main() {
     vec2 c = frag_texcoord - vec2(0.5);
-    float dist = length(c) * 2.0;
-    float alpha = 0.0;
-    vec3 color = frag_color.rgb;
+    float dist = length(c) * 2.0;  // 0 at center, 1 at edge midpoint
+    float cov = 0.0;
+    bool  additive = false;
+    vec3  color = frag_color.rgb;
 
     if (frag_texture_id == 2u) {
-        // Ripple — soft wide gaussian annulus; quad grows with age so the ring
-        // expands, frag_color.a fades it. A natural wash, not a drawn circle.
+        // Ripple — soft wide annulus; quad grows with age so the ring expands.
         float band = (dist - 0.8) / 0.16;
-        alpha = exp(-band * band);
+        cov = exp(-band * band);
     } else if (frag_texture_id == 1u) {
         // Droplet (teardrop) — spray / water
         float cy = c.y + 0.05;
         float stretch = 1.0 + max(0.0, cy) * 1.5;
         float d = sqrt(c.x * c.x * stretch * stretch + cy * cy) * 2.2;
-        alpha = max(0.0, 1.0 - d * d);
+        cov = max(0.0, 1.0 - d * d);
     } else {
-        // Orb (gaussian — tight bright core + wide soft halo). Default sprite.
-        float core = exp(-dist * dist * 6.0);
-        float halo = exp(-dist * dist * 1.6);
-        alpha = clamp(core + halo * 0.55, 0.0, 1.0);
-        color *= 1.0 + core * 1.5;
+        // Orb (spark) — bright core + soft halo, WINDOWED to 0 at the rim so it's
+        // a clean round dot at any size. Drawn additively for a hot glow.
+        float core = exp(-dist * dist * 7.0);
+        float halo = exp(-dist * dist * 2.2);
+        float mask = smoothstep(1.0, 0.5, dist);
+        cov = clamp(core + halo * 0.5, 0.0, 1.0) * mask;
+        color *= 1.0 + core * 2.5;
+        additive = true;
     }
 
-    alpha *= frag_color.a;
-    if (alpha < 0.01) discard;
+    cov *= frag_color.a;
+    if (cov < 0.01) discard;
 
-    out_color = vec4(color, alpha);
+    out_color = vec4(color * cov, additive ? 0.0 : cov);
 }
