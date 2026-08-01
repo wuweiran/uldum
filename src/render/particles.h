@@ -88,7 +88,7 @@ public:
     // Procedural shape IDs (computed in fragment shader, no textures needed).
     // The engine owns the mapping from effect type → shape (see effect.cpp
     // shape_for); these are the two sprites that mapping actually uses.
-    static constexpr u32 SHAPE_ORB     = 0;  // soft gaussian orb (default) — sparks
+    static constexpr u32 SHAPE_SPARK   = 0;  // solid filled circle (size-varied) — sparks
     static constexpr u32 SHAPE_DROPLET = 1;  // teardrop — spray / water
     static constexpr u32 SHAPE_RIPPLE  = 2;  // flat expanding ring — water wake (ground-aligned)
 

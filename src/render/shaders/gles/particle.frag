@@ -31,13 +31,11 @@ void main() {
         float d = sqrt(c.x * c.x * stretch * stretch + cy * cy) * 2.2;
         cov = max(0.0, 1.0 - d * d);
     } else {
-        // Orb (spark) — bright core + soft halo, WINDOWED to 0 at the rim so it's
-        // a clean round dot at any size. Drawn additively for a hot glow.
-        float core = exp(-dist * dist * 7.0);
-        float halo = exp(-dist * dist * 2.2);
-        float mask = smoothstep(1.0, 0.5, dist);
-        cov = clamp(core + halo * 0.5, 0.0, 1.0) * mask;
-        color *= 1.0 + core * 2.5;
+        // Spark — a SOLID filled circle. Opaque disc with a 1-texel antialiased
+        // rim. Per-particle size variation applied at spawn. Additive so overlaps
+        // flare; time-fade via frag_color.a (life).
+        cov = 1.0 - smoothstep(0.92, 1.0, dist);
+        color *= 1.4;
         additive = true;
     }
 

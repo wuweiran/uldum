@@ -84,7 +84,9 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
         p.color       = emitter.color;
         p.life        = emitter.particle_life;
         p.max_life    = emitter.particle_life;
-        p.size        = emitter.particle_size;
+        // Per-particle size variation (0.6×–1.4×) so a burst reads as a mix of
+        // big and small, not a uniform grid.
+        p.size        = emitter.particle_size * randf_range(0.6f, 1.4f);
         p.gravity     = emitter.gravity;
 
         glm::vec3 dir;
@@ -168,7 +170,7 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
             right = glm::vec3{half, 0, 0};
             up    = glm::vec3{0, half, 0};
         } else {
-            // Camera-facing billboard quad
+            // Camera-facing billboard quad (droplet — spray / water)
             f32 half = p.size * 0.5f;
             right = camera_right * half;
             up    = camera_up * half;

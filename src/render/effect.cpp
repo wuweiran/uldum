@@ -18,9 +18,9 @@ static constexpr const char* TAG = "Effect";
 // picks the shape. Swapping a row here is a no-schema visual tweak.
 static u32 shape_for(EffectKind k) {
     switch (k) {
-        case EffectKind::Spark: return ParticleSystem::SHAPE_ORB;      // gaussian orb
+        case EffectKind::Spark: return ParticleSystem::SHAPE_SPARK;    // streak ember
         case EffectKind::Spray: return ParticleSystem::SHAPE_DROPLET;  // teardrop
-        default:                return ParticleSystem::SHAPE_ORB;
+        default:                return ParticleSystem::SHAPE_SPARK;
     }
 }
 

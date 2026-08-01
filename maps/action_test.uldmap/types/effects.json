@@ -1,7 +1,7 @@
 {
     "hit_spark": {
         "type": "spark",
-        "count": 5, "speed": 80, "life": 0.3, "size": 6, "gravity": -100,
+        "count": 5, "speed": 80, "life": 0.3, "size": 4, "gravity": -100,
         "color": { "r": 1, "g": 0.7, "b": 0.2, "a": 1 }
     },
     "death_burst": {
@@ -17,7 +17,7 @@
     },
     "spell_cast": {
         "type": "spark",
-        "count": 15, "speed": 100, "life": 0.4, "size": 7, "gravity": -50,
+        "count": 15, "speed": 100, "life": 0.4, "size": 4, "gravity": -50,
         "color": { "r": 0.3, "g": 0.5, "b": 1, "a": 1 }
     },
     "consecration_burst": {
