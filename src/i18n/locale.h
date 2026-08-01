@@ -128,7 +128,7 @@ public:
     // Like `resolve`, but returns nullopt on a total miss (where `resolve`
     // would fall back to the literal key). Lets a caller walk a chain of
     // candidate keys and take the first that actually resolves — used by
-    // the HUD's cast-reject `ui.error.<base>.<specifier>` → `.<base>` walk.
+    // the HUD's cast-reject `error.<base>.<specifier>` → `.<base>` walk.
     std::optional<std::string> try_resolve(Pool pool, std::string_view key,
                                            const ArgsMap& args = {}) const;
 

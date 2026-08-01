@@ -356,12 +356,12 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
             if (matched) break;
         }
         // Report the target's own first flag as the specifier — the
-        // simplest path and what ui.error.target.<flag> expects.
+        // simplest path and what error.target.<flag> expects.
         if (!matched) return reject(cls->flags.empty() ? std::string{} : cls->flags[0]);
     }
 
     // `not_any`: if the target carries any listed tag, reject and report it
-    // (e.g. ui.error.target.structure).
+    // (e.g. error.target.structure).
     if (!filter.not_any.empty()) {
         if (const auto* cls = w.classifications.get(target.id)) {
             for (const auto& banned : filter.not_any) {

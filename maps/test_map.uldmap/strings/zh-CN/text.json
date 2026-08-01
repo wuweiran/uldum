@@ -18,33 +18,6 @@
         "shop.price": "{price} 金",
         "shop.buy":   "购买",
         "shop.prev":  "<",
-        "shop.next":  ">",
-
-        "command.move.name":          "移动",
-        "command.move.tooltip":       "命令单位移动到目标地点,沿途忽略敌人。",
-        "command.stop.name":          "停止",
-        "command.stop.tooltip":       "取消单位当前的命令。",
-        "command.hold_position.name": "原地待命",
-        "command.hold_position.tooltip": "命令单位原地不动,仅攻击进入射程的敌人。",
-        "command.attack.name":        "攻击",
-        "command.attack.tooltip":     "命令单位攻击目标,或前往目标地点并交战途中遇到的敌人。",
-        "command.attack_move.name":   "强攻",
-        "command.attack_move.tooltip": "前往目标地点,主动攻击沿途遇到的所有敌人。",
-        "command.patrol.name":        "巡逻",
-        "command.patrol.tooltip":     "命令单位在当前位置与目标地点之间往返巡逻。",
-
-        "error.cooldown":     "尚未冷却（还需 {cooldown_remaining} 秒）",
-        "error.cost":         "{resource}不足",
-        "error.cost.mana":    "法力不足",
-        "error.target":       "无效的目标",
-        "error.target.none":  "必须选择一个单位",
-        "error.target.enemy": "不能以敌方单位为目标",
-        "error.target.ally":  "不能以友方单位为目标",
-        "error.target.dead":  "目标必须存活",
-        "error.attack":       "无法攻击该目标",
-        "error.attack.air":   "无法攻击空中单位",
-        "error.build":          "无法在此建造",
-        "error.build.blocked":  "无法在此建造 — 地面被占用",
-        "error.build.no_space": "此处空间不足，无法建造"
+        "shop.next":  ">"
     }
 }

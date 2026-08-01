@@ -2013,8 +2013,8 @@ static void tooltip_keys(const Hud::Impl& s,
             if (idx >= slots.size()) return;
             const std::string& cmd = slots[idx].command;
             if (cmd.empty()) return;
-            out_name.key = "ui.command." + cmd + ".name";
-            out_body.key = "ui.command." + cmd + ".tooltip";
+            out_name.key = "command." + cmd + ".name";
+            out_body.key = "command." + cmd + ".tooltip";
             break;
         }
         case Hud::Impl::TooltipState::Source::PickupBar: {

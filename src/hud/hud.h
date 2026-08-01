@@ -619,7 +619,7 @@ public:
 
     // Show a cast-reject line to the LOCAL player (client-local — masked
     // to the local slot so it never replicates). Resolves the
-    // `ui.error.<base>[.<specifier>]` fallback chain through text.json,
+    // `error.<base>[.<specifier>]` fallback chain through system.json,
     // then the engine built-in wording; throttles identical reasons; plays
     // the authored error sound (if any) via the sound callback. Called from
     // the HUD's own cast gates and by the input preset (through the HUD

@@ -28,12 +28,13 @@ constexpr EntityRoute ENTITY_ROUTES[] = {
     { "doodad",       "doodads" },
 };
 
-constexpr const char* TEXT_FILE  = "text";
-constexpr const char* SHELL_FILE = "shell";
+constexpr const char* TEXT_FILE   = "text";
+constexpr const char* SYSTEM_FILE = "system";
+constexpr const char* SHELL_FILE  = "shell";
 
 // Map-pool file basenames the LocalePack tries to load.
 const std::vector<std::string> MAP_BASENAMES = {
-    "abilities", "units", "items", "destructables", "doodads", "text"
+    "abilities", "units", "items", "destructables", "doodads", "system", "text"
 };
 
 const std::vector<std::string> SHELL_BASENAMES = { "shell" };
@@ -173,6 +174,15 @@ bool LocaleManager::route(Pool pool, std::string_view key,
     auto dot = key.find('.');
     if (dot != std::string_view::npos) {
         std::string_view prefix = key.substr(0, dot);
+        // Engine-emitted, map-authored strings: command bar names/tooltips
+        // and cast-reject wording. Routed to their own system.json so
+        // text.json holds only map content. Whole key kept as inner (prefix
+        // is the top-level object in system.json).
+        if (prefix == "command" || prefix == "error") {
+            out_file  = SYSTEM_FILE;
+            out_inner = std::string(key);
+            return false;  // not an entity match; no raw types/*.json fallback
+        }
         std::string_view rest   = key.substr(dot + 1);
         for (const auto& r : ENTITY_ROUTES) {
             if (prefix == r.prefix) {

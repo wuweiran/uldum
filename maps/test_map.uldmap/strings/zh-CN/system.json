@@ -1,0 +1,31 @@
+{
+    "command": {
+        "move.name":          "移动",
+        "move.tooltip":       "命令单位移动到目标地点,沿途忽略敌人。",
+        "stop.name":          "停止",
+        "stop.tooltip":       "取消单位当前的命令。",
+        "hold_position.name": "原地待命",
+        "hold_position.tooltip": "命令单位原地不动,仅攻击进入射程的敌人。",
+        "attack.name":        "攻击",
+        "attack.tooltip":     "命令单位攻击目标,或前往目标地点并交战途中遇到的敌人。",
+        "attack_move.name":   "强攻",
+        "attack_move.tooltip": "前往目标地点,主动攻击沿途遇到的所有敌人。",
+        "patrol.name":        "巡逻",
+        "patrol.tooltip":     "命令单位在当前位置与目标地点之间往返巡逻。"
+    },
+    "error": {
+        "cooldown":     "尚未冷却（还需 {cooldown_remaining} 秒）",
+        "cost":         "{resource}不足",
+        "cost.mana":    "法力不足",
+        "target":       "无效的目标",
+        "target.none":  "必须选择一个单位",
+        "target.enemy": "不能以敌方单位为目标",
+        "target.ally":  "不能以友方单位为目标",
+        "target.dead":  "目标必须存活",
+        "attack":       "无法攻击该目标",
+        "attack.air":   "无法攻击空中单位",
+        "build":          "无法在此建造",
+        "build.blocked":  "无法在此建造 — 地面被占用",
+        "build.no_space": "此处空间不足，无法建造"
+    }
+}

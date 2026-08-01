@@ -231,7 +231,7 @@ struct Hud::Impl {
     DisplayMessageConfig  display_message_cfg{};
     DisplayMessageRuntime display_message_rt{};
     // Cast-reject (error) state: the optional reject SFX path and the UI
-    // sound callback. The strings live in text.json (`ui.error.*`), not
+    // sound callback. The strings live in system.json (`error.*`), not
     // here; the reject sound plays on every reject (WC3 — no cooldown).
     std::string      error_sound;
     Hud::PlaySoundFn play_sound_fn;

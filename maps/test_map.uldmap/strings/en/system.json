@@ -1,0 +1,31 @@
+{
+    "command": {
+        "move.name":          "Move",
+        "move.tooltip":       "Order the unit to move to a target point, ignoring enemies on the way.",
+        "stop.name":          "Stop",
+        "stop.tooltip":       "Cancel the unit's current orders.",
+        "hold_position.name": "Hold Position",
+        "hold_position.tooltip": "Order the unit to remain in place and attack only enemies that come into range.",
+        "attack.name":        "Attack",
+        "attack.tooltip":     "Order the unit to attack a target, or to attack-move toward a point and engage any enemies encountered.",
+        "attack_move.name":   "Attack-Move",
+        "attack_move.tooltip": "Move toward a point, attacking any enemies encountered along the way.",
+        "patrol.name":        "Patrol",
+        "patrol.tooltip":     "Order the unit to patrol between its current location and a target point."
+    },
+    "error": {
+        "cooldown":     "Not ready yet ({cooldown_remaining}s)",
+        "cost":         "Not enough {resource}",
+        "cost.mana":    "Not enough mana",
+        "target":       "Invalid target",
+        "target.none":  "Must target a unit",
+        "target.enemy": "Can't target enemies",
+        "target.ally":  "Can't target allies",
+        "target.dead":  "Target must be alive",
+        "attack":       "Can't attack that",
+        "attack.air":   "Can't attack air units",
+        "build":          "Can't build there",
+        "build.blocked":  "Can't build there — the ground is blocked",
+        "build.no_space": "Not enough room to build here"
+    }
+}

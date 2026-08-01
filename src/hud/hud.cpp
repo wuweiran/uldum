@@ -1283,10 +1283,10 @@ void Hud::emit_order_error(std::string_view base, std::string_view specifier,
     auto& s = *m_impl;
     if (!s.display_message_cfg.enabled) return;   // no overlay authored → silent
 
-    // Resolve chain: text.json `ui.error.<base>.<specifier>` → `ui.error.
-    // <base>` → engine built-in. First hit wins. The reject is client-
-    // local, so we resolve to a final string here and store it literally
-    // (no per-client re-resolve needed).
+    // Resolve chain: system.json `error.<base>.<specifier>` → `error.<base>`
+    // → engine built-in. First hit wins. The reject is client-local, so we
+    // resolve to a final string here and store it literally (no per-client
+    // re-resolve needed).
     auto builtin = [&]() -> std::string {
         if (base == "cooldown") return "Not ready yet";
         if (base == "cost")     return "Not enough resources";
@@ -1302,13 +1302,13 @@ void Hud::emit_order_error(std::string_view base, std::string_view specifier,
     if (s.locale_manager) {
         if (!spec_field.empty()) {
             if (auto v = s.locale_manager->try_resolve(
-                    i18n::Pool::Map, "ui.error." + spec_field, args)) {
+                    i18n::Pool::Map, "error." + spec_field, args)) {
                 text = std::move(*v); found = true;
             }
         }
         if (!found) {
             if (auto v = s.locale_manager->try_resolve(
-                    i18n::Pool::Map, "ui.error." + base_field, args)) {
+                    i18n::Pool::Map, "error." + base_field, args)) {
                 text = std::move(*v); found = true;
             }
         }

@@ -864,7 +864,7 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
 
     // error block — cast-reject config. Only `sound` (optional SFX path
     // played on any reject; empty = silent). The reject strings live in
-    // text.json under `ui.error.*` (localized per locale); the engine
+    // system.json under `error.*` (localized per locale); the engine
     // ships base-key defaults for unauthored ones.
     if (auto eb = doc.find("error"); eb != doc.end() && eb->is_object()) {
         if (auto v = eb->find("sound"); v != eb->end() && v->is_string())
