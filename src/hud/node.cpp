@@ -23,7 +23,8 @@ void Node::draw(HudRenderInterface& r) const {
 void Panel::draw(HudRenderInterface& r) const {
     if (!visible) return;
     if (!is_owned_by(r.hud().local_player())) return;
-    r.draw_rect(rect, bg);
+    if (corner_radius > 0.0f) r.draw_round_rect(rect, bg, corner_radius);
+    else                      r.draw_rect(rect, bg);
     Node::draw(r);
 }
 
@@ -118,9 +119,15 @@ void Image::draw(HudRenderInterface& r) const {
 void Button::draw(HudRenderInterface& r) const {
     if (!visible) return;
     if (!is_owned_by(r.hud().local_player())) return;
-    Color c = m_pressed ? bg_press : (m_hovered ? bg_hover : bg);
-    r.draw_rect(rect, c);
-    Node::draw(r);
+    Color c = enabled ? (m_pressed ? bg_press : (m_hovered ? bg_hover : bg)) : bg;
+    if (corner_radius > 0.0f) r.draw_round_rect(rect, c, corner_radius);
+    else                      r.draw_rect(rect, c);
+    Node::draw(r);   // label children
+    // Disabled wash over the whole button (bg + label), rounded to match.
+    if (!enabled && (disabled_tint.rgba >> 24) != 0) {
+        if (corner_radius > 0.0f) r.draw_round_rect(rect, disabled_tint, corner_radius);
+        else                      r.draw_rect(rect, disabled_tint);
+    }
 }
 
 bool Button::on_release(bool over) {

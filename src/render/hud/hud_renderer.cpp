@@ -550,6 +550,61 @@ static void draw_disc(HudRenderer::Impl& r, f32 cx, f32 cy, f32 radius, Color co
     }
 }
 
+// Filled rounded rectangle: a plus-shaped body (one full-width band + two
+// side bands) plus four quarter-circle corner fans. Reuses the same
+// PIPE_SOLID / white_set batch as draw_rect, so it composites identically.
+static void emit_round_rect(HudRenderer::Impl& r, const Rect& rc, f32 radius, Color color) {
+    if ((color.rgba >> 24) == 0) return;
+    if (rc.w <= 0.0f || rc.h <= 0.0f) return;
+    f32 rad = std::min(radius, std::min(rc.w, rc.h) * 0.5f);
+
+    ensure_batch(r, PIPE_SOLID, r.white_set);
+    u32 premul = premul_rgba(color);
+
+    f32 x0 = rc.x, y0 = rc.y, x1 = rc.x + rc.w, y1 = rc.y + rc.h;
+
+    if (rad <= 0.0f) {   // degenerate: a plain quad (emit_rect is defined later)
+        append_triangle(r, x0, y0, x1, y0, x1, y1, 0.0f, 0.0f, premul);
+        append_triangle(r, x0, y0, x1, y1, x0, y1, 0.0f, 0.0f, premul);
+        return;
+    }
+
+    f32 lx = x0 + rad, rx = x1 - rad;   // inner x span
+    f32 ty = y0 + rad, by = y1 - rad;   // inner y span
+
+    auto quad = [&](f32 ax, f32 ay, f32 bx, f32 by2) {
+        if (bx <= ax || by2 <= ay) return;
+        append_triangle(r, ax, ay, bx, ay, bx, by2, 0.0f, 0.0f, premul);
+        append_triangle(r, ax, ay, bx, by2, ax, by2, 0.0f, 0.0f, premul);
+    };
+    quad(x0, ty, x1, by);   // center full-width band
+    quad(lx, y0, rx, ty);   // top band (between the two top corners)
+    quad(lx, by, rx, y1);   // bottom band
+
+    // Four corner fans, each a quarter disc centered on the inset corner.
+    constexpr f32 HALF_PI = 1.5707963f;
+    constexpr u32 kSeg = 6;
+    struct Corner { f32 cx, cy, a0; };
+    const Corner corners[4] = {
+        { rx, ty, -HALF_PI },   // top-right    (angles -90°..0°)
+        { rx, by,  0.0f    },   // bottom-right ( 0°..90°)
+        { lx, by,  HALF_PI },   // bottom-left  ( 90°..180°)
+        { lx, ty,  HALF_PI * 2.0f }, // top-left (180°..270°)
+    };
+    for (const auto& c : corners) {
+        f32 step = HALF_PI / static_cast<f32>(kSeg);
+        f32 px0 = c.cx + std::cos(c.a0) * rad;
+        f32 py0 = c.cy + std::sin(c.a0) * rad;
+        for (u32 i = 0; i < kSeg; ++i) {
+            f32 a = c.a0 + step * static_cast<f32>(i + 1);
+            f32 px1 = c.cx + std::cos(a) * rad;
+            f32 py1 = c.cy + std::sin(a) * rad;
+            append_triangle(r, c.cx, c.cy, px0, py0, px1, py1, 0.0f, 0.0f, premul);
+            px0 = px1; py0 = py1;
+        }
+    }
+}
+
 static void draw_ring_arc(HudRenderer::Impl& r, f32 cx, f32 cy, f32 r_outer, f32 r_inner,
                           f32 start_angle, f32 sweep_angle, Color color) {
     if (r_outer <= r_inner || r_outer <= 0.0f) return;
@@ -2324,6 +2379,11 @@ void HudRenderer::begin_frame(u32 screen_w, u32 screen_h) {
 void HudRenderer::draw_rect(const Rect& rc, Color color) {
     if (!m_impl) return;
     emit_rect(*m_impl, rc, color);
+}
+
+void HudRenderer::draw_round_rect(const Rect& rc, Color color, f32 radius) {
+    if (!m_impl) return;
+    emit_round_rect(*m_impl, rc, radius, color);
 }
 
 void HudRenderer::draw_marquee(f32 x0, f32 y0, f32 x1, f32 y1) {

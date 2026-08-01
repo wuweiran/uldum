@@ -98,6 +98,8 @@ Node* build_atom(const nlohmann::json& jn, Node& parent, const Rect& rect) {
         n.rect = rect;
         if (auto it = jn.find("style"); it != jn.end() && it->is_object()) {
             if (auto bg = it->find("bg"); bg != it->end()) n.bg = parse_color(*bg);
+            if (auto v = it->find("corner_radius"); v != it->end() && v->is_number())
+                n.corner_radius = v->get<f32>();
         }
         return &n;
     }
@@ -148,6 +150,9 @@ Node* build_atom(const nlohmann::json& jn, Node& parent, const Rect& rect) {
             if (auto v = it->find("bg");       v != it->end()) n.bg       = parse_color(*v);
             if (auto v = it->find("hover_bg"); v != it->end()) n.bg_hover = parse_color(*v);
             if (auto v = it->find("press_bg"); v != it->end()) n.bg_press = parse_color(*v);
+            if (auto v = it->find("disabled_tint"); v != it->end()) n.disabled_tint = parse_color(*v);
+            if (auto v = it->find("corner_radius"); v != it->end() && v->is_number())
+                n.corner_radius = v->get<f32>();
         }
         return &n;
     }

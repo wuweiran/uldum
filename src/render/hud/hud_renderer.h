@@ -77,6 +77,7 @@ public:
 
     // Low-level primitives (overrides of HudRenderInterface).
     void draw_rect(const Rect& r, Color color) override;
+    void draw_round_rect(const Rect& r, Color color, f32 radius) override;
     void draw_marquee(f32 x0, f32 y0, f32 x1, f32 y1);
     void draw_image(const Rect& r, std::string_view asset_path,
                     Color tint) override;

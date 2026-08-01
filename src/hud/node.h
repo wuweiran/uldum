@@ -131,6 +131,9 @@ protected:
 class Panel : public Node {
 public:
     Color bg = rgba(30, 30, 38, 220);
+    // Rounded-corner radius in logical px. 0 = sharp rect. Clamped to half
+    // the shorter side at draw time.
+    f32   corner_radius = 0.0f;
     void draw(HudRenderInterface& r) const override;
 };
 
@@ -194,7 +197,15 @@ public:
     Color bg       = rgba(60,  64,  80,  240);
     Color bg_hover = rgba(80,  84, 104,  250);
     Color bg_press = rgba(110, 114, 140, 255);
+    // Overlaid on the whole button (bg + label children) when !enabled, to
+    // give a greyed-out disabled look. Default is a dark wash; rgba a=0
+    // disables the overlay. Follows corner_radius so rounded buttons stay
+    // rounded when disabled.
+    Color disabled_tint = rgba(0, 0, 0, 130);
     bool  enabled  = true;
+    // Rounded-corner radius in logical px. 0 = sharp rect. Clamped to half
+    // the shorter side at draw time.
+    f32   corner_radius = 0.0f;
 
     // Direct callback — used for engine-internal smoke tests. The
     // canonical Lua path routes through `Hud::fire_button_event(id)`

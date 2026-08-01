@@ -70,6 +70,12 @@ public:
 
     // Primitive draws.
     virtual void draw_rect(const Rect& r, Color color) = 0;
+    // Rounded-corner filled rect. Default falls back to a sharp rect so
+    // renderers that don't implement it still draw something sane; the
+    // concrete HudRenderer overrides with real corner geometry.
+    virtual void draw_round_rect(const Rect& r, Color color, f32 /*radius*/) {
+        draw_rect(r, color);
+    }
     virtual void draw_image(const Rect& r, std::string_view asset_path,
                             Color tint) = 0;
     virtual void draw_text(f32 x_left, f32 y_baseline, std::string_view utf8,

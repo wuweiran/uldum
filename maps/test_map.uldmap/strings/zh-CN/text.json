@@ -12,6 +12,14 @@
         "button_yes":          "是",
         "button_cancel":       "取消",
 
+        "shop.title": "兵营商店",
+        "shop.gold":  "金币：{amount}",
+        "shop.item":  "治疗药水 x{charges}",
+        "shop.price": "{price} 金",
+        "shop.buy":   "购买",
+        "shop.prev":  "<",
+        "shop.next":  ">",
+
         "command.move.name":          "移动",
         "command.move.tooltip":       "命令单位移动到目标地点,沿途忽略敌人。",
         "command.stop.name":          "停止",

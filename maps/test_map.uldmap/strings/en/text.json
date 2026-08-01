@@ -12,6 +12,14 @@
         "button_yes":          "Yes",
         "button_cancel":       "Cancel",
 
+        "shop.title": "Barracks Market",
+        "shop.gold":  "Gold: {amount}",
+        "shop.item":  "Healing Potion x{charges}",
+        "shop.price": "{price}g",
+        "shop.buy":   "Buy",
+        "shop.prev":  "<",
+        "shop.next":  ">",
+
         "command.move.name":          "Move",
         "command.move.tooltip":       "Order the unit to move to a target point, ignoring enemies on the way.",
         "command.stop.name":          "Stop",
