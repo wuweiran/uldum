@@ -1097,6 +1097,16 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 // FIRE — deal damage or spawn projectile
                 Unit self = world.unit(id);
 
+                // If a melee target has run beyond attack range + this slack by
+                // the damage point, the swing misses — it still completes
+                // (backswing + cooldown run) but deals no damage. `dist` is
+                // recomputed this tick, so it's the target's current position.
+                // Ranged attacks are exempt: their projectile launches and
+                // tracks the target on its own.
+                constexpr f32 MELEE_ATTACK_RANGE_BUFFER = 250.0f;
+                const bool melee_miss = !combat.projectile
+                    && dist > effective_range + MELEE_ATTACK_RANGE_BUFFER;
+
                 // Snapshot the attacker position BEFORE spawning the
                 // projectile. spawn_attack_projectile → create_projectile
                 // → world.transforms.add() can reallocate the dense
@@ -1115,7 +1125,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
                 if (combat.projectile) {
                     spawn_attack_projectile(world, self, target, combat.damage, *combat.projectile);
-                } else {
+                } else if (!melee_miss) {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
                 if (!world.contains(self)) continue;
@@ -1419,6 +1429,29 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         aset->cast_timer -= dt;
                         if (aset->cast_timer <= 0) {
                             Unit caster = world.unit(id);
+
+                            // If a ranged targeted spell's target has moved
+                            // beyond range + this buffer by the effect point, the
+                            // caster stops, re-approaches, and casts again — the
+                            // order stays active (unlike a melee whiff, which just
+                            // completes). Only meaningful for Target abilities with
+                            // a range; point / instant / self casts don't drift out.
+                            constexpr f32 SPELL_CAST_RANGE_BUFFER = 300.0f;
+                            if (def->form == AbilityForm::Target && lvl.range > 0
+                                && dist > lvl.range + SPELL_CAST_RANGE_BUFFER) {
+                                aset->cast_state = CastState::MovingToTarget;
+                                auto* pth = world.pathings.get(id);
+                                if (pth) {
+                                    pth->approach_range = lvl.range;
+                                    if (world.contains(aset->cast_target_unit)) {
+                                        pth->approach_target = aset->cast_target_unit;
+                                    } else {
+                                        pth->approach_goal = {aset->cast_target_pos.x,
+                                                              aset->cast_target_pos.y};
+                                    }
+                                }
+                                break;
+                            }
 
                             if (lvl.channel_time > 0) {
                                 // Channelled cast: hand off to Channeling.
