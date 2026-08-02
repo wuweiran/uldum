@@ -523,6 +523,24 @@ static i32 find_clip_by_name(const asset::ModelData& model, std::string_view nam
     return -1;
 }
 
+// Resolve a state's clip variants: base name (`attack`) + contiguous numbered
+// suffixes (`attack_2`, `attack_3`, …). Numbering starts at 2 and stops at the
+// first gap. out_active = the base clip (or first variant found, or -1).
+static std::vector<i32> resolve_state_variants(const asset::ModelData& model,
+                                               std::string_view base,
+                                               i32& out_active) {
+    std::vector<i32> variants;
+    i32 base_idx = find_clip_by_name(model, base);
+    if (base_idx >= 0) variants.push_back(base_idx);
+    for (u32 n = 2; ; ++n) {
+        i32 idx = find_clip_by_name(model, std::string(base) + "_" + std::to_string(n));
+        if (idx < 0) break;
+        variants.push_back(idx);
+    }
+    out_active = variants.empty() ? -1 : variants.front();
+    return variants;
+}
+
 AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& model,
                                                 bool play_birth, bool* out_created) {
     auto it = m_anim_instances.find(entity_id);
@@ -535,14 +553,21 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
     AnimationInstance inst;
     inst.model = &model.data;
 
-    // Bind animation states to clips by name (like WC3 model animations)
-    inst.state_to_clip[static_cast<u8>(AnimState::Idle)]   = find_clip_by_name(model.data, "idle");
-    inst.state_to_clip[static_cast<u8>(AnimState::Walk)]   = find_clip_by_name(model.data, "walk");
-    inst.state_to_clip[static_cast<u8>(AnimState::Attack)] = find_clip_by_name(model.data, "attack");
-    inst.state_to_clip[static_cast<u8>(AnimState::Spell)]  = find_clip_by_name(model.data, "spell");
-    inst.state_to_clip[static_cast<u8>(AnimState::Death)]  = find_clip_by_name(model.data, "death");
-    inst.state_to_clip[static_cast<u8>(AnimState::Birth)]  = find_clip_by_name(model.data, "birth");
-    inst.state_to_clip[static_cast<u8>(AnimState::Hit)]    = find_clip_by_name(model.data, "hit");
+    // Bind animation states to clips by name (like WC3 model animations),
+    // resolving each state's variant list (base + `_2`, `_3`, …).
+    auto bind_state = [&](AnimState st, std::string_view base) {
+        i32 active = -1;
+        inst.state_variants[static_cast<u8>(st)] =
+            resolve_state_variants(model.data, base, active);
+        inst.state_to_clip[static_cast<u8>(st)] = active;
+    };
+    bind_state(AnimState::Idle,   "idle");
+    bind_state(AnimState::Walk,   "walk");
+    bind_state(AnimState::Attack, "attack");
+    bind_state(AnimState::Spell,  "spell");
+    bind_state(AnimState::Death,  "death");
+    bind_state(AnimState::Birth,  "birth");
+    bind_state(AnimState::Hit,    "hit");
 
     // Start in Birth only for a unit actually born in this player's sight.
     // A unit revealed out of fog (or flagged skip_birth) was created long

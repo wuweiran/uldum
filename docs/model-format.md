@@ -129,6 +129,23 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **Hit flinch**: `hit` plays only on an otherwise-idle widget struck by a **normal attack** — spells, damage-over-time and splash don't flinch. Walking, attacking, casting and dying always outrank it, so a busy unit never flinches (no jitter, no throttle). Authoring it is optional; with no `hit` clip the widget simply doesn't recoil. Best for destructibles (crate/tree wobble) and idle units. Plays once for the clip's own length, then returns to `idle` — a new hit retriggers it.
 - **Flying units**: There is **no separate `fly` state** (this matches WC3). A flyer is a gameplay/movement property of the unit, not an animation tag — the model just plays `walk` while it moves through the air, so author the **wing-flap loop as the `walk` clip** (and a hover/glide as `idle`). The other clips (`attack`, `spell`, `death`) work the same as for ground units.
 
+### Random variations
+
+Any state can have alternate clips that the engine picks between at random — WC3's "Stand / Stand - 2" and "Attack / Attack - 2 / Attack - 3". Name them with the base clip plus a numeric suffix:
+
+| Base | Variants | Result |
+|------|----------|--------|
+| `idle` | `idle_2`, `idle_3` | Random idle each time the unit returns to idle |
+| `attack` | `attack_2`, `attack_3` | Random swing each attack |
+
+Rules:
+
+- **Suffix starts at `_2` and must be contiguous.** `attack` + `attack_2` + `attack_3` gives three variants; `attack` + `attack_3` (no `_2`) stops at the gap and uses only `attack`.
+- **The bare name still works.** A model with just `attack` behaves exactly as before — variation is opt-in, no existing model needs changing.
+- **Picked on entry**, per state: `attack` re-rolls each swing, `idle`/`walk` on each transition into that state.
+- **Cosmetic and client-local** — the choice is never synced, so host and clients may show different variants of the same swing. This never affects gameplay: the authoritative damage/cast timing (`combat.dmg_time`, etc.) is independent of which clip plays.
+- **Shared timing across variants.** All variants of a state reuse that state's single `dmg_pt` / `cast_pt` fraction (like WC3's one damage point per weapon). Author each variant's contact frame at roughly the same normalized time so the hit stays aligned; a variant whose contact lands elsewhere only looks slightly off, it never mistimes damage.
+
 ### Item animations
 
 Items are widgets too, so they share the same name-matched clip system — but only three states are meaningful for a ground item (the other clips are ignored). Carried items are hidden (no animation while in a slot), so all three only ever play on the ground:

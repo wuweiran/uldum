@@ -72,8 +72,15 @@ struct AnimationInstance {
     // the clip at time 0).
     bool construction_scaled = false;
 
-    // Mapping from AnimState to clip index (-1 = no clip, use bind pose)
+    // Mapping from AnimState to the ACTIVE clip index (-1 = no clip, use
+    // bind pose). Re-pointed on state entry to the picked variant, so
+    // downstream code only ever reads through this array.
     std::array<i32, static_cast<usize>(AnimState::Count)> state_to_clip{};
+
+    // Per-state clip variants (base name + contiguous `_2`, `_3`, …).
+    // Size <= 1 = no variation; otherwise set_anim_state picks one at
+    // random on entry. Cosmetic and client-local — never synced.
+    std::array<std::vector<i32>, static_cast<usize>(AnimState::Count)> state_variants{};
 
     // Output: final bone matrices, ready for GPU upload
     std::vector<glm::mat4> bone_matrices;

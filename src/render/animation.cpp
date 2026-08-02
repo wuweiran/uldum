@@ -13,6 +13,14 @@
 
 namespace uldum::render {
 
+// Client-local cosmetic RNG for animation-variant selection — never synced,
+// never feeds the simulation, so no per-entity seeding or determinism needed.
+static u32 variant_rng() {
+    static u32 s = 0x9e3779b9u;
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    return s;
+}
+
 // ── Keyframe interpolation ────────────────────────────────────────────────
 
 // Find the two keyframe indices and interpolation factor for a given time.
@@ -128,6 +136,14 @@ void set_anim_state(AnimationInstance& inst, AnimState state,
         if (!force_restart) return;  // same state, no restart requested — keep playing/holding
     }
 
+    // Re-roll the clip variant on each state entry (Attack: per swing via
+    // force_restart; Idle/Walk: per transition).
+    const auto& variants = inst.state_variants[static_cast<u8>(state)];
+    if (variants.size() > 1) {
+        inst.state_to_clip[static_cast<u8>(state)] =
+            variants[variant_rng() % variants.size()];
+    }
+
     inst.prev_time      = inst.time;
     inst.prev_speed     = inst.playback_speed;
     inst.previous_state = inst.current_state;
@@ -186,6 +202,15 @@ void update_animation(AnimationInstance& inst, f32 dt) {
         }
 
         if (inst.looping && clip.duration > 0) {
+            if (inst.time >= clip.duration) {
+                // Loop wrapped — re-roll the variant so a looping state
+                // (idle/walk) cycles between its alternates over time.
+                const auto& variants = inst.state_variants[static_cast<u8>(inst.current_state)];
+                if (variants.size() > 1) {
+                    inst.state_to_clip[static_cast<u8>(inst.current_state)] =
+                        variants[variant_rng() % variants.size()];
+                }
+            }
             inst.time = std::fmod(inst.time, clip.duration);
         } else if (inst.time >= clip.duration) {
             inst.time = clip.duration;
