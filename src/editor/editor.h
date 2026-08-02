@@ -16,9 +16,12 @@
 #include <vulkan/vulkan.h>
 #include <imgui.h>
 #include <array>
+#include <atomic>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace uldum::editor {
 
@@ -347,6 +350,44 @@ private:
     // Right-click Import PNG: native-pick the source, target `folder`, open the
     // (Browse/Path-less) convert modal.
     void open_png_import(const std::string& folder);
+
+    // Encode an in-memory RGBA (w*h*4) buffer to a KTX2 file (UASTC L2,
+    // mipmapped, no zstd). `linear` = data texture (clears sRGB). Returns "" on
+    // success or an error message. Used by the New Map bootstrapper (PNG import
+    // encodes straight from the file via basisu's own PNG reader).
+    std::string encode_rgba_to_ktx2(const std::filesystem::path& dest,
+                                    const u8* rgba, u32 w, u32 h, bool linear);
+
+    // ── New Map bootstrapper ─────────────────────────────────────────────
+    // File → New Map: writes a minimal loadable map (generated terrain/skybox/
+    // overlay textures + the config wiring them) then opens it. Output is a
+    // loose folder or, if m_newmap_pack, packed to .uldpak via uldum_pack.
+    //
+    // Threading: the folder picker + open_map run on the main thread; the
+    // blocking encode/pack runs on m_newmap_worker so the editor keeps
+    // rendering (an animated "Generating…" modal) instead of freezing. The
+    // worker publishes its result via the atomics + m_newmap_err/_target, which
+    // the main thread reads once m_newmap_done flips true.
+    bool        m_newmap_open  = false;
+    i32         m_newmap_preset = 0;   // 0 = rts, 1 = action
+    i32         m_newmap_tiles_x = 32;
+    i32         m_newmap_tiles_y = 32;
+    bool        m_newmap_pack   = false;   // false = folder (default), true = .uldpak
+    bool        m_newmap_run_pending = false;   // "Create" clicked → start on next frame
+    std::array<char, 128> m_newmap_id{};
+
+    std::thread       m_newmap_worker;
+    std::atomic<bool> m_newmap_busy{false};   // worker running → show modal
+    std::atomic<bool> m_newmap_done{false};   // worker finished → main finalizes
+    std::string       m_newmap_err;           // worker result: "" = success
+    std::string       m_newmap_target;        // worker result: map path to open
+
+    void draw_new_map_dialog();
+    void open_new_map_dialog();
+    // Main thread: validate + folder-pick + spawn the worker. No-op if cancelled.
+    void start_new_map();
+    // Main thread, after the worker signals done: join, report, open_map.
+    void finalize_new_map();
 };
 
 } // namespace uldum::editor

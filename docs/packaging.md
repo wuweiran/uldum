@@ -162,15 +162,8 @@ Source trees (`engine/`, `maps/<name>.uldmap/`) remain directories; the build pi
 
 **KTX2 + Basis Universal** is the only texture format the engine accepts. This applies to every target (`uldum_dev`, `uldum_game`, `uldum_worker`, `uldum_editor`) and every mount (`engine.uldpak`, `.uldmap` file, loose directory). A PNG inside a mount is a load error — there is no format fallback, and no bake step in the engine pipeline.
 
-Library: [Basis Universal](https://github.com/BinomialLLC/basis_universal) provides both the runtime transcoder (linked into `uldum_asset` via `basisu_transcoder.cpp` compiled as a small static lib) and the authoring CLI (`basisu.exe` built as part of the engine build, lands in `build/bin/`). One KTX2 payload transcodes to BC7 on desktop and ASTC on Android at GPU upload time.
+Library: [Basis Universal](https://github.com/BinomialLLC/basis_universal) provides both the runtime transcoder (linked into `uldum_asset` via `basisu_transcoder.cpp` compiled as a small static lib) and the authoring encoder (its `basisu_encoder` lib, linked into `uldum_editor` for in-process encoding). One KTX2 payload transcodes to BC7 on desktop and ASTC on Android at GPU upload time.
 
-**Why no in-engine bake:** the engine stays out of texture production. Map makers use their own tools (Photoshop, GIMP, Substance, etc.) plus `basisu` — the Basis Universal CLI — to produce KTX2 files directly. That mirrors how they already produce glTF models, OGG audio, and Lua scripts: finished authored files in the map folder. `uldum_pack pack` archives them as-is.
+**Why no in-engine bake at runtime:** the runtime stays out of texture production — it only reads finished KTX2. Authoring happens up front: map makers prepare art in their own tools (Photoshop, GIMP, Substance, etc.) and encode to KTX2 via the **editor's Import PNG** dialog. That mirrors how they already produce glTF models, OGG audio, and Lua scripts: finished authored files in the map folder. `uldum_pack pack` archives them as-is.
 
-**Author workflow (PNG → KTX2):**
-
-```
-basisu -ktx2 -uastc -uastc_level 2 -mipmap          -output_file tex.ktx2 tex.png   # albedo / sRGB (default)
-basisu -ktx2 -uastc -uastc_level 2 -mipmap -linear  -output_file tex.ktx2 tex.png   # normals / data / linear
-```
-
-A helper script `scripts/png_to_ktx2.ps1` wraps these flags — see [editor.md](editor.md).
+**Author workflow (PNG → KTX2):** in the editor, right-click a map folder → **Import PNG...**. It encodes in-process (UASTC level 2, mipmapped, plain non-Zstandard KTX2; sRGB or linear per the dialog) and writes the `.ktx2` into that folder — see [editor.md](editor.md). There is no separate CLI encoder in the build.

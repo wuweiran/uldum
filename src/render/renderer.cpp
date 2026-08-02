@@ -1359,6 +1359,14 @@ bool Renderer::create_terrain_textures() {
     const u8* layer_data[] = {fallback.data()};
     m_terrain_material.layer_array = upload_texture_array(*m_rhi, layer_data, 1, TEX_SIZE, TEX_SIZE);
     m_terrain_material.layer_count = 1;
+
+    // Match the layer array with a flat-normal array so binding 3 is always a
+    // valid 2D_ARRAY view (the shader's terrain_normals is a sampler2DArray).
+    auto flat = generate_solid_texture(TEX_SIZE, 128, 128, 255);
+    const u8* norm_data[] = {flat.data()};
+    m_terrain_material.normal_array = upload_texture_array(*m_rhi, norm_data, 1, TEX_SIZE, TEX_SIZE, false);
+    m_terrain_material.has_normals = false;
+
     log::info(TAG, "Default terrain texture created (1 layer)");
     return m_terrain_material.layer_array.texture.is_valid();
 }
@@ -1569,12 +1577,14 @@ void Renderer::load_tileset_textures(const map::Tileset& tileset) {
             normal_ptrs[i] = normal_pixels[i].data();
         }
 
-        if (any_loaded) {
-            m_terrain_material.normal_array = upload_texture_array(*m_rhi, normal_ptrs.data(),
-                                                                    layer_count, TEX_SIZE, TEX_SIZE, false);
-            m_terrain_material.has_normals = true;
-            log::info(TAG, "Terrain normal maps loaded");
-        }
+        // Always upload the normal array (flat where a layer has no real
+        // normal map) so binding 3 is a valid 2D_ARRAY view matching the
+        // shader's sampler2DArray. has_normals still tracks whether ANY real
+        // normal map was present, so lighting can skip normal mapping when not.
+        m_terrain_material.normal_array = upload_texture_array(*m_rhi, normal_ptrs.data(),
+                                                                layer_count, TEX_SIZE, TEX_SIZE, false);
+        m_terrain_material.has_normals = any_loaded;
+        if (any_loaded) log::info(TAG, "Terrain normal maps loaded");
     }
 
     // Compute water layer masks + per-layer colors for water surface rendering

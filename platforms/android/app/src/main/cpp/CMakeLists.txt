@@ -5,7 +5,7 @@
 # flavors build the same target; they differ only in compile-time flags
 # and APK-level config).
 #
-# Desktop-only bits (imgui, basisu.exe CLI, uldum_pack tool, uldum_editor,
+# Desktop-only bits (imgui, basisu encoder lib, uldum_pack tool, uldum_editor,
 # uldum_dev/game/server exes, shader compilation via glslc, pack_assets
 # target) are guarded off in the relevant CMakeLists when ANDROID is true.
 

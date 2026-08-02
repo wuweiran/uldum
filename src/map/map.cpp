@@ -110,6 +110,7 @@ void MapManager::unload_map() {
     }
     m_manifest = {};
     m_scene = {};
+    m_tileset = {};
     m_map_root.clear();
     m_assets = nullptr;
 }
@@ -291,6 +292,7 @@ bool MapManager::load_tileset(asset::AssetManager& assets) {
 
     try {
         auto& j = doc->data;
+        m_tileset = {};   // a load fully defines the tileset — never append to stale layers
         m_tileset.name = j.value("name", "Default");
 
         if (j.contains("layers")) {

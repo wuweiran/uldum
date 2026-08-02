@@ -200,14 +200,13 @@ if(NOT ANDROID)
 endif()
 
 # ── Basis Universal (KTX2 container + UASTC encoder/transcoder) ───────────
-# BasisU is the codec behind KTX2 UASTC/ETC1S. It ships both an authoring
-# CLI (basisu.exe — we invoke it from scripts/png_to_ktx2.ps1) and a
-# self-contained transcoder that can parse KTX2 files end-to-end.
-#
-# We build two things from the same source tree:
+# BasisU is the codec behind KTX2 UASTC/ETC1S. We use two libraries from its
+# source tree; its bundled CLI (basisu.exe) and examples are excluded from the
+# build (see EXCLUDE_FROM_ALL below):
 #   - `basisu_transcoder` — a static lib made from just transcoder/*.cpp, linked
-#     into uldum_asset for runtime decoding
-#   - `basisu` — their full build (encoder + CLI), used only at author time
+#     into uldum_asset for runtime KTX2 decoding
+#   - `basisu_encoder` — the authoring encoder, linked into uldum_editor for
+#     in-process PNG → KTX2 (the Import PNG dialog)
 #
 # Replaces KTX-Software, which bundles more than we need (fmt, cxxopts,
 # astc-encoder, five extra CLI tools) and hit MSVC/fmt consteval issues.
@@ -312,26 +311,20 @@ if(ULDUM_SHELL_UI)
     unset(_ULDUM_SAVED_BUILD_SHARED_LIBS)
 endif()
 
-# Their full build — gives us the `basisu` CLI executable for authoring.
-# Desktop-only: the CLI is a host tool (PNG → KTX2 encoding offline); it's
-# never invoked on device. Android builds skip this to avoid cross-compiling
-# an encoder that would never run.
-#
-# BasisU's own CMakeLists hard-sets CMAKE_RUNTIME_OUTPUT_DIRECTORY to a
-# subdirectory under their source tree, and target-scoped overrides don't
-# dislodge it. Copy the binary into our build/bin/ with a POST_BUILD step so
-# png_to_ktx2.ps1 can find it alongside the engine executables.
+# Add basisu's tree EXCLUDE_FROM_ALL so its CLI (basisu.exe) and example
+# executables are defined but never built — we only want the encoder library.
+# basisu_encoder still builds because uldum_editor links it (for in-process
+# PNG → KTX2 in the Import dialog). Desktop-only: Android skips this to avoid
+# cross-compiling an encoder that would never run on device.
 if(NOT ANDROID)
-    add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR})
-    if(TARGET basisu)
+    add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR} EXCLUDE_FROM_ALL)
+    # Expose the encoder headers so in-process callers (uldum_editor's PNG
+    # import) can #include "encoder/basisu_comp.h". basisu's own CMake leaves
+    # basisu_encoder's include dir unset (the CLI uses source-relative paths).
+    if(TARGET basisu_encoder)
+        target_include_directories(basisu_encoder SYSTEM PUBLIC ${basisu_SOURCE_DIR})
         if(MSVC)
-            target_compile_options(basisu PRIVATE /W0)
+            target_compile_options(basisu_encoder PRIVATE /W0)
         endif()
-        add_custom_target(basisu_copy_to_bin ALL
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:basisu>
-                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<TARGET_FILE_NAME:basisu>
-            COMMENT "Copying basisu.exe to build/bin/")
-        add_dependencies(basisu_copy_to_bin basisu)
     endif()
 endif()

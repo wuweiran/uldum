@@ -298,7 +298,7 @@ Versions are pinned in `third_party/CMakeLists.txt` via `FetchContent`. `latest`
 | VMA | v3.3.0 | Vulkan memory allocator | MIT |
 | ENet | v1.3.18 | UDP networking | MIT |
 | cpp-httplib | v0.46.0 | HTTP for `uldum_server` (orchestrator API) + dev CLI client | MIT |
-| Basis Universal | latest | KTX2 transcoder (runtime) + encoder `basisu` CLI (author-time) | Apache 2.0 |
+| Basis Universal | latest | KTX2 transcoder (runtime) + `basisu_encoder` lib (editor Import PNG) | Apache 2.0 |
 | FreeType | VER-2-14-3 | Font rasterization for HUD MSDF + RmlUi | FTL / GPLv2 |
 | RmlUi | 6.2 | Shell UI framework (game builds only) | MIT |
 

@@ -86,7 +86,7 @@ One `hud.json` per map, alongside `manifest.json` in the map folder. Top-level k
 
 - **`preset`** (required) — `"rts"` or `"action_rpg"`. Picks the input bindings and default composite layout.
 - **`composites`** — configuration for engine composites (position, slot layouts, inline style). Composites are singletons per map.
-- **`world_overlays`** — configuration for screen-pixel-sized elements anchored to world positions / entities (unit health bars, name label style, etc.). See the World UI section below.
+- **`world_overlays`** — configuration for screen-pixel-sized elements anchored to world positions / entities (unit health bars, name label style, etc.). See the World UI section below. Ground-plane decals (selection rings, AoE previews, cast arrow) are configured under `targeting` and documented in [overlay-textures.md](overlay-textures.md).
 
 **All custom UI — panels, labels, buttons, custom bars — is Lua-authored, not JSON-declared.** The map's Lua script creates nodes at load time via `CreateNode{...}`, attaches them to the HUD root, and mutates content at runtime. Styles are set at creation and frozen; only content is Lua-mutable thereafter.
 

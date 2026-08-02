@@ -92,7 +92,7 @@ cmake --build $buildTree --target uldum_game
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
 
 # Assemble dist/ from the build tree's bin/. Copy only the shipping bits —
-# uldum_pack.exe and basisu.exe are build-time tools, skipped.
+# uldum_pack.exe is a build-time tool, skipped.
 Write-Host ''
 Write-Host "Assembling $distDir ..."
 if (Test-Path -LiteralPath $distDir) {

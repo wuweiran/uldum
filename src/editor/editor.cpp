@@ -21,11 +21,19 @@
 #include <iterator>
 #include <shobjidl.h>
 #include <cmath>
+#include <thread>
 
 // stb_image is in third_party and already linked via uldum_asset.
 // stbi_info() reads only the PNG header — cheap and lets the import
 // dialog prefill the resize fields with the source's dimensions.
 #include <stb_image.h>
+
+// Basis Universal encoder — in-process PNG → KTX2 for the asset import
+// dialog. Linked from basisu_encoder (basisu's UASTC/KTX2 authoring lib).
+#include <encoder/basisu_comp.h>
+
+#include "editor/overlay_decals.h"
+#include "editor/map_bootstrap.h"
 
 // Forward declare the Win32 ImGui WndProc handler
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -532,8 +540,23 @@ void Editor::run() {
             ImGui::EndFrame();
         }
 
+        // New Map: start on the frame after Create (so the dialog closed and the
+        // modal is up), then finalize once the worker thread signals done. The
+        // encode/pack runs off-thread, so the editor keeps rendering meanwhile.
+        if (m_newmap_run_pending) {
+            m_newmap_run_pending = false;
+            start_new_map();
+        }
+        if (m_newmap_done.load(std::memory_order_acquire)) {
+            m_newmap_done.store(false, std::memory_order_relaxed);
+            finalize_new_map();
+        }
+
         frame_count++;
     }
+
+    // Don't leave a worker running past shutdown.
+    if (m_newmap_worker.joinable()) m_newmap_worker.join();
 
     m_rhi.wait_idle();
     log::info(TAG, "Exiting editor loop ({} frames)", frame_count);
@@ -1992,56 +2015,6 @@ static int run_uldum_pack(const std::string& args) {
     return static_cast<int>(rc);
 }
 
-// Run a sibling exe (looked up next to uldum_editor.exe), piping its
-// stdout + stderr into `output`. Returns the process exit code, or -1
-// if launch failed. Synchronous — fine for short-running tools like
-// basisu (~hundreds of ms for a typical texture).
-static int run_capture(const std::string& exe_name, const std::string& args,
-                       std::string& output) {
-    wchar_t exe_path[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-    std::filesystem::path tool =
-        std::filesystem::path(exe_path).parent_path() / exe_name;
-
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-    HANDLE read_h = nullptr, write_h = nullptr;
-    if (!CreatePipe(&read_h, &write_h, &sa, 0)) return -1;
-    SetHandleInformation(read_h, HANDLE_FLAG_INHERIT, 0);
-
-    std::string cmd = "\"" + tool.string() + "\" " + args;
-
-    STARTUPINFOA si{ sizeof(si) };
-    si.dwFlags    = STARTF_USESTDHANDLES;
-    si.hStdOutput = write_h;
-    si.hStdError  = write_h;
-    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-
-    PROCESS_INFORMATION pi{};
-    if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        CloseHandle(read_h); CloseHandle(write_h);
-        return -1;
-    }
-    // Drop the parent's copy of the write end so ReadFile returns EOF
-    // once the child exits — otherwise we'd hang waiting on a handle
-    // we still own.
-    CloseHandle(write_h);
-
-    char buf[1024];
-    DWORD n = 0;
-    while (ReadFile(read_h, buf, sizeof(buf), &n, nullptr) && n > 0) {
-        output.append(buf, n);
-    }
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD rc = 0;
-    GetExitCodeProcess(pi.hProcess, &rc);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(read_h);
-    return static_cast<int>(rc);
-}
-
 // Win32 open-file picker (for opening a packed .uldmap).
 static std::string pick_open_file(HWND hwnd, const wchar_t* title,
                                   const wchar_t* filter_label, const wchar_t* filter_pattern) {
@@ -2437,6 +2410,10 @@ void Editor::draw_ui() {
     // Main menu bar
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("New Map...")) {
+                open_new_map_dialog();
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Open Map Folder...")) {
                 std::string path = pick_folder(static_cast<HWND>(m_platform->native_window_handle()));
                 if (!path.empty()) {
@@ -2700,6 +2677,7 @@ void Editor::draw_ui() {
     if (m_show_assets) m_files.draw(file_ctx(), &m_show_assets);
 
     draw_import_dialog();
+    draw_new_map_dialog();
 }
 
 // ── Asset import ─────────────────────────────────────────────────────────
@@ -2825,32 +2803,58 @@ void Editor::run_png_import() {
     }
     fs::path dest = dest_dir / m_import_filename.data();
 
-    // Match scripts/png_to_ktx2.ps1: zstd is always off (runtime
-    // transcoder limitation), UASTC level 2, mipmaps on. -linear
-    // flips colorspace handling for data textures.
-    std::string args = "-ktx2 -ktx2_no_zstandard -uastc -uastc_level 2 -mipmap";
-    if (m_import_linear) args += " -linear";
-    if (m_import_resize && m_import_w > 0 && m_import_h > 0) {
-        args += " -resample " + std::to_string(m_import_w)
-              + " "           + std::to_string(m_import_h);
+    // Encode in-process via basisu_encoder: UASTC level 2, KTX2 container,
+    // plain (no zstd — runtime transcoder limitation), mipmaps on. -linear
+    // equivalent clears the sRGB options for data textures.
+    static bool s_encoder_ready = false;
+    if (!s_encoder_ready) {
+        basisu::basisu_encoder_init();
+        s_encoder_ready = true;
     }
-    args += " -output_file \"" + dest.string() + "\" \"" + src.string() + "\"";
 
-    std::string captured;
-    int rc = run_capture("basisu.exe", args, captured);
-    if (rc == 0) {
+    basisu::basis_compressor_params p;
+    p.m_read_source_images = true;
+    p.m_write_output_basis_or_ktx2_files = true;
+    p.m_source_filenames.push_back(src.string().c_str());
+    p.m_out_filename = dest.string().c_str();
+
+    p.m_uastc = true;
+    p.m_pack_uastc_ldr_4x4_flags = 2;   // cPackUASTCLevelDefault
+    p.m_create_ktx2_file = true;
+    p.m_ktx2_uastc_supercompression = basist::KTX2_SS_NONE;
+    p.m_mip_gen = true;
+    p.set_srgb_options(!m_import_linear);
+    if (m_import_resize && m_import_w > 0 && m_import_h > 0) {
+        p.m_resample_width  = m_import_w;
+        p.m_resample_height = m_import_h;
+    }
+    // Keep the encoder quiet — it otherwise prints progress to stdout.
+    p.m_status_output = false;
+    p.m_print_stats   = false;
+
+    u32 threads = std::max(1u, std::thread::hardware_concurrency());
+    basisu::job_pool jpool(threads);
+    p.m_pJob_pool = &jpool;
+
+    basisu::basis_compressor comp;
+    if (!comp.init(p)) {
+        m_import_result = ImportResult::Failure;
+        m_import_result_msg = "Encoder init failed for:\n  " + src.string();
+        log::error(TAG, "Import: basis_compressor init failed for '{}'", src.string());
+        return;
+    }
+
+    basisu::basis_compressor::error_code rc = comp.process();
+    if (rc == basisu::basis_compressor::cECSuccess) {
         m_import_result = ImportResult::Success;
         m_import_result_msg = "Wrote " + dest.string();
         log::info(TAG, "Import: wrote '{}'", dest.string());
     } else {
         m_import_result = ImportResult::Failure;
-        // Surface basisu's own message on failure so the user can act
-        // on a missing file / bad format / unwritable destination
-        // without digging through logs.
-        m_import_result_msg = "basisu exit code " + std::to_string(rc);
-        if (!captured.empty()) m_import_result_msg += "\n\n" + captured;
-        log::error(TAG, "Import: basisu failed (exit {}) for '{}'",
-                   rc, src.string());
+        m_import_result_msg = "Encode failed (code " + std::to_string(static_cast<int>(rc))
+                            + ") for:\n  " + src.string();
+        log::error(TAG, "Import: encode failed (code {}) for '{}'",
+                   static_cast<int>(rc), src.string());
     }
 }
 
@@ -2884,6 +2888,211 @@ void Editor::open_png_import(const std::string& folder) {
     }
 
     m_import_open = true;
+}
+
+// ── KTX2 encode helper ───────────────────────────────────────────────────
+
+std::string Editor::encode_rgba_to_ktx2(const std::filesystem::path& dest,
+                                        const u8* rgba, u32 w, u32 h, bool linear) {
+    static bool s_encoder_ready = false;
+    if (!s_encoder_ready) { basisu::basisu_encoder_init(); s_encoder_ready = true; }
+
+    // basisu opens the output path directly — it won't create parent dirs.
+    std::error_code ec;
+    std::filesystem::create_directories(dest.parent_path(), ec);
+
+    basisu::basis_compressor_params p;
+    p.m_read_source_images = false;   // in-memory source, not a file
+    p.m_write_output_basis_or_ktx2_files = true;
+    p.m_source_images.push_back(basisu::image(rgba, w, h, 4));
+    p.m_out_filename = dest.string().c_str();
+
+    p.m_uastc = true;
+    p.m_pack_uastc_ldr_4x4_flags = 2;   // cPackUASTCLevelDefault
+    p.m_create_ktx2_file = true;
+    p.m_ktx2_uastc_supercompression = basist::KTX2_SS_NONE;
+    p.m_mip_gen = true;
+    p.set_srgb_options(!linear);
+    p.m_status_output = false;
+    p.m_print_stats   = false;
+
+    u32 threads = std::max(1u, std::thread::hardware_concurrency());
+    basisu::job_pool jpool(threads);
+    p.m_pJob_pool = &jpool;
+
+    basisu::basis_compressor comp;
+    if (!comp.init(p)) return "encoder init failed";
+    basisu::basis_compressor::error_code rc = comp.process();
+    if (rc != basisu::basis_compressor::cECSuccess)
+        return "encode failed (code " + std::to_string(static_cast<int>(rc)) + ")";
+    return {};
+}
+
+// ── New Map bootstrapper ─────────────────────────────────────────────────
+
+void Editor::open_new_map_dialog() {
+    std::snprintf(m_newmap_id.data(), m_newmap_id.size(), "new_map");
+    m_newmap_preset  = 0;
+    m_newmap_tiles_x = 128;
+    m_newmap_tiles_y = 128;
+    m_newmap_pack    = false;
+    m_newmap_open    = true;
+}
+
+void Editor::start_new_map() {
+    namespace fs = std::filesystem;
+    std::string id = m_newmap_id.data();
+    if (id.empty()) {
+        m_import_result = ImportResult::Failure;
+        m_import_result_msg = "Map id must not be empty.";
+        m_import_show_result = true;
+        return;
+    }
+
+    // Folder picker MUST run on the main thread (Win32 STA COM dialog).
+    std::string parent = pick_folder(static_cast<HWND>(m_platform->native_window_handle()));
+    if (parent.empty()) return;   // cancelled — no worker, no modal
+
+    fs::path folder_path = fs::path(parent) / (id + ".uldmap");
+    if (fs::exists(folder_path)) {
+        m_import_result = ImportResult::Failure;
+        m_import_result_msg = "Already exists:\n  " + folder_path.string();
+        m_import_show_result = true;
+        return;
+    }
+
+    // Snapshot everything the worker needs (no editor state read off-thread).
+    map_bootstrap::Options opts;
+    opts.id           = id;
+    opts.name         = id;
+    opts.tiles_x      = static_cast<u32>(std::max(1, m_newmap_tiles_x));
+    opts.tiles_y      = static_cast<u32>(std::max(1, m_newmap_tiles_y));
+    opts.input_preset = m_newmap_preset == 1 ? "action" : "rts";
+    bool pack = m_newmap_pack;
+
+    fs::path build_dir = pack
+        ? fs::temp_directory_path() / ("uldum_newmap_" + std::to_string(GetCurrentProcessId()))
+        : folder_path;
+
+    m_newmap_err.clear();
+    m_newmap_target = folder_path.string();
+    m_newmap_done.store(false, std::memory_order_relaxed);
+    m_newmap_busy.store(true, std::memory_order_release);
+
+    // Worker: the blocking encode (+ optional pack). Only touches locals, the
+    // filesystem, and encode_rgba_to_ktx2 (basisu — self-contained). Results go
+    // to m_newmap_err; main thread reads them after m_newmap_done.
+    m_newmap_worker = std::thread([this, opts, pack, build_dir, folder_path]() {
+        namespace fs = std::filesystem;
+        if (pack) { std::error_code ec; fs::remove_all(build_dir, ec); }
+
+        auto encode = [this](const fs::path& dest, const u8* rgba, u32 w, u32 h, bool linear) {
+            return encode_rgba_to_ktx2(dest, rgba, w, h, linear);
+        };
+        std::string err = map_bootstrap::create(build_dir, opts, encode);
+
+        if (err.empty() && pack) {
+            int rc = run_uldum_pack("pack \"" + build_dir.string() + "\" \"" + folder_path.string() + "\"");
+            std::error_code ec; fs::remove_all(build_dir, ec);
+            if (rc != 0) err = "pack failed (exit " + std::to_string(rc) + ")";
+        }
+
+        m_newmap_err = err;
+        m_newmap_done.store(true, std::memory_order_release);
+    });
+}
+
+void Editor::finalize_new_map() {
+    if (m_newmap_worker.joinable()) m_newmap_worker.join();
+    m_newmap_busy.store(false, std::memory_order_release);
+
+    if (m_newmap_err.empty()) {
+        m_import_result = ImportResult::Success;
+        m_import_result_msg = "Created " + m_newmap_target;
+        m_import_show_result = true;
+        open_map(m_newmap_target);   // GPU work — main thread only
+    } else {
+        m_import_result = ImportResult::Failure;
+        m_import_result_msg = "New Map failed:\n  " + m_newmap_err;
+        m_import_show_result = true;
+    }
+}
+
+void Editor::draw_new_map_dialog() {
+    if (m_newmap_open) {
+        ImGui::OpenPopup("New Map");
+        m_newmap_open = false;
+    }
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("New Map", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("Creates a minimal map — generated dirt terrain, gradient "
+                           "skybox, and overlay decals, plus the config wiring them — "
+                           "then opens it.");
+        ImGui::Separator();
+
+        ImGui::InputText("Id", m_newmap_id.data(), m_newmap_id.size());
+
+        // Default scene terrain size — WC3-style presets, width and height
+        // chosen independently.
+        static const int kSizes[] = {32, 64, 96, 128, 160, 192, 256};
+        auto size_combo = [&](const char* label, int& value) {
+            char preview[8];
+            std::snprintf(preview, sizeof(preview), "%d", value);
+            if (ImGui::BeginCombo(label, preview)) {
+                for (int s : kSizes) {
+                    bool sel = (value == s);
+                    char item[8];
+                    std::snprintf(item, sizeof(item), "%d", s);
+                    if (ImGui::Selectable(item, sel)) value = s;
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        };
+        ImGui::Text("Default scene terrain size (tiles):");
+        size_combo("Width",  m_newmap_tiles_x);
+        size_combo("Height", m_newmap_tiles_y);
+
+        ImGui::Text("Input preset:");
+        ImGui::RadioButton("RTS", &m_newmap_preset, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("Action", &m_newmap_preset, 1);
+
+        ImGui::Text("Output:");
+        int out = m_newmap_pack ? 1 : 0;
+        ImGui::RadioButton("Folder", &out, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton(".uldpak", &out, 1);
+        m_newmap_pack = (out == 1);
+
+        ImGui::Separator();
+        bool can_create = m_newmap_id[0] != '\0';
+        if (!can_create) ImGui::BeginDisabled();
+        if (ImGui::Button("Create", ImVec2(120, 0))) {
+            // Defer to next frame: start_new_map does the folder-pick + spawns
+            // the worker, so the "Generating…" modal is already up.
+            m_newmap_run_pending = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (!can_create) ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    // Progress modal — visible while the worker encodes/packs on its thread.
+    // The editor keeps rendering, so the "…" ellipsis animates (not a freeze).
+    if (m_newmap_busy.load(std::memory_order_acquire)) {
+        ImGui::OpenPopup("Generating Map");
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginPopupModal("Generating Map", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+            int dots = 1 + (static_cast<int>(ImGui::GetTime() * 3.0) % 3);
+            ImGui::Text("Generating map — encoding textures%.*s", dots, "...");
+            ImGui::EndPopup();
+        }
+    }
 }
 
 // ── ImGui teardown ───────────────────────────────────────────────────────

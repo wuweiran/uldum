@@ -247,7 +247,6 @@ All build / test / asset-util scripts are PowerShell (`.ps1`). The helper at `sc
 | `build_editor.ps1` | `uldum_editor` only | `engine.uldpak` |
 | `build_server.ps1` | server-side targets (`uldum_worker`, `uldum_server`) | `engine.uldpak`, every map in `maps/` |
 | `convert_skybox.py` | — (asset util) | EXR → KTX2 cubemap faces |
-| `png_to_ktx2.ps1` | — (asset util) | PNG → KTX2 |
 
 Output: `build/bin/`. Engine scripts never write to `dist/` and never touch a game project.
 

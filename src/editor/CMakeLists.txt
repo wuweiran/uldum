@@ -2,6 +2,8 @@ add_executable(uldum_editor
     main.cpp
     editor.cpp
     file_explorer.cpp
+    overlay_decals.cpp
+    map_bootstrap.cpp
 )
 
 target_include_directories(uldum_editor PRIVATE ${ULDUM_SRC})
@@ -17,6 +19,7 @@ target_link_libraries(uldum_editor PRIVATE
     uldum_map
     uldum_scriptcheck
     imgui
+    basisu_encoder
     ole32
 )
 

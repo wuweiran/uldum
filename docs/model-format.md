@@ -2,7 +2,7 @@
 
 ## Overview
 
-All models use **glTF 2.0** (`.gltf` or `.glb`). The engine extracts geometry, skeleton, and animation data via cgltf. Standalone textures are **KTX2 + Basis Universal** (authored from PNG via `basisu` — see [packaging.md](packaging.md)). Audio is **OGG Opus** (music) or **WAV** (SFX).
+All models use **glTF 2.0** (`.gltf` or `.glb`). The engine extracts geometry, skeleton, and animation data via cgltf. Standalone textures are **KTX2 + Basis Universal** (authored from PNG via the editor's Import PNG — see [packaging.md](packaging.md)). Audio is **OGG Opus** (music) or **WAV** (SFX).
 
 ## Coordinate System
 
@@ -135,14 +135,14 @@ Any state can have alternate clips that the engine picks between at random — W
 
 | Base | Variants | Result |
 |------|----------|--------|
-| `idle` | `idle_2`, `idle_3` | Random idle each time the unit returns to idle |
+| `idle` | `idle_2`, `idle_3` | Idle cycles between variants as it loops |
 | `attack` | `attack_2`, `attack_3` | Random swing each attack |
 
 Rules:
 
 - **Suffix starts at `_2` and must be contiguous.** `attack` + `attack_2` + `attack_3` gives three variants; `attack` + `attack_3` (no `_2`) stops at the gap and uses only `attack`.
 - **The bare name still works.** A model with just `attack` behaves exactly as before — variation is opt-in, no existing model needs changing.
-- **Picked on entry**, per state: `attack` re-rolls each swing, `idle`/`walk` on each transition into that state.
+- **Re-rolled per play**: non-looping states (`attack`, `spell`) pick on each entry (every swing/cast); looping states (`idle`, `walk`) re-roll each time the clip loops, so a standing unit cycles through its idle variants over time.
 - **Cosmetic and client-local** — the choice is never synced, so host and clients may show different variants of the same swing. This never affects gameplay: the authoritative damage/cast timing (`combat.dmg_time`, etc.) is independent of which clip plays.
 - **Shared timing across variants.** All variants of a state reuse that state's single `dmg_pt` / `cast_pt` fraction (like WC3's one damage point per weapon). Author each variant's contact frame at roughly the same normalized time so the hit stays aligned; a variant whose contact lands elsewhere only looks slightly off, it never mistimes damage.
 
@@ -195,16 +195,17 @@ Items are widgets too, so they share the same name-matched clip system — but o
 | Stage | Format | Tool |
 |-------|--------|------|
 | Authoring | PNG / TGA / source format of choice | Any image editor |
-| Import step (author-side, outside the engine) | PNG → KTX2 | `basisu` / `scripts/png_to_ktx2.ps1` |
+| Import step (author-side, outside the engine) | PNG → KTX2 | editor Import PNG |
 | In-tree / shipping | KTX2 + Basis Universal | — (runtime reads KTX2 directly) |
 
 See [packaging.md](packaging.md) and [editor.md](editor.md) for the full authoring workflow.
 
 ## Audio
 
-- **Music / voice**: OGG Opus (streaming)
-- **SFX**: WAV (no decompression latency) or OGG Opus
-- **3D positional**: Per-unit sound sources with distance attenuation
+- **Recommended**: OGG **Vorbis** (`.ogg`) — good compression, the engine's default.
+- **Also decoded**: WAV, MP3, FLAC. miniaudio is built with all its built-in codecs enabled and detects format from file contents, so any of these load with no code change (see [audio.md](audio.md)). Note the engine decodes OGG **Vorbis**, not Opus.
+- **Streaming vs. memory**: music streams from disk; SFX / voice / ambient load into memory.
+- **3D positional**: per-unit sound sources with distance attenuation.
 
 ## Unit Type Model Reference
 

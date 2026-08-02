@@ -129,7 +129,7 @@ src/
 ├── network/        GameServer, NetworkManager, ENet transport
 ├── map/            Map format, terrain data, scene loader
 ├── editor/         Map editor executable — terrain tools, cliff/ramp editing
-├── tools/          Build-time CLI utilities (uldum_pack, uldum_gen_overlays)
+├── tools/          Build-time CLI utilities (uldum_pack)
 ├── server/         Headless server-side binaries (uldum_worker, future uldum_server orchestrator)
 └── app/            Client / editor entry points (uldum_dev, uldum_game, android_main)
 ```

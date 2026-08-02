@@ -52,19 +52,22 @@ No "reverse bake" is supported — `.uldmap` → source folder is not a round-tr
 
 ## PNG → KTX2 conversion (author-side)
 
-Map makers convert PNG textures to KTX2 outside the engine using the [Basis Universal](https://github.com/BinomialLLC/basis_universal) encoder, before placing files into a map folder. `basisu.exe` is built as part of the engine build and ends up at `build/bin/basisu.exe`.
+Map makers convert PNG textures to KTX2 in the editor: right-click a map folder
+in the Map Explorer → **Import PNG...**. The editor encodes **in-process** (it
+links the [Basis Universal](https://github.com/BinomialLLC/basis_universal)
+`basisu_encoder` library directly) and writes the `.ktx2` into that folder —
+no external tool or command line needed.
 
-A helper script `scripts/png_to_ktx2.ps1` wraps the canonical flags:
+The dialog exposes the meaningful options:
 
-```powershell
-# albedo / diffuse / sRGB textures
-scripts\png_to_ktx2.ps1 tex.png                  # → tex.ktx2, UASTC, sRGB, mipmapped
+- **Colorspace** — sRGB (default, for albedo/diffuse) or linear (normal maps and
+  data textures like the overlay masks).
+- **Resize** — optional; prefilled with the source PNG's dimensions.
 
-# normal maps / data textures (linear)
-scripts\png_to_ktx2.ps1 -Linear normal.png       # → normal.ktx2, UASTC, linear, mipmapped
-```
-
-Drop the resulting `.ktx2` into the map's asset folder. The engine never converts, bakes, or falls back — it only reads KTX2.
+Internally it always uses UASTC level 2, generates mipmaps, and produces plain
+(non-Zstandard) KTX2 — the runtime transcoder rejects Zstandard-supercompressed
+KTX2, so that flag is mandatory and not exposed. The engine never converts,
+bakes, or falls back at runtime — it only reads KTX2.
 
 ## Out of scope for the current phase
 
