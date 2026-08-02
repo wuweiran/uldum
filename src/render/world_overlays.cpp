@@ -23,7 +23,7 @@ constexpr const char* kFragSpv = "engine/shaders/world_overlay.frag.spv";
 
 constexpr u32 kMaxVerts  = 16 * 1024;     // per-frame vertex ceiling
 constexpr u32 kMaxDraws  = 256;           // per-frame draw ceiling
-constexpr f32 kZBias     = 2.0f;          // raise off terrain to avoid z-fight
+constexpr f32 kZBias     = 16.0f;         // raise off terrain to avoid z-fight
 
 // Vertex layout — matches world_overlay.vert. RGBA8 is premultiplied
 // alpha, packed in one u32 (R in low byte, A in high).
