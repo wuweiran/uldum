@@ -2,7 +2,7 @@
 
 A unit-centric game engine inspired by Warcraft III, built with modern C++23. Two interchangeable GPU backends — Vulkan 1.3 (Windows + Android) and OpenGL ES 3.1+ (Android fallback for non-Vulkan-1.3 devices).
 
-## Features (planned)
+## Features
 
 - **Vulkan 1.3 / OpenGL ES rendering** — GPU-driven rendering with bindless textures (Vulkan) or sampler-array fallback (GLES); shared shader sources, separate per-backend stages
 - **Skeletal animation** — GPU skinning, animation state machine, glTF models
@@ -17,7 +17,7 @@ A unit-centric game engine inspired by Warcraft III, built with modern C++23. Tw
 
 ## Current Status
 
-Phase 26 (App architecture revamp) — `uldum_dev` refactored onto the new `Engine + App` model and migrated to a public surface; remaining sub-steps (sample_game conversion + Shell facade) are in progress.
+Phase 29 (Message-layer redesign) complete — the wire protocol is sorted into explicit tiers, cold state survives a fog round-trip, and death is derived from health on both sides. Work since then is incremental gameplay, editor, and effect polish.
 
 **What works:**
 
@@ -26,7 +26,7 @@ Phase 26 (App architecture revamp) — `uldum_dev` refactored onto the new `Engi
 - **GPU-driven static rendering.** Mega VB/IB, bindless textures, instance SSBO, multi-draw indirect partitioned by pipeline class × cull mode. 4× MSAA, frustum culling, PCF shadow maps with correctly silhouetted alpha-masked casters.
 - **Terrain.** Heightmap + cliffs + ramps, splatmap with 4 layers, SDF-based transitions with noise, sampler2DArray for layer textures, shallow + deep water with Gerstner waves and reflection.
 - **Skeletal animation.** GPU skinning, animation state machine driven by simulation, crossfade blending, skinned shadow casting.
-- **Effects + particles.** CPU-driven billboards with burst + continuous emitters, procedural shapes, glow-particle-seeded point lights, unit-attached effects with bone targeting.
+- **Effects + particles.** CPU-driven billboards with burst + continuous emitters, procedural shapes, `fire` plumes that lerp hot→cool and cast a flickering point light, glow-particle-seeded point lights, unit-attached effects with bone targeting.
 - **ECS simulation.** Monotonic typed handles (Unit / Item / Destructable / Projectile), paged sparse-set storage, data-driven types loaded from map JSON, deterministic 32 Hz tick. WC3-style facing + scale + alliances.
 - **Gameplay primitives.** Tile-grid A* + steering, attack-move + auto-acquire, abilities with typed innate/item/applied ownership, items as ability bundles, projectiles, cliff-aware fog of war with shared vision.
 - **Lua 5.4 scripting.** Sandboxed sol2 VM, WC3-style triggers backed by typed stack-local event frames, timers, regions, scene switching mid-session (Lua VM swap), camera scripting, save-data channel.
@@ -35,7 +35,8 @@ Phase 26 (App architecture revamp) — `uldum_dev` refactored onto the new `Engi
 - **Production server topology.** `uldum_worker` (one process per session, game-agnostic, Linux + Windows) + `uldum_server` orchestrator (HTTP API, per-player tokens, webhook dispatch).
 - **Shell UI** (game builds) — RmlUi 6 driven by project-supplied `.rml` / `.rcss`; networked lobby with host-authoritative slot table.
 - **HUD** (all builds) — custom retained-mode tree of atoms + composites (action_bar, command_bar, minimap, joystick, inventory, mobile nearby-item pickup), MSDF text, world overlays, drag-cast.
-- **In-engine terrain editor.** Sculpt / paint / cliff / ramp / pathing / object placement, source-folder or packed-map workflow.
+- **In-engine terrain editor.** New-map bootstrapper, sculpt / paint / cliff / ramp / pathing / object placement, map file explorer with per-asset inspection and a model viewer, source-folder or packed-map workflow.
+- **Localization.** Per-map string packs with locale fallback; engine-emitted command / error wording split into its own `system.json`.
 - **Build targets.** `uldum_dev`, `uldum_game` (per-project), `uldum_worker`, `uldum_server`, `uldum_editor`, `uldum_pack`. Windows + Android (dev APK and game-flavor APK).
 
 ## Prerequisites
@@ -125,6 +126,7 @@ src/
 ├── simulation/     ECS, units, abilities, pathfinding, combat, projectiles
 ├── input/          Command system, selection, picker, RTS / action presets, hotkey bindings
 ├── hud/            Custom retained-mode in-game UI (atoms, composites, world overlays, text tags)
+├── i18n/           Locale manager, string packs, per-map + engine string routing
 ├── shell/          RmlUi-backed around-game UI (menus, lobby, loading, results) — game builds only
 ├── network/        GameServer, NetworkManager, ENet transport
 ├── map/            Map format, terrain data, scene loader
@@ -137,6 +139,8 @@ src/
 ## Documentation
 
 - [docs/design.md](docs/design.md) — Full technical design and phase roadmap
+- [docs/engine-model.md](docs/engine-model.md) — `Engine` + `App` architecture, runtime and build model
+- [docs/platform.md](docs/platform.md) — Platform layer: window, input, filesystem (Win32 / Android)
 - [docs/gameplay-model.md](docs/gameplay-model.md) — Game object hierarchy, components, unit/item/destructable model
 - [docs/ability-system.md](docs/ability-system.md) — Ability system, slots, hotkeys, scripting
 - [docs/items.md](docs/items.md) — Item system: types, inventory, charges/level fields, pickup/use lifecycle
@@ -146,6 +150,8 @@ src/
 - [docs/terrain.md](docs/terrain.md) — Terrain system, heightmap, cliffs, ramps, pathing
 - [docs/audio.md](docs/audio.md) — Audio system design
 - [docs/effects.md](docs/effects.md) — Particle and effect system
+- [docs/overlay-textures.md](docs/overlay-textures.md) — World overlay / decal textures
+- [docs/i18n.md](docs/i18n.md) — Localization: string packs, locale routing, engine vs map strings
 - [docs/model-format.md](docs/model-format.md) — Model, animation, texture specifications
 - [docs/network.md](docs/network.md) — Network protocol, transport, state sync, interpolation
 - [docs/coordinates.md](docs/coordinates.md) — Coordinate system and unit conventions
