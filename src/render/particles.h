@@ -27,6 +27,8 @@ struct Particle {
     glm::vec3 position{0};
     glm::vec3 velocity{0};
     glm::vec4 color{1};      // tint; alpha fades to 0 over life (built-in disappearance)
+    glm::vec4 color_end{1};  // color at end of life when has_color_end (hot→cool ramp)
+    bool has_color_end = false;
     f32 life     = 0;
     f32 max_life = 1;
     f32 size     = 8;
@@ -48,6 +50,8 @@ struct ParticleEmitter {
     f32          particle_speed = 100.0f;
     f32          particle_size  = 8.0f;
     glm::vec4    color{1.0f, 0.8f, 0.2f, 1.0f};   // tint; alpha fades to 0 over life
+    glm::vec4    color_end{1.0f};                  // end-of-life color if has_color_end
+    bool         has_color_end = false;            // lerp color→color_end over life
     f32          spread       = 1.0f;      // 0 = up only, 1 = full sphere
     f32          gravity      = -200.0f;   // Z acceleration
 
@@ -67,8 +71,10 @@ public:
     void shutdown();
 
     // Spawn a one-shot burst at a position. If `radius > 0`, the emitter
-    // uses Ring shape; otherwise shape is chosen from `spread`.
-    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f, u32 texture_id = 0, f32 spread = 1.0f, f32 radius = 0);
+    // uses Ring shape; otherwise shape is chosen from `spread`. When
+    // `color_end` is given (non-null), particles lerp color→color_end over
+    // their life (a hot→cool fire ramp); otherwise the single color is held.
+    void burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed = 150, f32 life = 0.5f, f32 size = 10, f32 gravity = -200.0f, u32 texture_id = 0, f32 spread = 1.0f, f32 radius = 0, const glm::vec4* color_end = nullptr);
 
     // Update particles (spawn, simulate, kill dead). Call once per frame.
     void update(f32 dt);

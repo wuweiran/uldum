@@ -13,6 +13,7 @@ An effect's `type` names an orthogonal visual phenomenon (not a particle shape):
 |---|---|---|
 | `spark` | particle | Energetic bright bits — impacts, magic, soft auras. |
 | `spray` | particle | A liquid arc — blood or water (the color decides which). |
+| `fire`  | particle + light | A sustained flame — an additive orb plume that lerps **hot→cool** over life and casts a **flickering point light**. The one particle kind that lights the scene. |
 | `glow`  | **glow system** | Engine-owned light visual: rising volumetric Tyndall light shafts today (WC3 level-up look); the home for future light effects like persistent "hero glow". No texture knob — the look is procedural. |
 
 Particle **shape** (the soft orb / teardrop sprite) is an internal engine detail
@@ -36,6 +37,14 @@ loaded by both host and client at session start, so the registries stay symmetri
         "type": "glow",
         "height": 240, "radius": 26, "life": 1.3, "tyndall": 0.65, "intensity": 1.2,
         "color": { "r": 1.0, "g": 0.92, "b": 0.55, "a": 1.0 }
+    },
+    "campfire": {
+        "type": "fire",
+        "life": 0.8, "size": 15,
+        "emit_rate": 40, "spread": 0.18, "radius": 0,
+        "light": 1.4,
+        "color":     { "r": 1.0, "g": 0.6, "b": 0.2,  "a": 1.0 },
+        "color_end": { "r": 0.7, "g": 0.1, "b": 0.03, "a": 1.0 }
     }
 }
 ```
@@ -52,6 +61,11 @@ over each particle's `life` — a built-in disappearance, no second color needed
 For `glow` it's the steady shaft/light tint; brightness rises and falls via the
 fade envelope (`fade_in`/`fade_out`).
 
+**`color_end`** (optional, RGBA): when present, each particle **lerps its RGB
+from `color` → `color_end` over its life** (alpha still rides the life fade).
+This is the hot→cool ramp that makes `fire` read as flame (yellow core → deep
+red ember), but any particle kind may use it.
+
 ### Particle fields (`spark` / `spray`)
 
 | Field | Default | Meaning |
@@ -64,6 +78,42 @@ fade envelope (`fade_in`/`fade_out`).
 | `gravity` | -200 | Per-second downward acceleration |
 | `spread` | 1.0 | `0` = straight up, `1` = full sphere |
 | `radius` | 0 | `> 0` = ring emitter, particles arranged on a horizontal circle |
+
+### Fire fields (`fire`)
+
+Unlike `spark`/`spray`, **`fire` has no per-field defaults** — a fire authors
+its whole schema every time (a missing field logs a warning). The fields below
+are exactly the ones that define a fire's look and shape; the plume mechanics
+that don't (`speed`, `gravity`, `count`) are **engine-fixed and not part of the
+schema** — writing them does nothing.
+
+| Field | Meaning |
+|---|---|
+| `life` | Seconds each ember lives (plume height / how long you see a one-shot) |
+| `size` | Ember world size |
+| `emit_rate` | Density — particles/sec. Candle vs. bonfire vs. inferno. |
+| `spread` | Cone width — the silhouette. `0.15` = narrow tongue, `0.5` = wide base. |
+| `radius` | Footprint. `0` = a single pillar; `> 0` = a **ring** of fire (fire pit / circular wall). |
+| `light` | A single number = light **brightness**. The flame always casts a warm flickering point light (its color is the flame's `color`); reach and flicker are engine-fixed, and its **lift auto-derives from `life`** — a taller (longer-lived) fire raises its own light. |
+| `color` | Hot color at birth. |
+| `color_end` | Cool color at death — the flame lerps `color` → `color_end` over each ember's life. Any hue (orange→dark-red, blue→dark-blue). |
+
+Fire is the **only** particle kind that lights the scene (`spark`/`spray` are
+pure billboards). A flame is almost always spawned as a persistent effect
+(`CreateEffect`), since it's continuous.
+
+The campfire in full — every schema field authored:
+
+```json
+"campfire": {
+    "type": "fire",
+    "life": 0.8, "size": 15,
+    "emit_rate": 40, "spread": 0.18, "radius": 0,
+    "light": 1.4,
+    "color":     { "r": 1.0, "g": 0.6, "b": 0.2,  "a": 1.0 },
+    "color_end": { "r": 0.7, "g": 0.1, "b": 0.03, "a": 1.0 }
+}
+```
 
 ### Glow fields (`glow`)
 

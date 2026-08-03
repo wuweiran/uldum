@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 
 namespace uldum::render {
@@ -18,7 +19,8 @@ static constexpr const char* TAG = "Effect";
 // picks the shape. Swapping a row here is a no-schema visual tweak.
 static u32 shape_for(EffectKind k) {
     switch (k) {
-        case EffectKind::Spark: return ParticleSystem::SHAPE_SPARK;    // streak ember
+        case EffectKind::Spark: return ParticleSystem::SHAPE_SPARK;    // gaussian orb
+        case EffectKind::Fire:  return ParticleSystem::SHAPE_SPARK;    // additive orb plume
         case EffectKind::Spray: return ParticleSystem::SHAPE_DROPLET;  // teardrop
         default:                return ParticleSystem::SHAPE_SPARK;
     }
@@ -26,6 +28,7 @@ static u32 shape_for(EffectKind k) {
 
 static EffectKind parse_kind(const std::string& s) {
     if (s == "spray") return EffectKind::Spray;
+    if (s == "fire")  return EffectKind::Fire;
     if (s == "glow")  return EffectKind::Glow;
     if (s == "spark" || s.empty()) return EffectKind::Spark;
     log::warn(TAG, "Unknown effect kind '{}', defaulting to spark", s);
@@ -72,6 +75,13 @@ void EffectRegistry::load_from_json(const std::string& path) {
         // particles spawn at this color and fade its alpha → 0 over their life
         // (built-in disappearance — no second color needed).
         if (val.contains("color")) def.color = read_color(val["color"], 1.0f);
+        // Optional end-of-life tint. When present, particles lerp color→color_end
+        // over their life (the hot→cool fire ramp). Any particle kind can use it,
+        // but it's the point of Fire.
+        if (val.contains("color_end")) {
+            def.color_end = read_color(val["color_end"], 1.0f);
+            def.has_color_end = true;
+        }
 
         if (def.kind == EffectKind::Glow) {
             auto& b = def.glow;
@@ -82,6 +92,43 @@ void EffectRegistry::load_from_json(const std::string& path) {
             b.fade_out  = val.value("fade_out", b.fade_out);
             b.tyndall   = val.value("tyndall", b.tyndall);
             b.intensity = val.value("intensity", b.intensity);
+        } else if (def.kind == EffectKind::Fire) {
+            // Fire owns its full schema: the map authors every field below —
+            // there are no silent per-field defaults (a warning fires if one is
+            // missing). Plume mechanics that DON'T define a fire's shape are
+            // engine-fixed and are NOT part of the schema (writing them in JSON
+            // does nothing): speed, gravity, and count (count is unused by a
+            // continuous emitter anyway).
+            auto& p = def.particle;
+            p.speed   = 55.0f;   // engine-fixed
+            p.gravity = 30.0f;   // engine-fixed
+            p.count   = 1;       // engine-fixed
+
+            auto req = [&](const char* key) {
+                if (!val.contains(key))
+                    log::warn(TAG, "fire effect '{}' missing required field '{}'", name, key);
+            };
+            req("life"); req("size"); req("emit_rate"); req("spread");
+            req("radius"); req("light"); req("color"); req("color_end");
+
+            p.life      = val.value("life", p.life);
+            p.size      = val.value("size", p.size);
+            p.emit_rate = val.value("emit_rate", p.emit_rate);
+            p.spread    = val.value("spread", p.spread);
+            p.radius    = val.value("radius", p.radius);
+
+            // Light lift auto-derives from the flame's height: an ember rises
+            // over its `life` under the fixed speed+gravity, so mean rise =
+            // speed·life + ½·gravity·life². The light sits at mid-flame (half
+            // that), so a taller (longer-lived) fire lifts its own light — no
+            // `height` knob needed.
+            f32 rise = p.speed * p.life + 0.5f * p.gravity * p.life * p.life;
+            def.light.height = 0.5f * rise;
+
+            // Light is a single scalar = brightness. Reach and flicker are
+            // engine-fixed, lift auto-derives (above) — a fire is always lit.
+            if (val.contains("light") && val["light"].is_number())
+                def.light.intensity = val["light"].get<f32>();
         } else {
             auto& p = def.particle;
             p.count     = val.value("count", p.count);
@@ -107,12 +154,13 @@ u32 EffectManager::emit(const EffectDef& def, glm::vec3 pos) {
     if (def.kind == EffectKind::Glow) {
         return m_glow ? m_glow->spawn(pos, def.glow, def.color) : 0;
     }
-    // Particle kinds (Spark / Spray). Burst-only here; continuous emission is
-    // handled by update() for emitters with emit_rate > 0.
+    // Particle kinds (Spark / Spray / Fire). Burst-only here; continuous
+    // emission is handled by update() for emitters with emit_rate > 0.
     const auto& p = def.particle;
     if (p.count > 0 && p.emit_rate <= 0 && m_particles) {
+        const glm::vec4* ce = def.has_color_end ? &def.color_end : nullptr;
         m_particles->burst(pos, p.count, def.color, p.speed, p.life,
-                           p.size, p.gravity, shape_for(def.kind), p.spread, p.radius);
+                           p.size, p.gravity, shape_for(def.kind), p.spread, p.radius, ce);
     }
     return 0;
 }
@@ -191,11 +239,14 @@ void EffectManager::destroy(u32 id) {
 
 void EffectManager::clear() {
     m_instances.clear();
+    m_fire_lights.clear();
     if (m_particles) m_particles->clear();
     if (m_glow) m_glow->clear();
 }
 
 void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
+    m_time += dt;
+    m_fire_lights.clear();
     for (auto& inst : m_instances) {
         if (!inst.alive) continue;
 
@@ -220,13 +271,34 @@ void EffectManager::update(f32 dt, UnitPosFn get_pos, void* ctx) {
         if (inst.def && inst.def->kind != EffectKind::Glow &&
             inst.def->particle.emit_rate > 0 && m_particles) {
             const auto& p = inst.def->particle;
+            const glm::vec4* ce = inst.def->has_color_end ? &inst.def->color_end : nullptr;
             inst.emit_accumulator += p.emit_rate * dt;
             u32 to_spawn = static_cast<u32>(inst.emit_accumulator);
             if (to_spawn > 0) {
                 inst.emit_accumulator -= static_cast<f32>(to_spawn);
                 m_particles->burst(inst.position, to_spawn, inst.def->color,
                                    p.speed, p.life, p.size, p.gravity,
-                                   shape_for(inst.def->kind), p.spread, p.radius);
+                                   shape_for(inst.def->kind), p.spread, p.radius, ce);
+            }
+        }
+
+        // Fire backend: emit one flickering point light per live fire instance.
+        // Two out-of-phase sines give an organic wobble without any RNG (and it
+        // stays deterministic, so it never desyncs — it's purely cosmetic anyway).
+        if (inst.def && inst.def->kind == EffectKind::Fire) {
+            const auto& L = inst.def->light;
+            if (L.radius > 0.0f) {
+                f32 ph = static_cast<f32>(inst.id) * 1.3f;
+                f32 wob = 0.6f * std::sin(m_time * 11.0f + ph)
+                        + 0.4f * std::sin(m_time * 19.0f + ph * 2.7f);
+                f32 bright = L.intensity * (1.0f + L.flicker * wob);
+                if (bright < 0.0f) bright = 0.0f;
+                FireLight fl;
+                fl.position  = inst.position + glm::vec3{0, 0, L.height};
+                fl.color     = glm::vec3{inst.def->color.r, inst.def->color.g, inst.def->color.b};
+                fl.radius    = L.radius;
+                fl.intensity = bright;
+                m_fire_lights.push_back(fl);
             }
         }
 

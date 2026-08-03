@@ -7,6 +7,7 @@
 #include <glm/vec4.hpp>
 
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,13 +26,15 @@ class GlowSystem;
 //
 //   • Spark — energetic bright bits (impacts, magic, soft auras). Particle.
 //   • Spray — liquid arc (blood OR water — color decides). Particle.
+//   • Fire  — sustained flame: additive orb plume that lerps hot→cool over
+//             life AND casts a flickering point light. Particle + light.
 //   • Glow  — engine-owned light visual (volumetric Tyndall shafts today;
 //             "hero glow" and other light effects in future). Glow backend.
 //
 // Engine, not authors, decides the particle shape per kind (see effect.cpp
 // shape_for()). One effect = exactly one kind; no composition.
 
-enum class EffectKind : u8 { Spark, Spray, Glow };
+enum class EffectKind : u8 { Spark, Spray, Fire, Glow };
 
 // Particle-backend params (Spark / Spray).
 struct ParticleParams {
@@ -60,12 +63,25 @@ struct GlowParams {
     f32 intensity = 1.0f;    // brightness of the beam and the light it casts
 };
 
+// Point light cast by a Fire effect. Sits above the emitter and flickers.
+// Reach/brightness are independent of the particle plume so a small flame can
+// still throw a wide warm pool. Radius 0 disables the light (pure visual fire).
+struct FireLightParams {
+    f32 radius    = 190.0f;  // light reach (world units)
+    f32 intensity = 1.4f;    // base brightness
+    f32 height    = 30.0f;   // lift above the emitter anchor (world units)
+    f32 flicker   = 0.3f;    // brightness wobble amplitude (0 = steady)
+};
+
 struct EffectDef {
     std::string    name;
     EffectKind     kind = EffectKind::Spark;
     glm::vec4      color{1, 0.8f, 0.2f, 1};   // tint; particles fade its alpha→0 over life
-    ParticleParams particle{};   // meaningful for Spark / Spray
+    glm::vec4      color_end{1, 0.2f, 0.05f, 1}; // end-of-life tint if has_color_end
+    bool           has_color_end = false;      // lerp color→color_end over particle life
+    ParticleParams particle{};   // meaningful for Spark / Spray / Fire
     GlowParams     glow{};       // meaningful for Glow
+    FireLightParams light{};     // meaningful for Fire
 };
 
 // ── Effect instance ───────────────────────────────────────────────────────
@@ -106,6 +122,16 @@ private:
 // ── Effect manager ────────────────────────────────────────────────────────
 // Owns live effect instances. Updated each frame by the renderer.
 
+// One point light emitted by a live Fire effect this frame. Rebuilt every
+// update(); the Renderer drains it right after the glow lights (same pattern),
+// so fire lights ride the engine's normal point-light path.
+struct FireLight {
+    glm::vec3 position{0};
+    glm::vec3 color{1};
+    f32       radius    = 0;
+    f32       intensity = 0;
+};
+
 class EffectManager {
 public:
     void set_particles(ParticleSystem* ps) { m_particles = ps; }
@@ -141,6 +167,10 @@ public:
                                     void* ctx);
     void update(f32 dt, UnitPosFn get_pos, void* ctx);
 
+    // Point lights from live Fire effects this frame (rebuilt each update()).
+    // The Renderer drains this the same way it does GlowSystem::glow_data().
+    std::span<const FireLight> fire_lights() const { return m_fire_lights; }
+
 private:
     // Spawn an effect's initial visual at `pos`: particle burst (Spark/Spray)
     // or a glow (Glow). The one place that maps EffectKind → backend. Returns
@@ -153,6 +183,8 @@ private:
     EffectRegistry*  m_registry  = nullptr;
     UnitPosResolver  m_resolve;
     std::vector<EffectInstance> m_instances;
+    std::vector<FireLight>      m_fire_lights;   // rebuilt each update()
+    f32                         m_time = 0;      // accumulated seconds (flicker phase)
     u32 m_next_id = 0;
 };
 

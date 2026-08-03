@@ -56,7 +56,7 @@ void ParticleSystem::shutdown() {
 
 // ── Burst ────────────────────────────────────────────────────────────────
 
-void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity, u32 texture_id, f32 spread, f32 radius) {
+void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 speed, f32 life, f32 size, f32 gravity, u32 texture_id, f32 spread, f32 radius, const glm::vec4* color_end) {
     ParticleEmitter e;
     e.position       = position;
     if (radius > 0)              e.shape = EmitterShape::Ring;
@@ -68,6 +68,7 @@ void ParticleSystem::burst(glm::vec3 position, u32 count, glm::vec4 color, f32 s
     e.particle_life  = life;
     e.particle_size  = size;
     e.color          = color;
+    if (color_end) { e.color_end = *color_end; e.has_color_end = true; }
     e.gravity        = gravity;
     e.burst_count    = count;
     e.active         = true;
@@ -82,6 +83,8 @@ void ParticleSystem::spawn_from_emitter(ParticleEmitter& emitter, u32 count) {
         Particle p;
         p.position    = emitter.position;
         p.color       = emitter.color;
+        p.color_end     = emitter.color_end;
+        p.has_color_end = emitter.has_color_end;
         p.life        = emitter.particle_life;
         p.max_life    = emitter.particle_life;
         // Per-particle size variation (0.6×–1.4×) so a burst reads as a mix of
@@ -156,6 +159,13 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
         // over the particle's life (life/max_life goes 1→0).
         f32 life_frac = (p.max_life > 0) ? (p.life / p.max_life) : 0.0f;
         glm::vec4 color = p.color;
+        if (p.has_color_end) {
+            // Hot→cool ramp: lerp rgb color→color_end as the particle ages
+            // (age 0 at birth → 1 at death). Fire uses this for the yellow→red
+            // fade; alpha still rides the life fade below.
+            f32 age = 1.0f - life_frac;
+            color = p.color + (p.color_end - p.color) * age;
+        }
         color.a *= life_frac;
 
         glm::vec3 right, up;

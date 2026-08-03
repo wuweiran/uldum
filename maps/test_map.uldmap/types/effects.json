@@ -72,5 +72,13 @@
         "count": 15, "speed": 200, "life": 0.32, "size": 9,
         "gravity": -100, "spread": 0.5,
         "color": { "r": 1.0, "g": 0.9, "b": 0.45, "a": 1.0 }
+    },
+    "campfire": {
+        "type": "fire",
+        "life": 0.8, "size": 15,
+        "emit_rate": 40, "spread": 0.18, "radius": 5,
+        "light": 1.4,
+        "color":     { "r": 1.0, "g": 0.6, "b": 0.2,  "a": 1.0 },
+        "color_end": { "r": 0.7, "g": 0.1, "b": 0.03, "a": 1.0 }
     }
 }

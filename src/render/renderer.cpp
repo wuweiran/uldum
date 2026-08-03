@@ -3763,6 +3763,15 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
         }
     }
 
+    // Fire effects also emit point lights (the one particle kind that lights the
+    // scene). EffectManager rebuilds this list each update() with flicker baked
+    // into intensity — drained here exactly like the glow lights above.
+    {
+        for (auto& fl : m_effect_manager.fire_lights()) {
+            add_point_light(fl.position, fl.color, fl.radius, fl.intensity);
+        }
+    }
+
     // Flush point lights to environment UBO and reset for next frame
     if (void* env_mapped = m_rhi->mapped_ptr(m_env_ubo_buffer)) {
         std::memcpy(env_mapped, &m_env_data, sizeof(m_env_data));

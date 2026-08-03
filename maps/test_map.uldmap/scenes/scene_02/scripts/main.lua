@@ -41,6 +41,13 @@ function main()
 
     Log("[Scene02] Heroes found — Footman and Paladin at center")
 
+    -- Campfire at the scene center (world origin). A persistent `fire` effect:
+    -- an additive orb plume that fades hot→cool and casts a flickering warm
+    -- point light on the heroes and ground. CreateEffect (not PlayEffect) so it
+    -- burns for the scene's lifetime; the scene swap clears the EffectManager,
+    -- so no manual cleanup. Its def lives in types/effects.json (host + client).
+    CreateEffect("campfire", 0, 0, 0)
+
     ---------------------------------------------------------------------------
     -- Splash AoE for the ship + airship. Bound to the PROJECTILE hit, not the
     -- damage event — that's what projectiles are for. The projectile carries
