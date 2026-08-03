@@ -7,18 +7,18 @@
     },
     "frost_hit": {
         "type": "spark",
-        "count": 30, "speed": 240, "life": 0.55, "size": 6,
+        "count": 30, "speed": 240, "life": 0.55, "size": 10,
         "gravity": -120, "spread": 0.35,
         "color": { "r": 0.85, "g": 0.97, "b": 1.0, "a": 1.0 }
     },
     "portal_rim": {
         "type": "spark",
-        "count": 1, "emit_rate": 14, "speed": 60, "life": 1.4, "size": 5, "gravity": 20,
+        "count": 1, "emit_rate": 14, "speed": 60, "life": 1.4, "size": 9, "gravity": 20,
         "color": { "r": 1.0, "g": 0.85, "b": 0.25, "a": 0.9 }
     },
     "hit_spark": {
         "type": "spark",
-        "count": 5, "speed": 80, "life": 0.3, "size": 4, "gravity": -100,
+        "count": 5, "speed": 80, "life": 0.3, "size": 6, "gravity": -100,
         "color": { "r": 1, "g": 0.7, "b": 0.2, "a": 1 }
     },
     "death_burst": {
@@ -40,7 +40,7 @@
     },
     "spell_cast": {
         "type": "spark",
-        "count": 15, "speed": 100, "life": 0.4, "size": 4, "gravity": -50,
+        "count": 15, "speed": 100, "life": 0.4, "size": 7, "gravity": -50,
         "color": { "r": 0.3, "g": 0.5, "b": 1, "a": 1 }
     },
     "consecration_burst": {
@@ -63,13 +63,13 @@
     },
     "shock_wave": {
         "type": "spark",
-        "count": 55, "speed": 300, "life": 0.4, "size": 7,
+        "count": 30, "speed": 300, "life": 0.4, "size": 12,
         "gravity": -80, "spread": 0.45,
         "color": { "r": 1.0, "g": 0.85, "b": 0.3, "a": 1.0 }
     },
     "shock_wave_hit": {
         "type": "spark",
-        "count": 26, "speed": 200, "life": 0.32, "size": 5,
+        "count": 15, "speed": 200, "life": 0.32, "size": 9,
         "gravity": -100, "spread": 0.5,
         "color": { "r": 1.0, "g": 0.9, "b": 0.45, "a": 1.0 }
     }

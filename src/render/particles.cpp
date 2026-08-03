@@ -170,7 +170,8 @@ void ParticleSystem::upload(glm::vec3 camera_right, glm::vec3 camera_up) {
             right = glm::vec3{half, 0, 0};
             up    = glm::vec3{0, half, 0};
         } else {
-            // Camera-facing billboard quad (droplet — spray / water)
+            // Camera-facing billboard quad (orb spark / droplet). Per-particle
+            // size variation is applied at spawn (spawn_from_emitter).
             f32 half = p.size * 0.5f;
             right = camera_right * half;
             up    = camera_up * half;

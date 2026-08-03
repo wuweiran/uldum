@@ -29,12 +29,15 @@ void main() {
         float d = sqrt(c.x * c.x * stretch * stretch + cy * cy) * 2.2;
         cov = max(0.0, 1.0 - d * d);
     } else {
-        // Spark — a SOLID filled circle. Fully opaque disc with a 1-texel
-        // antialiased rim so edges don't shimmer. Per-particle size variation is
-        // applied at spawn. Additive so overlapping sparks flare; time-fade comes
-        // from frag_color.a (life).
-        cov = 1.0 - smoothstep(0.92, 1.0, dist);
-        color *= 1.4;
+        // Spark — gaussian: tight bright core + soft halo, WINDOWED to 0 at
+        // the rim so it stays a clean round dot at any size (no fuzzy-square
+        // faceting). Per-particle size variation is applied at spawn. Additive so
+        // clustered sparks sum into a hot core; frag_color.a (life) fades it out.
+        float core = exp(-dist * dist * 11.0);
+        float halo = exp(-dist * dist * 5.0);
+        float mask = smoothstep(1.0, 0.5, dist);   // 0 at rim → kills the square
+        cov = clamp(core + halo * 0.35, 0.0, 1.0) * mask;
+        color *= 1.0 + core * 4.5;                  // hot emissive core
         additive = true;
     }
 
