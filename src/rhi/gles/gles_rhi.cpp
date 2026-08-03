@@ -623,7 +623,7 @@ unsigned int Rhi::clear_fbo() {
 }
 TextureFormat Rhi::depth_format()     const { return TextureFormat::D32_SFLOAT; }
 
-// ── Resource factories (TODO) ─────────────────────────────────────────
+// ── Resource factories ────────────────────────────────────────────────
 
 BufferHandle Rhi::create_buffer(const BufferDesc& desc) {
     if (desc.size == 0 || desc.usage == BufferUsage::None) {

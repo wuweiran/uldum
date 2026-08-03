@@ -108,6 +108,15 @@ struct WorldContext {
     // refreshes this each frame before the HUD update tick. Avoids a
     // direct `render::Camera` method call from `uldum_hud`.
     f32 camera_yaw_rad = 0.0f;
+
+    // Cursor position in PHYSICAL pixels — the same space the picker was
+    // initialised in (platform width/height) and that the input preset
+    // feeds pick_* from, NOT the logical dp the rest of this struct's
+    // overlay math uses. Refreshed by App each frame alongside
+    // camera_yaw_rad. Negative means "no cursor" (touch builds between
+    // taps) — hover resolves to nothing rather than picking at a stale point.
+    f32 cursor_x = -1.0f;
+    f32 cursor_y = -1.0f;
 };
 
 } // namespace uldum::hud

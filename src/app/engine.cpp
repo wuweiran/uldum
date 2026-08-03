@@ -1979,6 +1979,11 @@ void Engine::run() {
                 // Refresh the per-frame camera yaw the HUD's drag-cast
                 // uses to align finger displacement with screen axes.
                 m_hud_world_ctx.camera_yaw_rad = m_renderer.camera().yaw_rad();
+                // Cursor feed for the world overlay's hovered-unit lookup
+                // (VisibilityPolicy::Hovered). Physical px — same space the
+                // picker was initialised in.
+                m_hud_world_ctx.cursor_x = in.mouse_x;
+                m_hud_world_ctx.cursor_y = in.mouse_y;
                 m_hud.handle_hotkeys(in);
                 m_hud.joystick_update(in);
                 m_hud.action_bar_drag_update(in);

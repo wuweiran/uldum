@@ -116,9 +116,13 @@ void draw_entity_bars_impl(HudRenderer& r,
     const map::TerrainData* terrain = ctx.terrain;
 
     // Optional: current hovered unit (for Hovered visibility policy).
+    // Resolved through the pick_target callback so this stays free of
+    // input::Picker symbols; unset callback / no cursor => no hover.
     u32 hovered_id = UINT32_MAX;
-    // TODO: pick_target callback would need mouse coords injected; for
-    // now we skip hover until wired (was a no-op gate on ctx.picker too).
+    if (ctx.pick_target && ctx.cursor_x >= 0.0f && ctx.cursor_y >= 0.0f) {
+        auto hovered = ctx.pick_target(ctx.cursor_x, ctx.cursor_y);
+        if (simulation::is_non_null_handle(hovered)) hovered_id = hovered.id;
+    }
 
     // Optional: selected ids (for Selected visibility policy).
     const simulation::SelectionState* selection = ctx.selection;
