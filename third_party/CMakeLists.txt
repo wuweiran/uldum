@@ -82,7 +82,7 @@ FetchContent_MakeAvailable(sol2)
 #                     IMGUI_IMPL_OPENGL_ES3 — set by the dev console).
 message(STATUS "Fetching Dear ImGui...")
 FetchContent_Declare(imgui
-    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.8.tar.gz
+    URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9b.tar.gz
 )
 FetchContent_Populate(imgui)
 
@@ -192,7 +192,7 @@ endif()
 if(NOT ANDROID)
     message(STATUS "Fetching cpp-httplib...")
     FetchContent_Declare(httplib
-        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.49.0.tar.gz
+        URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.52.0.tar.gz
     )
     FetchContent_Populate(httplib)
     add_library(httplib INTERFACE)
