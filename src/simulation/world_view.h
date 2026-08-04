@@ -14,7 +14,7 @@
 namespace uldum::simulation {
 
 // Fog render-classification of a VIEW entity — a pure membership fact, NOT a
-// visibility query. "Visible" (WC3 gameplay truth) is is_unit_visible_to on the
+// visibility query. "Visible" (gameplay truth) is is_unit_visible_to on the
 // AUTH World; this is only "how does the view draw it":
 //   Live    — currently in live sight: render + animate normally.
 //   Memory  — a static shown from the player's memory (snapshot, out of live

@@ -22,7 +22,7 @@ namespace uldum::simulation {
 
 struct Transform {
     glm::vec3 position{0.0f};
-    f32       facing = 0.0f;   // radians around Z axis (up). 0 = facing +X (WC3 convention)
+    f32       facing = 0.0f;   // radians around Z axis (up). 0 = facing +X
     f32       scale  = 1.0f;
     // Previous tick state for render interpolation
     glm::vec3 prev_position{0.0f};
@@ -104,6 +104,11 @@ struct Selectable {
 };
 
 // ── Unit Components ────────────────────────────────────────────────────────
+
+// Upper bound on collision_radius, clamped at load. Bounds the acquisition
+// broad phase, which must grow its query by this much to avoid culling large
+// targets before the exact edge-to-edge test.
+constexpr f32 MAX_COLLISION_RADIUS = 256.0f;
 
 struct Movement {
     f32       speed     = 0;
@@ -296,7 +301,7 @@ enum class CastState : u8 {
 struct AbilitySet {
     std::vector<AbilityInstance> abilities;
     // All ability types live here: active, passive, auras, and applied abilities
-    // (what WC3 calls "buffs"). No separate component for any of these.
+    // (also known as "buffs"). No separate component for any of these.
 
     // Cast state machine — active while processing a Cast order
     CastState   cast_state    = CastState::None;
@@ -407,7 +412,7 @@ struct DestructableComp {
     std::string type_id;
     u8          variation = 0;
     u8          target_bit = 0;  // widget-target bit (STRUCTURE / TREE / DEBRIS) for attack validation
-    bool        selectable = true;  // left-clickable? false for trees (WC3: trees aren't selectable)
+    bool        selectable = true;  // left-clickable? false for trees
 };
 
 // ── Doodad Components ──────────────────────────────────────────────────────

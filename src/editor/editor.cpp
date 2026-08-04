@@ -606,7 +606,7 @@ struct BrushRange {
     u32 min_ix, max_ix, min_iy, max_iy;
 };
 
-// size = WC3 convention (1 = single vertex). Radius = size - 1.
+// size 1 = single vertex; radius = size - 1.
 static BrushRange compute_brush_range(const map::TerrainData& td, i32 cx, i32 cy, i32 size) {
     i32 r = size - 1;
     BrushRange br;
@@ -618,7 +618,7 @@ static BrushRange compute_brush_range(const map::TerrainData& td, i32 cx, i32 cy
 }
 
 // Falloff based on tile distance from center vertex (0 at edge, 1 at center)
-// size = WC3 convention (1 = single vertex). Radius = size - 1.
+// size 1 = single vertex; radius = size - 1.
 static f32 tile_falloff(i32 dx, i32 dy, i32 size) {
     i32 r = size - 1;
     if (r <= 0) return 1.0f;  // size 1: full strength at center
@@ -3033,7 +3033,7 @@ void Editor::draw_new_map_dialog() {
 
         ImGui::InputText("Id", m_newmap_id.data(), m_newmap_id.size());
 
-        // Default scene terrain size — WC3-style presets, width and height
+        // Default scene terrain size — presets, width and height
         // chosen independently.
         static const int kSizes[] = {32, 64, 96, 128, 160, 192, 256};
         auto size_combo = [&](const char* label, int& value) {

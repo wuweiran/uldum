@@ -98,7 +98,7 @@ struct World {
 
     // Terrain (not owned — set during init, on host AND client). Lets creation
     // (create_*/spawn_*_with_id) sample ground height so an entity's Z is set at
-    // build time, one place, for every caller. WC3-style: Z is derived locally
+    // build time, one place, for every caller. Z is derived locally
     // from terrain, never synced. Null → Z defaults to 0 (pre-terrain spawns).
     const map::TerrainData* terrain = nullptr;
 
@@ -156,7 +156,7 @@ struct World {
     //                         channeled abilities.
     //   on_ability_endcast  — channel_time > 0: fires when Channeling
     //                         ends, both natural completion AND
-    //                         interruption. Mirrors WC3 SPELL_ENDCAST.
+    //                         interruption.
     //   on_ability_effect   — the spell's effect resolves. For non-
     //                         channeled abilities, fires at Foreswing
     //                         end. For channeled abilities, fires

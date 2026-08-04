@@ -3,8 +3,8 @@
 ## Overview
 
 Maps define all gameplay logic via Lua 5.4 scripts. The engine provides a C++ API
-exposed to Lua through sol2 bindings. This is analogous to WC3's JASS system, but
-using Lua instead of a custom language.
+exposed to Lua through sol2 bindings. This fills the role a dedicated map-scripting
+language would, but using Lua instead of a custom language.
 
 ### Script Directory Structure
 
@@ -68,7 +68,7 @@ The first match wins. This lets a scene override a map-wide module if needed.
 
 ## Trigger System
 
-WC3-style triggers adapted to Lua. A trigger is a lifecycle scope that owns events,
+Event-condition-action triggers adapted to Lua. A trigger is a lifecycle scope that owns events,
 conditions, actions, timers, and custom data. When destroyed, everything it owns is
 cleaned up automatically.
 

@@ -30,7 +30,7 @@ public:
     // screen_to_world routes through the minimap and pick_widget/target/item
     // return invalid. This makes ground orders and ground-target abilities
     // work off the minimap through the exact same handle_orders path a world
-    // click uses (WC3 behavior). Rect is in PHYSICAL pixels — the same space
+    // click uses. Rect is in PHYSICAL pixels — the same space
     // as the pointer coords handed to the pick functions. A zero-width rect
     // (default) disables the proxy: nothing is ever "over the minimap".
     void set_minimap_rect(f32 x, f32 y, f32 w, f32 h) {

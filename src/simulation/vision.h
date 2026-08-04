@@ -20,7 +20,6 @@ enum class Visibility : u8 {
 };
 
 // Configurable fog of war mode (set from map manifest).
-// Matches WC3 World Editor options.
 enum class FogMode : u8 {
     None       = 0,   // no fog — everything visible to all players
     Explored   = 1,   // map starts pre-explored (terrain visible, dimmed) — enemies hidden outside vision

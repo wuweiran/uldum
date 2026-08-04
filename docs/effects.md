@@ -14,7 +14,7 @@ An effect's `type` names an orthogonal visual phenomenon (not a particle shape):
 | `spark` | particle | Energetic bright bits — impacts, magic, soft auras. |
 | `spray` | particle | A liquid arc — blood or water (the color decides which). |
 | `fire`  | particle + light | A sustained flame — an additive orb plume that lerps **hot→cool** over life and casts a **flickering point light**. The one particle kind that lights the scene. |
-| `glow`  | **glow system** | Engine-owned light visual: rising volumetric Tyndall light shafts today (WC3 level-up look); the home for future light effects like persistent "hero glow". No texture knob — the look is procedural. |
+| `glow`  | **glow system** | Engine-owned light visual: rising volumetric Tyndall light shafts today (the level-up look); the home for future light effects like persistent "hero glow". No texture knob — the look is procedural. |
 
 Particle **shape** (the soft orb / teardrop sprite) is an internal engine detail
 — authors never pick it. You pick the phenomenon; the engine maps it to a shape

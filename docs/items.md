@@ -44,11 +44,11 @@ New file, sibling of `abilities.json`. Loaded by the same type registry pass.
 | `icon` | yes | — | Slot icon (KTX2 path). |
 | `model` | yes | — | Ground model (glTF). |
 | `abilities` | yes | — | Ordered list of ability ids. First = fireable if non-passive. Ignored for `powerup`. |
-| `type` | no | `permanent` | WC3 item type — drives engine behavior. One of `permanent` / `charged` / `powerup` (see below). |
+| `type` | no | `permanent` | Item type — drives engine behavior. One of `permanent` / `charged` / `powerup` (see below). |
 | `initial_charges` | no | 0 | Starting charge count. Only meaningful on `type: charged` (warned + ignored otherwise). |
 | `initial_level` | no | 0 | Initial value of the `level` integer (engine renders the badge, never interprets). |
 
-### `type` — WC3 item type
+### `type` — item type
 
 The single field that decides how the engine treats the item:
 
@@ -62,7 +62,7 @@ The `EVENT_*_ITEM_*` and cast events still fire in every case, so a map can laye
 
 - Per-unit-type slot count via the existing `inventory_size` field in `units.json`. **Default 0** — non-hero unit types have no inventory unless they declare one.
 - Engine cap: **16 slots**. Loader clamps with a warning if a unit type asks for more.
-- One item entity per slot. **No multi-entity stacking.** Same-type pickups create separate items in separate slots. Maps wanting WC3-style merge implement it in `on_item_picked_up`.
+- One item entity per slot. **No multi-entity stacking.** Same-type pickups create separate items in separate slots. Maps wanting stack/merge behavior implement it in `on_item_picked_up`.
 - All slots are "active" — every ability contributed by an item in any slot is live in the carrier's `ability_set`. No equip / hold distinction.
 
 ## Lifecycle
@@ -172,7 +172,7 @@ These belong to later phases or to map-side Lua, not Phase 17:
 
 ## Future direction — engine-shipped Lua stdlib
 
-WC3 shipped `blizzard.j` — a Lua-equivalent script ahead of every map's own code, providing default behavior for armor, orb effects, item charges, default tooltips, and other "expected gameplay" patterns. Maps could rely on the defaults or override them per trigger.
+A common pattern in map-scripting engines is a stdlib script run ahead of every map's own code, providing default behavior for armor, orb effects, item charges, default tooltips, and other "expected gameplay" patterns. Maps can rely on the defaults or override them per trigger.
 
 Once 17 ships and we have ~3 patterns recurring across sample maps (item-charge consumption, drop-on-death, same-type merge, etc.), we extract them into a single optional `engine/scripts/stdlib.lua` that loads ahead of any map's `main.lua`. Maps that want the defaults get them for free; maps that want different behavior either don't `require()` the stdlib or override specific functions.
 

@@ -296,7 +296,7 @@ public:
     void           clear_focus_target();
 
     // ── Text tags ────────────────────────────────────────────────────────
-    // WC3-style floating / persistent text. Engine-side API — Lua
+    // Floating / persistent text. Engine-side API — Lua
     // A tag's handle IS its shared ECS entity id: the host allocates it
     // and ships it at creation; create_text_tag on the client is handed
     // the same id off the wire. Returns a null handle on failure.
@@ -664,7 +664,7 @@ public:
     // Fired when the held item commits to a drop on the ground. The
     // held source slot is implicit (the HUD already knows it); the
     // app uses this to issue a DropItem order with the explicit
-    // world-space drop point. WC3 model — held via right-click on a
+    // world-space drop point. Held via right-click on a
     // slot, dropped via left-click on the terrain.
     using InventoryDropFn = std::function<void(u32 item_id, i32 slot, glm::vec3 world_pos)>;
     void set_inventory_drop_fn(InventoryDropFn fn);
@@ -678,7 +678,7 @@ public:
 
     // Single-shot right-click pulse, called from the app when the
     // platform reports `mouse_right_pressed`. Used to lift items from
-    // an inventory slot (WC3 style) or cancel an existing hold.
+    // an inventory slot or cancel an existing hold.
     // Returns true when the click was claimed by the HUD so the
     // input preset can skip its smart-order branch on this frame.
     bool handle_right_click(f32 x, f32 y);

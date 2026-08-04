@@ -1599,11 +1599,11 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
                              cfg.style.map_bound_width, cfg.style.map_bound_color);
     }
 
-    // Current camera view — WC3-style axis-aligned rectangle. Unproject the 4
+    // Current camera view — axis-aligned rectangle. Unproject the 4
     // screen corners onto the ground plane (z = camera target's z), take their
-    // world-space AABB (WC3 draws a rect, not the SC-style perspective
-    // trapezoid), map to the minimap, outline it clipped to the map area — an
-    // edge that runs off the map simply doesn't draw (not clamped to the border).
+    // world-space AABB (a rect, not a perspective trapezoid), map to the
+    // minimap, outline it clipped to the map area — an edge that runs off
+    // the map simply doesn't draw (not clamped to the border).
     if (s.world_ctx->camera && cfg.style.camera_frame_width > 0.0f &&
         (cfg.style.camera_frame_color.rgba >> 24) != 0) {
         const auto& cam = *s.world_ctx->camera;
@@ -1629,7 +1629,7 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
             wx = o.x; wy = o.y;   // horizon ray — fall back to origin
         };
 
-        // World-space AABB of the 4 ground corners → WC3 rectangle. NOT clamped
+        // World-space AABB of the 4 ground corners → rectangle. NOT clamped
         // to terrain; the minimap outline is clipped instead so off-map edges
         // vanish rather than pinning to the border.
         const f32 ndc[4][2] = {{-1, 1}, {1, 1}, {1, -1}, {-1, -1}};

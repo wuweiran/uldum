@@ -260,8 +260,8 @@ bool Engine::init(const LaunchArgs& args) {
         });
     }
 
-    // Action-bar hotkey mode — "ability" (WC3 mnemonic) or "positional"
-    // (MOBA grid). Player-level preference, not per-map. HUD consults
+    // Action-bar hotkey mode — "ability" (mnemonic) or "positional"
+    // (grid). Player-level preference, not per-map. HUD consults
     // this every frame for both resolve + keyboard dispatch so a flip
     // takes effect immediately without a session restart.
     m_settings.subscribe("input.action_bar_hotkey_mode", [this](const settings::Value& v) {
@@ -821,7 +821,7 @@ bool Engine::start_session() {
             m_commands.submit(cmd);
         });
 
-    // Inventory drop — held-then-clicked-on-terrain (WC3 style). The
+    // Inventory drop — held-then-clicked-on-terrain. The
     // sim places the item at the explicit world pos passed in.
     m_hud.set_inventory_drop_fn([this](u32 item_id, i32 /*slot*/, glm::vec3 world_pos) {
         const auto& world = active_sim().world();
@@ -1728,7 +1728,7 @@ void Engine::run() {
             }
 
             if (ready_to_play) {
-                // WC3-style: compute initial vision + build the local view ONCE
+                // Compute initial vision + build the local view ONCE
                 // before the first Playing frame, so the fog grid and the
                 // LocalView projection are already populated when frame 1's
                 // selection prune (and the renderer/HUD) read them. Without
@@ -1862,7 +1862,7 @@ void Engine::run() {
                 //
                 // Also drop anything that left live vision: you can view a
                 // foreign unit/widget while it's in sight, but the moment it
-                // slips into fog the selection clears (WC3). Own units are
+                // slips into fog the selection clears. Own units are
                 // never fogged from their owner, so they stay selected.
                 {
                     const auto& world = active_world();
@@ -1892,7 +1892,7 @@ void Engine::run() {
                         if (own && own->id == me.id) return true;   // own troops: never fogged
                         // Foreign widget: keep selected only while LIVE-visible.
                         // A snapshot (fog memory) or hidden unit drops from the
-                        // selection the moment it slips into fog (WC3). Pure view
+                        // selection the moment it slips into fog. Pure view
                         // membership — no vision query (that's is_unit_visible_to
                         // on the AUTH World, a different, gameplay question).
                         return world.fog_mode(u.id) == simulation::FogVis::Live;
@@ -1949,7 +1949,7 @@ void Engine::run() {
                     if (!found_other) hud_pdown = false;
                 }
                 m_hud.handle_pointer(hud_px, hud_py, hud_pdown);
-                // Right-click pulse — drives the WC3-style item lift
+                // Right-click pulse — drives the item lift
                 // (right-click slot to grab; right-click again to
                 // cancel). Fires before the input preset so when the
                 // HUD claims the right-click (lift / cancel), the
@@ -2066,7 +2066,7 @@ void Engine::run() {
             // so it can sit far off-screen while the thumb stays by the ability
             // button. Pan the camera to keep it visible while aiming. Stateless:
             // on release this simply stops — RTS leaves the camera where it
-            // ended (WC3 free camera); the Action preset's hero-follow reclaims
+            // ended (free camera); the Action preset's hero-follow reclaims
             // it the next frame (its handle_camera_follow suspends while a
             // drag-cast is aiming, so it doesn't fight this pan). A script
             // camera lock always wins, so skip while locked.
@@ -2310,7 +2310,7 @@ void Engine::run() {
                         }
                     }
 
-                    // ── Target ping (WC3-style) ──────────────────────
+                    // ── Target ping ──────────────────────────────────
                     // Brief flashing ring at the target of a right-click
                     // attack / pickup. Scales from 1.4× to 0.9× of the
                     // target's selection radius and fades to zero alpha

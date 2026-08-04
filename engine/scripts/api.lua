@@ -5,7 +5,7 @@
 -- by the engine. The actual implementations are C++ functions bound via sol2.
 -- Runtime constants (events, priorities) are in constants.lua.
 --
--- Analogous to Warcraft III's "common.j".
+-- The canonical declaration file for the engine's global scripting API.
 --------------------------------------------------------------------------------
 
 -- NOTE: Function stubs below exist for documentation/IDE autocomplete only.
@@ -584,13 +584,13 @@ function SetProjectileDamage(projectile, damage) end
 function IsProjectileNormalAttack(projectile) end
 
 --- Projectile world X — the impact point when read inside a PROJECTILE_HIT
---- handler (splash / AoE centers here). X/Y only, WC3 convention (no Z).
+--- handler (splash / AoE centers here). X/Y only, by convention (no Z).
 ---@param projectile unit
 ---@return number
 function GetProjectileX(projectile) end
 
 --- Projectile world Y — the impact point when read inside a PROJECTILE_HIT
---- handler. X/Y only, WC3 convention (no Z).
+--- handler. X/Y only, by convention (no Z).
 ---@param projectile unit
 ---@return number
 function GetProjectileY(projectile) end
@@ -908,7 +908,7 @@ function StopAmbientLoop(handle, fade_out) end
 function SetVolume(channel, volume) end
 
 --------------------------------------------------------------------------------
--- Camera (WC3-aligned)
+-- Camera
 --------------------------------------------------------------------------------
 -- Target-based pose: a `CameraSetup` is (target_x, target_y, target_z) +
 -- distance + pitch + yaw (degrees on the Lua surface). The eye position
@@ -920,7 +920,7 @@ function SetVolume(channel, volume) end
 --   {Player, ...}     → a list
 --
 -- Distance is the eye-to-target world distance. Pitch / yaw are degrees
--- (matches WC3 World Editor convention).
+-- (matches the in-engine world editor convention).
 
 --- Look up a named CameraSetup authored in the current scene's
 --- `placements.bin` (cameras section). Returns nil if no setup with

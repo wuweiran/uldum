@@ -6,7 +6,7 @@
 // cast curve, reticle, AoE shapes, target-unit ring, future build-
 // placement ghost, debug gizmos) goes through here.
 //
-// Design follows the WC3 model: shape lives in the texture, geometry
+// Design: shape lives in the texture, geometry
 // is a thin substrate. Five primitive generators cover all current
 // indicators:
 //   • add_ring   — closed annular ribbon (selection, range, target-unit)

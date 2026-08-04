@@ -112,7 +112,7 @@ static f32       lerp_facing  (const simulation::Transform& t, f32 alpha) { retu
 // ── Terrain slope tilt helper ──────────────────────────────────────────────
 
 // Build a rotation that tilts an entity to match the terrain slope, clamped
-// per-axis (WC3 Max Pitch / Max Roll). `terrain_normal` is the Z-up surface
+// per-axis (Max Pitch / Max Roll). `terrain_normal` is the Z-up surface
 // normal; `facing` is the unit's yaw so the normal can be split into pitch
 // (tilt about the side axis — nose up/down along the slope) and roll (tilt
 // about the forward axis — lean L/R across it). Each is clamped to its cap
@@ -282,7 +282,7 @@ bool Renderer::init(rhi::Rhi& rhi) {
     // Create a placeholder box mesh for entities without a real model.
     // Defined directly in Z-up game coordinates: base at Z=0, top at Z=2.
     asset::MeshData placeholder;
-    const float s = 16.0f;   // half-width (~32 game units, WC3 collision size)
+    const float s = 16.0f;   // half-width (~32 game units, typical collision size)
     const float h = 64.0f;  // height
     // UVs map to the default texture (white with warm tint from texture)
     placeholder.vertices = {
@@ -553,7 +553,7 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
     AnimationInstance inst;
     inst.model = &model.data;
 
-    // Bind animation states to clips by name (like WC3 model animations),
+    // Bind animation states to clips by name (named model animations),
     // resolving each state's variant list (base + `_2`, `_3`, …).
     auto bind_state = [&](AnimState st, std::string_view base) {
         i32 active = -1;
@@ -3730,8 +3730,8 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             auto* lm = get_or_load_model(r->model_path);
             if (!lm) continue;
             f32 sc = t->scale;
-            // Size the click volume from the MODEL (AABB × instance scale),
-            // WC3-style. A constant floor keeps it clickable/pingable when the
+            // Size the click volume from the MODEL (AABB × instance scale).
+            // A constant floor keeps it clickable/pingable when the
             // model is tiny (the generic placeholder box) or flat — NOT
             // collision_radius, which can be 0 (destructables have no Movement)
             // and would collapse the circle to nothing. Real unit models exceed
@@ -3967,7 +3967,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             bool created = false;
             auto& anim = get_or_create_anim(id, *lm, play_birth, &created);
 
-            // Fog-memory freeze (WC3): a static shown from memory is NOT being
+            // Fog-memory freeze: a static shown from memory is NOT being
             // simulated in the view — hold its skeleton on the last-seen frame
             // instead of advancing it (a burning building freezes mid-burn, a
             // unit caught mid-swing holds that pose, a death-collapse holds its

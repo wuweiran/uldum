@@ -33,7 +33,7 @@ enum PathingFlag : u8 {
 struct TerrainData {
     u32 tiles_x   = 0;
     u32 tiles_y   = 0;
-    f32 tile_size  = 128.0f;   // world units per tile edge (WC3 scale)
+    f32 tile_size  = 128.0f;   // world units per tile edge
     f32 layer_height = 128.0f; // height per cliff level
 
     // Per-vertex data — indexed by iy * (tiles_x+1) + ix
@@ -52,7 +52,7 @@ struct TerrainData {
     f32 world_width()  const { return static_cast<f32>(tiles_x) * tile_size; }
     f32 world_height() const { return static_cast<f32>(tiles_y) * tile_size; }
 
-    // Convention: world (0, 0) is the MAP CENTER (WC3-style). Internal grid
+    // Convention: world (0, 0) is the MAP CENTER. Internal grid
     // indices stay 0-based; world position of grid vertex (0, 0) is the
     // south-west corner, which sits at (-W/2, -H/2).
     f32 origin_x() const { return -0.5f * world_width();  }
@@ -156,8 +156,8 @@ bool raycast_terrain(const TerrainData& td,
 // footprint extent (tiles) along that axis. Odd extent → snap to a
 // tile center (half-tile offset from origin); even extent → snap to a
 // tile corner (vertex). Used at placement time so a building's
-// pathing footprint lines up exactly with the tile grid — matches
-// WC3's "buildings sit on the tile grid" rule.
+// pathing footprint lines up exactly with the tile grid — buildings
+// sit on the tile grid.
 f32 snap_building_axis(const TerrainData& td, f32 x, f32 origin, u32 footprint_extent);
 inline f32 snap_building_x(const TerrainData& td, f32 x, u32 footprint_w) {
     return snap_building_axis(td, x, td.origin_x(), footprint_w);
@@ -168,7 +168,7 @@ inline f32 snap_building_y(const TerrainData& td, f32 y, u32 footprint_h) {
 
 // Snap to the nearest pathing-cell center (cell_size = tile_size / 4).
 // Used for destructables so trees / rocks land on cell positions —
-// finer-than-tile placement (WC3 doodads can sit at sub-tile spots)
+// finer-than-tile placement (doodads can sit at sub-tile spots)
 // while still landing on a deterministic, save-stable grid.
 f32 snap_cell_axis(const TerrainData& td, f32 x, f32 origin);
 inline f32 snap_cell_x(const TerrainData& td, f32 x) {

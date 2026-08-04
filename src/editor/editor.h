@@ -29,7 +29,7 @@ namespace uldum::editor {
 // semantics all change per mode. Hotkeys come from the menu.
 enum class EditMode : u8 {
     Terrain,   // existing brushes — heightmap / cliffs / ramps / paint
-    Object,    // unit / item / destructable placement — WC3's "Object" vocab
+    Object,    // unit / item / destructable placement
     Region,    // named scene zones — drag rect / circle, edit id, etc.
     // Camera, Trigger come later.
 };
@@ -57,9 +57,9 @@ enum class Tool : u8 {
 
 // Categories within Object mode. A dropdown in the right panel
 // switches between them; each pulls its type list from the active
-// map's type registries. WC3 splits Unit (with Item filter) and
-// Doodad (=Destructable) into separate palettes; we collapse all
-// three into one mode for a smaller editor.
+// map's type registries. Unit (with Item filter) and Destructable
+// are commonly separate palettes; we collapse all three into one
+// mode for a smaller editor.
 enum class ObjectCategory : u8 {
     Unit,
     Item,
@@ -153,7 +153,7 @@ private:
 
     // Tool state
     Tool  m_tool           = Tool::Raise;
-    i32   m_brush_size     = 2;     // WC3 convention: 1 = single vertex, 2 = 1-radius, etc.
+    i32   m_brush_size     = 2;     // 1 = single vertex, 2 = 1-radius, etc.
     f32   m_brush_amount   = 10.0f; // fixed amount per click (game units)
     f32   m_brush_speed    = 30.0f; // continuous mode: game units per second
     bool  m_continuous     = false; // continuous mode (hold to keep applying)

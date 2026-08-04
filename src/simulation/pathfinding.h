@@ -18,7 +18,7 @@ struct World;
 enum class MoveType : u8;
 
 // Pathing-cell subdivision: each terrain tile splits into SUBDIV×SUBDIV
-// pathing cells (WC3 convention: 4 → 16 cells per tile, 32-unit cells over
+// pathing cells (4 → 16 cells per tile, 32-unit cells over
 // 128-unit tiles). Static obstacles still snap to tile boundaries for now,
 // but A* and runtime blocking work at cell granularity so dynamic / sub-tile
 // obstacles can land natively.

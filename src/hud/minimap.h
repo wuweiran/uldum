@@ -30,7 +30,7 @@ struct MinimapStyle {
     Color enemy_dot_color = rgba(220, 70,  70,  255);   // red
     Color neutral_dot_color = rgba(200, 200, 100, 255); // yellow
     f32   dot_size        = 3.0f;                        // square side in pixels
-    // Current camera view — WC3-style white rectangle marking the ground the
+    // Current camera view — white rectangle marking the ground the
     // main view currently covers. Clipped to the map area (edges past the map
     // don't draw), not clamped.
     Color camera_frame_color = rgba(255, 255, 255, 220);

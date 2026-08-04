@@ -59,7 +59,7 @@ function setup_barracks_market()
     local SHOP_RADIUS = 400
     local PAGE_SIZE   = 3
 
-    -- Gold, owned entirely in Lua (WC3-style; the engine has no gold resource).
+    -- Gold, owned entirely in Lua (the engine has no gold resource).
     local gold = { [0] = 1000 }
     local function get_gold(pid) return gold[pid] or 0 end
 

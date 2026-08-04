@@ -88,12 +88,14 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
         if (val.contains("movement")) {
             auto& m = val["movement"];
             def.move_speed        = m.value("speed", 270.0f);
-            // WC3 turn_rate convention: 0.5 ≈ 360°/s. Convert to rad/s: rate * 4π.
+            // turn_rate is authored such that 0.5 ≈ 360°/s; convert to rad/s.
             def.turn_rate         = m.value("turn_rate", 0.6f) * 4.0f * glm::pi<f32>();
             def.collision_radius  = m.value("collision_radius", 32.0f);
+            if (def.collision_radius < 0.0f) def.collision_radius = 0.0f;
+            if (def.collision_radius > MAX_COLLISION_RADIUS) def.collision_radius = MAX_COLLISION_RADIUS;
             def.move_type         = parse_move_type(m.value("type", "ground"));
             def.fly_height        = m.value("fly_height", 0.0f);
-            // MoveType::None means "cannot move" (WC3 Movement Type = None) —
+            // MoveType::None means "cannot move" —
             // it's the authoritative immobility signal, independent of any
             // authored/default speed. Force speed to 0 so every speed-keyed
             // path (movement step, collision "static" test, command-bar gate)
@@ -128,7 +130,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             auto& c = val["weapon"];
             UnitTypeDef::WeaponDef w;
             w.damage           = c.value("damage", 10.0f);
-            w.attack_range     = c.value("range", 1.0f);
+            w.attack_range     = c.value("range", 128.0f);
             w.attack_cooldown  = c.value("cooldown", 1.0f);
             w.dmg_time         = c.value("dmg_time", 0.3f);
             w.backsw_time      = c.value("backsw_time", 0.3f);
@@ -161,9 +163,9 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.weapon = std::move(w);
         }
 
-        // Acquisition range is unit-level (WC3 semantics), authored as a
+        // Acquisition range is unit-level, authored as a
         // sibling of `weapon`. Only meaningful when a weapon exists.
-        def.acquire_range = val.value("acquire_range", 10.0f);
+        def.acquire_range = val.value("acquire_range", 600.0f);
 
         if (val.contains("animation")) {
             auto& a = val["animation"];
@@ -292,7 +294,7 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
             def.pathing_footprint_h = fp->at(1).get<u32>();
         }
 
-        // "Targeted As" — WC3's attack-handshake axis (how the destructable is
+        // "Targeted As" — the attack-handshake axis (how the destructable is
         // hit). "tree" makes it un-choppable by ordinary units (only
         // tree-targeting attacks hit it); "structure" reads as building-like;
         // omitted / anything else → debris (crate/barrel: ordinary units can
@@ -304,7 +306,7 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
         }
         def.target_bit = widget_target_from_targeted_as(def.targeted_as);
 
-        // Selectable by left-click? WC3: trees aren't selectable; crates/other
+        // Selectable by left-click? Trees aren't selectable; crates/other
         // destructables are. Default follows the "tree" tag; an explicit
         // "selectable" field overrides either way.
         def.selectable = !has_classification(def.targeted_as, "tree");

@@ -135,7 +135,7 @@ bool AbilityRegistry::load_from_doc(const asset::JsonDocument* doc, std::string_
         // Target-form metadata. At least one of `widget_kinds` (a
         // non-empty array of "unit" / "destructable" / "item") or
         // `accept_point` (true) must be set for the form to do anything
-        // useful; combining them yields the WC3-style hybrid cast.
+        // useful; combining them yields a hybrid cast.
         if (def.form == AbilityForm::Target) {
             if (val.contains("widget_kinds")) {
                 def.widget_kinds = parse_widget_kinds(val["widget_kinds"]);

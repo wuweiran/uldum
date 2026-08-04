@@ -58,7 +58,7 @@ Commands are:
 
 Input presets handle commands through keybindings (S = stop, H = hold, A =
 attack-move). Commands are not slotted — they appear in a fixed area of the
-UI (in WC3, the bottom row of the command card).
+UI (conventionally the bottom row of the command card).
 
 ### Ability Slots
 
@@ -134,7 +134,7 @@ struct SelectionState {
 };
 ```
 
-### Selection rules (WC3-style)
+### Selection rules (classic RTS)
 
 - **Click**: select single unit. Prefer highest priority within click radius.
 - **Box drag**: select all own units in box.
@@ -213,7 +213,7 @@ std::unique_ptr<InputPreset> create_preset(std::string_view name);
 
 ### RTS Preset
 
-Standard WC3-style controls. Preset `"rts"` in `manifest.json`.
+Standard RTS controls. Preset `"rts"` in `manifest.json`.
 
 | Aspect | Behavior |
 |---|---|

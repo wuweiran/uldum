@@ -13,7 +13,7 @@ namespace uldum::render {
 
 // Top-down game camera. Game coordinates: X=right, Y=forward, Z=up.
 //
-// Target-based, WC3 style: state is (target point, eye distance, pitch,
+// Target-based: state is (target point, eye distance, pitch,
 // yaw). The eye position is derived each frame as
 // `target - distance * forward_dir`. Scripts and the editor's free-fly
 // path both manipulate target / distance directly; the eye never gets
@@ -52,7 +52,7 @@ public:
     // Per-axis live setters used by scripted-camera commands. Pitch /
     // yaw / unaffected fields stay put.
     //
-    // Clamping convention (mirrors WC3): xy ground-plane gestures
+    // Clamping convention: xy ground-plane gestures
     // (`set_target_xy`, `pan`, `translate`, WASD in `update`) honor the
     // configured bounds; the full-vec3 `set_target` and whole-pose
     // `set_pose` bypass the clamp so scripts and cinematic CameraSetup
@@ -105,13 +105,13 @@ private:
     void recalculate();
     void clamp_target_xy_to_bounds();
 
-    // Game coordinates: X=right, Y=forward, Z=up. Defaults reproduce
-    // WC3's built-in game camera: target on the ground at world origin,
+    // Game coordinates: X=right, Y=forward, Z=up. Defaults are the
+    // classic RTS game camera: target on the ground at world origin,
     // 1650 unit eye-to-target distance, 56° angle-of-attack, FOV 40°.
     // Eye sits south at (0, -1650 cos56°, 1650 sin56°) ≈ (0, -923, 1370).
     glm::vec3 m_target{0.0f, 0.0f, 0.0f};
     f32 m_distance  = 1650.0f;
-    f32 m_pitch_rad = -0.977f;  // -56° (WC3 angle-of-attack 304°)
+    f32 m_pitch_rad = -0.977f;  // -56° (angle-of-attack 304° in 0..360 form)
     f32 m_yaw_rad   = 0.0f;     // 0 = looking +Y
 
     static constexpr f32 kMinDistance = 128.0f;
@@ -127,7 +127,7 @@ private:
 
     f32 m_move_speed   = 1280.0f;   // target-pan speed (units / sec)
     f32 m_zoom_speed   = 640.0f;    // Q/E distance step (units / sec)
-    f32 m_fov    = 0.698f;   // ~40° (WC3 game camera FOV)
+    f32 m_fov    = 0.698f;   // ~40° (classic RTS game camera FOV)
     f32 m_aspect = 16.0f / 9.0f;
     f32 m_near   = 16.0f;    // Far enough out to keep depth precision for the
                              // 2u water-over-terrain gap at max zoom.

@@ -18,8 +18,8 @@ struct Entity {
     bool operator==(const Entity&) const = default;
 };
 
-// `Handle` is the SAME id, named for its gameplay/scripting role. In the WC3
-// sense a "handle" is a script-addressable object; the typed gameplay ids
+// `Handle` is the SAME id, named for its gameplay/scripting role. A "handle"
+// is a script-addressable object; the typed gameplay ids
 // below (Unit / Item / Destructable) are handles because they get Lua
 // usertypes. Decoration (Doodad) is an Entity but NOT a handle — it has no
 // script binding — so it derives straight from Entity to say so in the type.
@@ -43,7 +43,7 @@ inline bool is_non_null_handle(Handle h) {
     return is_non_null_entity(h);
 }
 
-// Widget — the WC3 mid-tier: a Unit, Destructable, or Item. Common base so a
+// Widget — the mid-tier: a Unit, Destructable, or Item. Common base so a
 // targetable thing (order/combat target, picker return) has one type.
 struct Widget : Handle {};
 
@@ -51,8 +51,7 @@ struct Widget : Handle {};
 struct Unit         : Widget {};
 struct Destructable : Widget {};
 struct Item         : Widget {};
-// Projectile is a transient agent (missile / bolt): unlike WC3 — where missile
-// art has no script identity — ours is script-addressable (CreateProjectile,
+// Projectile is a transient agent (missile / bolt): script-addressable (CreateProjectile,
 // GetProjectile*, projectile_hit/destroyed events), so it's a real handle.
 struct Projectile   : Handle {};
 // TextTag is a floating/label text object: script-addressable (CreateTextTag
@@ -74,7 +73,7 @@ enum class Category : u8 { Unit, Destructable, Item, Doodad, Projectile };
 // Movement types — engine-defined preset because pathfinding needs them. This
 // is the PATHING axis ONLY (how a unit traverses terrain). It does NOT drive
 // attack targeting — that is the classification-based "Targeted As" axis below.
-// Mirrors WC3, where Movement Type (Foot/Fly/None) and Targeted As (ground/air/
+// Movement Type (Foot/Fly/None) and Targeted As (ground/air/
 // structure) are independent fields: a flyer is hit as "air" because it's
 // classified air, not because it flies.
 enum class MoveType : u8 { Ground, Fly, Amphibious, Water, None };
@@ -102,7 +101,7 @@ inline const char* move_type_name(MoveType t) {
 }
 
 // ── Attack targeting ("Targeted As") ──────────────────────────────────────
-// The WC3-style attack handshake, fully DECOUPLED from MoveType. An attack
+// The attack handshake, fully DECOUPLED from MoveType. An attack
 // carries a target_mask (which classes it may hit); a target presents its own
 // class bit(s). A ground melee attack can't hit a flyer because the flyer
 // presents AIR and the attack's mask lacks it — nothing to do with pathing.
@@ -128,7 +127,7 @@ inline constexpr u8 TARGET_MASK_SURFACE = TARGET_BIT_GROUND;
 inline constexpr u8 TARGET_MASK_DEFAULT_WIDGETS = TARGET_BIT_STRUCTURE | TARGET_BIT_DEBRIS;
 
 // Derive a destructable's widget target bit from its "targeted_as" flags —
-// WC3's "Targeted As" axis (how a thing is hit). "tree" is choppable only by
+// the "Targeted As" axis (how a thing is hit). "tree" is choppable only by
 // tree-targeting attacks; "structure" reads as a building; anything else
 // (incl. omitted) defaults to DEBRIS (crate/barrel: smashable).
 inline u8 widget_target_from_targeted_as(const std::vector<std::string>& flags) {
@@ -141,7 +140,7 @@ inline u8 widget_target_from_targeted_as(const std::vector<std::string>& flags) 
 
 // Build a target mask from a JSON "targets" string array. Empty → surface +
 // default widgets. "ground"/"water"/"amphibious" all present as GROUND for
-// targeting (WC3 targets naval as ground); only "air" opts into anti-air.
+// targeting (naval targets as ground); only "air" opts into anti-air.
 inline u8 parse_target_mask(const std::vector<std::string>& targets) {
     if (targets.empty()) return TARGET_MASK_SURFACE | TARGET_MASK_DEFAULT_WIDGETS;
     u8 mask = 0;

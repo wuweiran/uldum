@@ -63,7 +63,7 @@ HUD content is built from two categories of node. The split is load-bearing; eve
 
 Criterion: *"is this widget's behavior the same across every game that uses this preset?"* → yes → engine composite; no → build with atoms.
 
-> We call them **nodes** (not "widgets") — `widget` is a WC3 term and we're not trying to re-adopt it. `Panel`, `Label`, `Button`, `Image`, `Bar` are all node types; "tree of nodes" is the HUD's data model.
+> We call them **nodes** (not "widgets") — `Widget` is already the gameplay-model handle type and we're not overloading it here. `Panel`, `Label`, `Button`, `Image`, `Bar` are all node types; "tree of nodes" is the HUD's data model.
 
 ### Style vs content — static vs dynamic
 
@@ -190,7 +190,7 @@ This applies to every visual style field across every atom and composite. A few 
 
 ### Lua API conventions
 
-HUD Lua follows the same flat WC3-style naming as the rest of the engine's scripting API. No OOP-style `Object:Method()` — every function is a global with a verb-noun-ish name, first argument is the subject when relevant.
+HUD Lua follows the same flat global-function naming as the rest of the engine's scripting API. No OOP-style `Object:Method()` — every function is a global with a verb-noun-ish name, first argument is the subject when relevant.
 
 - Node handles are values returned by `GetNode` / `CreateNode` / composite accessors; pass them as arguments.
 - Composites are singletons; their APIs are named-prefixed (`ActionBarSetSlot`, `MinimapSetVisible`).

@@ -255,7 +255,7 @@ void FileExplorer::draw_inspector(const FileExplorerContext& ctx) {
                 ImGui::TextDisabled("drag = orbit,  wheel = zoom  (dist %.2f)",
                                     ctx.renderer->viewer_distance());
 
-                // Animation clip switcher (WC3-style: prev / name / next). The
+                // Animation clip switcher (prev / name / next). The
                 // name sits in a fixed-width centered slot so the right arrow
                 // doesn't shift as clip names change length.
                 const auto& clips = ctx.renderer->viewer_clips();

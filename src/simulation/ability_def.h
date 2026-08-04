@@ -17,7 +17,7 @@ namespace uldum::simulation {
 // not a form: any form can declare a `channel_time` on its level data
 // to make the cast sustained.
 //
-// "Target" subsumes WC3's TargetUnit / TargetPoint / TargetDestructable /
+// "Target" subsumes the TargetUnit / TargetPoint / TargetDestructable /
 // TargetItem split. The single form covers all "cast on a thing in the
 // world" shapes; `widget_kinds` + `accept_point` on AbilityDef pick
 // which kinds the cursor accepts.
@@ -161,7 +161,7 @@ struct AbilityDef {
     bool accept_point = false;
 
     // Build-form metadata. The structure type ids this ability offers in
-    // its build sub-panel (WC3's "Structures Built"). Ignored when `form`
+    // its build sub-panel ("Structures Built"). Ignored when `form`
     // isn't Build. A unit may carry several Build abilities (e.g. basic vs.
     // advanced) — each surfaces its own list.
     std::vector<std::string> builds;

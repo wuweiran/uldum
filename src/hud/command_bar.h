@@ -71,7 +71,7 @@ struct CommandBarStyle {
     f32   armed_border_width = 3.0f;
 };
 
-// Style families. Classic = the WC3-ish rectangular grid. Round = circular
+// Style families. Classic = the rectangular grid. Round = circular
 // buttons (one big primary + smaller satellites work well for an Action /
 // MOBA layout, mobile or otherwise).
 enum class CommandBarStyleId : u8 {

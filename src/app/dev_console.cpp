@@ -942,7 +942,7 @@ void DevConsole::draw_settings_panel() {
     ImGui::TextUnformatted("Input");
     ImGui::Separator();
     {
-        // Action-bar hotkey mode: ability (WC3 mnemonic) vs positional (grid).
+        // Action-bar hotkey mode: ability (mnemonic) vs positional (grid).
         std::string mode = "ability";
         settings::Value mode_v = m_settings->get("input.action_bar_hotkey_mode");
         if (auto* str = std::get_if<std::string>(&mode_v)) mode = *str;

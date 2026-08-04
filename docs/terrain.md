@@ -2,11 +2,11 @@
 
 ## Overview
 
-Tile-based heightmap terrain inspired by Warcraft III. The terrain is the foundational surface for all gameplay — units walk on it, buildings sit on it, the camera looks at it. The engine provides heightmap sculpting, cliff layers, texture painting, water, and per-vertex pathing.
+Tile-based heightmap terrain in the classic RTS style. The terrain is the foundational surface for all gameplay — units walk on it, buildings sit on it, the camera looks at it. The engine provides heightmap sculpting, cliff layers, texture painting, water, and per-vertex pathing.
 
 ## Data Model
 
-Terrain is a regular grid of tiles at WC3 scale (1 tile = 128 game units). All data is per-vertex.
+Terrain is a regular grid of tiles at the engine's standard scale (1 tile = 128 game units). All data is per-vertex.
 
 ```
 TerrainData

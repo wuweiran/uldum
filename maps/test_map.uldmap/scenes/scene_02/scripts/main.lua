@@ -3,7 +3,7 @@
 -- Creeps spawn from edges and attack toward two heroes at the center.
 -- Footman has Cleave (30% AoE on attack), Paladin has Consecration (periodic
 -- AoE damage) and Holy Light (auto-heals Footman when HP is low).
--- Coordinate scale: WC3-style (1 tile = 128 game units, map = 8192x8192,
+-- Coordinate scale: engine standard (1 tile = 128 game units, map = 8192x8192,
 -- world origin at map center so the 64×64 grid extends (-4096..+4096) on each axis).
 --------------------------------------------------------------------------------
 
@@ -55,7 +55,7 @@ function main()
     -- on impact even if the target died in flight (a corpse still triggers HIT,
     -- whereas the damage event is suppressed once HP hits 0). Blast centers on
     -- the projectile's impact point (GetProjectileX/Y). Friendly fire ON — no
-    -- enemy filter, so allies caught in the blast take damage too (WC3 siege
+    -- enemy filter, so allies caught in the blast take damage too (siege
     -- feel). A burst VFX marks the impact. Found by type id (units preplaced).
     ---------------------------------------------------------------------------
     local function register_splash(attacker, radius, pct)
@@ -74,7 +74,7 @@ function main()
             local dmg = GetProjectileDamage(proj) * pct
             if dmg <= 0 then return end
 
-            -- Ground-only splash (WC3 artillery): the blast is a shockwave on
+            -- Ground-only splash (artillery): the blast is a shockwave on
             -- the ground, so it only forms when the shell lands on a ground
             -- unit, and it only harms ground units. A hit on an air/water unit
             -- deals its direct damage but no AoE.

@@ -116,7 +116,7 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 | `walk` | Moving — Move order, AttackMove, or chasing an attack target | Movement or combat chase | Yes |
 | `attack` | Attacking — plays during WindUp + Backswing phases, scaled to `attack_cooldown` | Combat system | No (restarts each swing) |
 | `spell` | Casting an ability — plays during CastPoint + Backswing phases | Ability cast system | No |
-| `hit` | Hit by a normal attack while otherwise idle — brief recoil/flinch (WC3 "Stand Hit") | Idle widgets, normal-attack hits only | No (one-shot) |
+| `hit` | Hit by a normal attack while otherwise idle — brief recoil/flinch (a "stand hit") | Idle widgets, normal-attack hits only | No (one-shot) |
 | `death` | Unit has died | Death system | No (holds last frame) |
 
 ### Behavior
@@ -127,11 +127,11 @@ Clips are glTF `animations[]` entries. The engine matches clips to gameplay stat
 - **Attack timing**: The `attack` clip is uniformly scaled to fit `attack_cooldown`. The `animation.dmg_pt` fraction (from `units.json`) defines where the visual hit lands in the clip. The engine uses `combat.dmg_time` and `combat.backsw_time` (seconds) for gameplay timing
 - **Spell timing**: The `spell` clip uses two-phase scaling. The `animation.cast_pt` fraction defines where the visual cast fires. The ability's `cast_time` and `backsw_time` (seconds) control gameplay timing
 - **Hit flinch**: `hit` plays only on an otherwise-idle widget struck by a **normal attack** — spells, damage-over-time and splash don't flinch. Walking, attacking, casting and dying always outrank it, so a busy unit never flinches (no jitter, no throttle). Authoring it is optional; with no `hit` clip the widget simply doesn't recoil. Best for destructibles (crate/tree wobble) and idle units. Plays once for the clip's own length, then returns to `idle` — a new hit retriggers it.
-- **Flying units**: There is **no separate `fly` state** (this matches WC3). A flyer is a gameplay/movement property of the unit, not an animation tag — the model just plays `walk` while it moves through the air, so author the **wing-flap loop as the `walk` clip** (and a hover/glide as `idle`). The other clips (`attack`, `spell`, `death`) work the same as for ground units.
+- **Flying units**: There is **no separate `fly` state**. A flyer is a gameplay/movement property of the unit, not an animation tag — the model just plays `walk` while it moves through the air, so author the **wing-flap loop as the `walk` clip** (and a hover/glide as `idle`). The other clips (`attack`, `spell`, `death`) work the same as for ground units.
 
 ### Random variations
 
-Any state can have alternate clips that the engine picks between at random — WC3's "Stand / Stand - 2" and "Attack / Attack - 2 / Attack - 3". Name them with the base clip plus a numeric suffix:
+Any state can have alternate clips that the engine picks between at random — e.g. two idle stands, or three attack swings. Name them with the base clip plus a numeric suffix:
 
 | Base | Variants | Result |
 |------|----------|--------|
@@ -144,7 +144,7 @@ Rules:
 - **The bare name still works.** A model with just `attack` behaves exactly as before — variation is opt-in, no existing model needs changing.
 - **Re-rolled per play**: non-looping states (`attack`, `spell`) pick on each entry (every swing/cast); looping states (`idle`, `walk`) re-roll each time the clip loops, so a standing unit cycles through its idle variants over time.
 - **Cosmetic and client-local** — the choice is never synced, so host and clients may show different variants of the same swing. This never affects gameplay: the authoritative damage/cast timing (`combat.dmg_time`, etc.) is independent of which clip plays.
-- **Shared timing across variants.** All variants of a state reuse that state's single `dmg_pt` / `cast_pt` fraction (like WC3's one damage point per weapon). Author each variant's contact frame at roughly the same normalized time so the hit stays aligned; a variant whose contact lands elsewhere only looks slightly off, it never mistimes damage.
+- **Shared timing across variants.** All variants of a state reuse that state's single `dmg_pt` / `cast_pt` fraction (one damage point per weapon). Author each variant's contact frame at roughly the same normalized time so the hit stays aligned; a variant whose contact lands elsewhere only looks slightly off, it never mistimes damage.
 
 ### Item animations
 
@@ -156,8 +156,8 @@ Items are widgets too, so they share the same name-matched clip system — but o
 | `birth` | Plays once when the item is dropped / created on the ground (materialize / drop-in) | No |
 | `death` | Plays once when the item is **destroyed on the ground** — a consumed `powerup`, a `charged` item spending its last charge on the ground, or Lua `RemoveItem`. Then the item is removed. | No (holds last frame) |
 
-- **`idle` is the WC3 "Stand" loop** — spinning powerups/runes, bobbing potions, a glowing tome. Author it as a looping transform baked into the model. This is the whole of item liveliness; most items need only `idle`.
-- **Pickup into an inventory is instant** — no `death` clip plays when a unit *collects* an item (matches WC3). `death` is for an item leaving the world *on the ground*, not for one going into a slot.
+- **`idle` is the item's "stand" loop** — spinning powerups/runes, bobbing potions, a glowing tome. Author it as a looping transform baked into the model. This is the whole of item liveliness; most items need only `idle`.
+- **Pickup into an inventory is instant** — no `death` clip plays when a unit *collects* an item. `death` is for an item leaving the world *on the ground*, not for one going into a slot.
 - **Preplaced items** (authored in the map) come up already in `idle` — they do **not** replay `birth` on map load. Only items created/dropped at runtime birth.
 - All three are **optional**: with no clip for a state the bind pose is used (a static potion model just sits there — no crash, no motion).
 - Items are not skeletal fighters — `walk` / `attack` / `spell` / `hit` clips on an item model are ignored.
@@ -224,7 +224,7 @@ The engine searches for the model relative to the map's asset directory first, t
 
 ## Scale
 
-All units use WC3-style scale:
+All units use the engine's standard scale:
 
 | Measurement | Typical Value |
 |------------|---------------|

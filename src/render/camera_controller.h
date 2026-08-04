@@ -58,7 +58,7 @@ public:
     // Adjust yaw (rotation, radians). Same: used by setup-apply today.
     void set_source_yaw_rad(f32 yaw_rad, f32 duration);
 
-    // Apply a whole CameraSetup (the WC3 cinematic primitive). Starts
+    // Apply a whole CameraSetup (the cinematic primitive). Starts
     // an independent tween on every axis using the same duration.
     // duration == 0 snaps; > 0 interpolates.
     void apply_setup(glm::vec3 target, f32 distance,

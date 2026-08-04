@@ -1,22 +1,22 @@
 # Uldum Engine — Gameplay Object Model
 
 This document defines the game object hierarchy, component design, and gameplay systems.
-Inspired by Warcraft III's object model, implemented via ECS internally.
+A classic RTS object model, implemented via ECS internally.
 
 See `docs/map-system.md` for the full engine vs map boundary definition.
 
 ### Key Terminology
 
-- **Ability**: anything attached to a unit that has effects — active (cast by player), passive (always on), or applied (given to a unit by another ability, with optional duration and auto-remove). In WC3 terms, "buffs" and "auras" are both just abilities.
+- **Ability**: anything attached to a unit that has effects — active (cast by player), passive (always on), or applied (given to a unit by another ability, with optional duration and auto-remove). There is no separate buff or aura concept — both are just abilities.
 - **State**: a depletable/regenerating resource (HP, mana, energy). Has `current`, `max`, `regen`. HP is engine-built-in; others are map-defined.
 - **Attribute**: a single-value modifier (strength, agility, intelligence). Does not deplete. All map-defined.
-- **Classification**: a string-based flag on a unit, all map-defined. Drives two things: ability/trigger filters (`"hero"`, `"mechanical"`, `"undead"`, …) and — since targeting was decoupled from `MoveType` — the WC3-style **"Targeted As"** axis for attacks (`"air"` → hit as air, else ground; `"structure"` → also hit as structure). A flyer is targeted as air because it's classified `"air"`, not because it flies.
+- **Classification**: a string-based flag on a unit, all map-defined. Drives two things: ability/trigger filters (`"hero"`, `"mechanical"`, `"undead"`, …) and — since targeting was decoupled from `MoveType` — the **"Targeted As"** axis for attacks (`"air"` → hit as air, else ground; `"structure"` → also hit as structure). A flyer is targeted as air because it's classified `"air"`, not because it flies.
 
 ## 1. Object Hierarchy
 
-### WC3 Reference
+### Reference Model
 
-In WC3's JASS type system, the hierarchy is:
+The classic RTS scripting hierarchy Uldum's model derives from:
 
 ```
 handle
@@ -29,7 +29,7 @@ handle
     └── item            (ground items — potions, weapons)
 ```
 
-Key points from WC3:
+Key points of that model:
 - **Building IS a Unit** — same type, just has the STRUCTURE flag
 - **Hero IS a Unit** — same type, just has the HERO flag plus level/XP/inventory
 - **Item is NOT a Destructable** — they are siblings under Widget
@@ -39,7 +39,7 @@ Key points from WC3:
 
 ### Uldum Hierarchy
 
-The handle *types* mirror WC3's inheritance (`Widget : Handle`, `Unit/Destructable/Item : Widget`),
+The handle *types* mirror that inheritance (`Widget : Handle`, `Unit/Destructable/Item : Widget`),
 but *behavior* is the component set each type receives at creation. The tree shows that layering.
 
 ```
@@ -78,7 +78,7 @@ Handle (monotonic u32 id — script-addressable)
 
 Doodad is NOT a Handle — a bare Entity (`struct Doodad : Entity`), the one type
 with no script binding. Pure decoration, addressable only by its internal ECS id
-(WC3 has no `doodad` handle type):
+(there is no `doodad` handle type):
 
 ```
 Doodad (Transform + Renderable only — NOT a Handle, no gameplay)
@@ -98,7 +98,7 @@ are transient visual objects with simple movement logic.
 ### Typed Handles (public API)
 
 The public API (C++ game code and Lua scripts) works with **typed handles**. This follows
-WC3's JASS model where `unit`, `destructable`, `item` are distinct types that internally
+the reference model, where `unit`, `destructable`, `item` are distinct types that internally
 hold a handle reference.
 
 ```
@@ -129,7 +129,7 @@ old handle therefore resolves to no entity rather than aliasing a new one.
 // Base handle — shared by all game object types
 struct Handle { u32 id; };
 
-// Widget — WC3 mid-tier: anything with position + health that can be targeted /
+// Widget — mid-tier: anything with position + health that can be targeted /
 // damaged / selected. The common base for the three targetable handle types.
 struct Widget        : Handle {};
 
@@ -151,7 +151,7 @@ Every game object in the world has these components (stored internally, indexed 
 ```
 Transform {
     vec3  position
-    f32   facing        // rotation around Z axis (up), in radians. 0 = facing +X (WC3 convention)
+    f32   facing        // rotation around Z axis (up), in radians. 0 = facing +X
     f32   scale         // uniform scale, default 1.0
 }
 
@@ -193,14 +193,14 @@ Selectable {
 ```
 
 **Selection / click hit-testing.** A unit is picked by ray-vs-vertical-cylinder
-(radius × height), WC3-style — not by raycasting mesh triangles. The cylinder is
+(radius × height) — not by raycasting mesh triangles. The cylinder is
 **auto-sized from the model's bounding box** at load (radius = footprint
 half-width, height = full model height, both × instance scale), so clicking any
 part of the silhouette — a unit's head, an airship's balloon — selects it with
 zero authoring.
 
-The `selection` block in `units.json` is an optional **override** (the WC3
-"clickHelper"):
+The `selection` block in `units.json` is an optional **override** (a hand-authored
+click helper):
 
 - **Omit `radius`** → auto-size the whole cylinder from the model. Best default.
 - **Author `radius`** → use the JSON cylinder (`height` defaults to `2 × radius`
@@ -228,8 +228,8 @@ damage handler reads them from the attacker/target and applies its own formula.
 Player { u32 id }
 
 Movement {
-    f32       speed            // game units per second (WC3 scale: footman ~270)
-    f32       turn_rate        // WC3/DotA 2 convention, converted to rad/s at load (× 4π)
+    f32       speed            // game units per second (engine scale: a basic melee unit ~270)
+    f32       turn_rate        // authored in turns-per-second-style units, converted to rad/s at load (× 4π)
     f32       collision_radius // per-unit collision size (game units)
     MoveType  type             // ground, air, amphibious
     u8        cliff_level      // current cliff level the unit is on
@@ -261,7 +261,7 @@ OrderQueue {
 AbilitySet {
     std::vector<AbilityInstance>  abilities
     // All ability types live here: active, passive, auras, and applied abilities
-    // (what WC3 calls "buffs"). No separate component for any of these.
+    // (commonly called "buffs"). No separate component for any of these.
 }
 
 UnitClassificationComp {
@@ -280,8 +280,8 @@ AttributeBlock {
 Note: `MoveType` (`ground` / `fly` / `amphibious` / `water` / `none`) is one of
 the few engine-defined enums because pathfinding needs to query terrain
 differently for each. It is the **pathing axis only** — attack targeting is
-driven by classification flags (`"air"` / `"structure"`), not `MoveType`, exactly
-like WC3 separates "Movement Type" from "Targeted As".
+driven by classification flags (`"air"` / `"structure"`), not `MoveType` — "Movement
+Type" and "Targeted As" are deliberately separate axes.
 
 ### Inventory (any unit with inventory_size > 0)
 
@@ -657,9 +657,9 @@ AbilityInstance {
 - **attack_modifier**: hooks into CombatSystem; on each attack hit, apply bonus damage + on_hit_buff
 - **trigger bindings**: registered with the event system; fire Lua callback when event occurs
 
-## 6. Applied Abilities (WC3 "Buffs")
+## 6. Applied Abilities ("Buffs")
 
-In WC3 terms, a "buff" or "debuff" is an ability applied to a unit by another
+A "buff" or "debuff" is an ability applied to a unit by another
 ability. In Uldum, these are just ability instances in the target's AbilitySet —
 not a separate system. An applied ability:
 - Has a duration (auto-removed when expired, or permanent if duration = 0)
@@ -826,8 +826,8 @@ Movement speed is 0 (immobile).
 (`units.json` with a footprint) are authored in **terrain tiles**
 (128 game units each). Destructable footprints
 (`destructables.json`) are authored in **pathing cells** (32 game
-units = ¼ tile). This mirrors WC3's split between tile-aligned
-buildings and finer-grained doodads, and lets a tree block a 2×2-cell
+units = ¼ tile). This split keeps buildings tile-aligned while giving
+doodads finer granularity, and lets a tree block a 2×2-cell
 patch instead of a whole tile. Internally both end up on the same
 cell grid; the engine multiplies tile counts by `PATHING_SUBDIV = 4`
 on emit.
@@ -1172,7 +1172,7 @@ Detection that pierces invisibility within a radius. Folded into the vision subs
 
 ### HUD
 
-Flagged units get a status-icon strip near the HP bar (same place WC3's buff icons live). Icon set ships with the engine; map can override the icon textures via hud.json.
+Flagged units get a status-icon strip near the HP bar, the conventional place for buff icons. Icon set ships with the engine; map can override the icon textures via hud.json.
 
 ### Lua API
 
@@ -1218,7 +1218,7 @@ Flagged units get a status-icon strip near the HP bar (same place WC3's buff ico
 - Shared state ids carry by **percentage**. Mana at 60% → mana at 60% of new max if the new type also has mana.
 - Old-only ids → gone. New-only ids → start at 100% of new max.
 - Regen rates come from the new type's per-state config.
-- Round-trip loss: morphing druid (mana 60%) → bear (no mana) → druid resets mana to 100%. State percentages are not remembered across a type boundary. Same WC3 behavior; pin it rather than try to remember dormant snapshots.
+- Round-trip loss: morphing druid (mana 60%) → bear (no mana) → druid resets mana to 100%. State percentages are not remembered across a type boundary. This is intentional; pin it rather than try to remember dormant snapshots.
 
 ### Cleared
 

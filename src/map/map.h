@@ -86,7 +86,7 @@ struct Tileset {
 // Environment settings — drives skybox, lighting, fog
 struct EnvironmentConfig {
     // Sun / directional light
-    glm::vec3 sun_direction{-0.4f, -0.5f, 0.8f};  // WC3-style: shadows to upper-right
+    glm::vec3 sun_direction{-0.4f, -0.5f, 0.8f};  // shadows to upper-right
     glm::vec3 sun_color{1.0f, 1.0f, 0.9f};
     f32       sun_intensity = 1.0f;
 
@@ -167,7 +167,7 @@ struct Region {
     std::vector<RegionCircle> circles;
 };
 
-// WC3-style camera setup. Target-based: stores what the camera looks AT
+// Camera setup. Target-based: stores what the camera looks AT
 // (target xyz), how far the eye sits along the eye-ray (`distance`),
 // and the eye angles (`pitch_deg`, `yaw_deg`). The eye position is
 // derived at render time as `target - distance * forward_dir`. Authors
@@ -176,12 +176,12 @@ struct Region {
 struct CameraSetup {
     std::string id;
     f32 target_x = 0, target_y = 0, target_z = 0;
-    f32 distance  = 1650.0f;       // WC3 default eye-to-target distance
-    f32 pitch_deg = -56.0f;        // WC3 angle-of-attack 304°
+    f32 distance  = 1650.0f;       // default eye-to-target distance
+    f32 pitch_deg = -56.0f;        // angle-of-attack 304°
     f32 yaw_deg   = 0.0f;          // 0 = looking +Y
 };
 
-// Camera-bounds rect (WC3 analog of war3map.w3i's camera bounds).
+// Camera-bounds rect.
 // Authored per-scene in scene.json. When present, gameplay xy-pan
 // gestures (WASD, drag, edge scroll, minimap click, hero-follow) clamp
 // the target inside the rect; CameraSetup applies bypass it so

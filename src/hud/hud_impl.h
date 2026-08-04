@@ -232,7 +232,7 @@ struct Hud::Impl {
     DisplayMessageRuntime display_message_rt{};
     // Cast-reject (error) state: the optional reject SFX path and the UI
     // sound callback. The strings live in system.json (`error.*`), not
-    // here; the reject sound plays on every reject (WC3 — no cooldown).
+    // here; the reject sound plays on every reject (no cooldown).
     std::string      error_sound;
     Hud::PlaySoundFn play_sound_fn;
     i32 inventory_hover_slot   = -1;
@@ -248,7 +248,7 @@ struct Hud::Impl {
     i32 pickup_bar_pressed_slot = -1;
     Hud::PickupFn pickup_fn;
 
-    // WC3-style item hold (desktop). Right-click on a slot lifts the
+    // Item hold (desktop). Right-click on a slot lifts the
     // item: `held_item_slot` is the source slot, `held_item_id` is
     // the item being held (snapshotted so we can render its icon at
     // the cursor even if the underlying inventory shifts), and
@@ -352,7 +352,7 @@ inline bool triggers_from_action_bar(simulation::AbilityForm f) {
     return is_castable_form(f) || f == simulation::AbilityForm::Build;
 }
 
-// WC3-style command card. The bar always draws; each slot self-gates on
+// Command card. The bar always draws; each slot self-gates on
 // `command_bar_slot_applies`. It's false when the selection isn't a unit the
 // local player owns, or when the lead unit lacks the capability the command
 // needs (move/patrol/hold need locomotion, attack needs a weapon) — such

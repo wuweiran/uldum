@@ -22,8 +22,8 @@ bool Pathfinder::can_occupy(u32 tx, u32 ty, MoveType move_type) const {
     if (move_type == MoveType::Ground && m_terrain->is_tile_deep_water(tx, ty)) return false;
     if (move_type == MoveType::Water  && !m_terrain->is_tile_deep_water(tx, ty)) return false;
 
-    // Runtime blocks (buildings): direct per-tile lookup. WC3-style
-    // pathing — a building with a W×H footprint marks exactly W×H
+    // Runtime blocks (buildings): direct per-tile lookup.
+    // A building with a W×H footprint marks exactly W×H
     // tiles, adjacent tiles stay walkable.
     if (is_tile_blocked(tx, ty)) return false;
     return true;

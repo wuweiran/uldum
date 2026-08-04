@@ -280,7 +280,7 @@ private:
 
     // Server-side tracker for active effects. Every effect — burst or
     // continuous — lives in the same list and follows the same Create
-    // / Destroy lifecycle (WC3 convention: the author always destroys
+    // / Destroy lifecycle (by convention the author always destroys
     // the handle, even for one-shot bursts via the
     // `DestroyEffect(CreateEffect(...))` idiom). `delivered` is the
     // players the effect is currently rendering for — the dispatcher

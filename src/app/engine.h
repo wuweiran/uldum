@@ -207,7 +207,7 @@ private:
     // link. Called from start_session's client branch.
     void wire_client_callbacks();
 
-    // Fire the WC3-style target ping for a locally-committed order, if it
+    // Fire the target ping for a locally-committed order, if it
     // landed on a unit/item (input::derive_target_ping decides). Used by the
     // mobile HUD commit callbacks, which build orders here in the App rather
     // than in the RTS preset — so they'd otherwise miss the ping the preset
@@ -273,7 +273,7 @@ private:
     // both mutate the same struct.
     bool                     m_lobby_active = false;
 
-    // WC3-style "target acquired" ping. Set when the input preset
+    // "Target acquired" ping. Set when the input preset
     // commits a right-click on a unit / item / destructable. Lives for
     // a fraction of a second, scales/fades, then expires. If `unit` is
     // valid, the ring follows the unit's interpolated position; if not,

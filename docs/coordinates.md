@@ -16,7 +16,7 @@
 - **Z** = up / height (ground level = 0)
 - **Facing** = rotation around Z axis, in radians. 0 = facing +Y (forward).
 - **Right-handed** coordinate system.
-- **World origin (0, 0) = map center** (WC3 convention). A 32×32 tile map at 128 units/tile extends (-2048..+2048) on each axis. The south-west corner is at `(origin_x(), origin_y())` = `(-world_width/2, -world_height/2)`.
+- **World origin (0, 0) = map center.** A 32×32 tile map at 128 units/tile extends (-2048..+2048) on each axis. The south-west corner is at `(origin_x(), origin_y())` = `(-world_width/2, -world_height/2)`.
 
 ## Where Game Coordinates Are Used
 

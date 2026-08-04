@@ -300,7 +300,7 @@ public:
     // host's local slot the caller has already applied locally and we
     // skip; otherwise we send to the matching peer's transport id.
     // Returns false if the player id has no matching peer (logged).
-    // WC3-style camera commands. Each takes a single player; App routes
+    // Camera commands. Each takes a single player; App routes
     // a `players_mask` by iterating set bits and calling these per peer
     // (host's own slot applies locally instead).
     bool host_send_camera_apply_setup(u32 player_id,

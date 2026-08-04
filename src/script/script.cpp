@@ -1442,7 +1442,7 @@ void ScriptEngine::bind_api() {
     // PROJECTILE_HIT trigger (splash/AoE centers here). A projectile shares
     // the Transform, so this reads the same transform GetUnitX would; the
     // dedicated name keeps map code reading intentionally. X/Y only
-    // (world plane) — Z stays out of the position API, WC3 convention.
+    // (world plane) — Z stays out of the position API by convention.
     lua["GetProjectileX"] = [&](simulation::Projectile proj) -> f32 {
         if (!sim.world().contains(proj)) return 0.0f;
         auto* t = sim.world().transforms.get(proj.id);
@@ -1781,7 +1781,7 @@ void ScriptEngine::bind_api() {
     // stay symmetric and there's no peer-join replay edge case.
 
     // Effect lifecycle. Every effect is created via Create* and lives
-    // until the author calls DestroyEffect — WC3 convention. Burst /
+    // until the author calls DestroyEffect — by convention. Burst /
     // one-shot effects use the `DestroyEffect(CreateEffect(...))`
     // idiom; DestroyEffect does a late-delivery pass to every player
     // who can see the effect's position right now BEFORE tearing
@@ -1843,8 +1843,8 @@ void ScriptEngine::bind_api() {
             // NOW (e.g. a `DestroyEffect(CreateEffect(...))` burst
             // called in the same tick the per-tick dispatcher would
             // have run) gets a Create then immediately a Destroy.
-            // Particles emitted on Create fade naturally; this is the
-            // WC3 idiom and what makes one-shot bursts work.
+            // Particles emitted on Create fade naturally; this is
+            // what makes one-shot bursts work.
             if (m_effect_deliver_fn) {
                 for (u32 p = 0; p < m_player_count; ++p) {
                     if (it->delivered.contains(p)) continue;
@@ -1945,7 +1945,7 @@ void ScriptEngine::bind_api() {
         m_audio->set_volume(ch, volume);
     };
 
-    // ── Camera API (WC3-aligned) ──────────────────────────────────────────
+    // ── Camera API ────────────────────────────────────────────────────────
     // Target-based pose (`CameraSetup` = target xyz + distance + pitch +
     // yaw, degrees on the Lua surface). Per-player routing via a
     // `players` arg parsed by parse_players_mask — accepts nil (all),
@@ -3238,7 +3238,7 @@ void ScriptEngine::bind_hud_api() {
     //
     // Passive abilities can be bound in manual mode but shouldn't —
     // nothing fires when the slot is triggered (convention, not
-    // enforced). Slot indices are 1-based in Lua (WC3 convention),
+    // enforced). Slot indices are 1-based in Lua (by convention),
     // 0-based internally.
 
     lua["ActionBarSetVisible"] = [this](bool visible) {

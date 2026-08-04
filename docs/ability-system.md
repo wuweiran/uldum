@@ -63,7 +63,7 @@ Periodically scans for nearby units and calls `AddAbility` on the unit with a co
 - `aura_radius`: scan radius (per level)
 - `aura_ability`: id of the `passive_modifier` / `passive_flag` to apply
 
-**Multiple auras of the same kind overlap correctly:** the applied buff is typically declared `stackable: false`. Each tick's `AddAbility` call refreshes the existing instance's duration rather than creating a duplicate, so two paladins running Devotion Aura on the same footman do not stack the buff (matching WC3 semantics). For genuinely stacking effects (Veno-style poison), declare the buff `stackable: true`.
+**Multiple auras of the same kind overlap correctly:** the applied buff is typically declared `stackable: false`. Each tick's `AddAbility` call refreshes the existing instance's duration rather than creating a duplicate, so two paladins running Devotion Aura on the same footman do not stack the buff. For genuinely stacking effects (Veno-style poison), declare the buff `stackable: true`.
 
 ### instant
 
@@ -235,7 +235,7 @@ A minimal ability definition only needs `form`:
 
 Toggle-style abilities (Immolation, Defend, Permanent Invisibility) are authored as plain `instant` abilities. The map's Lua script flips a per-unit "active" flag on cast, applies / revokes the effect (e.g. an aura passive), and runs its own periodic timer for any mana drain. The engine doesn't bake the on/off pattern in.
 
-Spellbook-style "icon that opens a sub-bar of contained abilities" (class kits, hero ult selection, item-granted spell groups) is also a composition, not a form. The button is an `instant` ability whose Lua callback toggles a HUD sub-bar node's visibility (`ShowNode` / `HideNode`); the contained abilities are added to the unit normally (`AddAbility`) and laid out on that sub-bar in `hud.json`. Cooldowns / costs / casts run through the regular pipeline; the spellbook button is just a UI gate. Active and passive abilities can both live inside — WC3's passive-only restriction was an implementation artifact, not an inherent constraint.
+Spellbook-style "icon that opens a sub-bar of contained abilities" (class kits, hero ult selection, item-granted spell groups) is also a composition, not a form. The button is an `instant` ability whose Lua callback toggles a HUD sub-bar node's visibility (`ShowNode` / `HideNode`); the contained abilities are added to the unit normally (`AddAbility`) and laid out on that sub-bar in `hud.json`. Cooldowns / costs / casts run through the regular pipeline; the spellbook button is just a UI gate. Active and passive abilities can both live inside — restricting spellbooks to passives only would be an implementation artifact, not an inherent constraint.
 
 ## Ability Slots
 

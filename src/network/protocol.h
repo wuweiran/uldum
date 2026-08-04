@@ -117,7 +117,7 @@ enum class MsgType : u8 {
     S_SCENE_SWITCH  = 0x63,   // host requests a scene swap; clients tear down
                               // local state and ack via C_LOAD_DONE
 
-    // Playing — scripted-camera commands. WC3-style target-based pose
+    // Playing — scripted-camera commands. Target-based pose
     // (target xyz + distance + pitch + yaw). Each is targeted at a
     // single recipient; the host sends per-player. Lua scripts produce
     // these via CameraSetupApply / CameraSetTargetPosition / etc.

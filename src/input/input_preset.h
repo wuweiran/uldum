@@ -86,7 +86,7 @@ struct InputContext {
 
     // Callback fired when a right-click resolves to a unit / item /
     // destructable / ground-attack-move target. The app uses it to
-    // flash a brief WC3-style "target acquired" ring at the target.
+    // flash a brief "target acquired" ring at the target.
     // Color comes from `kind` — Hostile=red, Friendly=green, Item=yellow.
     // Purely visual — no gameplay effect. May be empty; presets check
     // before calling. `unit` is invalid when the click was a ground
@@ -186,7 +186,7 @@ public:
 // Create an input preset by name ("rts", future: "action_rpg").
 std::unique_ptr<InputPreset> create_preset(std::string_view name);
 
-// The WC3-style "target acquired" ping is feedback for *local input* only —
+// The "target acquired" ping is feedback for *local input* only —
 // it must never fire on script / AI orders, so it's derived here at the
 // input layer (not in CommandSystem::submit, which scripts also go through)
 // and emitted once at each human-input commit site. The color is a property

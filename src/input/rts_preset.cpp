@@ -149,7 +149,7 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                     m_box_start_x, m_box_start_y,
                     input.mouse_x, input.mouse_y);
 
-                // WC3 policy: own units win the box; a box with no own
+                // Selection policy: own units win the box; a box with no own
                 // units selects a single foreign unit as a view.
                 std::vector<simulation::Unit> own;
                 simulation::Unit foreign{};
@@ -173,13 +173,13 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                 }
                 // Empty box drag: don't change selection
             } else {
-                // WC3-style click select: prefer own units when multiple
+                // Click select: prefer own units when multiple
                 // units overlap the cursor (so your hero wins over a
                 // neutral grunt next to him), but fall through to any
                 // unit if no own unit is under the click. Foreign-unit
                 // selection is a "view" — orders won't fire on it
                 // because the order pipeline validates ownership.
-                // Shift-click only stacks own units (WC3 behavior); a
+                // Shift-click only stacks own units; a
                 // shift-click on a foreign unit while you have own
                 // units selected does nothing.
                 auto unit = ctx.picker.pick_widget(input.mouse_x, input.mouse_y, sel.player());
@@ -216,7 +216,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     // HUD captures: skip pointer-driven orders (targeting click, attack-
     // move click, right-click order). Key-driven cancels (Escape out of
     // any targeting mode) still run so the user can always bail out.
-    // Right-click while targeting also bails out (WC3/SC2) — cancel only,
+    // Right-click while targeting also bails out — cancel only,
     // never an order — so it must survive this early-return too.
     // Exception: when the pointer is over the minimap, orders DO run — the
     // minimap is a world proxy, so a click there commits a ground order /
@@ -256,8 +256,8 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     // Widget-first: if the ability accepts a widget kind and one is under
     // the cursor (and passes target_filter), cast on it. Otherwise fall
     // through to the ground point when accept_point is on. Widget-only
-    // abilities keep the targeting mode armed on a missed click — matches
-    // WC3 "click goes ping" on invalid targets.
+    // abilities keep the targeting mode armed on a missed click — the
+    // click just pings instead of committing on invalid targets.
     if (m_target_mode == TargetingMode::Ability && input.mouse_left_pressed) {
         if (!sel.empty()) {
             const auto* def = ctx.simulation.abilities().get(m_target_ability_id);
@@ -367,7 +367,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             if (simulation::is_non_null_handle(target)) {
                 // A-click on unit: force Attack — but only if some selected
                 // unit can actually hit it (a ground-only force can't attack
-                // a flyer). Like the ability widget path / WC3: an invalid
+                // a flyer). Like the ability widget path: an invalid
                 // target shows an error and keeps targeting armed (the click
                 // "goes ping"), rather than issuing a doomed walk-up.
                 const auto& world = ctx.simulation.world();
@@ -381,7 +381,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 }
                 if (!any_can_hit) {
                     if (ctx.hud) ctx.hud->emit_order_error("attack", spec);
-                    return;   // stay armed — WC3: an invalid target keeps targeting mode
+                    return;   // stay armed — an invalid target keeps targeting mode
                 }
                 GameCommand cmd;
                 cmd.player = sel.player();
@@ -432,7 +432,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                     cancel_targeting();
                     return;
                 }
-                // Illegal spot → stay armed, explain (WC3 "can't build there").
+                // Illegal spot → stay armed, explain ("can't build there").
                 if (ctx.hud) ctx.hud->emit_order_error("build", "blocked");
                 return;
             }
@@ -442,7 +442,7 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
     }
 
     // Right-click while in any targeting mode = cancel; no smart order
-    // is issued. Matches WC3 / SC2 behavior where a stray right-click
+    // is issued. A stray right-click
     // bails out of targeting rather than firing a Move at the mouse
     // point.
     if (input.mouse_right_pressed && is_targeting()) {
@@ -488,7 +488,6 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
             // widget class. A footman can't chop a tree (its target_mask lacks
             // the TREE bit), so right-clicking one must fall through to a plain
             // ground move at the click point, not a dead Attack or a Follow.
-            // Matches WC3.
             auto* tinfo = view.handle_info(target.id);
             bool is_dest = tinfo && tinfo->category == simulation::Category::Destructable;
             bool is_destructable = false;
@@ -524,8 +523,8 @@ void RtsPreset::handle_orders(const InputContext& ctx) {
                 // Attack the target. Capture where the player last saw it (its view
                 // position — live entity or memory snapshot) into the order's point:
                 // if it later fogs / dies, the unit walks to THIS point, never the
-                // live transform of something it can't see (anti-leak). Full WC3 —
-                // applies to a mobile enemy as well as a static widget.
+                // live transform of something it can't see (anti-leak). Applies
+                // to a mobile enemy as well as a static widget.
                 glm::vec3 tpos{0.0f};
                 if (const auto* t = view.transform(target.id)) tpos = t->position;
                 cmd.order = simulation::orders::Attack{tpos, target};

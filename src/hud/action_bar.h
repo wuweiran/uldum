@@ -79,21 +79,21 @@ struct ActionBarSlot {
 // variant exposes its own parameter block — adding a variant is a
 // localized render path + parser extension, not a generic layer engine.
 enum class ActionBarStyleId : u8 {
-    ClassicRts = 0,   // WC3-alike: square icon, radial cooldown pie, hotkey badge.
+    ClassicRts = 0,   // Square icon, radial cooldown pie, hotkey badge.
     Moba       = 1,   // Mobile-MOBA-alike: round button, perimeter cooldown ring,
                       // dim disc + remaining-seconds in center on cooldown.
 };
 
 // How the bar routes keyboard input → ability. A player-level setting
 // (`input.action_bar_hotkey_mode` in the settings store), not a per-map
-// decision — lets users pick between WC3-style mnemonics and MOBA-style
+// decision — lets users pick between per-ability mnemonics and MOBA-style
 // positional grids once and have it apply everywhere. Only consulted
 // when `binding_mode == Auto`; manual binding uses `slot.bound_ability`
 // directly and ignores this.
 enum class ActionBarHotkeyMode : u8 {
     // Each ability declares its own `hotkey` letter in its type def;
     // slots match abilities by that letter. Pressing "T" triggers
-    // whatever ability has hotkey="T" on the selected unit. WC3 style.
+    // whatever ability has hotkey="T" on the selected unit.
     Ability    = 0,
     // Slots bind by position. Slot 1 (hotkey="Q") always triggers the
     // selected unit's 1st non-hidden ability in registration order,

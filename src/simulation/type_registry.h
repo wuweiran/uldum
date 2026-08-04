@@ -26,7 +26,7 @@ struct UnitTypeDef {
     std::string icon_path;
     f32 model_scale = 1.0f;
 
-    // Orientation — slope-conform tilt clamps (WC3 "Orientation" Art group).
+    // Orientation — slope-conform tilt clamps.
     // Radians; 0 = stay upright (structures). Default 180° = no clamp.
     f32 max_pitch = glm::radians(180.0f);
     f32 max_roll  = glm::radians(180.0f);
@@ -48,7 +48,7 @@ struct UnitTypeDef {
     // pathing blocks and for placement snapping (odd extent → tile
     // center, even extent → tile corner). Independent of
     // collision_radius, which still drives unit physics and attack
-    // range. Mirrors WC3's split between a Pathing Map and a
+    // range. A split between a Pathing Map and a
     // Collision Size, simplified to a rectangle for v1.
     u32 pathing_footprint_w = 0;
     u32 pathing_footprint_h = 0;
@@ -66,8 +66,8 @@ struct UnitTypeDef {
     };
     std::optional<WeaponDef> weapon;
 
-    // Acquisition range is unit-level, not per-weapon (mirrors WC3's
-    // Acquisition Range): how far the unit scans for enemies to auto-engage.
+    // Acquisition range is unit-level, not per-weapon:
+    // how far the unit scans for enemies to auto-engage.
     f32 acquire_range = 10.0f;
 
     // Animation (JSON: animation section)
@@ -120,7 +120,7 @@ struct DestructableTypeDef {
     std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
     u32                      pathing_footprint_w = 0;       // tiles; 0 = no pathing block
     u32                      pathing_footprint_h = 0;
-    std::vector<std::string> targeted_as;                   // WC3 "Targeted As" tags ("structure", "tree", "debris", …)
+    std::vector<std::string> targeted_as;                   // "Targeted As" tags ("structure", "tree", "debris", …)
     u8                       target_bit = TARGET_BIT_DEBRIS;  // derived from targeted_as (attack handshake)
     bool                     selectable = true;             // left-clickable? auto-false for "tree", JSON-overridable
 };
@@ -133,7 +133,7 @@ struct DoodadTypeDef {
     f32                      model_scale = 1.0f;
 };
 
-// WC3-style item class — the single field that drives engine item behavior.
+// Item class — the single field that drives engine item behavior.
 // Permanent: sits in a slot, grants its abilities while carried (default).
 // Charged: sits in a slot, grants its use ability; the engine spends 1 charge
 //   when that ability's effect fires and destroys the item at 0.

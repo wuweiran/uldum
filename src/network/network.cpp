@@ -2144,7 +2144,7 @@ void NetworkManager::spawn_client_entity(simulation::World& world, u32 entity_id
     // Thin dispatcher: materialize a wire-spawned entity through the SAME
     // create_* construction code the host uses (via the spawn_*_with_id id-seam),
     // so the client can never drift from the host. Z is sampled from world.terrain
-    // inside the builders (WC3-style local Z). Category is resolved from the
+    // inside the builders (local Z). Category is resolved from the
     // world's own type registry (already wired on the client's mirror world).
     if (world.handle_infos.has(entity_id)) return;
 

@@ -1315,7 +1315,7 @@ void Hud::emit_order_error(std::string_view base, std::string_view specifier,
     }
     if (!found) text = builtin();
 
-    // WC3: the error sound plays on EVERY rejected order — no cooldown.
+    // The error sound plays on EVERY rejected order — no cooldown.
     if (s.play_sound_fn && !s.error_sound.empty()) {
         s.play_sound_fn(s.error_sound);
     }
@@ -1372,14 +1372,14 @@ bool Hud::handle_right_click(f32 x, f32 y) {
     f32 inv_s = 1.0f / s.ui_scale;  // ui_scale clamped > 0 at its sole writer (set_ui_scale)
     f32 dpx = x * inv_s, dpy = y * inv_s;
 
-    // Build sub-panel open → right-click anywhere backs out of it (WC3
-    // command-card cancel), returning the bar to the unit's abilities.
+    // Build sub-panel open → right-click anywhere backs out of it
+    // (command-card cancel), returning the bar to the unit's abilities.
     if (s.build_panel_open) {
         close_build_panel();
         return true;
     }
 
-    // Already holding → right-click anywhere cancels the hold (WC3 UX).
+    // Already holding → right-click anywhere cancels the hold.
     if (s.held_item_slot >= 0) {
         s.held_item_slot = -1;
         s.held_item_id   = UINT32_MAX;
@@ -1941,7 +1941,7 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
             for (u32 id : world.transform_ids()) {
                 const auto* hinfo = world.handle_info(id);
                 if (!hinfo) continue;
-                // Honor the drag's widget_kinds mask (WC3-style): a candidate's
+                // Honor the drag's widget_kinds mask: a candidate's
                 // category must be an accepted widget kind — not hard-coded to
                 // Unit, or crates could never snap.
                 u32 cand_kind = 0;
@@ -2677,8 +2677,8 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
 static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     const auto& cfg = s.action_bar_cfg;
     if (!cfg.enabled || !s.action_bar_rt.visible) return -1;
-    // While the build sub-panel is open the action bar is DISABLED (WC3
-    // command-card behavior): no hover / press / click. The build_bar takes
+    // While the build sub-panel is open the action bar is DISABLED
+    // (command-card behavior): no hover / press / click. The build_bar takes
     // over input; right-click / Esc / selection-change close it and restore
     // the action bar. Hotkeys are already gated in handle_hotkeys.
     if (s.build_panel_open) return -1;
@@ -2745,7 +2745,7 @@ resolve_slot_ability(u32 slot_index,
     // triggers each slot and which letter the badge shows — see the
     // hotkey dispatch loop and the slot draw site for those branches.
     // Passives / auras count toward slot positions (they show their
-    // icon WC3-command-card style, just don't fire on click); only
+    // icon command-card style, just don't fire on click); only
     // explicitly hidden abilities are skipped.
     u32 nth = 0;
     for (const auto& inst : aset->abilities) {
@@ -3057,7 +3057,7 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
 
     // Press edge: down on this frame, was up last frame.
     if (button_down && !s.pointer_down_prev) {
-        // Holding an item (WC3 lift): the next left-click commits.
+        // Holding an item (lift): the next left-click commits.
         // On another inventory slot → swap. On terrain → drop at the
         // clicked world point. Anywhere else → cancel.
         if (s.held_item_slot >= 0) {

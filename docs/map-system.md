@@ -2,14 +2,14 @@
 
 ## Overview
 
-A **map** in Uldum is a self-contained gameplay package — equivalent to a WC3 map (`.w3x`). It defines terrain, units, abilities, assets, scripts, and all gameplay logic. The engine provides mechanical infrastructure; the map provides content and rules.
+A **map** in Uldum is a self-contained gameplay package — a single distributable directory. It defines terrain, units, abilities, assets, scripts, and all gameplay logic. The engine provides mechanical infrastructure; the map provides content and rules.
 
 Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 
 ## Terminology
 
-- **Map**: a gameplay package. Analogous to a WC3 map or a "mod."
-- **Scene**: a terrain + placement set within a map. A map contains 1+ scenes. Addresses WC3's limitation of one terrain per map.
+- **Map**: a gameplay package — the unit of distribution, equivalent to a "mod."
+- **Scene**: a terrain + placement set within a map. A map contains 1+ scenes, lifting the common one-terrain-per-map limitation.
 - **Tileset**: a set of ground textures used by terrain (grass, dirt, stone, etc.).
 - **State**: a depletable/regenerating resource on a unit (HP, mana, energy). Has `current`, `max`, `regen`.
 - **Attribute**: a single-value modifier on a unit (strength, agility, intelligence). Does not deplete or regenerate.
@@ -30,7 +30,7 @@ Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 | Attribute system | Single-value modifiers (strength, agility, etc.). All map-defined. Modified by abilities/items/levels |
 | Normal attack | Melee/ranged attack flow: dmg_time (fore-swing), backsw_time (recovery), attack cooldown, projectile launch |
 | Projectile system | Flight, homing, arc, collision detection, impact event |
-| Ability system | Four cast-flow forms (passive, aura, instant, target); channel is a per-level flag on any active form. Cooldown, range check, state cost check. Applied abilities (WC3 "buffs") are abilities with duration + auto-remove |
+| Ability system | Four cast-flow forms (passive, aura, instant, target); channel is a per-level flag on any active form. Cooldown, range check, state cost check. Applied abilities ("buffs") are abilities with duration + auto-remove |
 | Collision / spatial queries | `units_in_range()`, `units_in_rect()`, etc. |
 | Event system | on_damage, on_death, on_cast, on_attack, etc. Map Lua hooks these |
 | Damage event flow | Engine fires `on_damage(source, target, amount, context)`. Map Lua can modify amount (apply its own attack/armor logic). Engine applies final HP change |
@@ -48,7 +48,7 @@ Maps are distributed as `.uldmap` directories (or packed archives in Phase 12).
 | Attributes | Map declares: strength, agility, intelligence, etc. |
 | Damage logic | Map Lua hooks `on_damage` to apply attack/armor multipliers |
 | Unit types | JSON definitions with states, attributes, classifications, abilities |
-| Ability types | JSON + Lua. Includes applied abilities (WC3 "buffs": passive, with duration) |
+| Ability types | JSON + Lua. Includes applied abilities ("buffs": passive, with duration) |
 | Item types | JSON definitions |
 | Destructable types | JSON definitions |
 | UI layout | Map declares layout structure (panels, positions). Engine/UI framework renders |
@@ -77,7 +77,7 @@ my_map.uldmap/
 │
 ├── types/                      # all gameplay type definitions
 │   ├── units.json
-│   ├── abilities.json      # all abilities: active, passive, auras, applied (WC3 "buffs")
+│   ├── abilities.json      # all abilities: active, passive, auras, applied ("buffs")
 │   ├── items.json
 │   └── destructables.json
 │
@@ -232,14 +232,14 @@ Key changes from earlier design:
 - **Attack/armor types are strings** — map declares valid values in manifest
 - **States are map-defined** — HP is built-in; map adds mana, energy, etc.
 - **Attributes are map-defined** — strength, agility, etc. are strings
-- **No separate buff system** — WC3 "buffs" are just applied abilities (passive, with duration and auto-remove)
+- **No separate buff system** — "buffs" are just applied abilities (passive, with duration and auto-remove)
 - **Damage logic is in Lua** — map hooks `on_damage` event, applies its own multipliers
 
 ## Multi-Scene Support
 
 ### Why
 
-WC3's one-terrain-per-map limitation forces campaigns into sequential map lists with no shared state. Uldum's scene system allows:
+A one-terrain-per-map limitation forces campaigns into sequential map lists with no shared state. Uldum's scene system allows:
 - RPG maps with town → dungeon → boss transitions
 - Campaign-style progression within a single map package
 - Shared hero state, inventory, quest flags across scenes

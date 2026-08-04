@@ -49,6 +49,13 @@ static f32 angle_diff(f32 from, f32 to) {
     return normalize_angle(to - from);
 }
 
+// Max facing error that still permits a swing.
+static constexpr f32 ATTACK_FACING_TOLERANCE_RAD = 0.1745f;  // ~10 degrees
+
+// Max facing error that still permits a step. Narrow, so a unit pointed away
+// from its target pivots in place instead of arcing toward it.
+static constexpr f32 PROPULSION_WINDOW = glm::radians(60.0f);
+
 // Turn `facing` toward `desired` by at most `turn_rate * dt`, then normalize.
 // Returns the signed error BEFORE turning, so callers can gate on how far off
 // they were this tick (e.g. only step when roughly aligned).
@@ -82,7 +89,7 @@ static f32 turn_toward(f32& facing, f32 desired, f32 turn_rate, f32 dt) {
 
 // Two units share a collision layer only if they're on the same plane: Air
 // with Air, surface (Ground/Water/Amphibious) with surface. Air units fly
-// over everything, so they never block or push ground/water units (WC3-style).
+// over everything, so they never block or push ground/water units.
 static bool same_collision_layer(MoveType a, MoveType b) {
     return (a == MoveType::Fly) == (b == MoveType::Fly);
 }
@@ -620,11 +627,18 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         f32 face_diff = turn_toward(transform->facing, desired_facing, mov.turn_rate, dt);
 
         // Step forward (only if roughly facing the right direction)
-        if (std::abs(face_diff) < glm::half_pi<f32>()) {
+        if (std::abs(face_diff) < PROPULSION_WINDOW) {
             f32 step = mov.speed * dt;
-            if (step > steer_dist) step = steer_dist;   // don't overshoot detour/waypoint
-            f32 new_x = transform->position.x + dir.x * step;
-            f32 new_y = transform->position.y + dir.y * step;
+            f32 new_x, new_y;
+            if (steer_dist <= step) {
+                // Close enough to land on it this tick — take the target
+                // exactly rather than a facing-aligned step that falls short.
+                new_x = steer_target.x;
+                new_y = steer_target.y;
+            } else {
+                new_x = transform->position.x + std::cos(transform->facing) * step;
+                new_y = transform->position.y + std::sin(transform->facing) * step;
+            }
 
             if (can_step(transform->position.x, transform->position.y, new_x, new_y)) {
                 transform->position.x = new_x;
@@ -763,7 +777,7 @@ static Projectile spawn_attack_projectile(World& world, Unit source, Widget targ
 
 // ── Combat system ─────────────────────────────────────────────────────────
 
-// Can an attack with `target_mask` hit `target`? Two axes of the WC3-style
+// Can an attack with `target_mask` hit `target`? Two axes of the
 // handshake, both fully decoupled from MoveType: a destructable presents a
 // widget bit (STRUCTURE / TREE / DEBRIS) from its "targeted_as"; a unit presents
 // a class bit (AIR / GROUND / STRUCTURE) from its `classifications`. The attack
@@ -784,6 +798,27 @@ bool can_attack_target(const World& world, u8 target_mask, Widget target,
     return ok;
 }
 
+static f32 range_collision_radius(const World& world, u32 wid) {
+    if (auto* m = world.movements.get(wid)) return m->collision_radius;
+    return 0.0f;
+}
+
+// Edge-to-edge 2D distance: the distance convention shared by the fire gate,
+// chase threshold and acquisition. Range values are a gap between unit edges.
+static f32 attack_edge_distance(const World& world, u32 attacker_id, const glm::vec3& attacker_pos,
+                                u32 target_id, const glm::vec3& target_pos) {
+    glm::vec3 d = target_pos - attacker_pos;
+    d.z = 0;
+    f32 dist = glm::length(d)
+             - range_collision_radius(world, attacker_id)
+             - range_collision_radius(world, target_id);
+    return dist < 0.0f ? 0.0f : dist;
+}
+
+// Extra range tolerated only while recovering between swings, so a target
+// drifting during cooldown doesn't cancel into a chase and re-approach.
+static constexpr f32 RANGE_MOTION_BUFFER = 250.0f;
+
 void system_combat(World& world, float dt, const SpatialGrid& grid) {
     std::vector<Unit> units;
     units.reserve(world.combats.count());
@@ -800,8 +835,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         if (!combat_comp || !transform || !oq) continue;
         auto& combat = *combat_comp;
 
-        // Under construction: not operational yet, so it can't fight (WC3
-        // disables unit functions until the build completes).
+        // Under construction: not operational yet, so it can't fight
+        // (unit functions are disabled until the build completes).
         if (auto* c = world.constructions.get(id); c && c->under_construction) {
             combat.target = Unit{};
             combat.attack_state = AttackState::Idle;
@@ -940,7 +975,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     filter.enemy_of   = *owner;
                     filter.visible_to = *owner;  // skip fogged / unexplored
                     filter.alive_only = true;
-                    auto enemies = grid.units_in_range(world, transform->position, acquire_r, filter);
+                    // Broad phase scans on center distance while the test
+                    // below is edge-to-edge, so grow the query and re-test
+                    // exactly in the loop.
+                    f32 self_radius = range_collision_radius(world, id);
+                    f32 query_r = acquire_r + self_radius + MAX_COLLISION_RADIUS;
+                    auto enemies = grid.units_in_range(world, transform->position, query_r, filter);
                     Unit best;
                     f32 best_dist = acquire_r + 1;
                     for (auto& e : enemies) {
@@ -958,12 +998,16 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                         if (!can_attack_target(world, combat.target_mask, e)) continue;
                         auto* et = world.transforms.get(e.id);
                         if (!et) continue;
-                        f32 d = glm::length(et->position - transform->position);
+                        // Same convention as the fire gate, so a unit never
+                        // acquires a target it then reports as out of range.
+                        f32 d = attack_edge_distance(world, id, transform->position,
+                                                     e.id, et->position);
+                        if (d > acquire_r) continue;  // grown broad phase overshoots
                         if (d < best_dist) { best = e; best_dist = d; }
                     }
                     if (is_non_null_handle(best)) {
                         // Auto-acquire: set combat target only, no order created.
-                        // This matches WC3 behavior — auto-attack is not an order.
+                        // Auto-attack is not an order.
                         combat.target = best;
                         target = best;
                         target_valid = true;
@@ -997,17 +1041,18 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
         glm::vec3 to_target = target_t->position - transform->position;
         to_target.z = 0;
-        f32 dist = glm::length(to_target);
+        f32 dist = attack_edge_distance(world, id, transform->position,
+                                        target.id, target_t->position);
 
-        // WC3-style center-to-edge range: attacker can fire when the
-        // distance from its center to the target's *edge* is within
-        // its attack_range. Without the target-radius term, a melee
-        // attacker can never get close enough to a large building
-        // (center-to-center distance always exceeds attack_range
-        // because the building itself is wider than the gap).
-        f32 target_radius = 0.0f;
-        if (auto* tm = world.movements.get(target.id)) target_radius = tm->collision_radius;
-        f32 effective_range = combat.range + target_radius;
+        const bool cooling_down = combat.attack_state == AttackState::Backswing
+                               || combat.attack_state == AttackState::Cooldown;
+        f32 effective_range = combat.range + (cooling_down ? RANGE_MOTION_BUFFER : 0.0f);
+
+        // The movement system stops on center-to-center distance, so convert
+        // the edge-to-edge budget before handing it over.
+        f32 approach_center_range = combat.range
+                                  + range_collision_radius(world, id)
+                                  + range_collision_radius(world, target.id);
 
         switch (combat.attack_state) {
         case AttackState::Idle:
@@ -1031,7 +1076,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     auto* pth = world.pathings.get(id);
                     if (pth) {
                         pth->approach_target = target;
-                        pth->approach_range = effective_range;
+                        pth->approach_range = approach_center_range;
                     }
                 }
             } else {
@@ -1063,12 +1108,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             auto* mov = world.movements.get(id);
             f32 turn_rate = mov ? mov->turn_rate : 3.0f;
 
-            // turn_rate == 0 → a FIXED structure (WC3 arrow tower): it never
+            // turn_rate == 0 → a FIXED structure (e.g. arrow tower): it never
             // rotates its model but still fires in any direction. Skip the
             // facing requirement entirely, else max_turn is 0, `diff` never
             // shrinks, the tolerance gate never passes, and it's stuck here
-            // forever (never attacks). turn_rate > 0 → turns to face first
-            // (WC3 ancient protector), then fires.
+            // forever (never attacks). turn_rate > 0 → turns to face first,
+            // then fires.
             if (turn_rate <= 0.0f) {
                 combat.attack_state = AttackState::WindUp;
                 combat.attack_timer = combat.dmg_time;
@@ -1077,7 +1122,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
             f32 max_turn = turn_rate * dt;
 
-            constexpr f32 ATTACK_FACING_TOLERANCE = 0.1745f;  // ~10 degrees
+            constexpr f32 ATTACK_FACING_TOLERANCE = ATTACK_FACING_TOLERANCE_RAD;
             if (std::abs(diff) > max_turn) {
                 transform->facing += (diff > 0 ? max_turn : -max_turn);
                 transform->facing = normalize_angle(transform->facing);
@@ -1097,16 +1142,6 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 // FIRE — deal damage or spawn projectile
                 Unit self = world.unit(id);
 
-                // If a melee target has run beyond attack range + this slack by
-                // the damage point, the swing misses — it still completes
-                // (backswing + cooldown run) but deals no damage. `dist` is
-                // recomputed this tick, so it's the target's current position.
-                // Ranged attacks are exempt: their projectile launches and
-                // tracks the target on its own.
-                constexpr f32 MELEE_ATTACK_RANGE_BUFFER = 250.0f;
-                const bool melee_miss = !combat.projectile
-                    && dist > effective_range + MELEE_ATTACK_RANGE_BUFFER;
-
                 // Snapshot the attacker position BEFORE spawning the
                 // projectile. spawn_attack_projectile → create_projectile
                 // → world.transforms.add() can reallocate the dense
@@ -1125,7 +1160,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
                 if (combat.projectile) {
                     spawn_attack_projectile(world, self, target, combat.damage, *combat.projectile);
-                } else if (!melee_miss) {
+                } else {
                     deal_attack_damage(world, self, target, combat.damage);
                 }
                 if (!world.contains(self)) continue;
@@ -1156,7 +1191,20 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             if (combat.attack_timer <= 0) {
                 // If target still valid and in range, go straight to next swing
                 if (target_valid && dist <= effective_range) {
-                    combat.attack_state = AttackState::TurningToFace;
+                    // Already aligned (or a fixed structure that never turns) —
+                    // start the swing this tick instead of spending one in
+                    // TurningToFace just to re-confirm the facing.
+                    auto* mov = world.movements.get(id);
+                    f32 turn_rate = mov ? mov->turn_rate : 3.0f;
+                    f32 desired = std::atan2(to_target.y, to_target.x);
+                    bool aligned = turn_rate <= 0.0f
+                        || std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE_RAD;
+                    if (aligned) {
+                        combat.attack_state = AttackState::WindUp;
+                        combat.attack_timer = combat.dmg_time;
+                    } else {
+                        combat.attack_state = AttackState::TurningToFace;
+                    }
                 } else {
                     combat.attack_state = AttackState::Idle;
                 }
@@ -1311,7 +1359,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         if (a.ability_id == cast_order->ability_id) { inst = &a; break; }
                     }
                     if (inst && inst->cooldown_remaining <= 0) {
-                        // Engine-enforced ability cost. WC3 semantics:
+                        // Engine-enforced ability cost. Semantics:
                         // mana / state cost is spent when the spell's
                         // EFFECT fires (foreswing completes / channel
                         // resolves), NOT at cast start — an interrupted
@@ -1989,7 +2037,7 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
         oq->current.reset();
 
         // Structures spawn at a fixed default facing, NOT the worker's heading
-        // (which varies with the direction it walked in from). WC3-style: a
+        // (which varies with the direction it walked in from): a
         // building always faces the same way regardless of who built it or how
         // they approached. 270° (same deg→rad convention as authored facings).
         constexpr f32 BUILDING_FACING = 1.5f * glm::pi<f32>();   // 270 degrees

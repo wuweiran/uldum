@@ -35,8 +35,8 @@ void apply_scene_data(Simulation& sim, map::SceneData& scene);
 // cameras are authored data and stay with the caller's SceneData.
 void export_scene_data(const World& world, map::SceneData& out);
 
-// True for entities that persist in fog-of-war Explored tiles (WC3-style:
-// trees, doodads, and structure-classified units stay visible to a player
+// True for entities that persist in fog-of-war Explored tiles (trees,
+// doodads, and structure-classified units stay visible to a player
 // once their tile has been scouted, frozen at last-seen state). Mobile
 // units / projectiles / items return false.
 bool is_static_remembered_entity(const World& world, u32 entity_id);

@@ -319,7 +319,7 @@ int main(int argc, char* argv[]) {
     float accumulator = 0;
     bool running = true;
 
-    // WC3-style lobby start countdown. Once every connected peer is seated
+    // Lobby start countdown. Once every connected peer is seated
     // (and at least one is present), count down, then auto-commit — the worker
     // has no Start button. Open slots are allowed at start (they go unused), so
     // a 2-slot map starts with a single player. Any lobby change that unseats a

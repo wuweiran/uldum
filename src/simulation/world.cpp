@@ -14,14 +14,14 @@ static constexpr const char* TAG = "World";
 // Ground height at (x,y) from the world's terrain, or 0 if no terrain is set
 // (pre-terrain spawns / headless). Creation seeds Transform.z from this so every
 // caller — host create_* and client spawn_*_with_id alike — gets the right
-// height in one place. WC3-style: Z is local, derived from terrain, never synced.
+// height in one place. Z is local, derived from terrain, never synced.
 static f32 ground_height(const World& world, f32 x, f32 y) {
     return (world.terrain && world.terrain->is_valid())
         ? map::sample_height(*world.terrain, x, y) : 0.0f;
 }
 
 // Upper bound on shift-queued orders behind the in-progress one. Legitimate
-// WC3-style waypoint/patrol chains are a handful deep; this ceiling only
+// waypoint/patrol chains are a handful deep; this ceiling only
 // exists so a scripted or hostile client can't grow a unit's deque without
 // bound (memory-exhaustion DoS). Orders past the cap are dropped.
 static constexpr usize MAX_QUEUED_ORDERS = 64;
@@ -614,7 +614,7 @@ void deal_damage(World& world, Unit source, Widget target, f32 amount, std::stri
     if (hp->current == 0) {
         hp->killer = world.contains(source) ? source : Unit{};
     }
-    if (damage_type == "attack") ++hp->hit_count;   // normal-attack flinch only (WC3 Stand Hit)
+    if (damage_type == "attack") ++hp->hit_count;   // normal-attack flinch only
 
     // Fight-back: if target is idle (no order, no current target), attack the source.
     // Only fight back against enemies (different owner).
@@ -714,7 +714,7 @@ void issue_order(World& world, Unit unit, Order order) {
         if (!inst) return;
 
         // Cooldown + affordability — keep the existing activity untouched.
-        // WC3: an order the unit can't act on (on cooldown, or not enough
+        // An order the unit can't act on (on cooldown, or not enough
         // mana) is rejected at issue time and does NOT interrupt what the unit
         // is already doing. Both gates live here so a spammed cast order (e.g.
         // an auto-cast trigger) can't cancel the caster's current attack/move
@@ -764,7 +764,7 @@ void issue_order(World& world, Unit unit, Order order) {
         oq->queued.push_back(std::move(order));
     } else {
         // Fresh (non-shift) order, a shift-order onto an IDLE unit, or any Stop.
-        // Idle-shift starts NOW (WC3 executes it immediately). A non-shift order
+        // Idle-shift starts NOW (executed immediately). A non-shift order
         // or a Stop wipes the pending queue; idle-shift keeps it (empty anyway).
         if (!order.queued || is_stop) oq->queued.clear();
         if (is_stop) oq->current.reset();          // become idle — never install Stop

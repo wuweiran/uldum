@@ -3,7 +3,7 @@
 -- Used by all scenes via require("combat")
 --------------------------------------------------------------------------------
 
---- Register WC3-style armor damage reduction.
+--- Register diminishing-returns armor damage reduction.
 -- Runs at HIGH priority so cleave/other effects see the reduced amount.
 -- Formula: reduction = armor * 0.06 / (1 + armor * 0.06)
 function register_armor_system()
@@ -21,7 +21,7 @@ function register_armor_system()
             SetDamageAmount(dmg)
         end
     end)
-    Log("[Combat] Armor damage reduction active (WC3 formula)")
+    Log("[Combat] Armor damage reduction active (diminishing-returns formula)")
 end
 
 --- Register hit spark VFX on attack damage.

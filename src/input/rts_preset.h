@@ -6,7 +6,7 @@
 
 namespace uldum::input {
 
-// WC3-style RTS controls: click select, box drag, right-click orders,
+// RTS controls: click select, box drag, right-click orders,
 // control groups, edge pan, scroll zoom, hotkeys.
 class RtsPreset : public InputPreset {
 public:

@@ -195,7 +195,7 @@ BuildingPlacement evaluate_building_placement(const Simulation& sim,
                 out.tile_ok[static_cast<usize>(j) * out.fw + i] = b ? 1u : 0u;
             }
         }
-        // Pass 2: dynamic unit occupancy (WC3). Units don't reserve grid cells,
+        // Pass 2: dynamic unit occupancy. Units don't reserve grid cells,
         // so pass 1 misses them; a unit whose collision disc intrudes a tile
         // turns THAT tile red. Same-layer only (air vs surface never block).
         const World& w = sim.world();

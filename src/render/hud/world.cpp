@@ -174,7 +174,7 @@ void draw_entity_bars_impl(HudRenderer& r,
 
             if (!passes_visibility(bar.visibility, fraction, is_hovered, is_selected)) {
                 // Don't advance stack_y — the bar slot is omitted entirely
-                // (other bars in the stack close up). Matches WC3: if mana
+                // (other bars in the stack close up): if mana
                 // bar is hidden the health bar is at its normal position.
                 continue;
             }

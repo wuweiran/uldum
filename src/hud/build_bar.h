@@ -1,7 +1,7 @@
 #pragma once
 
 // Engine composite: build sub-panel. A worker's Build-form ability opens
-// this locally (WC3 command-card build mode) — but as its OWN composite,
+// this locally (command-card build mode) — but as its OWN composite,
 // NOT a takeover of action_bar. The map authors a `composites.build_bar`
 // block in hud.json declaring the slot GRID (positions + style); the slot
 // CONTENTS are filled by the engine from the opened ability's `builds`
@@ -59,7 +59,7 @@ struct BuildBarConfig {
     BuildBarStyle style;
     std::vector<BuildBarSlot> slots;
 
-    // Authored dismiss button (WC3 command-card Cancel). Its position/style
+    // Authored dismiss button (command-card Cancel). Its position/style
     // are declared by the map in the `cancel` block, so it can sit anywhere
     // (not auto-appended after the structures — a map with scattered slots or
     // no background controls exactly where the X goes). Absent → no Cancel

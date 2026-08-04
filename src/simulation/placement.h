@@ -33,7 +33,7 @@ struct BuildingPlacement {
 // Is a single TILE buildable by a structure — flat (not a ramp/cliff
 // transition), passable, not deep water, and not occupied by a runtime
 // blocker. Stricter than can_occupy_cell (which lets walkers cross ramps):
-// buildings require FLAT ground, matching WC3.
+// buildings require FLAT ground.
 bool tile_buildable(const Pathfinder& pf, const map::TerrainData& td,
                     i32 tx, i32 ty, MoveType move_type);
 
