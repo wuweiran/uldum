@@ -371,6 +371,11 @@ function GetUnitAttackRange(unit) end
 ---@return number
 function GetUnitAcquireRange(unit) end
 
+--- Attack rate multiplier (1.0 = unmodified).
+---@param unit unit
+---@return number
+function GetUnitAttackSpeed(unit) end
+
 ---@param unit unit
 ---@return number
 function GetUnitSightRange(unit) end

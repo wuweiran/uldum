@@ -317,6 +317,7 @@ GetUnitTurnRate(unit) → float
 GetUnitDamage(unit) → float
 GetUnitAttackRange(unit) → float
 GetUnitAcquireRange(unit) → float
+GetUnitAttackSpeed(unit) → float
 GetUnitSightRange(unit) → float
 GetUnitHealthRegen(unit) → float
 GetUnitDamageTaken(unit) → float

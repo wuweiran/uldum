@@ -429,6 +429,7 @@ These are engine-owned: the engine's own systems read them directly, and each va
 | `damage` | ✓ | ✓ | `_mult` covers crit-amp passives |
 | `attack_range` | ✓ | ✓ | |
 | `acquire_range` | ✓ | ✓ | numeric only; on/off goes to the `no_acquire` flag |
+| `attack_speed` | ✓ | ✓ | base 1.0, so a bare `0.1` is +10%; `_mult` scales the summed total. Clamped to `[0.1, 5]` |
 | `move_speed` | ✓ | ✓ | slow is `_mult`, boots are bare |
 | `turn_rate` | ✓ | ✓ | |
 | `damage_taken` | ✓ | ✓ | incoming multiplier, base 1.0; defensive auras |

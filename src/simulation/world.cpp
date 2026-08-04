@@ -1550,6 +1550,8 @@ void recalculate_modifiers(World& world, u32 id) {
         combat->damage        = compose("damage", base_damage, 0.0f);
         combat->range         = compose("attack_range", base_range, 0.0f);
         combat->acquire_range = compose("acquire_range", def ? def->acquire_range : 0.0f, 0.0f);
+        // Clamped low so stacked slows can't stall a swing or divide by zero.
+        combat->attack_speed  = std::clamp(compose("attack_speed", 1.0f, 0.0f), 0.1f, 5.0f);
     }
 
     if (auto* sight = world.sights.get(id)) {

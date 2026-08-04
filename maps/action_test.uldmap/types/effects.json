@@ -61,5 +61,29 @@
         "height": 135, "radius": 32, "life": 0.75,
         "tyndall": 0.65, "intensity": 1.3,
         "color": { "r": 1.0, "g": 0.3, "b": 0.15, "a": 1 }
+    },
+
+    "rune_haste_burst": {
+        "type": "spray",
+        "count": 26, "speed": 165, "life": 0.6, "size": 8, "gravity": -110,
+        "color": { "r": 1.0, "g": 0.85, "b": 0.25, "a": 1 }
+    },
+    "rune_haste_aura": {
+        "type": "glow",
+        "height": 135, "radius": 30, "life": 0.75,
+        "tyndall": 0.6, "intensity": 1.25,
+        "color": { "r": 1.0, "g": 0.8, "b": 0.2, "a": 1 }
+    },
+
+    "rune_mana_burst": {
+        "type": "spray",
+        "count": 22, "speed": 120, "life": 0.8, "size": 9, "gravity": -90,
+        "color": { "r": 0.45, "g": 0.5, "b": 1.0, "a": 1 }
+    },
+    "rune_mana_aura": {
+        "type": "glow",
+        "height": 140, "radius": 30, "life": 0.9,
+        "tyndall": 0.7, "intensity": 1.2,
+        "color": { "r": 0.4, "g": 0.45, "b": 1.0, "a": 1 }
     }
 }

@@ -1173,6 +1173,10 @@ void ScriptEngine::bind_api() {
         if (!sim.world().contains(u)) return 0;
         auto* c = sim.world().combats.get(u.id); return c ? c->acquire_range : 0;
     };
+    lua["GetUnitAttackSpeed"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* c = sim.world().combats.get(u.id); return c ? c->attack_speed : 0;
+    };
     lua["GetUnitSightRange"] = [&](simulation::Unit u) -> f32 {
         if (!sim.world().contains(u)) return 0;
         auto* s = sim.world().sights.get(u.id); return s ? s->sight_range : 0;

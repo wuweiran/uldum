@@ -1017,18 +1017,9 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
 
             // No valid target — but let backswing/cooldown finish.
             if (!target_valid) {
-                if (combat.attack_state == AttackState::Backswing) {
-                    combat.attack_timer -= dt;
-                    if (combat.attack_timer <= 0) {
-                        combat.attack_state = AttackState::Cooldown;
-                        combat.attack_timer = combat.attack_cooldown - combat.dmg_time - combat.backsw_time;
-                        if (combat.attack_timer < 0) combat.attack_timer = 0;
-                    }
-                } else if (combat.attack_state == AttackState::Cooldown) {
-                    combat.attack_timer -= dt;
-                    if (combat.attack_timer <= 0) {
-                        combat.attack_state = AttackState::Idle;
-                    }
+                if (combat.attack_state == AttackState::Backswing
+                    || combat.attack_state == AttackState::Cooldown) {
+                    advance_swing(combat, dt);
                 }
                 continue;
             }
@@ -1115,8 +1106,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             // forever (never attacks). turn_rate > 0 → turns to face first,
             // then fires.
             if (turn_rate <= 0.0f) {
-                combat.attack_state = AttackState::WindUp;
-                combat.attack_timer = combat.dmg_time;
+                begin_swing(combat);
                 break;
             }
 
@@ -1130,24 +1120,21 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 transform->facing = desired;
             }
             if (std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE) {
-                combat.attack_state = AttackState::WindUp;
-                combat.attack_timer = combat.dmg_time;
+                begin_swing(combat);
             }
             break;
         }
 
         case AttackState::WindUp:
-            combat.attack_timer -= dt;
-            if (combat.attack_timer <= 0) {
-                // FIRE — deal damage or spawn projectile
+        case AttackState::Backswing:
+        case AttackState::Cooldown: {
+            if (!advance_swing(combat, dt)) break;
+
+            if (combat.attack_state == AttackState::Backswing) {
                 Unit self = world.unit(id);
 
-                // Snapshot the attacker position BEFORE spawning the
-                // projectile. spawn_attack_projectile → create_projectile
-                // → world.transforms.add() can reallocate the dense
-                // transform vector, dangling the `transform` pointer
-                // cached at the top of this loop. We only need the
-                // position for the attack sound below, so capture it now.
+                // Capture before spawning: create_projectile can reallocate
+                // the transform pool and dangle `transform`.
                 const glm::vec3 attack_pos = transform->position;
 
                 std::string attack_sound;
@@ -1156,7 +1143,6 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                         attack_sound = def->sound_attack;
                     }
                 }
-                f32 backswing_time = combat.backsw_time;
 
                 if (combat.projectile) {
                     spawn_attack_projectile(world, self, target, combat.damage, *combat.projectile);
@@ -1169,47 +1155,28 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     world.on_sound(attack_sound, attack_pos);
                     if (!world.contains(self)) continue;
                 }
+                break;
+            }
 
+            if (combat.attack_state == AttackState::Idle) {
                 auto* current_combat = world.combats.get(id);
                 if (!current_combat) continue;
-                current_combat->attack_state = AttackState::Backswing;
-                current_combat->attack_timer = backswing_time;
-            }
-            break;
-
-        case AttackState::Backswing:
-            combat.attack_timer -= dt;
-            if (combat.attack_timer <= 0) {
-                combat.attack_state = AttackState::Cooldown;
-                combat.attack_timer = combat.attack_cooldown - combat.dmg_time - combat.backsw_time;
-                if (combat.attack_timer < 0) combat.attack_timer = 0;
-            }
-            break;
-
-        case AttackState::Cooldown:
-            combat.attack_timer -= dt;
-            if (combat.attack_timer <= 0) {
-                // If target still valid and in range, go straight to next swing
-                if (target_valid && dist <= effective_range) {
-                    // Already aligned (or a fixed structure that never turns) —
-                    // start the swing this tick instead of spending one in
-                    // TurningToFace just to re-confirm the facing.
-                    auto* mov = world.movements.get(id);
-                    f32 turn_rate = mov ? mov->turn_rate : 3.0f;
-                    f32 desired = std::atan2(to_target.y, to_target.x);
-                    bool aligned = turn_rate <= 0.0f
-                        || std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE_RAD;
-                    if (aligned) {
-                        combat.attack_state = AttackState::WindUp;
-                        combat.attack_timer = combat.dmg_time;
-                    } else {
-                        combat.attack_state = AttackState::TurningToFace;
-                    }
+                if (!target_valid || dist > effective_range) break;
+                // Skip TurningToFace when already aligned (or a fixed
+                // structure that never turns) — saves a tick.
+                auto* mov = world.movements.get(id);
+                f32 turn_rate = mov ? mov->turn_rate : 3.0f;
+                f32 desired = std::atan2(to_target.y, to_target.x);
+                bool aligned = turn_rate <= 0.0f
+                    || std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE_RAD;
+                if (aligned) {
+                    begin_swing(*current_combat);
                 } else {
-                    combat.attack_state = AttackState::Idle;
+                    current_combat->attack_state = AttackState::TurningToFace;
                 }
             }
             break;
+        }
         }
     }
 }

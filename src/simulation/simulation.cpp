@@ -425,32 +425,19 @@ void Simulation::client_tick(float dt) {
         auto& combat = w.combats.data()[i];
         if (combat.attack_state == AttackState::Idle) continue;
 
-        combat.attack_timer -= dt;
-        if (combat.attack_timer <= 0) {
-            if (combat.attack_state == AttackState::WindUp) {
-                // WindUp → Backswing at the damage point: bump the target's local
-                // hit_count so its renderer plays the flinch clip, matching the
-                // host's system_health (which bumps it only on "attack" damage).
-                if (combat.target.id != UINT32_MAX) {
-                    if (auto* thp = w.healths.get(combat.target.id)) {
-                        ++thp->hit_count;
-                    }
+        if (!advance_swing(combat, dt)) continue;
+
+        if (combat.attack_state == AttackState::Backswing) {
+            // Damage point — bump hit_count so the target's renderer plays
+            // the flinch clip, matching the host's system_health.
+            if (combat.target.id != UINT32_MAX) {
+                if (auto* thp = w.healths.get(combat.target.id)) {
+                    ++thp->hit_count;
                 }
-                combat.attack_state = AttackState::Backswing;
-                combat.attack_timer = combat.backsw_time;
-            } else if (combat.attack_state == AttackState::Backswing) {
-                f32 cooldown = combat.attack_cooldown - combat.dmg_time - combat.backsw_time;
-                if (cooldown > 0) {
-                    combat.attack_state = AttackState::Cooldown;
-                    combat.attack_timer = cooldown;
-                } else {
-                    combat.attack_state = AttackState::WindUp;
-                    combat.attack_timer = combat.dmg_time;
-                }
-            } else if (combat.attack_state == AttackState::Cooldown) {
-                combat.attack_state = AttackState::WindUp;
-                combat.attack_timer = combat.dmg_time;
             }
+        } else if (combat.attack_state == AttackState::Idle) {
+            // The host owns target validity and streams attack_state.
+            begin_swing(combat);
         }
     }
 

@@ -204,11 +204,60 @@ struct Combat {
     std::optional<ProjectileSpec> projectile;  // set → ranged; unset → melee
     f32         acquire_range   = 10.0f;   // auto-attack enemy acquisition range
     u8          target_mask     = TARGET_MASK_SURFACE;  // which target classes this attack can hit
+    f32         attack_speed    = 1.0f;   // rate multiplier; the times above are divided by it
     // Runtime state
     AttackState attack_state    = AttackState::Idle;
     f32         attack_timer    = 0;
+    f32         cooldown_timer  = 0;      // drains every tick, so cooldown overlaps the animation
     Widget      target;   // Unit or Destructable — the thing being attacked
 };
+
+// Effective swing durations. When the cooldown is shorter than the
+// animation, the backswing is dropped first and the fore-swing
+// compressed only if it still doesn't fit.
+inline f32 swing_cooldown(const Combat& c) { return c.attack_cooldown / c.attack_speed; }
+
+inline f32 swing_dmg_time(const Combat& c) {
+    return std::min(c.dmg_time / c.attack_speed, swing_cooldown(c));
+}
+
+inline f32 swing_backsw_time(const Combat& c) {
+    return std::min(c.backsw_time / c.attack_speed,
+                    std::max(0.0f, swing_cooldown(c) - swing_dmg_time(c)));
+}
+
+inline void begin_swing(Combat& c) {
+    c.attack_state   = AttackState::WindUp;
+    c.attack_timer   = swing_dmg_time(c);
+    c.cooldown_timer = swing_cooldown(c);
+}
+
+// Swing phase clock, shared by the host's system_combat and the client's
+// client_tick so the two can't drift. Returns true on the tick a phase
+// ends, leaving the new phase in attack_state: Backswing = damage point,
+// Idle = swing over.
+inline bool advance_swing(Combat& c, f32 dt) {
+    c.cooldown_timer = std::max(0.0f, c.cooldown_timer - dt);
+    c.attack_timer -= dt;
+    if (c.attack_timer > 0) return false;
+
+    switch (c.attack_state) {
+    case AttackState::WindUp:
+        c.attack_state = AttackState::Backswing;
+        c.attack_timer = swing_backsw_time(c);
+        return true;
+    case AttackState::Backswing:
+        c.attack_state = AttackState::Cooldown;
+        c.attack_timer = c.cooldown_timer;
+        if (c.cooldown_timer > 0) return false;
+        [[fallthrough]];
+    case AttackState::Cooldown:
+        c.attack_state = AttackState::Idle;
+        return true;
+    default:
+        return false;
+    }
+}
 
 // Dead unit state — unit becomes a corpse, then eventually gets cleaned up.
 struct Corpse {

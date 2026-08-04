@@ -136,20 +136,24 @@ end
 -- VFX pair (a burst where the book shatters + an aura over the hero). Each
 -- rune keys a distinct colour so the player reads the reward at a glance.
 --
--- These are permanent bumps, and the two kinds of stat take different
+-- These are permanent bumps, and the three kinds of stat take different
 -- routes. `armor` is map-defined — the map owns it, so it's a plain
--- read-modify-write. move_speed / damage are engine properties with no
--- setter, so their running total accumulates on a single `rune_bonus`
--- passive rather than one AbilityInstance per pickup: eating 100 books is
--- then one number, not 100 instances the tick loop walks forever.
+-- read-modify-write. The built-in properties have no setter, so their
+-- running total accumulates on a single `rune_bonus` passive rather than
+-- one AbilityInstance per pickup: eating 100 books is then one number,
+-- not 100 instances the tick loop walks forever. State max/regen needs a
+-- `state_modifier` ability, so it accumulates on its own instance.
 local RUNES = {
-    { attr = "armor",      delta = 1, builtin = false, burst = "rune_armor_burst", aura = "rune_armor_aura" },
-    { attr = "move_speed", delta = 3, builtin = true,  burst = "rune_swift_burst", aura = "rune_swift_aura" },
-    { attr = "damage",     delta = 2, builtin = true,  burst = "rune_might_burst", aura = "rune_might_aura" },
+    { attr = "armor",             delta = 2,   kind = "attribute", burst = "rune_armor_burst", aura = "rune_armor_aura" },
+    { attr = "move_speed",        delta = 5,   kind = "builtin",   burst = "rune_swift_burst", aura = "rune_swift_aura" },
+    { attr = "damage",            delta = 4,   kind = "builtin",   burst = "rune_might_burst", aura = "rune_might_aura" },
+    { attr = "attack_speed",      delta = 0.1, kind = "builtin",   burst = "rune_haste_burst", aura = "rune_haste_aura" },
+    { attr = "mana.regen",        delta = 0.8, kind = "state",     burst = "rune_mana_burst",  aura = "rune_mana_aura"  },
 }
 
 function register_rune_system()
-    -- Drop: 1-in-3 per creep death, spawned where the corpse fell.
+    -- Drop: 1-in-3 per creep death, spawned where the corpse fell. A fifth
+    -- of those are mana tomes instead of runes.
     local drop_trig = CreateTrigger()
     TriggerRegisterEvent(drop_trig, EVENT_GLOBAL_DEATH)
     TriggerAddCondition(drop_trig, function()
@@ -174,15 +178,16 @@ function register_rune_system()
         if not (hero and item) then return end
 
         local rune = RUNES[RandomInt(1, #RUNES)]
-        if rune.builtin then
-            if not HasAbility(hero, "rune_bonus") then
-                AddAbility(hero, "rune_bonus")
-            end
-            SetAbilityModifier(hero, "rune_bonus", rune.attr,
-                GetAbilityModifier(hero, "rune_bonus", rune.attr) + rune.delta)
-        else
+        if rune.kind == "attribute" then
             SetUnitAttribute(hero, rune.attr,
                 GetUnitAttribute(hero, rune.attr) + rune.delta)
+        else
+            local ability = rune.kind == "state" and "rune_state_bonus" or "rune_bonus"
+            if not HasAbility(hero, ability) then
+                AddAbility(hero, ability)
+            end
+            SetAbilityModifier(hero, ability, rune.attr,
+                GetAbilityModifier(hero, ability, rune.attr) + rune.delta)
         end
 
         local ix, iy, iz = GetItemPosition(item)

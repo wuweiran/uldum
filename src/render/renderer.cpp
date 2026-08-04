@@ -669,8 +669,10 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
         // changed since last frame) so the renderer retriggers the
         // attack clip from frame 0.
         bool new_swing = false;
+        f32 dmg_time = simulation::swing_dmg_time(*combat);
+        f32 backsw_time = simulation::swing_backsw_time(*combat);
         if (combat->attack_state == AttackState::WindUp &&
-            combat->attack_timer > combat->dmg_time * 0.8f) {
+            combat->attack_timer > dmg_time * 0.8f) {
             u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);
             if (swing_id != anim.attack_swing_id) {
                 anim.attack_swing_id = swing_id;
@@ -679,9 +681,9 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
         }
         AttackAnimInfo info;
         info.dmg_point  = combat->dmg_pt;
-        info.cast_point = combat->dmg_time;
-        info.backswing  = combat->backsw_time;
-        f32 dur = combat->dmg_time + combat->backsw_time;
+        info.cast_point = dmg_time;
+        info.backswing  = backsw_time;
+        f32 dur = dmg_time + backsw_time;
         return {AnimState::Attack, dur, new_swing, info, true};
     }
 

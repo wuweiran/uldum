@@ -3,7 +3,14 @@
         "name": "Rune Bonuses",
         "form": "passive",
         "levels": [
-            { "modifiers": { "move_speed": 0, "damage": 0 } }
+            { "modifiers": { "move_speed": 0, "damage": 0, "attack_speed": 0 } }
+        ]
+    },
+    "rune_state_bonus": {
+        "name": "Rune Bonuses",
+        "form": "state_modifier",
+        "levels": [
+            { "modifiers": { "mana.regen": 0 } }
         ]
     },
     "devotion_aura": {
