@@ -9,6 +9,7 @@ static constexpr const char* TAG = "AbilityRegistry";
 AbilityForm parse_ability_form(const std::string& s) {
     if (s == "passive_modifier") return AbilityForm::PassiveModifier;
     if (s == "passive_flag")     return AbilityForm::PassiveFlag;
+    if (s == "state_modifier")   return AbilityForm::StateModifier;
     // Legacy alias — older defs used "passive" for what is now passive_modifier.
     if (s == "passive")          return AbilityForm::PassiveModifier;
     if (s == "aura")             return AbilityForm::Aura;

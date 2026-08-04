@@ -136,16 +136,16 @@ end
 -- VFX pair (a burst where the book shatters + an aura over the hero). Each
 -- rune keys a distinct colour so the player reads the reward at a glance.
 --
--- These are permanent, same-source bumps, so they go through the base layer
--- directly (read-modify-write on GetUnitBaseAttribute → SetUnitBaseAttribute)
--- rather than stacking an ability instance per pickup. Eating 100 books is
--- then one number, not 100 AbilityInstances the tick loop walks forever.
--- (An ability would be the right call instead if these needed to expire or
--- be strippable — the base layer is for the sticky part.)
+-- These are permanent bumps, and the two kinds of stat take different
+-- routes. `armor` is map-defined — the map owns it, so it's a plain
+-- read-modify-write. move_speed / damage are engine properties with no
+-- setter, so their running total accumulates on a single `rune_bonus`
+-- passive rather than one AbilityInstance per pickup: eating 100 books is
+-- then one number, not 100 instances the tick loop walks forever.
 local RUNES = {
-    { attr = "armor",      delta = 1,  burst = "rune_armor_burst", aura = "rune_armor_aura" },
-    { attr = "move_speed", delta = 3, burst = "rune_swift_burst", aura = "rune_swift_aura" },
-    { attr = "damage",     delta = 2,  burst = "rune_might_burst", aura = "rune_might_aura" },
+    { attr = "armor",      delta = 1, builtin = false, burst = "rune_armor_burst", aura = "rune_armor_aura" },
+    { attr = "move_speed", delta = 3, builtin = true,  burst = "rune_swift_burst", aura = "rune_swift_aura" },
+    { attr = "damage",     delta = 2, builtin = true,  burst = "rune_might_burst", aura = "rune_might_aura" },
 }
 
 function register_rune_system()
@@ -174,8 +174,16 @@ function register_rune_system()
         if not (hero and item) then return end
 
         local rune = RUNES[RandomInt(1, #RUNES)]
-        SetUnitBaseAttribute(hero, rune.attr,
-            GetUnitBaseAttribute(hero, rune.attr) + rune.delta)
+        if rune.builtin then
+            if not HasAbility(hero, "rune_bonus") then
+                AddAbility(hero, "rune_bonus")
+            end
+            SetAbilityModifier(hero, "rune_bonus", rune.attr,
+                GetAbilityModifier(hero, "rune_bonus", rune.attr) + rune.delta)
+        else
+            SetUnitAttribute(hero, rune.attr,
+                GetUnitAttribute(hero, rune.attr) + rune.delta)
+        end
 
         local ix, iy, iz = GetItemPosition(item)
         PlayEffect(rune.burst, ix, iy, iz)

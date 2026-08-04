@@ -586,6 +586,8 @@ void deal_damage(World& world, Unit source, Widget target, f32 amount, std::stri
     auto* hp = world.healths.get(target.id);
     if (!hp || hp->current <= 0) return;
 
+    amount *= hp->damage_taken;
+
     // Invulnerability and the on_damage trigger are unit-only (a crate can't be
     // invulnerable, and GetTriggerUnit is never a crate). Non-units skip both and
     // take HP damage directly.
@@ -1454,15 +1456,23 @@ void recalculate_modifiers(World& world, u32 id) {
     // `_mult` values are unit fractions (-0.5 = -50%, +0.25 = +25%) —
     // multiple sources sum before the (1 + sum) multiplier applies.
     //
-    // flat/pct are built from ability_sets unconditionally because
-    // they feed three independent passes: the AttributeBlock numeric
-    // map (skipped if the unit has no attributes), the Movement speed,
-    // and the Renderable visual alpha. The latter two need to keep
-    // working on attribute-less units (e.g. summons with a slow / fade
-    // buff but no JSON `attributes` block) — the old early-return on
-    // missing AttributeBlock skipped both.
+    // flat/pct are built from ability_sets unconditionally because they
+    // feed both the AttributeBlock numeric map (skipped if the unit has
+    // no attributes) and the built-in property passes below, which must
+    // keep working on attribute-less units (e.g. summons with a slow
+    // buff but no JSON `attributes` block).
+    //
+    // State max/regen compose separately: max resolves first so a
+    // regen_pct_max contribution reads the finished max, not the base.
     std::unordered_map<std::string, f32> flat;
     std::unordered_map<std::string, f32> pct;
+
+    // State modifiers, keyed by state name. Only `state_modifier` abilities
+    // contribute; a dotted key elsewhere is dropped.
+    struct StateDelta {
+        f32 max = 0, max_mult = 0, regen = 0, regen_mult = 0, regen_pct_max = 0;
+    };
+    std::unordered_map<std::string, StateDelta> state_deltas;
 
     auto strip_suffix = [](std::string_view k, std::string_view suffix) -> std::string {
         return std::string(k.substr(0, k.size() - suffix.size()));
@@ -1470,7 +1480,25 @@ void recalculate_modifiers(World& world, u32 id) {
 
     if (auto* aset = world.ability_sets.get(id)) {
         for (const auto& inst : aset->abilities) {
+            const AbilityDef* adef =
+                world.abilities ? world.abilities->get(inst.ability_id) : nullptr;
+            bool is_state_form = adef && adef->form == AbilityForm::StateModifier;
+
             for (const auto& [k, delta] : inst.active_modifiers) {
+                auto dot = k.find('.');
+                if (dot != std::string::npos) {
+                    if (!is_state_form) continue;
+                    std::string state = k.substr(0, dot);
+                    std::string field = k.substr(dot + 1);
+                    auto& d = state_deltas[state];
+                    if      (field == "max")           d.max           += delta;
+                    else if (field == "max_mult")      d.max_mult      += delta;
+                    else if (field == "regen")         d.regen         += delta;
+                    else if (field == "regen_mult")    d.regen_mult    += delta;
+                    else if (field == "regen_pct_max") d.regen_pct_max += delta;
+                    continue;
+                }
+                if (is_state_form) continue;
                 std::string_view kv{k};
                 if (kv.size() > 5 && kv.substr(kv.size() - 5) == "_mult") {
                     pct[strip_suffix(kv, "_mult")] += delta;
@@ -1491,74 +1519,93 @@ void recalculate_modifiers(World& world, u32 id) {
         }
     }
 
-    // Movement speed. Lives on Movement, not in the attribute block, so
-    // it needs an explicit pass: rebuild the base from the per-unit
-    // override (what SetUnitAttribute last wrote to base["move_speed"])
-    // or, absent one, the type def, then re-apply move_speed (additive) /
-    // move_speed_mult every recalc.
+    const UnitTypeDef* def = nullptr;
+    if (world.types) {
+        if (auto* info = world.handle_infos.get(id)) {
+            def = world.types->get_unit_type(info->type_id);
+        }
+    }
+
+    // Built-in properties live on their own components, not in the
+    // attribute block, so each needs the base pulled from the type def
+    // and the modifiers re-applied here. A property missing from this
+    // table would land in the attribute block's numeric map, which no
+    // system reads — the modifier would silently do nothing.
+    auto compose = [&](const char* key, f32 base, f32 min) {
+        auto fit = flat.find(key);
+        auto pit = pct.find(key);
+        f32 fv = (fit != flat.end()) ? fit->second : 0.0f;
+        f32 pv = (pit != pct.end())  ? pit->second  : 0.0f;
+        return std::max(min, (base + fv) * (1.0f + pv));
+    };
+
     if (auto* mov = world.movements.get(id)) {
-        f32 base_speed = 0;
-        if (world.types) {
-            if (auto* info = world.handle_infos.get(id)) {
-                if (auto* def = world.types->get_unit_type(info->type_id)) {
-                    base_speed = def->move_speed;
-                }
-            }
-        }
-        if (auto* attrs = world.attribute_blocks.get(id)) {
-            auto it = attrs->base.find("move_speed");
-            if (it != attrs->base.end()) base_speed = it->second;
-        }
-        auto fit = flat.find("move_speed");
-        auto pit = pct.find("move_speed");
-        f32 fv = (fit != flat.end()) ? fit->second : 0.0f;
-        f32 pv = (pit != pct.end())  ? pit->second  : 0.0f;
-        mov->speed = std::max(0.0f, (base_speed + fv) * (1.0f + pv));
+        mov->speed     = compose("move_speed", def ? def->move_speed : 0.0f, 0.0f);
+        mov->turn_rate = compose("turn_rate",  def ? def->turn_rate  : 0.0f, 0.0f);
     }
 
-    // Attack damage. Like move_speed, it lives on its own component
-    // (Combat), not in the attribute block, so it needs an explicit pass:
-    // rebuild the base from the per-unit override (base["damage"]) or the
-    // type def, then re-apply damage (additive) / damage_mult. Without
-    // this, a passive `modifiers: { damage: N }` writes into the attribute
-    // block's numeric map — which the attack path never reads — and the
-    // buff silently does nothing.
     if (auto* combat = world.combats.get(id)) {
-        f32 base_damage = 0;
-        if (world.types) {
-            if (auto* info = world.handle_infos.get(id)) {
-                if (auto* def = world.types->get_unit_type(info->type_id)) {
-                    if (def->weapon) base_damage = def->weapon->damage;
-                }
-            }
-        }
-        if (auto* attrs = world.attribute_blocks.get(id)) {
-            auto it = attrs->base.find("damage");
-            if (it != attrs->base.end()) base_damage = it->second;
-        }
-        auto fit = flat.find("damage");
-        auto pit = pct.find("damage");
-        f32 fv = (fit != flat.end()) ? fit->second : 0.0f;
-        f32 pv = (pit != pct.end())  ? pit->second  : 0.0f;
-        combat->damage = std::max(0.0f, (base_damage + fv) * (1.0f + pv));
+        f32 base_damage = (def && def->weapon) ? def->weapon->damage : 0.0f;
+        f32 base_range  = (def && def->weapon) ? def->weapon->attack_range : 0.0f;
+        combat->damage        = compose("damage", base_damage, 0.0f);
+        combat->range         = compose("attack_range", base_range, 0.0f);
+        combat->acquire_range = compose("acquire_range", def ? def->acquire_range : 0.0f, 0.0f);
     }
 
-    // Visual attributes (alpha, eventually scale / tint) live on
-    // Renderable rather than the attribute block — the renderer reads
-    // them every frame without an attribute lookup. Compose them here
-    // so abilities, not Lua setters, drive the values. Base is the
-    // multiplicative identity (1.0); buffs declare `visual_alpha_mult`
-    // as a unit-fraction (e.g. -0.5 for a half-translucent ghost).
-    // Multiple sources sum.
+    if (auto* sight = world.sights.get(id)) {
+        sight->sight_range = compose("sight_range", def ? def->sight_range : 0.0f, 0.0f);
+    }
+
+    if (auto* t = world.transforms.get(id)) {
+        t->scale = compose("scale", def ? def->model_scale : 1.0f, 0.0f);
+    }
+
+    // visual_alpha has no type-def base — it is identity-based, so each
+    // source contributes only a `_mult` unit fraction.
     if (auto* r = world.renderables.get(id)) {
-        f32 alpha_mult_sum = 0.0f;
-        if (auto* aset = world.ability_sets.get(id)) {
-            for (const auto& inst : aset->abilities) {
-                auto it = inst.active_modifiers.find("visual_alpha_mult");
-                if (it != inst.active_modifiers.end()) alpha_mult_sum += it->second;
-            }
+        r->visual_alpha = std::clamp(compose("visual_alpha", 1.0f, 0.0f), 0.0f, 1.0f);
+    }
+
+    // States. `health` is a state name like any other, routed to the Health
+    // component; everything else lives in the state block. Current scales
+    // with max so a +max buff grants proportional current and dropping it
+    // can't leave the unit above the new cap (or, for health, kill it).
+    auto compose_state = [](const StateDelta& d, f32 base_max, f32 base_regen,
+                            f32& cur, f32& max, f32& regen) {
+        f32 new_max = std::max(0.0f, (base_max + d.max) * (1.0f + d.max_mult));
+        if (max > 0.0f && new_max != max) {
+            cur = std::clamp(cur * (new_max / max), 0.0f, new_max);
         }
-        r->visual_alpha = std::clamp(1.0f + alpha_mult_sum, 0.0f, 1.0f);
+        max = new_max;
+        if (cur > new_max) cur = new_max;
+        regen = (base_regen + d.regen) * (1.0f + d.regen_mult)
+              + d.regen_pct_max * new_max;
+    };
+
+    static const StateDelta no_delta{};
+
+    if (auto* hp = world.healths.get(id)) {
+        hp->damage_taken = compose("damage_taken", 1.0f, 0.0f);
+        auto it = state_deltas.find("health");
+        const StateDelta& d = (it != state_deltas.end()) ? it->second : no_delta;
+        compose_state(d, def ? def->max_health : 0.0f, def ? def->health_regen : 0.0f,
+                      hp->current, hp->max, hp->regen_per_sec);
+    }
+
+    if (auto* sb = world.state_blocks.get(id)) {
+        for (auto& [name, sv] : sb->states) {
+            f32 base_max = 0, base_regen = 0;
+            if (def) {
+                auto dit = def->states.find(name);
+                if (dit != def->states.end()) {
+                    base_max   = dit->second.max;
+                    base_regen = dit->second.regen;
+                }
+            }
+            auto it = state_deltas.find(name);
+            const StateDelta& d = (it != state_deltas.end()) ? it->second : no_delta;
+            compose_state(d, base_max, base_regen, sv.current, sv.max, sv.regen_per_sec);
+        }
     }
 }
 

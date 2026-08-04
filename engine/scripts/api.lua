@@ -343,18 +343,71 @@ function GetUnitMaxHealth(unit) end
 function SetUnitHealth(unit, hp) end
 
 --------------------------------------------------------------------------------
--- States (map-defined: mana, energy, etc.)
+-- Built-in properties
+--
+-- Read-only. Each value is composed every recalc from the unit type's
+-- definition plus the modifiers of every active ability, so a setter would
+-- be overwritten on the next one. To change a property, put it in an
+-- ability's `modifiers` — see SetAbilityModifier for a running total.
 --------------------------------------------------------------------------------
 
 ---@param unit unit
----@param state_id string   e.g. "mana"
 ---@return number
-function GetUnitState(unit, state_id) end
+function GetUnitMoveSpeed(unit) end
+
+---@param unit unit
+---@return number radians per second
+function GetUnitTurnRate(unit) end
+
+---@param unit unit
+---@return number
+function GetUnitDamage(unit) end
+
+---@param unit unit
+---@return number
+function GetUnitAttackRange(unit) end
+
+---@param unit unit
+---@return number
+function GetUnitAcquireRange(unit) end
+
+---@param unit unit
+---@return number
+function GetUnitSightRange(unit) end
+
+---@param unit unit
+---@return number hp per second
+function GetUnitHealthRegen(unit) end
+
+--- Incoming-damage multiplier (1.0 = unmodified).
+---@param unit unit
+---@return number
+function GetUnitDamageTaken(unit) end
+
+---@param unit unit
+---@return number render scale
+function GetUnitScale(unit) end
+
+--------------------------------------------------------------------------------
+-- States (map-defined: mana, energy, etc., plus the built-in "health")
+--
+-- Max and regen are read-only — `state_modifier` abilities are the setter.
+--------------------------------------------------------------------------------
+
+---@param unit unit
+---@param state_id string   e.g. "mana", "health"
+---@return number
+function GetUnitCurrentState(unit, state_id) end
 
 ---@param unit unit
 ---@param state_id string
 ---@return number
 function GetUnitMaxState(unit, state_id) end
+
+---@param unit unit
+---@param state_id string
+---@return number per-second regeneration
+function GetUnitStateRegen(unit, state_id) end
 
 ---@param unit unit
 ---@param state_id string
@@ -365,28 +418,21 @@ function SetUnitState(unit, state_id, value) end
 -- Attributes (map-defined: armor, strength, etc.)
 --------------------------------------------------------------------------------
 
---- Get a numeric attribute's EFFECTIVE value (base + all active
---- ability/item/aura modifiers) — what combat and movement actually use.
+--- Get a map-defined numeric attribute (e.g. "armor", "strength"). The
+--- engine stores and syncs these but interprets none of them — the map
+--- that defines an attribute owns what it means. Built-in properties
+--- (move_speed, damage, ...) are not reachable here; they have their own
+--- getters and are driven by abilities.
 ---@param unit unit
 ---@param attr_id string   e.g. "armor", "strength"
 ---@return number
 function GetUnitAttribute(unit, attr_id) end
 
---- Get a numeric attribute's BASE value (pre-modifier). Use this for
---- read-modify-write (e.g. a permanent +2) so a transient aura bonus
---- isn't folded into the base.
----@param unit unit
----@param attr_id string
----@return number
-function GetUnitBaseAttribute(unit, attr_id) end
-
---- Set a numeric attribute's BASE value. The effective value is computed
---- (base + modifiers) and can't be set directly — the next recalc would
---- overwrite it. Modifiers still stack on top of the new base.
+--- Set a map-defined numeric attribute.
 ---@param unit unit
 ---@param attr_id string
 ---@param value number
-function SetUnitBaseAttribute(unit, attr_id, value) end
+function SetUnitAttribute(unit, attr_id, value) end
 
 --- Get a string attribute (e.g. "armor_type").
 ---@param unit unit
@@ -616,6 +662,15 @@ function GetProjectileSource() end
 ---@param value number
 ---@return boolean
 function SetAbilityModifier(unit, ability_id, key, value) end
+
+--- Current value of a modifier on the first matching ability instance.
+--- Read side of SetAbilityModifier — makes a running total (stacking
+--- pickups, ramping buffs) a read-modify-write on the owning ability.
+---@param unit unit
+---@param ability_id string
+---@param key string
+---@return number   0 if the unit lacks the ability or the key
+function GetAbilityModifier(unit, ability_id, key) end
 
 ---@param unit unit
 ---@param ability_id string

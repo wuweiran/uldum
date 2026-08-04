@@ -29,11 +29,11 @@ Channelling is not itself a form. Any active form can carry a `channel_time` on 
 Always active while on the unit. Contributes numeric modifiers — either unit attributes (damage, armor, move_speed, …) or ability-scoped attributes (cooldown, cast_range, mana_cost, …). The two share the same `modifiers` map; the key namespace is what differs (see [Modifier Surface](#modifier-surface) below).
 
 **Engine handles:**
-- Apply/revert contributions on add / remove / level-change via `recalculate_modifiers`
+- Apply/revert contributions on add / remove / level-change
 - Optional `duration` on the per-level data — instance auto-removes on expiry
 
 **Map defines:**
-- `modifiers`: attribute deltas keyed by attribute name + `_flat` / `_percent` suffix (e.g., `armor_flat: 3`, `move_speed_percent: -25`, `cooldown_percent: -10`). Engine looks up which namespace each key belongs to.
+- `modifiers`: deltas keyed by property name, bare for additive or with a `_mult` suffix for multiplicative (e.g., `armor: 3`, `move_speed_mult: -0.25`, `cooldown_mult: -0.1`). Engine looks up which namespace each key belongs to.
 
 ### passive_flag
 
@@ -48,6 +48,29 @@ Always active while on the unit. Toggles one or more **refcounted** status flags
 - `flags`: list of flag names to apply (e.g., `["silenced", "no_acquire"]`)
 
 The refcount semantics mean two abilities both applying `silenced` cleanly compose — removing one leaves silence in effect until the other is also removed. Multiple sources of the same flag never trample each other.
+
+### state_modifier
+
+Always active while on the unit. Adjusts the **max** and **regeneration** of one or more states — either a map-defined state (`mana`, `energy`, …) or the built-in `health`.
+
+Modifier keys are dotted: `<state>.<field>`, where the state name is whatever the unit type declared. The five fields:
+
+| Field | Meaning |
+|---|---|
+| `max` | additive bonus to the state's max |
+| `max_mult` | multiplies the max, unit fraction (`0.25` = +25%) |
+| `regen` | additive bonus to per-second regeneration |
+| `regen_mult` | multiplies the regeneration, unit fraction |
+| `regen_pct_max` | regeneration as a fraction of the finished max (`0.01` = 1% of max per second) |
+
+**Engine handles:**
+- Composing max first, then regeneration, so `regen_pct_max` always reads the final max
+- Scaling the current value with the max, so a max buff grants proportional current and dropping it can never leave the unit above the new cap
+- Naming a state the unit doesn't have, or using a field outside the five above, does nothing
+
+Dotted keys only mean something on this form; bare keys only mean something on the other forms. Either one in the wrong place is silently ignored.
+
+Lua reads the result with `GetUnitCurrentState`, `GetUnitMaxState`, `GetUnitStateRegen`. Only the current value has a setter — max and regen are recomposed every recalculation, so abilities are the only way to change them.
 
 ### aura
 
@@ -113,7 +136,7 @@ All fields are optional except `form`. Omitted fields use these defaults:
 |-------|---------|-------|
 | `name` | `""` | Display name |
 | `icon` | `""` | Icon texture path |
-| `form` | **(required)** | `passive_modifier`, `passive_flag`, `aura`, `instant`, `target` |
+| `form` | **(required)** | `passive_modifier`, `passive_flag`, `state_modifier`, `aura`, `instant`, `target` |
 | `widget_kinds` | `[]` | Target form only: widget categories the cursor snaps to (`unit` / `destructable` / `item`) |
 | `accept_point` | `false` | Target form only: cursor falls through to ground when no widget snaps |
 | `stackable` | `false` | If false, duplicate instances refresh duration instead of stacking |
@@ -137,7 +160,7 @@ Each entry in `levels[]` uses these defaults for omitted fields:
 | `backsw_time` | `0` | No recovery |
 | `damage` | `0` | |
 | `heal` | `0` | |
-| `modifiers` | `{}` | Attribute deltas keyed by `<attr>_flat` / `<attr>_percent`. Usually paired with `form: passive_modifier`, but a `passive_flag` buff may also declare them when the same conceptual effect bundles flags and stat changes (e.g. Wind Walk: invisible flag + alpha modifier). |
+| `modifiers` | `{}` | Deltas keyed by `<prop>` / `<prop>_mult`. Usually paired with `form: passive_modifier`, but a `passive_flag` buff may also declare them when the same conceptual effect bundles flags and stat changes (e.g. Wind Walk: invisible flag + alpha modifier). |
 | `flags` | `[]` | Refcounted status flags applied while the ability is active. Usually paired with `form: passive_flag`, but `passive_modifier` may also declare them when the bundle is naturally one effect. |
 | `duration` | `-1` | `-1` = permanent (innate), `>= 0` = timed (auto-removed on expiry) |
 | `aura_radius` | `0` | Aura form only |
@@ -147,7 +170,7 @@ Each entry in `levels[]` uses these defaults for omitted fields:
 
 A minimal ability definition only needs `form`:
 ```json
-{ "my_passive_buff": { "form": "passive_modifier", "levels": [{ "modifiers": { "armor_flat": 3 } }] } }
+{ "my_passive_buff": { "form": "passive_modifier", "levels": [{ "modifiers": { "armor": 3 } }] } }
 ```
 
 ### Examples
@@ -186,9 +209,9 @@ A minimal ability definition only needs `form`:
         "form": "passive_modifier",
         "max_level": 3,
         "levels": [
-            { "modifiers": { "armor_flat": 1.5 }, "duration": 0.35 },
-            { "modifiers": { "armor_flat": 3.0 }, "duration": 0.35 },
-            { "modifiers": { "armor_flat": 4.5 }, "duration": 0.35 }
+            { "modifiers": { "armor": 1.5 }, "duration": 0.35 },
+            { "modifiers": { "armor": 3.0 }, "duration": 0.35 },
+            { "modifiers": { "armor": 4.5 }, "duration": 0.35 }
         ]
     },
     "frost_slow": {
@@ -197,7 +220,7 @@ A minimal ability definition only needs `form`:
         "stackable": false,
         "max_level": 1,
         "levels": [
-            { "modifiers": { "move_speed_percent": -25 }, "duration": 3.0 }
+            { "modifiers": { "move_speed_mult": -0.25 }, "duration": 3.0 }
         ]
     },
     "windwalk_invisible": {
@@ -216,7 +239,7 @@ A minimal ability definition only needs `form`:
         "stackable": true,
         "max_level": 1,
         "levels": [
-            { "modifiers": { "armor_flat": 5 } }
+            { "modifiers": { "armor": 5 } }
         ]
     },
     "immolation": {
@@ -346,35 +369,37 @@ Ability cost references map-defined states by name:
 
 ## Modifier System
 
-`passive_modifier` abilities declare attribute deltas in a flat `modifiers` map. Each key carries its composition rule in the suffix:
+`passive_modifier` abilities declare deltas in a flat `modifiers` map. The key carries its composition rule:
 
-- `<attr>_flat` — additive (sums across all active instances)
-- `<attr>_percent` — percentage of base (sums and composes via `(1 + sum/100)`)
+- `<prop>` — bare key, additive (sums across all active instances)
+- `<prop>_mult` — multiplicative, as a unit fraction (sums, then composes via `(1 + sum)`)
 
 ```json
 "modifiers": {
-    "armor_flat": 3,
-    "move_speed_percent": -25,
-    "attack_speed_percent": 15,
-    "cooldown_percent": -10
+    "armor": 3,
+    "move_speed_mult": -0.25,
+    "damage": 12,
+    "cooldown_mult": -0.1
 }
 ```
 
-### Two attribute namespaces
+`_mult` is the only special suffix; anything else is a bare key. Values are unit fractions, not percentages — `-0.25` is −25%.
 
-The engine routes keys to one of two namespaces based on the attribute name. Authors don't pick the namespace — it's an attribute property.
+### Two namespaces
 
-| Namespace | Scope | Attributes |
+The engine routes keys to one of two namespaces based on the name. Authors don't pick the namespace — it's a property of the key.
+
+| Namespace | Scope | Keys |
 |---|---|---|
-| **unit** | the carrier's own stats | `damage`, `armor`, `move_speed`, `max_hp`, `hp_regen`, `max_mana`, `mana_regen`, `sight_range`, `true_sight`, `acquire_range`, `attack_range`, `attack_speed`, `magic_resistance`, `damage_taken`, `scale`, `visual_alpha` |
+| **unit** | the carrier's own stats | the built-in properties listed under Modifier Surface, plus any map-defined attribute |
 | **ability** | every ability on the carrier | `cooldown`, `cast_range`, `mana_cost`, `cast_time`, `duration` |
 
 To scope an ability-namespace modifier to specific ability ids, dot-qualify the key:
 
 ```json
 "modifiers": {
-    "wind_walk.cooldown_flat": -2,
-    "cooldown_percent": -10
+    "wind_walk.cooldown": -2,
+    "cooldown_mult": -0.1
 }
 ```
 
@@ -382,44 +407,45 @@ The first row applies only to `wind_walk`'s cooldown; the second applies to ever
 
 ### Recalculation
 
-When an ability is added / removed / leveled, the engine recomputes effective values for the affected attributes:
+When an ability is added / removed / leveled, the engine recomputes effective values for the affected properties:
 
 ```
-effective(attr) = base(attr) + sum(*_flat contributions)
-                            * (1 + sum(*_percent contributions) / 100)
+effective(prop) = (base(prop) + sum(bare-key contributions))
+                             * (1 + sum(*_mult contributions))
 ```
 
-Systems read effective values, not base values. The recompute is keyed off attribute name so unrelated stats aren't disturbed.
+A bare key is additive; the `_mult` suffix is the only special one, and its values are unit fractions (`-0.5` = −50%, `+0.25` = +25%). Multiple `_mult` sources sum before the `(1 + sum)` factor applies, so two −50% slows leave a unit at 0, not 25%.
+
+Systems read effective values, not base values. The recompute is keyed off the property name so unrelated stats aren't disturbed.
 
 ## Modifier Surface
 
-The full list of properties an ability can modify, what kind of modifier each one accepts, and which form expresses it.
+### Built-in properties (`passive_modifier`)
 
-### Unit-namespace attributes (`passive_modifier`)
+These are engine-owned: the engine's own systems read them directly, and each value is composed from the unit type's base plus every active ability modifier. Abilities are the **only** setter — there is no Lua setter, because the next recompute would overwrite it. Read them with the matching `GetUnit*` accessor.
 
-| Attribute | `_flat` | `_percent` | Notes |
+| Property | bare | `_mult` | Notes |
 |---|---|---|---|
-| `damage` | ✓ | ✓ | mult covers crit-amp passives |
-| `attack_range` | ✓ | — | |
-| `attack_speed` | — | ✓ | scales `attack_cooldown` |
-| `acquire_range` | ✓ | — | numeric only; on/off goes to the `no_acquire` flag |
-| `move_speed` | ✓ | ✓ | slow is `_percent`, boots are `_flat` |
-| `turn_rate` | — | ✓ | rare |
-| `max_hp` | ✓ | — | Strength items |
-| `hp_regen` | ✓ | — | |
-| `damage_taken` | — | ✓ | defensive auras |
-| `max_mana` | ✓ | — | Intelligence |
-| `mana_regen` | ✓ | — | |
-| `sight_range` | ✓ | — | |
-| `true_sight` | ✓ | — | gem |
-| `armor` | ✓ | — | Faerie Fire = −2 |
-| `magic_resistance` | ✓ | ✓ | |
-| `scale` | — | ✓ | Grow / Shrink |
-| `visual_alpha` | — | ✓ | each source contributes a factor; final = product |
+| `damage` | ✓ | ✓ | `_mult` covers crit-amp passives |
+| `attack_range` | ✓ | ✓ | |
+| `acquire_range` | ✓ | ✓ | numeric only; on/off goes to the `no_acquire` flag |
+| `move_speed` | ✓ | ✓ | slow is `_mult`, boots are bare |
+| `turn_rate` | ✓ | ✓ | |
+| `damage_taken` | ✓ | ✓ | incoming multiplier, base 1.0; defensive auras |
+| `sight_range` | ✓ | ✓ | |
+| `scale` | ✓ | ✓ | Grow / Shrink |
+| `visual_alpha` | — | ✓ | base is identity 1.0; `_mult` only |
+| `true_sight` | ✓ | ✓ | |
+
+A modifier key that is neither a built-in property nor a map-defined attribute has no effect — nothing reads it.
+
+### Map-defined attributes
+
+`armor`, `magic_resistance`, `strength`, and anything else a map invents are **not** on the list above. The engine stores and syncs them but interprets none of them, so the map that defines an attribute also owns how it applies. Abilities can still modify them — a temporary, refcounted aura bonus is exactly what `passive_modifier` is for — and Lua reads the result with `GetUnitAttribute`. For permanent bumps that never expire, `SetUnitAttribute` directly is simpler than carrying an ability instance.
 
 ### Ability-namespace attributes (`passive_modifier`)
 
-| Attribute | `_flat` | `_percent` | Notes |
+| Attribute | bare | `_mult` | Notes |
 |---|---|---|---|
 | `cooldown` | ✓ | ✓ | Aghs-style ult cooldown reduction |
 | `cast_range` | ✓ | ✓ | |
@@ -444,7 +470,7 @@ All refcounted booleans — flag is "on" while at least one source applies it.
 | `magic_immune` | reject hostile casts, unless `pierces_immune` |
 | `untargetable` | reject clicks / direct casts / picker |
 | `unattackable` | reject auto-attack acquire and attack orders |
-| `ethereal` | composite — typically `untargetable` + a `damage_taken_percent` shift |
+| `ethereal` | composite — typically `untargetable` + a `damage_taken_mult` shift |
 | `invisible` | per-player visibility cull |
 
 ## Aura Scanning
@@ -510,11 +536,11 @@ calls the registered Lua callback if one exists for that ability id. If no callb
 registered, the engine just runs the mechanical part (e.g., a passive with modifiers needs
 no Lua at all).
 
-## AoE-around-caster Indicator (`IndicatorShape::AreaSelf`)
+## AoE-around-caster Indicator (planned)
 
-`IndicatorShape` only renders for `target`-form abilities that hit the ground. Instant abilities with an area effect (Thunder Clap, War Stomp) need their own indicator — the player can't see the radius before casting.
+The cast indicator only renders for `target`-form abilities that hit the ground. Instant abilities with an area effect (Thunder Clap, War Stomp) need their own indicator — the player can't see the radius before casting.
 
-`IndicatorShape::AreaSelf` is valid on `instant`. Geometry is a disc centered on the caster with radius from `level.area.radius`. Doesn't move with a cursor (it's caster-anchored).
+A caster-anchored `"shape": "area_self"` would be valid on `instant`: a disc centered on the caster with radius from `level.area.radius`, not following the cursor. Not yet implemented — the recognized shapes are `point`, `area`, `line`, and `cone`.
 
 **Preview trigger** — same affordance for all indicator shapes (range circles too, not just AreaSelf):
 
@@ -529,10 +555,10 @@ Two categories, split by who owns the visual.
 
 **Engine-side (multiplayer-aware).** Visibility states the engine must know about because they're per-player. Invisibility (Wind Walk, Permanent Invisibility) lives here — engine hides the unit from non-allied players, reveals on attack / cast / damage taken (or on entering the vision of a true-sight unit). Same family as fog of war (see [scripting.md](scripting.md)).
 
-**Map-driven (via abilities).** Per-unit visual modulation goes through `passive_modifier` on visual attributes (`scale_percent`, `visual_alpha_percent`) — multiple effects compose cleanly via the same recalc as combat stats. Authoring example: a Wind Walk fade declares a `passive_modifier` with `visual_alpha_percent: -50` and a 1 s duration; expiry restores alpha automatically.
+**Map-driven (via abilities).** Per-unit visual modulation goes through `passive_modifier` on visual properties (`scale_mult`, `visual_alpha_mult`) — multiple effects compose cleanly via the same recalc as combat stats. Authoring example: a Wind Walk fade declares a `passive_modifier` with `visual_alpha_mult: -0.5` and a 1 s duration; expiry restores alpha automatically.
 
-`visual_alpha` is now ability-driven: `recalculate_modifiers` sums `visual_alpha_percent` contributions from every active instance on the unit and writes the clamped result into `Renderable::visual_alpha`. Buffs declare e.g. `"modifiers": { "visual_alpha_percent": -50 }` for a half-translucent ghost; multiple sources sum (two −50 sources stack to fully invisible). `SetUnitAlpha` / `GetUnitAlpha` are gone from the Lua surface.
+`visual_alpha` is ability-driven: the engine sums `visual_alpha_mult` contributions from every active instance on the unit and applies the clamped result. Buffs declare e.g. `"modifiers": { "visual_alpha_mult": -0.5 }` for a half-translucent ghost; multiple sources sum (two −0.5 sources stack to fully invisible). `SetUnitAlpha` / `GetUnitAlpha` are gone from the Lua surface.
 
-Other direct setters (`SetUnitColor`, `SetUnitShaderVariant`, `EnableUnitAcquire`, `SetUnitStatus` for ability-domain flags) are slated for the same treatment as their effects migrate to the modifier system. Imperative-only operations (`SetUnitPosition`, `SetUnitFacing`, `SetUnitHealth`, `DamageUnit`, `HealUnit`) are not deprecated — they are actions, not modifiers. `SetUnitBaseAttribute` is likewise a keeper: it writes the *base* layer that ability modifiers compose on top of (effective = base + modifiers), so it's orthogonal to the modifier system rather than superseded by it.
+Other direct setters (`SetUnitColor`, `SetUnitShaderVariant`, `EnableUnitAcquire`, `SetUnitStatus` for ability-domain flags) are slated for the same treatment as their effects migrate to the modifier system. Imperative-only operations (`SetUnitPosition`, `SetUnitFacing`, `SetUnitHealth`, `DamageUnit`, `HealUnit`) are not deprecated — they are actions, not modifiers. `SetUnitAttribute` is likewise a keeper, but only for map-defined attributes: the engine doesn't interpret those, so there's nothing for it to conflict with. Built-in properties have no setter at all.
 
 Engine still does **not** bake state visuals (ethereal-blue, petrified-grey, on-fire-glow) into ability forms — those compose from a `passive_modifier` plus a particle effect attached to the buff.

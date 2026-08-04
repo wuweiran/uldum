@@ -509,9 +509,9 @@ Example: Critical Strike is a `stat_modifier` (no active component) with an
         "aura_radius": 900,
         "target_filter": { "ally": true },
         "levels": [
-            { "buff": { "modifiers": { "armor_flat": 1.5 } } },
-            { "buff": { "modifiers": { "armor_flat": 3.0 } } },
-            { "buff": { "modifiers": { "armor_flat": 4.5 } } }
+            { "buff": { "modifiers": { "armor": 1.5 } } },
+            { "buff": { "modifiers": { "armor": 3.0 } } },
+            { "buff": { "modifiers": { "armor": 4.5 } } }
         ]
     },
     "holy_light": {
@@ -679,7 +679,7 @@ not a separate system. An applied ability:
         "dispellable": true,
         "is_positive": false,
         "modifiers": {
-            "move_speed_percent": -25
+            "move_speed_mult": -0.25
         }
     },
     "poison_sting": {
@@ -690,7 +690,7 @@ not a separate system. An applied ability:
         "is_positive": false,
         "periodic_damage": 4,
         "modifiers": {
-            "move_speed_percent": -25
+            "move_speed_mult": -0.25
         }
     }
 }
@@ -887,7 +887,7 @@ See [items.md](items.md) for the full item schema and the `type` field
         "is_positive": true,
         "dispellable": false,
         "modifiers": {
-            "armor_flat": 1.5
+            "armor": 1.5
         }
     },
     "bloodlust_buff": {
@@ -896,8 +896,8 @@ See [items.md](items.md) for the full item schema and the `type` field
         "is_positive": true,
         "dispellable": true,
         "modifiers": {
-            "attack_speed_percent": 40,
-            "move_speed_percent": 25
+            "attack_speed_mult": 0.4,
+            "move_speed_mult": 0.25
         }
     },
     "poison_sting": {
@@ -910,7 +910,7 @@ See [items.md](items.md) for the full item schema and the `type` field
             "damage": 4
         },
         "modifiers": {
-            "move_speed_percent": -25
+            "move_speed_mult": -0.25
         }
     }
 }
@@ -1209,7 +1209,7 @@ Flagged units get a status-icon strip near the HP bar, the conventional place fo
 
 **Attributes (numeric + string):**
 
-- Base values replaced wholesale from the new type's `attributes_numeric` / `attributes_string`. Direct Lua mutations (`SetUnitBaseAttribute`) made before morph are lost — re-apply them in the morph helper if they should survive.
+- Base values replaced wholesale from the new type's `attributes_numeric` / `attributes_string`. Direct Lua mutations (`SetUnitAttribute`) made before morph are lost — re-apply them in the morph helper if they should survive.
 - Modifiers from passive abilities are gone with the old attribute block. After the component swap, `recalculate_modifiers` runs so any passive surviving on the ability set re-applies its modifiers to the fresh block. (Today `recalculate_modifiers` is a stub; the call is plumbed for when the modifier system lands.)
 - Attribute ids only on the old type → gone. Ids only on the new type → start at the new type's declared value.
 

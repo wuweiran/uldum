@@ -57,6 +57,7 @@ struct Health {
     f32 current     = 0;
     f32 max         = 0;
     f32 regen_per_sec = 0;
+    f32 damage_taken = 1.0f; // incoming-damage multiplier, composed by recalculate_modifiers
     u32 hit_count     = 0;   // bumped per normal-attack hit; renderer plays "hit" on change
     Unit killer{};
 };
@@ -83,14 +84,16 @@ struct StateBlock {
 };
 
 // Map-defined attributes (strength, agility, armor, armor_type, attack_type, etc.).
-// Single values that don't deplete or regenerate.
+// Single values that don't deplete or regenerate. The engine stores and
+// syncs them but interprets none of them — the map that defines an
+// attribute owns what it means. Built-in properties (move_speed, damage,
+// scale, ...) are NOT here; they live on their own components.
 //
-// `numeric` is the EFFECTIVE value seen by every reader (combat,
-// scripts, HUD). `base` is the value before passive-ability modifiers
-// are summed in. recalculate_modifiers rebuilds numeric from base +
-// the sum of active_modifiers across the unit's ability set. Lua's
-// SetUnitAttribute writes to base; modifiers from passives stack on
-// top.
+// `numeric` is the EFFECTIVE value seen by readers (scripts, HUD). `base`
+// is the value before passive-ability modifiers are summed in.
+// recalculate_modifiers rebuilds numeric from base + the sum of
+// active_modifiers across the unit's ability set. SetUnitAttribute writes
+// both, since a map-defined attribute set from Lua has no separate base.
 struct AttributeBlock {
     std::map<std::string, f32>         base;      // base values (pre-modifier)
     std::map<std::string, f32>         numeric;   // effective: "armor" → 5.0, "strength" → 22.0

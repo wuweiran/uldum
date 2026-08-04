@@ -120,7 +120,7 @@
         "max_level": 1,
         "levels": [
             { "flags": ["no_acquire", "phased"],
-              "modifiers": { "visual_alpha_percent": 0 } }
+              "modifiers": { "visual_alpha_mult": 0 } }
         ]
     },
     "windwalk_invisible": {

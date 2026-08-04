@@ -183,6 +183,6 @@ Concretely the current Phase 17 ships none of this — the engine keeps zero pol
 A small `item_test` map (or addition to `action_test`) ships:
 
 1. A `healing_potion` item type — active, 3 charges. Hero picks up via right-click, slot icon appears, badge shows `3`, hotkey fires the cast (heals self), a Lua trigger decrements charges and `RemoveItem`s at 0.
-2. A `sword_basic` item type — passive, `abilities: ["sword_damage_passive"]` whose ability is `form: passive` with `modifiers: { damage_bonus_flat: 10 }`. Slot icon visible, no badge, hero's damage stat goes up while held.
+2. A `sword_basic` item type — passive, `abilities: ["sword_damage_passive"]` whose ability is `form: passive` with `modifiers: { damage: 10 }`. Slot icon visible, no badge, hero's damage stat goes up while held.
 
 Together those exercise: item-type loading, ground entity creation, smart-order pickup, walk-and-claim, slot rendering with both badges, cast routing with `source_item`, Lua charge consumption, passive modifier integration. If any of those paths break, one of the two items goes wrong.

@@ -24,6 +24,7 @@ namespace uldum::simulation {
 enum class AbilityForm : u8 {
     PassiveModifier,  // always active, contributes numeric modifiers
     PassiveFlag,      // always active, applies refcounted status flags
+    StateModifier,    // always active, modifies a state's max / regen
     Aura,             // scan radius, apply/remove a passive_* buff to nearby units
     Instant,          // cast_time → fire → backsw_time, no target
     Target,           // cast on a widget and/or a point — see widget_kinds + accept_point

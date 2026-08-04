@@ -1149,70 +1149,68 @@ void ScriptEngine::bind_api() {
         simulation::set_health(sim.world(), u, hp);
     };
 
-    // Attributes
-    // Effective value = what combat/movement actually use. For most
-    // attributes that's the recalc'd numeric map; damage and move_speed
-    // live on their own components (Combat/Movement), so read those
-    // directly — the numeric map's entry for them is a phantom the
-    // attack/move paths never consult.
-    auto effective_attr = [&](simulation::Unit u, const std::string& name) -> f32 {
-        auto& w = sim.world();
-        if (name == "damage") {
-            if (auto* c = w.combats.get(u.id)) return c->damage;
-        } else if (name == "move_speed") {
-            if (auto* m = w.movements.get(u.id)) return m->speed;
-        }
-        auto* ab = w.attribute_blocks.get(u.id);
+    // Built-in properties. Read-only on purpose: the value is composed
+    // every recalc from the type def plus active ability modifiers, so a
+    // setter here would be overwritten on the next one. Abilities are the
+    // setter — see SetAbilityModifier.
+    lua["GetUnitMoveSpeed"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* m = sim.world().movements.get(u.id); return m ? m->speed : 0;
+    };
+    lua["GetUnitTurnRate"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* m = sim.world().movements.get(u.id); return m ? m->turn_rate : 0;
+    };
+    lua["GetUnitDamage"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* c = sim.world().combats.get(u.id); return c ? c->damage : 0;
+    };
+    lua["GetUnitAttackRange"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* c = sim.world().combats.get(u.id); return c ? c->range : 0;
+    };
+    lua["GetUnitAcquireRange"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* c = sim.world().combats.get(u.id); return c ? c->acquire_range : 0;
+    };
+    lua["GetUnitSightRange"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* s = sim.world().sights.get(u.id); return s ? s->sight_range : 0;
+    };
+    lua["GetUnitHealthRegen"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* h = sim.world().healths.get(u.id); return h ? h->regen_per_sec : 0;
+    };
+    lua["GetUnitDamageTaken"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 1.0f;
+        auto* h = sim.world().healths.get(u.id); return h ? h->damage_taken : 1.0f;
+    };
+    lua["GetUnitScale"] = [&](simulation::Unit u) -> f32 {
+        if (!sim.world().contains(u)) return 1.0f;
+        auto* t = sim.world().transforms.get(u.id); return t ? t->scale : 1.0f;
+    };
+
+    // Map-defined attributes (armor, strength, ...). The engine stores and
+    // syncs them but interprets none of them — the map that defines an
+    // attribute also owns whatever it means. Built-in properties are not
+    // reachable here; they have their own getters and are driven by
+    // abilities, not scripts.
+    lua["GetUnitAttribute"] = [&](simulation::Unit u, const std::string& name) -> f32 {
+        if (!sim.world().contains(u)) return 0;
+        auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return 0;
         auto it = ab->numeric.find(name);
         return it != ab->numeric.end() ? it->second : 0;
     };
 
-    // Base value = pre-modifier. Per-unit override in base wins; else the
-    // type def supplies the base for the two component-resident stats.
-    auto base_attr = [&](simulation::Unit u, const std::string& name) -> f32 {
-        auto& w = sim.world();
-        if (auto* ab = w.attribute_blocks.get(u.id)) {
-            auto it = ab->base.find(name);
-            if (it != ab->base.end()) return it->second;
-        }
-        if (auto* info = w.handle_infos.get(u.id); info && w.types) {
-            if (auto* def = w.types->get_unit_type(info->type_id)) {
-                if (name == "damage")     return def->weapon ? def->weapon->damage : 0.0f;
-                if (name == "move_speed") return def->move_speed;
-            }
-        }
-        return 0;
-    };
-
-    lua["GetUnitAttribute"] = [&, effective_attr](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().contains(u)) return 0;
-        return effective_attr(u, name);
-    };
-
-    // Pre-modifier base — use this for read-modify-write (e.g. permanent
-    // +2 armor) so you don't fold a transient aura bonus into the base.
-    lua["GetUnitBaseAttribute"] = [&, base_attr](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().contains(u)) return 0;
-        return base_attr(u, name);
-    };
-
-    // Writes the base; the next recalc re-sums passive ability modifiers
-    // on top (a +3 armor aura still adds 3 after the script writes a new
-    // base). Works for damage / move_speed too: recalc reads base as the
-    // per-unit override for those component-resident stats. Requires an
-    // AttributeBlock — a unit authored with no `attributes` can't be set.
-    // Named *Base* on purpose: the effective value is computed, never set —
-    // GetUnitAttribute reads it, this writes the base it's derived from.
-    lua["SetUnitBaseAttribute"] = [&, effective_attr](simulation::Unit u, const std::string& name, f32 value) {
+    lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
         if (!sim.world().contains(u)) return;
         auto* ab = sim.world().attribute_blocks.get(u.id);
         if (!ab) return;
-        ab->base[name] = value;
-        simulation::recalculate_modifiers(sim.world(), u.id);
+        ab->base[name]    = value;
+        ab->numeric[name] = value;
         if (m_unit_update_fn) {
-            auto pkt = network::build_cold_attr(u.id, name, effective_attr(u, name));
-            m_unit_update_fn(u.id, pkt);
+            m_unit_update_fn(u.id, network::build_cold_attr(u.id, name, value));
         }
     };
 
@@ -1236,28 +1234,48 @@ void ScriptEngine::bind_api() {
         }
     };
 
-    // Map-defined states (mana, energy, rage, etc.). Per-unit live
-    // values live in `state_blocks`; `unit_type.states` only defines
-    // the schema (max + regen) used to seed each unit on spawn.
-
-    lua["GetUnitState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().contains(u)) return 0;
+    // Map-defined states (mana, energy, rage, etc.), plus `health` — the
+    // engine's own state, reachable through the same three getters.
+    // Per-unit live values live in `state_blocks`; `unit_type.states` only
+    // defines the schema (max + regen) used to seed each unit on spawn.
+    //
+    // Max and regen are read-only: both are composed every recalc from the
+    // type def plus active `state_modifier` abilities, so a setter would be
+    // overwritten on the next one.
+    auto state_of = [&](simulation::Unit u, const std::string& name)
+        -> const simulation::StateValue* {
+        static simulation::StateValue hp_view;
+        if (!sim.world().contains(u)) return nullptr;
+        if (name == "health") {
+            auto* h = sim.world().healths.get(u.id);
+            if (!h) return nullptr;
+            hp_view = {h->current, h->max, h->regen_per_sec};
+            return &hp_view;
+        }
         auto* sb = sim.world().state_blocks.get(u.id);
-        if (!sb) return 0;
+        if (!sb) return nullptr;
         auto it = sb->states.find(name);
-        return it != sb->states.end() ? it->second.current : 0;
+        return it != sb->states.end() ? &it->second : nullptr;
     };
 
-    lua["GetUnitMaxState"] = [&](simulation::Unit u, const std::string& name) -> f32 {
-        if (!sim.world().contains(u)) return 0;
-        auto* sb = sim.world().state_blocks.get(u.id);
-        if (!sb) return 0;
-        auto it = sb->states.find(name);
-        return it != sb->states.end() ? it->second.max : 0;
+    lua["GetUnitCurrentState"] = [&, state_of](simulation::Unit u, const std::string& name) -> f32 {
+        auto* s = state_of(u, name); return s ? s->current : 0;
+    };
+
+    lua["GetUnitMaxState"] = [&, state_of](simulation::Unit u, const std::string& name) -> f32 {
+        auto* s = state_of(u, name); return s ? s->max : 0;
+    };
+
+    lua["GetUnitStateRegen"] = [&, state_of](simulation::Unit u, const std::string& name) -> f32 {
+        auto* s = state_of(u, name); return s ? s->regen_per_sec : 0;
     };
 
     lua["SetUnitState"] = [&](simulation::Unit u, const std::string& name, f32 value) {
         if (!sim.world().contains(u)) return;
+        if (name == "health") {
+            simulation::set_health(sim.world(), u, value);
+            return;
+        }
         auto* sb = sim.world().state_blocks.get(u.id);
         if (!sb) return;
         auto it = sb->states.find(name);
@@ -1506,6 +1524,24 @@ void ScriptEngine::bind_api() {
             }
         }
         return changed;
+    };
+
+    // Read side of SetAbilityModifier — the current value on the first
+    // matching instance, or 0 if the unit lacks the ability or the key.
+    // Makes a running total (rune pickups, stacking buffs) a
+    // read-modify-write on the ability that owns it.
+    lua["GetAbilityModifier"] = [&](simulation::Unit u, const std::string& ability_id,
+                                     const std::string& key) -> f32 {
+        auto& w = sim.world();
+        if (!w.contains(u)) return 0;
+        auto* aset = w.ability_sets.get(u.id);
+        if (!aset) return 0;
+        for (const auto& a : aset->abilities) {
+            if (a.ability_id != ability_id) continue;
+            auto it = a.active_modifiers.find(key);
+            return it != a.active_modifiers.end() ? it->second : 0.0f;
+        }
+        return 0;
     };
 
     lua["GetAbilityLevel"] = [&](simulation::Unit u, const std::string& ability_id) -> u32 {

@@ -304,15 +304,27 @@ GetUnitHealth(unit) → float
 GetUnitMaxHealth(unit) → float
 SetUnitHealth(unit, hp)
 
--- State (map-defined: mana, energy, etc.)
-GetUnitState(unit, state_id) → float
+-- States (map-defined: mana, energy, ... plus the built-in "health")
+-- Max and regen are read-only; state_modifier abilities are the setter.
+GetUnitCurrentState(unit, state_id) → float
 GetUnitMaxState(unit, state_id) → float
+GetUnitStateRegen(unit, state_id) → float
 SetUnitState(unit, state_id, value)
+
+-- Built-in properties (read-only — abilities are the setter)
+GetUnitMoveSpeed(unit) → float
+GetUnitTurnRate(unit) → float
+GetUnitDamage(unit) → float
+GetUnitAttackRange(unit) → float
+GetUnitAcquireRange(unit) → float
+GetUnitSightRange(unit) → float
+GetUnitHealthRegen(unit) → float
+GetUnitDamageTaken(unit) → float
+GetUnitScale(unit) → float
 
 -- Attributes (map-defined: armor, strength, etc.)
 GetUnitAttribute(unit, attr_id) → float
-GetUnitBaseAttribute(unit, attr_id) → float
-SetUnitBaseAttribute(unit, attr_id, value)
+SetUnitAttribute(unit, attr_id, value)
 GetUnitStringAttribute(unit, attr_id) → string
 SetUnitStringAttribute(unit, attr_id, value)
 
