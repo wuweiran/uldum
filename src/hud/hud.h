@@ -302,6 +302,7 @@ public:
     // the same id off the wire. Returns a null handle on failure.
     // Transient styles self-expire; destroy_text_tag is for permanent tags.
     simulation::TextTag create_text_tag(const TextTagCreateInfo& info);
+    void                set_text_tag_text(simulation::TextTag id, i18n::LocalizedString text);
     void                destroy_text_tag(simulation::TextTag id);
 
     // ── Composites ───────────────────────────────────────────────────────

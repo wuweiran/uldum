@@ -3275,6 +3275,12 @@ void ScriptEngine::bind_hud_api() {
                    : sol::make_object(*m_lua, sol::nil);
     };
 
+    lua["SetTextTagText"] = [this](simulation::TextTag tag, sol::object text) {
+        if (!m_hud) return;
+        m_hud->set_text_tag_text(
+            tag, parse_localized_string(text, "SetTextTagText"));
+    };
+
     lua["DestroyTextTag"] = [this](simulation::TextTag tag) {
         if (!m_hud) return;
         m_hud->destroy_text_tag(tag);

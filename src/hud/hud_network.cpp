@@ -120,6 +120,22 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
         hud.destroy_text_tag(simulation::TextTag{r.read_u32()});
         return true;
     }
+    case network::MsgType::S_HUD_SET_TEXT_TAG_TEXT: {
+        network::ByteReader r(data);
+        r.read_u8();
+        simulation::TextTag id{r.read_u32()};
+        i18n::LocalizedString loc;
+        loc.key = r.read_string();
+        u8 n = r.read_u8();
+        loc.args.reserve(n);
+        for (u8 i = 0; i < n; ++i) {
+            std::string k = r.read_string();
+            std::string v = r.read_string();
+            loc.args.emplace_back(std::move(k), std::move(v));
+        }
+        hud.set_text_tag_text(id, std::move(loc));
+        return true;
+    }
     case network::MsgType::S_HUD_DISPLAY_MESSAGE: {
         network::ByteReader r(data);
         r.read_u8();

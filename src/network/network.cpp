@@ -1492,6 +1492,7 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_HUD_SET_BUTTON_ENABLED:
     case MsgType::S_HUD_CREATE_TEXT_TAG:
     case MsgType::S_HUD_DESTROY_TEXT_TAG:
+    case MsgType::S_HUD_SET_TEXT_TAG_TEXT:
     case MsgType::S_HUD_DISPLAY_MESSAGE:
     case MsgType::S_HUD_ACTION_BAR_SET_SLOT: {
         if (m_hud_message_fn) m_hud_message_fn(data);

@@ -146,6 +146,7 @@ enum class MsgType : u8 {
     S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
     S_HUD_DESTROY_TEXT_TAG    = 0x79, // remove a permanent text tag by shared ECS id
     S_HUD_ACTION_BAR_SET_SLOT = 0x7A, // manual-mode slot→ability binding (empty ability = clear)
+    S_HUD_SET_TEXT_TAG_TEXT   = 0x7B,
 
     // Playing — audio (script-initiated). Sim sound effects from the
     // combat / ability systems use S_SOUND directly; these mirror the
@@ -1541,6 +1542,23 @@ inline std::vector<u8> build_hud_destroy_text_tag(u32 id) {
     ByteWriter wr;
     wr.write_u8(static_cast<u8>(MsgType::S_HUD_DESTROY_TEXT_TAG));
     wr.write_u32(id);
+    return std::move(wr.data());
+}
+
+inline std::vector<u8> build_hud_set_text_tag_text(
+        u32 id,
+        std::string_view loc_key,
+        const std::vector<std::pair<std::string, std::string>>& loc_args) {
+    ByteWriter wr;
+    wr.write_u8(static_cast<u8>(MsgType::S_HUD_SET_TEXT_TAG_TEXT));
+    wr.write_u32(id);
+    wr.write_string(loc_key);
+    usize n = std::min<usize>(loc_args.size(), 255);
+    wr.write_u8(static_cast<u8>(n));
+    for (usize i = 0; i < n; ++i) {
+        wr.write_string(loc_args[i].first);
+        wr.write_string(loc_args[i].second);
+    }
     return std::move(wr.data());
 }
 

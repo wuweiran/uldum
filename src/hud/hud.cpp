@@ -898,6 +898,20 @@ simulation::TextTag Hud::create_text_tag(const TextTagCreateInfo& info) {
     return info.id;
 }
 
+void Hud::set_text_tag_text(simulation::TextTag id, i18n::LocalizedString text) {
+    if (!m_impl || simulation::is_null_handle(id)) return;
+    for (auto& t : m_impl->text_tags) {
+        if (t.alive && t.id == id) {
+            t.text = std::move(text);
+            emit_sync(*m_impl,
+                      uldum::network::build_hud_set_text_tag_text(
+                          id.id, t.text.key, t.text.args),
+                      t.players_mask);
+            return;
+        }
+    }
+}
+
 void Hud::destroy_text_tag(simulation::TextTag id) {
     if (!m_impl || simulation::is_null_handle(id)) return;
     for (auto& t : m_impl->text_tags) {
