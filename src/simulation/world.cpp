@@ -404,6 +404,29 @@ void release_pathing_blocker(World& world, u32 id) {
     if (world.unblock_pathing) world.unblock_pathing(cx, cy, width, height);
 }
 
+static void relocate_pathing_blocker(World& world, u32 id, f32 x, f32 y) {
+    auto* blocker = world.pathing_blockers.get(id);
+    if (!blocker) return;
+
+    assert(world.terrain);
+    assert(world.block_pathing);
+    assert(world.unblock_pathing);
+
+    f32 cell_size = world.terrain->tile_size / static_cast<f32>(PATHING_SUBDIV);
+    i32 cx = static_cast<i32>(std::round(
+        (x - world.terrain->origin_x()) / cell_size -
+        0.5f * static_cast<f32>(blocker->w)));
+    i32 cy = static_cast<i32>(std::round(
+        (y - world.terrain->origin_y()) / cell_size -
+        0.5f * static_cast<f32>(blocker->h)));
+    if (cx == blocker->cx && cy == blocker->cy) return;
+
+    world.unblock_pathing(blocker->cx, blocker->cy, blocker->w, blocker->h);
+    blocker->cx = cx;
+    blocker->cy = cy;
+    world.block_pathing(blocker->cx, blocker->cy, blocker->w, blocker->h);
+}
+
 static void destroy_handle(World& world, Handle h) {
     if (!world.contains(h)) return;
     release_pathing_blocker(world, h.id);
@@ -914,8 +937,35 @@ glm::vec3 get_position(const World& world, Unit unit) {
 
 void set_position(World& world, Unit unit, f32 x, f32 y) {
     if (!world.contains(unit)) return;
-    auto* t = world.transforms.get(unit.id);
-    if (t) { t->position.x = x; t->position.y = y; }
+    assert(world.terrain);
+
+    auto* transform = world.transforms.get(unit.id);
+    assert(transform);
+
+    relocate_pathing_blocker(world, unit.id, x, y);
+
+    transform->position = {x, y, ground_height(world, x, y)};
+    transform->prev_position = transform->position;
+
+    if (auto* guard = world.guard_positions.get(unit.id)) {
+        guard->position = {x, y};
+        guard->return_timer = 0.0f;
+        guard->returning = false;
+    }
+
+    if (auto* pathing = world.pathings.get(unit.id)) {
+        pathing->cliff_level = world.terrain->cliff_level_at(x, y);
+        pathing->corridor.clear();
+        pathing->waypoint = {x, y};
+        pathing->has_waypoint = false;
+        pathing->detour = {x, y};
+        pathing->has_detour = false;
+        pathing->repath_timer = 0.0f;
+        pathing->path_dest = {x, y};
+        pathing->stuck_timer = 0.0f;
+        pathing->stuck_anchor = {x, y};
+        pathing->build_clear_timer = 0.0f;
+    }
 }
 
 Player get_owner(const World& world, Unit unit) {

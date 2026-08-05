@@ -312,7 +312,8 @@ function GetUnitZ(unit) end
 ---@return number, number, number   x, y, z
 function GetUnitPosition(unit) end
 
---- Set unit position on the XY plane. Z is set from terrain height.
+--- Relocate a unit on the XY plane. Refreshes terrain height, pathing, and
+--- guard position while preserving its current order.
 ---@param unit unit
 ---@param x number
 ---@param y number

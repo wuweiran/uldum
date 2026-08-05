@@ -455,6 +455,8 @@ void     clear_all_unit_status(World& world, Unit unit);
 f32      get_health(const World& world, Unit unit);
 void     set_health(World& world, Unit unit, f32 health);
 glm::vec3 get_position(const World& world, Unit unit);
+// Relocate while preserving the current order. Refreshes terrain height,
+// pathfinding scratch, cliff level, runtime footprint, and guard position.
 void     set_position(World& world, Unit unit, f32 x, f32 y);
 Player   get_owner(const World& world, Unit unit);
 bool     is_alive(const World& world, Unit unit);

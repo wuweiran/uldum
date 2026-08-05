@@ -1070,10 +1070,7 @@ void ScriptEngine::bind_api() {
         return {position.x, position.y, position.z};
     };
     lua["SetUnitPosition"] = [&](simulation::Unit u, f32 x, f32 y) {
-        if (!sim.world().contains(u)) return;
-        auto* t = sim.world().transforms.get(u.id);
-        if (t) { t->position.x = x; t->position.y = y; t->position.z = ::uldum::map::sample_height(terrain_ref,x, y); }
-        emit_static_transform(u.id);   // no-op for units (HOT tick re-syncs them)
+        simulation::set_position(sim.world(), u, x, y);
     };
     lua["GetUnitFacing"] = [&](simulation::Unit u) -> f32 {
         if (!sim.world().contains(u)) return 0;
