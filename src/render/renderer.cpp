@@ -131,7 +131,7 @@ static glm::mat4 slope_tilt_matrix(const glm::vec3& terrain_normal, f32 facing,
     // Decompose the normal onto those axes. n·fwd > 0 means the ground drops
     // ahead → nose pitches down; n·side likewise drives the roll lean.
     f32 pitch = std::clamp(std::atan2(-glm::dot(n, fwd), n.z), -max_pitch, max_pitch);
-    f32 roll  = std::clamp(std::atan2(-glm::dot(n, side), n.z), -max_roll,  max_roll);
+    f32 roll  = std::clamp(std::atan2(glm::dot(n, side), n.z), -max_roll,  max_roll);
 
     glm::mat4 m = glm::rotate(glm::mat4{1.0f}, pitch, side);
     return glm::rotate(m, roll, fwd);
