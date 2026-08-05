@@ -804,6 +804,7 @@ Two tiers by whether they block shipping a real production game; grouped by doma
 
 **Tooling & authoring**
 
+- **Map-defined player resources** — add synchronized per-player numeric resources and declarative costs when a real TD/economy map requires them; maps without resources pay no storage or policy cost.
 - **UI designer tool** — authors edit RML / RCSS directly until then.
 - Controller / gamepad input.
 
