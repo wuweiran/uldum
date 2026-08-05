@@ -32,6 +32,7 @@ struct World {
     SparseSet<Selectable>           selectables;
     SparseSet<Player>               owners;   // unit id -> owning player id
     SparseSet<Movement>             movements;
+    SparseSet<GuardPosition>        guard_positions;
     SparseSet<Pathing>              pathings; // host-only pathfinder scratch (see Pathing)
     SparseSet<Combat>               combats;
     SparseSet<Sight>                sights;
@@ -279,7 +280,7 @@ struct World {
     void clear_entities() {
         transforms.clear(); handle_infos.clear(); healths.clear();
         state_blocks.clear(); attribute_blocks.clear(); selectables.clear();
-        owners.clear(); movements.clear(); pathings.clear(); combats.clear(); sights.clear();
+        owners.clear(); movements.clear(); guard_positions.clear(); pathings.clear(); combats.clear(); sights.clear();
         order_queues.clear(); ability_sets.clear(); classifications.clear();
         inventories.clear(); buildings.clear();
         constructions.clear(); destructables.clear(); doodads.clear(); pathing_blockers.clear();

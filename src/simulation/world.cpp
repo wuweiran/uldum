@@ -40,6 +40,7 @@ void remove_all_components(World& world, u32 id) {
     world.selectables.remove(id);
     world.owners.remove(id);
     world.movements.remove(id);
+    world.guard_positions.remove(id);
     world.pathings.remove(id);
     world.combats.remove(id);
     world.sights.remove(id);
@@ -137,6 +138,9 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
         combat.acquire_range    = def.acquire_range;
         combat.target_mask      = w.target_mask;
         world.combats.add(id, std::move(combat));
+        if (def.move_type != MoveType::None) {
+            world.guard_positions.add(id, GuardPosition{{x, y}});
+        }
     }
     world.sights.add(id, Sight{def.sight_range});
     world.order_queues.add(id, OrderQueue{});
@@ -761,6 +765,17 @@ void issue_order(World& world, Unit unit, Order order) {
     if (!world.contains(unit)) return;
     oq = world.order_queues.get(unit.id);
     if (!oq) return;
+
+    bool starts_now = !order.queued || !oq->current || is_stop;
+    if (auto* guard = world.guard_positions.get(unit.id); starts_now && guard) {
+        guard->return_timer = 0.0f;
+        guard->returning = false;
+        if (is_stop || std::holds_alternative<orders::HoldPosition>(order.payload)) {
+            if (auto* transform = world.transforms.get(unit.id)) {
+                guard->position = {transform->position.x, transform->position.y};
+            }
+        }
+    }
 
     if (order.queued && oq->current && !is_stop) {
         oq->queued.push_back(std::move(order));

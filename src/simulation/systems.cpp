@@ -136,6 +136,29 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
     return false;
 }
 
+void system_guard_position(World& world, float dt, const Pathfinder& pathfinder) {
+    f32 arrival_tolerance = pathfinder.tile_size() * 0.5f;
+    for (u32 id : world.guard_positions.ids()) {
+        auto* guard = world.guard_positions.get(id);
+        auto* transform = world.transforms.get(id);
+        auto* orders = world.order_queues.get(id);
+        if (!guard || !transform || !orders || orders->current) continue;
+
+        f32 distance = glm::distance(glm::vec2{transform->position}, guard->position);
+        if (distance <= arrival_tolerance) {
+            guard->return_timer = 0.0f;
+            guard->returning = false;
+        } else if (guard->returning || distance > MAX_GUARD_DISTANCE) {
+            guard->returning = true;
+        } else if (distance > GUARD_DISTANCE) {
+            guard->return_timer += dt;
+            if (guard->return_timer >= GUARD_RETURN_TIME) guard->returning = true;
+        } else {
+            guard->return_timer = 0.0f;
+        }
+    }
+}
+
 void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                      const SpatialGrid& grid, const map::TerrainData* terrain) {
 
@@ -149,6 +172,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
         auto* transform = world.transforms.get(id);
         auto* oq = world.order_queues.get(id);
+        auto* guard = world.guard_positions.get(id);
         if (!transform || !oq) continue;
 
         // Status-flag gates: paused / stunned / rooted all suppress
@@ -283,6 +307,11 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
                 }
                 pth.cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
+                if (guard) {
+                    guard->position = {transform->position.x, transform->position.y};
+                    guard->return_timer = 0.0f;
+                    guard->returning = false;
+                }
                 // Consume the order. The preset re-emits a fresh
                 // MoveDirection next frame if the player is still
                 // holding keys; otherwise the unit naturally idles.
@@ -349,6 +378,11 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     has_goal = true;
                 }
             }
+        }
+
+        if (guard && guard->returning) {
+            goal2d = guard->position;
+            has_goal = true;
         }
 
         // Priority 2: Approach mode (set by combat/cast)
@@ -453,6 +487,15 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // (Follow / Approach are exempt: those orders are about
         // tracking, not arriving — keep the timer reset so the next
         // point-Move starts from a clean slate).
+        bool is_guard_return = guard && guard->returning;
+        auto begin_promoted_hold = [&] {
+            if (guard && oq->current &&
+                std::holds_alternative<orders::HoldPosition>(oq->current->payload)) {
+                guard->position = pos2d;
+                guard->return_timer = 0.0f;
+                guard->returning = false;
+            }
+        };
         if (!is_approach && !is_follow) {
             f32 progress = glm::length(pos2d - pth.stuck_anchor);
             if (progress >= Pathing::STUCK_PROGRESS_EPS) {
@@ -465,7 +508,13 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     pth.has_waypoint = false;
                     mov.moving = false;
                     pth.stuck_timer = 0;
-                    oq->advance();
+                    if (is_guard_return) {
+                        guard->return_timer = 0.0f;
+                        guard->returning = false;
+                    } else {
+                        oq->advance();
+                        begin_promoted_hold();
+                    }
                     continue;
                 }
             }
@@ -496,8 +545,21 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                 pth.has_waypoint = false;
                 mov.moving = false;
                 pth.stuck_timer = 0;
-                if (!is_follow) {
+                if (guard && guard->returning) {
+                    guard->return_timer = 0.0f;
+                    guard->returning = false;
+                } else if (!is_follow) {
+                    bool completed_point_order = false;
+                    if (oq->current) {
+                        if (auto* move = std::get_if<orders::Move>(&oq->current->payload)) {
+                            completed_point_order = is_null_handle(move->target_widget);
+                        } else if (auto* attack = std::get_if<orders::Attack>(&oq->current->payload)) {
+                            completed_point_order = is_null_handle(attack->target_widget);
+                        }
+                    }
+                    if (guard && completed_point_order) guard->position = pos2d;
                     oq->advance();
+                    begin_promoted_hold();
                 } else {
                     // Follow in range: keep turning to face the followed
                     // target. The next tick's re-path immediately flips
@@ -890,12 +952,20 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         if (auto* sf = world.status_flags.get(id)) {
             no_acquire = (sf->flags & status::NoAcquire) != 0;
         }
-        if (no_acquire && !has_widget) {
+        auto* guard = world.guard_positions.get(id);
+        bool returning = guard && guard->returning && !oq->current;
+        if ((no_acquire && !has_widget) || returning) {
             combat.target = Unit{};
             if (combat.attack_state == AttackState::WindUp ||
                 combat.attack_state == AttackState::TurningToFace ||
                 combat.attack_state == AttackState::MovingToTarget) {
                 combat.attack_state = AttackState::Idle;
+            }
+            if (returning) {
+                if (auto* pathing = world.pathings.get(id)) {
+                    pathing->approach_target = Unit{};
+                    pathing->approach_range = 0.0f;
+                }
             }
         }
 
@@ -943,12 +1013,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
         }
 
         if (!target_valid) {
-            // No live target. system_movement owns the walk-to-atk->target +
-            // arrival-advance (Priority-1 Attack branch); combat just drops the
-            // strike target + clears the live-handle approach so it doesn't fight
-            // the point goal, then auto-acquires. A speed-0 unit can't walk the
-            // seek, but its Attack order self-terminates via the movement stuck-
-            // timeout, so nothing sticks.
+            // No live target. system_movement owns any point-order or guard-position
+            // movement; combat clears the strike target and may auto-acquire again.
             combat.target = Unit{};
             if (combat.attack_state != AttackState::Idle &&
                 combat.attack_state != AttackState::Backswing &&
@@ -968,7 +1034,8 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             // Hold Position restricts scanning to the unit's own attack range so
             // the unit never picks up a target it would then need to chase.
             f32 acquire_r = is_holding ? combat.range : combat.acquire_range;
-            if (!has_widget && !no_acquire && acquire_r > 0 && combat.damage > 0) {
+            if (!has_widget && !no_acquire && !returning &&
+                acquire_r > 0 && combat.damage > 0) {
                 auto* owner = world.owners.get(id);
                 if (owner) {
                     UnitFilter filter;

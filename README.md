@@ -28,7 +28,7 @@ Phase 29 (Message-layer redesign) complete — the wire protocol is sorted into 
 - **Skeletal animation.** GPU skinning, animation state machine driven by simulation, crossfade blending, skinned shadow casting.
 - **Effects + particles.** CPU-driven billboards with burst + continuous emitters, procedural shapes, `fire` plumes that lerp hot→cool and cast a flickering point light, glow-particle-seeded point lights, unit-attached effects with bone targeting.
 - **ECS simulation.** Monotonic typed handles (Unit / Item / Destructable / Projectile), paged sparse-set storage, data-driven types loaded from map JSON, deterministic 32 Hz tick. Unit facing + scale + alliances.
-- **Gameplay primitives.** Tile-grid A* + steering, attack-move + auto-acquire, abilities with typed innate/item/applied ownership, items as ability bundles, projectiles, cliff-aware fog of war with shared vision.
+- **Gameplay primitives.** Tile-grid A* + steering, attack-move + auto-acquire + guard-position return, abilities with typed innate/item/applied ownership, items as ability bundles, projectiles, cliff-aware fog of war with shared vision.
 - **Lua 5.4 scripting.** Sandboxed sol2 VM, event-driven triggers backed by typed stack-local event frames, timers, regions, scene switching mid-session (Lua VM swap), camera scripting, save-data channel.
 - **Audio.** miniaudio with 3D positional SFX, music streaming, ambient loops, per-channel volume mixing.
 - **Server-authoritative networking.** ENet UDP, fog-filtered snapshots, host barrier on scene swap, reconnect-with-state-restore. Local single-player runs the same server in-process.

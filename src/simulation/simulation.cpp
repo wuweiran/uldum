@@ -392,6 +392,7 @@ void Simulation::tick(float dt) {
     // fresh Attack on an in-range target nudged one tick before combat could
     // stop it (combat.target still cleared by issue_order).
     system_combat(m_world, dt, m_spatial_grid);
+    system_guard_position(m_world, dt, m_pathfinder);
     system_movement(m_world, dt, m_pathfinder, m_spatial_grid, m_terrain);
     // Build after movement: movement consumes the approach fields system_build
     // sets to walk the worker to its site; on arrival system_build spawns the

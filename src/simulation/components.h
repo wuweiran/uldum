@@ -121,6 +121,16 @@ struct Movement {
     bool      moving    = false;  // synced to the client (walk anim); everything below is host-only Pathing
 };
 
+inline constexpr f32 GUARD_DISTANCE = 600.0f;
+inline constexpr f32 MAX_GUARD_DISTANCE = 1000.0f;
+inline constexpr f32 GUARD_RETURN_TIME = 5.0f;
+
+struct GuardPosition {
+    glm::vec2 position{0.0f};
+    f32 return_timer = 0.0f;
+    bool returning = false;
+};
+
 // Pathfinder / mover SCRATCH state — HOST-ONLY. The network client never runs
 // the movement or pathfinding systems, so none of this is meaningful there; it
 // is deliberately NOT created by spawn_client_entity, so client units don't
@@ -282,10 +292,7 @@ struct OrderQueue {
     std::deque<Order>    queued;
 
     // Finish the current order and promote the next queued one (if any)
-    // into `current`. The "reset current, pop queued front" pair was
-    // hand-written at every order-completion site; routing them through
-    // one method keeps the two halves from drifting (e.g. resetting
-    // without promoting, or promoting without clearing first).
+    // into `current`.
     void advance() {
         if (!queued.empty()) {
             current = std::move(queued.front());
