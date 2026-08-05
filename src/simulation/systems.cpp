@@ -17,16 +17,14 @@
 
 namespace uldum::simulation {
 
-void system_health(World& world, float dt) {
+void system_state(World& world, float dt) {
     for (u32 i = 0; i < world.healths.count(); ++i) {
         auto& hp = world.healths.data()[i];
         if (hp.current > 0 && hp.current < hp.max && hp.regen_per_sec > 0) {
             hp.current = std::min(hp.current + hp.regen_per_sec * dt, hp.max);
         }
     }
-}
 
-void system_state(World& world, float dt) {
     for (u32 i = 0; i < world.state_blocks.count(); ++i) {
         auto& sb = world.state_blocks.data()[i];
         for (auto& [id, state] : sb.states) {

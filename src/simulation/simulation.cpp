@@ -385,7 +385,6 @@ void Simulation::tick(float dt) {
 
     m_spatial_grid.update(m_world);
 
-    system_health(m_world, dt);
     system_state(m_world, dt);
     // Combat before movement: combat decides strike-vs-approach and sets the
     // approach target/range; movement executes it the same tick. Reversed, a
