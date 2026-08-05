@@ -10,6 +10,7 @@
 require("constants")
 local combat    = require("combat")
 local abilities = require("abilities")
+local revive    = require("revive")
 
 function main()
     Log("[Scene02] main() called — setting up ability test")
@@ -136,6 +137,7 @@ function main()
     combat.register_armor_system()
     combat.register_hit_vfx()
     combat.register_death_vfx()
+    revive.register_paladin(paladin, player1)
 
     -- Ability handlers (shared in scripts/abilities.lua). Global ones
     -- (consecration, holy_light, wind_walk) only need a single

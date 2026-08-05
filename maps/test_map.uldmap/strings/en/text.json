@@ -9,6 +9,7 @@
         "portal_label":        "[Portal: {scene}]",
         "portal_dialog_title": "Travel to Scene 01?",
         "portal_dialog_body":  "You've reached the portal. Switch scenes?",
+        "revive_countdown":    "Paladin revives in {seconds}",
         "button_yes":          "Yes",
         "button_cancel":       "Cancel",
 

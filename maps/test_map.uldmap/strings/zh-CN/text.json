@@ -9,6 +9,7 @@
         "portal_label":        "[传送门：{scene}]",
         "portal_dialog_title": "前往场景 01？",
         "portal_dialog_body":  "你已到达传送门,是否切换场景？",
+        "revive_countdown":    "圣骑士将在 {seconds} 秒后复活",
         "button_yes":          "是",
         "button_cancel":       "取消",
 

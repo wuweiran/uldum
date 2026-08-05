@@ -21,6 +21,7 @@
         "model_scale": 50.0,
         "model": "models/knight.glb",
         "health": { "max": 1200, "regen": 3.0 },
+        "death_type": "persistent",
         "states": { "mana": { "max": 255, "regen": 0.85 } },
         "attributes": {
             "armor": 4, "armor_type": "hero", "attack_type": "hero",

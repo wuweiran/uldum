@@ -80,5 +80,12 @@
         "light": 1.4,
         "color":     { "r": 1.0, "g": 0.6, "b": 0.2,  "a": 1.0 },
         "color_end": { "r": 0.7, "g": 0.1, "b": 0.03, "a": 1.0 }
+    },
+    "revive_glow": {
+        "type": "glow",
+        "height": 260, "radius": 70, "life": 1.5,
+        "fade_in": 0.1, "fade_out": 0.7,
+        "tyndall": 0.75, "intensity": 1.8,
+        "color": { "r": 1.0, "g": 0.9, "b": 0.45, "a": 1.0 }
     }
 }

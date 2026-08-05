@@ -1414,6 +1414,11 @@ function L(key, args) end
 ---@return TextTag|nil  tag handle (nil on failure)
 function CreateTextTag(args) end
 
+--- Update a live text tag's localized text without recreating it.
+---@param handle TextTag
+---@param text LocalizedString
+function SetTextTagText(handle, text) end
+
 --- Destroy a text tag by handle. For permanent tags; transient ones
 --- self-expire when their lifespan ends.
 ---@param handle TextTag
