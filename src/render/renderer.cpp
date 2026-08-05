@@ -3344,6 +3344,7 @@ void Renderer::draw_shadow_pass(rhi::CommandList& cmd, simulation::IWorldView& w
         const u32 fi = m_rhi->frame_index();
 
         for (u32 id : world.renderable_ids()) {
+            if (world.is_hidden(id)) continue;
             const auto& renderable = *world.renderable(id);
             if (!renderable.visible) continue;
 
@@ -3493,6 +3494,7 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
     buckets.reserve(8);
 
     for (u32 id : world.renderable_ids()) {
+        if (world.is_hidden(id)) continue;
         const auto& renderable = *world.renderable(id);
         if (!renderable.visible) continue;
 
@@ -3934,6 +3936,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
     if (has_skinned_pipeline) {
         auto cull_frustum = m_camera.frustum();
         for (u32 id : world.renderable_ids()) {
+            if (world.is_hidden(id)) continue;
             const auto& renderable = *world.renderable(id);
 
             auto* lm = get_or_load_model(renderable.model_path);
@@ -4098,6 +4101,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
         const u32 fi = m_rhi->frame_index();
         auto draw_frustum = m_camera.frustum();
         for (u32 id : world.renderable_ids()) {
+            if (world.is_hidden(id)) continue;
             const auto& renderable = *world.renderable(id);
             if (!renderable.visible) continue;
 

@@ -108,7 +108,7 @@ enum class MsgType : u8 {
 
     // DEMATERIALIZE (reliable): entity leaves client knowledge.
     S_HIDE          = 0x59,   // leaves live sight (still exists) → client: static→snapshot, mobile→drop
-    S_DESTROY       = 0x5A,   // removed from the world (decay / expiry / Lua) → client always removes
+    S_DESTROY       = 0x5A,   // client must forget this materialization (removed, decayed, or ShowUnit(false))
 
     // Playing — session events
     S_START         = 0x60,   // all players loaded, game begins
@@ -461,7 +461,7 @@ struct UnitState {
     u32 entity_id;
     f32 x, y, z;
     f32 facing;
-    u8  flags;       // 0x01 moving, 0x02 attacking, 0x04 casting, 0x08 FREE, 0x10 corpse-hidden, 0x20 has_health (death is derived from the health field, not a flag)
+    u8  flags;       // 0x01 moving, 0x02 attacking, 0x04 casting, 0x20 has_health (death is derived from the health field)
     f32 health_current;              // authentic Health.current; valid iff (flags & 0x20)
     u32 target_id;                   // valid iff (flags & 0x02)
     std::vector<f32> state_currents; // authentic StateValue.current, in the unit's sorted state-key order

@@ -126,6 +126,9 @@ struct World {
     using EntityDiedCallback = std::function<void(u32 entity_id)>;
     EntityDiedCallback on_entity_died;
 
+    using UnitRevivedCallback = std::function<void(Unit unit)>;
+    UnitRevivedCallback on_unit_revived;
+
     // Order callback — fired by issue_order whenever an order survives
     // admission checks and is added to the unit's queue (or replaces
     // its current order). Lets triggers react to commands as they
@@ -458,6 +461,9 @@ glm::vec3 get_position(const World& world, Unit unit);
 // Relocate while preserving the current order. Refreshes terrain height,
 // pathfinding scratch, cliff level, runtime footprint, and guard position.
 void     set_position(World& world, Unit unit, f32 x, f32 y);
+void     show_unit(World& world, Unit unit, bool show);
+bool     is_unit_hidden(const World& world, Unit unit);
+bool     revive_unit(World& world, Unit unit, f32 x, f32 y);
 Player   get_owner(const World& world, Unit unit);
 bool     is_alive(const World& world, Unit unit);
 bool     is_dead(const World& world, Unit unit);

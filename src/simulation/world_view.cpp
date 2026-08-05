@@ -15,6 +15,7 @@ const Combat*                 WorldView::combat(u32 id)         const { return m
 const Construction*           WorldView::construction(u32 id)   const { return m_world->constructions.get(id); }
 const Selectable*             WorldView::selectable(u32 id)     const { return m_world->selectables.get(id); }
 bool                          WorldView::is_dead(u32 id)        const { return health_is_dead(m_world->healths.get(id)); }
+bool                          WorldView::is_hidden(u32 id)      const { const auto* h = m_world->handle_infos.get(id); return h && h->hidden; }
 const StatusFlags*            WorldView::status(u32 id)         const { return m_world->status_flags.get(id); }
 const UnitClassificationComp* WorldView::classification(u32 id) const { return m_world->classifications.get(id); }
 const AbilitySet*             WorldView::ability_set(u32 id)    const { return m_world->ability_sets.get(id); }
@@ -84,6 +85,10 @@ const Construction* LocalView::construction(u32 id) const {
 }
 bool LocalView::is_dead(u32 id) const {
     return health_is_dead(health(id));
+}
+bool LocalView::is_hidden(u32 id) const {
+    const auto* h = handle_info(id);
+    return h && h->hidden;
 }
 const StatusFlags* LocalView::status(u32 id) const {
     return resolve<StatusFlags>(*this, id, nullptr, source->status_flags);
@@ -241,6 +246,7 @@ bool ability_can_afford(const IWorldView& world, u32 unit_id,
 }
 
 bool can_attack_target(const IWorldView& world, u8 target_mask, Widget target) {
+    if (world.is_hidden(target.id)) return false;
     u8 target_bits;
     if (const auto* d = world.destructable(target.id)) {
         target_bits = d->target_bit;

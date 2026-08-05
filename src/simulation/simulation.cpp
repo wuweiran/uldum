@@ -309,6 +309,7 @@ bool Simulation::target_filter_passes(const TargetFilter& filter,
     // so an MP client resolves targets against the replicated entities directly.
     const World& w = world();
     if (!w.contains(target)) return reject("");
+    if (const auto* info = w.handle_infos.get(target.id); info->hidden) return reject("");
 
     // Liveness gate. `alive` defaults true in JSON (parser-side), so
     // most filters only accept living targets. `dead` lets resurrect-

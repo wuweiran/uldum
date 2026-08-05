@@ -48,6 +48,7 @@ struct Transform {
 struct HandleInfo {
     std::string type_id;     // references type definition (e.g. "footman")
     Category category = Category::Unit;
+    bool hidden = false;
 };
 
 // ── Widget Components ──────────────────────────────────────────────────────
@@ -269,12 +270,12 @@ inline bool advance_swing(Combat& c, f32 dt) {
     }
 }
 
-// Dead unit state — unit becomes a corpse, then eventually gets cleaned up.
 struct Corpse {
-    f32 corpse_timer   = 0;     // time since death
-    f32 corpse_duration = 8.0f; // seconds corpse remains visible
-    f32 cleanup_delay  = 30.0f; // seconds before entity is fully destroyed
-    bool corpse_visible = true;  // false after corpse_duration expires
+    f32 corpse_timer   = 0;
+    f32 corpse_duration = 8.0f;
+    f32 cleanup_delay  = 30.0f;
+    bool decayed = false;
+    bool persistent = false;
 };
 
 // Per-unit sight radius. The Vision subsystem (see vision.h) stamps

@@ -723,6 +723,7 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
         "model": "models/units/footman.gltf",
         "icon": "icons/footman.ktx2",
         "health": { "max": 420, "regen": 0.25 },
+        "death_type": "decay",
         "states": {
             "mana": { "max": 0, "regen": 0 }
         },
@@ -740,6 +741,13 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
     }
 }
 ```
+
+`death_type` controls the unit's corpse lifetime:
+
+- `"decay"` (default) — hide the corpse after its decay time, then remove the handle at cleanup.
+- `"persistent"` — hide the corpse through `ShowUnit(unit, false)` after the same decay time, but retain its handle and state until `ReviveUnit` or `RemoveUnit`.
+
+`ReviveUnit(unit, x, y)` accepts any corpse whose handle still exists, restores it at full health, shows it, and fires the unit-revived events. Persistent units remain revivable after their corpse has disappeared. `ShowUnit(unit, show)` is the generic hidden-state primitive; hidden units retain their handle and continue internal timers but leave rendering, vision, targeting, selection, spatial queries, collision, and client projection.
 
 ### Hero Type Example
 

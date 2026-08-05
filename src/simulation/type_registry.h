@@ -34,6 +34,7 @@ struct UnitTypeDef {
     // Health (engine built-in state)
     f32 max_health = 100;
     f32 health_regen = 0;
+    DeathType death_type = DeathType::Decay;
 
     // Movement
     f32      move_speed = 270;

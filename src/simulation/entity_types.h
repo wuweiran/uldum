@@ -78,6 +78,12 @@ enum class Category : u8 { Unit, Destructable, Item, Doodad, Projectile };
 // classified air, not because it flies.
 enum class MoveType : u8 { Ground, Fly, Amphibious, Water, None };
 
+enum class DeathType : u8 { Decay, Persistent };
+
+inline DeathType parse_death_type(const std::string& s) {
+    return s == "persistent" ? DeathType::Persistent : DeathType::Decay;
+}
+
 // Parse MoveType from string. Returns Ground for unrecognized values.
 inline MoveType parse_move_type(const std::string& s) {
     if (s == "fly" || s == "air") return MoveType::Fly;   // "air" kept as an alias

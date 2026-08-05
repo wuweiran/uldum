@@ -142,7 +142,7 @@ void draw_entity_bars_impl(HudRenderer& r,
         // Bars are for units only. Destructables carry Health (so combat can
         // damage them) but must not advertise an HP bar.
         if (auto* hi = world.handle_info(id);
-            !hi || hi->category != simulation::Category::Unit) continue;
+            !hi || hi->hidden || hi->category != simulation::Category::Unit) continue;
 
         // Interpolated world position for the bar anchor — matches how
         // the renderer (and selection circles) draw moving units so the

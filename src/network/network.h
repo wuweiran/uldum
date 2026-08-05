@@ -498,6 +498,7 @@ private:
                          bool newly_created);
     void host_send_show(PeerInfo& peer, u32 entity_id,
                         const simulation::HandleInfo& info);
+    void host_send_inventory_state(PeerInfo& peer, u32 carrier_id);
     // MATERIALIZE cold-state batch (S_COLD, N records) — sent right after
     // S_SPAWN/S_SHOW for any stateful entity. No-op if the entity has no records.
     void host_send_cold_batch(PeerInfo& peer, u32 entity_id);

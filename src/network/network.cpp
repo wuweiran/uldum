@@ -70,12 +70,6 @@ static UnitState build_unit_state(const simulation::World& world, u32 id) {
                  aset->cast_state == simulation::CastState::Backswing)) {
         flags |= 0x04;
     }
-    // Corpse hidden (host past corpse_duration) — mirrored by the viewer
-    // instead of running its own corpse timer. (Death itself is NOT a flag: the
-    // client derives it from the authentic health field below via health_is_dead,
-    // exactly as the host does — no "dead" bit, no replicated Corpse component.)
-    if (const auto* r = world.renderables.get(id); r && !r->visible) flags |= 0x10;
-
     // Authentic health: send Health.current (not a derived fraction — the engine
     // stores absolute current/max). has_health (0x20) gates presence so
     // projectiles/doodads carry none. The client already has max from the type
@@ -154,12 +148,6 @@ static void apply_unit_state_scalars(simulation::World& world, const UnitState& 
     // (health_is_dead), the same predicate the host uses. No "dead" component on
     // the client: the renderer reads is_dead() → health, so writing health < 0
     // (which the host does at death, shipped via 0x20) already makes it a corpse.
-
-    // Corpse-hidden bit — the host is the single clock for when a corpse stops
-    // drawing; mirror it onto the renderable.
-    if (auto* r = world.renderables.get(e.entity_id)) {
-        r->visible = !(e.flags & 0x10);
-    }
 
     // Map-defined states (mana/energy/etc.) — KEYLESS map-back. The wire carries
     // only current values in the host's sorted state-key order; the client owns
@@ -898,6 +886,19 @@ void NetworkManager::host_send_cold_batch(PeerInfo& peer, u32 entity_id) {
     m_transport->send(peer.peer_id, msg, true);
 }
 
+void NetworkManager::host_send_inventory_state(PeerInfo& peer, u32 carrier_id) {
+    auto& world = m_simulation->world();
+    const auto* inventory = world.inventories.get(carrier_id);
+    if (!inventory) return;
+    for (u32 slot = 0; slot < inventory->slots.size(); ++slot) {
+        simulation::Item item = inventory->slots[slot];
+        if (!world.contains(item)) continue;
+        m_transport->send(
+            peer.peer_id,
+            build_cold_inventory(carrier_id, slot, item.id), true);
+    }
+}
+
 void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
                                      const simulation::HandleInfo& info,
                                      bool newly_created) {
@@ -920,6 +921,7 @@ void NetworkManager::host_send_spawn(PeerInfo& peer, u32 entity_id,
     // states, abilities, cooldowns, attrs, current anim — atomic-enough (same
     // reliable-ordered drain) that the entity is born with its real state.
     host_send_cold_batch(peer, entity_id);
+    host_send_inventory_state(peer, entity_id);
 }
 
 void NetworkManager::host_send_show(PeerInfo& peer, u32 entity_id,
@@ -946,6 +948,7 @@ void NetworkManager::host_send_show(PeerInfo& peer, u32 entity_id,
     // (health→death of a crate, abilities/cooldowns/mana that changed out of
     // sight) would otherwise be lost.
     host_send_cold_batch(peer, entity_id);
+    host_send_inventory_state(peer, entity_id);
 }
 
 void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
@@ -962,9 +965,15 @@ void NetworkManager::host_send_spawn_burst(PeerInfo& peer) {
         // added, mana spent, a crate destroyed → health 0), and it skips
         // host_send_spawn's batch — so send the batch here for ones visible at join.
         if (id < m_placement_count) {
+            if (info.hidden) {
+                m_transport->send(peer.peer_id, build_destroy(id), true);
+                continue;
+            }
             peer.known.insert(id);
-            if (is_visible_to(id, peer.player))
+            if (is_visible_to(id, peer.player)) {
                 host_send_cold_batch(peer, id);
+                host_send_inventory_state(peer, id);
+            }
             continue;
         }
         if (!is_visible_to(id, peer.player)) continue;
@@ -1020,6 +1029,8 @@ NetworkManager::ViewGate NetworkManager::view_gate(
     // discovered on first encounter; a *dynamic* static must be scouted first
     // (H3) or a never-seen static on a pre-explored tile would show.
     ViewGate g{};
+    const auto* info = world.handle_infos.get(id);
+    if (!info || info->hidden) return g;
     g.remembered = simulation::is_static_remembered_entity(world, id);
     g.live_vis   = sim.vision().is_unit_visible_to(world, sim, id, player);
 
@@ -1030,16 +1041,6 @@ NetworkManager::ViewGate NetworkManager::view_gate(
         sim.vision().is_unit_visible_to(world, sim, id, player, /*is_static_remembered=*/true);
     g.keep = g.live_vis || remembered_ok;
     return g;
-}
-
-// A corpse that has passed its corpse_duration is DECAYED: the host stopped
-// drawing it (renderable.visible=false) and holds the handle only as GC scratch
-// until cleanup_delay. To the client it's gone NOW — the host must S_DESTROY it at
-// decay (not wait for the 30s handle-free), so the corpse disappears in lockstep
-// with the host. Applies to every category (unit/destructable/item corpse).
-static bool is_decayed_corpse(const simulation::World& world, u32 id) {
-    const auto* c = world.corpses.get(id);
-    return c && !c->corpse_visible;
 }
 
 void NetworkManager::host_broadcast_tick(u32 tick) {
@@ -1077,13 +1078,6 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             // no per-peer `discovered`. The client owns memory (decides snapshot
             // vs drop on S_HIDE). Same predicate as the anti-cheat snapshot filter.
             if (!is_visible_to(id, peer.player)) continue;
-
-            // A decayed corpse (past corpse_duration) is invisible on the host but
-            // still world-present as GC scratch until cleanup_delay. Treat it as
-            // GONE: don't add to visible_now (so it's not re-shown to joiners) and
-            // let the leave-loop S_DESTROY it below. This is what makes the corpse
-            // disappear on the client at decay (8s), not at handle-free (30s).
-            if (is_decayed_corpse(world, id)) continue;
 
             // A dying projectile is gameplay-dead; its death clip is a pure
             // client-side visual. We already sent S_PROJECTILE_DYING and the
@@ -1130,8 +1124,6 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
         //   dying projectile   → drop SILENTLY. S_PROJECTILE_DYING already went out
         //                       and the client owns teardown; no S_DESTROY (too
         //                       common) and no S_HIDE (it would cut the death clip).
-        //   decayed corpse     → S_DESTROY (past corpse_duration: gone on the host
-        //                       even though the handle lingers as GC until cleanup).
         //   gone from world    → S_DESTROY (freed / expiry / Lua).
         //   still in world     → S_HIDE  (client snapshots a static, drops a mobile).
         std::vector<u32> to_remove;
@@ -1142,7 +1134,8 @@ void NetworkManager::host_broadcast_tick(u32 tick) {
             const auto* pc = world.projectiles.get(known_id);
             const bool dying_projectile = pc && pc->dying;
             if (!carried && !dying_projectile) {
-                const bool gone = !infos.has(known_id) || is_decayed_corpse(world, known_id);
+                const auto* known_info = infos.get(known_id);
+                const bool gone = !known_info || known_info->hidden;
                 auto msg = gone ? build_destroy(known_id)
                                 : build_hide(known_id);
                 m_transport->send(peer.peer_id, msg, true);
@@ -1992,8 +1985,6 @@ static void apply_cold_record(simulation::World& world, u32 entity_id,
         break;
     }
     case ColdKind::Transform: {
-        // Static teleport / facing (destructable/doodad/item). Units self-heal
-        // via the HOT S_UNIT_STATE tick, so this is only ever sent for statics.
         if (auto* t = world.transforms.get(entity_id)) {
             t->position = {rec.x, rec.y, rec.z};
             t->prev_position = t->position;
@@ -2218,6 +2209,11 @@ void NetworkManager::project_local_view(const simulation::Simulation& sim,
 
     for (u32 i = 0; i < infos.count(); ++i) {
         u32 id = infos.ids()[i];
+        const auto& info = infos.data()[i];
+        if (info.hidden) {
+            if (view.snapshotted(id)) drop_snapshot(id);
+            continue;
+        }
 
         // A CARRIED item isn't world-present — it lives in a carrier's inventory
         // slot and its ground Transform is frozen at the pickup tile. Running the

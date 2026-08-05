@@ -43,7 +43,7 @@ void SpatialGrid::update(const World& world) {
     for (u32 i = 0; i < handle_infos.count(); ++i) {
         u32 id = handle_infos.ids()[i];
         const auto& info = handle_infos.data()[i];
-        if (info.category != Category::Unit) continue;
+        if (info.category != Category::Unit || info.hidden) continue;
 
         const auto* t = transforms.get(id);
         if (!t) continue;
@@ -66,6 +66,7 @@ void SpatialGrid::get_cell_range(f32 x, f32 y, f32 radius, i32& min_cx, i32& min
 
 bool SpatialGrid::passes_filter(const World& world, Unit unit, const UnitFilter& filter) const {
     if (!world.contains(unit)) return false;
+    if (world.handle_infos.get(unit.id)->hidden) return false;
 
     // Alive check
     if (filter.alive_only) {

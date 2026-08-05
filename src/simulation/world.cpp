@@ -466,7 +466,7 @@ void destroy(World& world, Doodad d)          { destroy_handle(world, d); }
 bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
     // Type/model changes are not yet replicated to network clients.
     assert(world.terrain);
-    if (!world.contains(unit) || !world.types) return false;
+    if (!world.contains(unit) || world.corpses.has(unit.id) || !world.types) return false;
     auto* hi = world.handle_infos.get(unit.id);
     if (!hi) return false;
 
@@ -716,7 +716,8 @@ void deal_damage(World& world, Unit source, Widget target, f32 amount, std::stri
 }
 
 void issue_order(World& world, Unit unit, Order order) {
-    if (!world.contains(unit)) return;
+    if (!world.contains(unit) || world.corpses.has(unit.id) ||
+        health_is_dead(world.healths.get(unit.id))) return;
     auto* oq = world.order_queues.get(unit.id);
     if (!oq) return;
 
@@ -922,7 +923,7 @@ f32 get_health(const World& world, Unit unit) {
 }
 
 void set_health(World& world, Unit unit, f32 health) {
-    if (!world.contains(unit)) return;
+    if (!world.contains(unit) || world.corpses.has(unit.id)) return;
     auto* h = world.healths.get(unit.id);
     if (!h) return;
     h->current = std::clamp(health, 0.0f, h->max);
@@ -966,6 +967,55 @@ void set_position(World& world, Unit unit, f32 x, f32 y) {
         pathing->stuck_anchor = {x, y};
         pathing->build_clear_timer = 0.0f;
     }
+}
+
+void show_unit(World& world, Unit unit, bool show) {
+    if (!world.contains(unit)) return;
+    auto* info = world.handle_infos.get(unit.id);
+    if (info->hidden == !show) return;
+
+    info->hidden = !show;
+    if (!show) {
+        release_pathing_blocker(world, unit.id);
+    } else {
+        const auto* def = world.types->get_unit_type(info->type_id);
+        reconcile_unit_pathing_blocker(world, unit.id, *def);
+    }
+}
+
+bool is_unit_hidden(const World& world, Unit unit) {
+    if (!world.contains(unit)) return false;
+    return world.handle_infos.get(unit.id)->hidden;
+}
+
+bool revive_unit(World& world, Unit unit, f32 x, f32 y) {
+    if (!world.contains(unit) || !world.corpses.has(unit.id)) return false;
+
+    auto* health = world.healths.get(unit.id);
+    auto* info = world.handle_infos.get(unit.id);
+    assert(health);
+    assert(info);
+    assert(info->category == Category::Unit);
+
+    bool was_hidden = info->hidden;
+    world.corpses.remove(unit.id);
+    set_position(world, unit, x, y);
+    health->current = health->max;
+    health->killer = {};
+
+    show_unit(world, unit, true);
+    if (!was_hidden) {
+        const auto* def = world.types->get_unit_type(info->type_id);
+        reconcile_unit_pathing_blocker(world, unit.id, *def);
+    }
+    if (auto* renderable = world.renderables.get(unit.id)) {
+        renderable->skip_birth = true;
+    }
+
+    world.anim_queues.remove(unit.id);
+
+    if (world.on_unit_revived) world.on_unit_revived(unit);
+    return true;
 }
 
 Player get_owner(const World& world, Unit unit) {
@@ -1048,7 +1098,8 @@ Unit get_item_owner(const World& world, Item item) {
 }
 
 i32 give_item_to_unit(World& world, Unit unit, Item item) {
-    if (!world.contains(unit) || !world.contains(item)) return -1;
+    if (!world.contains(unit) || world.corpses.has(unit.id) ||
+        !world.contains(item)) return -1;
     // A dying item (playing its death clip on the ground) can't be grabbed.
     if (world.corpses.has(item.id)) return -1;
     // Powerups are consumed on pickup and never occupy a slot — the

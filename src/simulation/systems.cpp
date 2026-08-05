@@ -108,7 +108,7 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
                                       self_radius * 4.0f, filter);
     for (auto& other : nearby) {
         if (other.id == self_id) continue;
-        if (world.corpses.has(other.id)) continue;
+        if (health_is_dead(world.healths.get(other.id))) continue;
         // A phased OTHER unit is also passed through.
         if (auto* osf = world.status_flags.get(other.id); osf && (osf->flags & status::Phased)) continue;
 
@@ -137,6 +137,7 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
 void system_guard_position(World& world, float dt, const Pathfinder& pathfinder) {
     f32 arrival_tolerance = pathfinder.tile_size() * 0.5f;
     for (u32 id : world.guard_positions.ids()) {
+        if (health_is_dead(world.healths.get(id))) continue;
         auto* guard = world.guard_positions.get(id);
         auto* transform = world.transforms.get(id);
         auto* orders = world.order_queues.get(id);
@@ -162,6 +163,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
 
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
+        if (health_is_dead(world.healths.get(id))) continue;
         auto& mov = world.movements.data()[i];
         // Host-only pathfinder scratch (create_unit adds it alongside Movement).
         auto* pth_ptr = world.pathings.get(id);
@@ -845,6 +847,8 @@ static Projectile spawn_attack_projectile(World& world, Unit source, Widget targ
 // flyer (flyer is classified "air") or an ordinary unit chopping trees.
 bool can_attack_target(const World& world, u8 target_mask, Widget target,
                        std::string* out_specifier) {
+    const auto* info = world.handle_infos.get(target.id);
+    if (!info || info->hidden) return false;
     u8 target_bits;
     if (const auto* d = world.destructables.get(target.id)) {
         target_bits = d->target_bit;
@@ -887,7 +891,7 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
     }
 
     for (Unit unit : units) {
-        if (!world.contains(unit)) continue;
+        if (!world.contains(unit) || health_is_dead(world.healths.get(unit.id))) continue;
         u32 id = unit.id;
         auto* combat_comp = world.combats.get(id);
         auto* transform = world.transforms.get(id);
@@ -1334,6 +1338,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
             if (!aset) continue;
         }
 
+        if (health_is_dead(world.healths.get(id))) continue;
+
         // Status-flag gates. Cooldown / duration ticking above runs
         // for ALL units — even paused / stunned ones tick passive
         // durations down. The cast state machine below is what we
@@ -1718,7 +1724,7 @@ void system_items(World& world, float /*dt*/) {
     }
 
     for (Unit unit_h : units) {
-        if (!world.contains(unit_h)) continue;
+        if (!world.contains(unit_h) || health_is_dead(world.healths.get(unit_h.id))) continue;
 
         u32 id = unit_h.id;
         auto* oq = world.order_queues.get(id);
@@ -1873,7 +1879,7 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
     for (u32 id : world.order_queues.ids()) workers.push_back(world.unit(id));
 
     for (Unit worker : workers) {
-        if (!world.contains(worker)) continue;
+        if (!world.contains(worker) || health_is_dead(world.healths.get(worker.id))) continue;
         u32 id = worker.id;
         auto* oq = world.order_queues.get(id);
         if (!oq || !oq->current) continue;
@@ -2119,7 +2125,7 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
     for (u32 i = 0; i < world.constructions.count(); ++i) {
         u32 site_id = world.constructions.ids()[i];
         auto& c = world.constructions.data()[i];
-        if (!c.under_construction) continue;
+        if (health_is_dead(world.healths.get(site_id)) || !c.under_construction) continue;
         if (c.build_time_total <= 0.0f) { c.under_construction = false; continue; }
 
         c.build_progress += dt / c.build_time_total;
@@ -2460,7 +2466,8 @@ static void remove_all_components_and_free(World& world, Handle h) {
 void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& pathfinder) {
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
-        if (world.corpses.has(id)) continue;
+        const auto* info = world.handle_infos.get(id);
+        if (!info || info->hidden || health_is_dead(world.healths.get(id))) continue;
 
         auto* transform = world.transforms.get(id);
         if (!transform) continue;
@@ -2483,7 +2490,7 @@ void system_collision(World& world, const SpatialGrid& grid, const Pathfinder& p
 
         for (auto& other : nearby) {
             if (other.id <= id) continue;
-            if (world.corpses.has(other.id)) continue;
+            if (health_is_dead(world.healths.get(other.id))) continue;
 
             // A phased OTHER unit is also passed through.
             if (auto* osf = world.status_flags.get(other.id); osf && (osf->flags & status::Phased)) continue;
@@ -2615,15 +2622,57 @@ void system_death(World& world, float dt) {
             if (!world.contains(entity)) continue;
         }
 
-        world.movements.remove(id);
-        world.combats.remove(id);
-        world.order_queues.remove(id);
-        world.ability_sets.remove(id);
-        world.sights.remove(id);
+        if (auto* movement = world.movements.get(id)) movement->moving = false;
+        if (auto* pathing = world.pathings.get(id)) {
+            pathing->corridor.clear();
+            pathing->has_waypoint = false;
+            pathing->has_detour = false;
+            pathing->approach_target = {};
+            pathing->approach_range = 0.0f;
+            pathing->stuck_timer = 0.0f;
+            pathing->build_clear_timer = 0.0f;
+        }
+        if (auto* combat = world.combats.get(id)) {
+            combat->target = {};
+            combat->attack_state = AttackState::Idle;
+            combat->attack_timer = 0.0f;
+            combat->cooldown_timer = 0.0f;
+        }
+        if (auto* orders = world.order_queues.get(id)) {
+            orders->current.reset();
+            orders->queued.clear();
+        }
+        if (auto* abilities = world.ability_sets.get(id)) {
+            std::string casting_id = abilities->casting_id;
+            Unit cast_target = abilities->cast_target_unit;
+            glm::vec3 cast_position = abilities->cast_target_pos;
+            Item source_item = abilities->cast_source_item;
+            bool was_channeling = abilities->cast_state == CastState::Channeling;
+            abilities->cast_state = CastState::None;
+            abilities->cast_timer = 0.0f;
+            abilities->casting_id.clear();
+            abilities->cast_target_unit = {};
+            abilities->cast_target_pos = {};
+            abilities->cast_source_item = {};
+            if (was_channeling && world.on_ability_endcast) {
+                world.on_ability_endcast(Unit{id}, casting_id, cast_target,
+                                         cast_position, source_item);
+                if (!world.contains(entity)) continue;
+            }
+        }
+        if (auto* guard = world.guard_positions.get(id)) {
+            guard->return_timer = 0.0f;
+            guard->returning = false;
+        }
 
         release_pathing_blocker(world, id);
 
-        world.corpses.add(id, Corpse{});
+        Corpse corpse;
+        if (category == Category::Unit) {
+            const auto* def = world.types->get_unit_type(type_id);
+            corpse.persistent = def->death_type == DeathType::Persistent;
+        }
+        world.corpses.add(id, std::move(corpse));
 
         // Destructables leave the per-tick snapshot (unlike units, whose health
         // rides S_UNIT_STATE), so signal death on-change — the network layer sends
@@ -2642,15 +2691,17 @@ void system_death(World& world, float dt) {
 
         dead.corpse_timer += dt;  // game-speed-scaled; corpses linger in game-time, not real-time
 
-        // Hide corpse after corpse_duration
-        if (dead.corpse_visible && dead.corpse_timer >= dead.corpse_duration) {
-            dead.corpse_visible = false;
-            auto* r = world.renderables.get(id);
-            if (r) r->visible = false;
+        if (!dead.decayed && dead.corpse_timer >= dead.corpse_duration) {
+            dead.decayed = true;
+            const auto* info = world.handle_infos.get(id);
+            if (info && info->category == Category::Unit) {
+                show_unit(world, Unit{id}, false);
+            } else if (auto* renderable = world.renderables.get(id)) {
+                renderable->visible = false;
+            }
         }
 
-        // Fully destroy after cleanup_delay
-        if (dead.corpse_timer >= dead.cleanup_delay) {
+        if (!dead.persistent && dead.corpse_timer >= dead.cleanup_delay) {
             if (world.handle_infos.has(id)) to_destroy.push_back(Handle{id});
         }
     }
@@ -2693,7 +2744,8 @@ void system_regions(World& world) {
         for (u32 i = 0; i < world.transforms.count(); ++i) {
             u32 unit_id = world.transforms.ids()[i];
             const auto* info = world.handle_infos.get(unit_id);
-            if (!info || info->category != Category::Unit || world.corpses.has(unit_id)) {
+            if (!info || info->hidden || info->category != Category::Unit ||
+                world.corpses.has(unit_id)) {
                 continue;
             }
             if (region_contains_point(region_it->second,

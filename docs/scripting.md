@@ -210,10 +210,11 @@ These four are **widget-level** — they fire for both units and destructables (
 
 #### Unit lifecycle
 
-| Global | Notes |
-|---|---|
-| `EVENT_GLOBAL_UNIT_CREATED` | After entity creation |
-| `EVENT_GLOBAL_UNIT_REMOVED` | Before entity cleanup |
+| Global | Unit-scoped | Notes |
+|---|---|---|
+| `EVENT_GLOBAL_UNIT_CREATED` | — | After entity creation |
+| `EVENT_GLOBAL_UNIT_REMOVED` | — | Before entity cleanup |
+| `EVENT_GLOBAL_UNIT_REVIVED` | `EVENT_UNIT_REVIVED` | After `ReviveUnit` restores the corpse at full health |
 
 #### Orders + selection
 
@@ -285,6 +286,9 @@ The engine API is the set of C++ functions exposed to Lua. They are declared in
 -- Creation / destruction
 CreateUnit(type_id, player, x, y, facing) → unit
 RemoveUnit(unit)
+ReviveUnit(unit, x, y) → bool
+ShowUnit(unit, show)
+IsUnitHidden(unit) → bool
 IsUnitAlive(unit) → bool
 IsUnitDead(unit) → bool
 IsUnitHero(unit) → bool

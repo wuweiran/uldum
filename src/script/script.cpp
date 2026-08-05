@@ -399,6 +399,10 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         }
     };
 
+    sim.world().on_unit_revived = [fan_out](simulation::Unit unit) {
+        fan_out(unit, GenericEvent{}, "global_unit_revived", "unit_revived");
+    };
+
     // Hook order callback — fires every time a new order survives the
     // sim's admission checks. order_to_event_data maps the order variant to
     // the OrderEvent core, surfaced through trigger context accessors:
@@ -1023,6 +1027,18 @@ void ScriptEngine::bind_api() {
         return simulation::is_dead(sim.world(), unit);
     };
 
+    lua["ShowUnit"] = [&](simulation::Unit unit, bool show) {
+        simulation::show_unit(sim.world(), unit, show);
+    };
+
+    lua["IsUnitHidden"] = [&](simulation::Unit unit) -> bool {
+        return simulation::is_unit_hidden(sim.world(), unit);
+    };
+
+    lua["ReviveUnit"] = [&](simulation::Unit unit, f32 x, f32 y) -> bool {
+        return simulation::revive_unit(sim.world(), unit, x, y);
+    };
+
     lua["IsUnitHero"] = [&](simulation::Unit unit) -> bool {
         auto& world = sim.world();
         if (!world.contains(unit)) return false;
@@ -1624,7 +1640,8 @@ void ScriptEngine::bind_api() {
     };
 
     lua["HealUnit"] = [&](simulation::Unit source, simulation::Unit target, f32 amount) {
-        if (amount <= 0 || !sim.world().contains(target)) return;
+        if (amount <= 0 || !sim.world().contains(target) ||
+            sim.world().corpses.has(target.id)) return;
         auto* hp = sim.world().healths.get(target.id);
         if (!hp) return;
         EventFrame frame;

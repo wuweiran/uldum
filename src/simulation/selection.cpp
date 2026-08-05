@@ -42,7 +42,10 @@ std::vector<Unit> SelectionState::selected_units(const World& world) const {
     if (!lead_owner || lead_owner->id != m_player.id) return {};
     std::vector<Unit> out;
     out.reserve(m_selected.size());
-    for (Widget w : m_selected) out.push_back(Unit{w.id});
+    for (Widget w : m_selected) {
+        const auto* info = world.handle_infos.get(w.id);
+        if (info && !info->hidden) out.push_back(Unit{w.id});
+    }
     return out;
 }
 

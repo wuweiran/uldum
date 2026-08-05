@@ -84,6 +84,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.max_health   = h.value("max", 100.0f);
             def.health_regen = h.value("regen", 0.0f);
         }
+        def.death_type = parse_death_type(val.value("death_type", "decay"));
 
         if (val.contains("movement")) {
             auto& m = val["movement"];

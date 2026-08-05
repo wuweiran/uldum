@@ -88,6 +88,8 @@ bool collision_overlaps(const World& world, f32 wx, f32 wy, f32 radius,
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
         if (id == ignore_id) continue;
+        const auto* info = world.handle_infos.get(id);
+        if (!info || info->hidden) continue;
         const auto& other = world.movements.data()[i];
         if ((other.type == MoveType::Fly) != my_air) continue;
         const auto* t = world.transforms.get(id);
@@ -101,6 +103,8 @@ bool collision_overlaps(const World& world, f32 wx, f32 wy, f32 radius,
 }
 
 bool is_displaceable(const World& world, u32 unit_id, u32 builder_owner_id) {
+    const auto* info = world.handle_infos.get(unit_id);
+    if (!info || info->hidden) return false;
     // Own unit.
     const auto* owner = world.owners.get(unit_id);
     if (!owner || owner->id != builder_owner_id) return false;
@@ -137,6 +141,8 @@ std::vector<u32> footprint_occupants(const World& world, const map::TerrainData&
     for (u32 i = 0; i < world.movements.count(); ++i) {
         u32 id = world.movements.ids()[i];
         if (id == ignore_id) continue;
+        const auto* info = world.handle_infos.get(id);
+        if (!info || info->hidden) continue;
         const auto& mv = world.movements.data()[i];
         if ((mv.type == MoveType::Fly) != my_air) continue;
         if (mv.collision_radius <= 0.0f) continue;

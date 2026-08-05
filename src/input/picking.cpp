@@ -199,8 +199,9 @@ simulation::Widget Picker::pick_widget(f32 screen_x, f32 screen_y,
         if (!transform) continue;
 
         auto* info = m_world->handle_info(id);
-        if (!info || (info->category != simulation::Category::Unit &&
-                      info->category != simulation::Category::Destructable)) continue;
+        if (!info || info->hidden ||
+            (info->category != simulation::Category::Unit &&
+             info->category != simulation::Category::Destructable)) continue;
         // Selection excludes non-selectable destructables (trees). Attack/cast
         // targeting passes selectable_only=false so it can still hit them.
         if (selectable_only) {
@@ -277,7 +278,7 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
         if (!sel) continue;
 
         auto* info = m_world->handle_info(id);
-        if (!info || info->category != simulation::Category::Item) continue;
+        if (!info || info->hidden || info->category != simulation::Category::Item) continue;
         if (m_world->is_dead(id)) continue;
         // Skip items currently being carried (they're "inside" a unit).
         auto* car = m_world->carriable(id);
@@ -317,7 +318,7 @@ std::vector<simulation::Unit> Picker::pick_units_in_box(f32 x0, f32 y0, f32 x1, 
 
     for (u32 id : m_world->selectable_ids()) {
         auto* info = m_world->handle_info(id);
-        if (!info || info->category != simulation::Category::Unit) continue;
+        if (!info || info->hidden || info->category != simulation::Category::Unit) continue;
         if (m_world->is_dead(id)) continue;
         if (auto* sf = m_world->status(id);
             sf && (sf->flags & simulation::status::Untargetable)) continue;

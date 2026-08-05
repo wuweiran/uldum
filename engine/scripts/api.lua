@@ -263,6 +263,26 @@ function IsUnitAlive(unit) end
 ---@return boolean
 function IsUnitDead(unit) end
 
+--- Show or hide a unit without removing it. Hidden units retain their handle
+--- and continue simulating, but are excluded from rendering, vision, targeting,
+--- selection, spatial queries, collision, and client projection.
+---@param unit unit
+---@param show boolean
+function ShowUnit(unit, show) end
+
+---@param unit unit
+---@return boolean
+function IsUnitHidden(unit) end
+
+--- Revive an existing corpse at a new position with full health. Returns
+--- false if the unit is not currently a corpse. Fires EVENT_UNIT_REVIVED
+--- and EVENT_GLOBAL_UNIT_REVIVED after the unit becomes active.
+---@param unit unit
+---@param x number
+---@param y number
+---@return boolean
+function ReviveUnit(unit, x, y) end
+
 --- Check if a unit has the "hero" classification.
 ---@param unit unit
 ---@return boolean

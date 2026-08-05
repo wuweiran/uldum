@@ -82,7 +82,8 @@ void Vision::update(World& world, const Simulation& sim) {
 
         const auto* owner = world.owners.get(id);
         const auto* transform = world.transforms.get(id);
-        if (!owner || !transform) continue;
+        const auto* info = world.handle_infos.get(id);
+        if (!owner || !transform || !info || info->hidden) continue;
         if (world.corpses.has(id)) continue;
 
         u32 player_id = owner->id;
@@ -148,6 +149,8 @@ void Vision::update(World& world, const Simulation& sim) {
     const auto& grid_q = sim.spatial_grid();
     for (u32 i = 0; i < attrs.count(); ++i) {
         u32 detector_id = attrs.ids()[i];
+        const auto* info = world.handle_infos.get(detector_id);
+        if (!info || info->hidden) continue;
         const auto& ab = attrs.data()[i];
         auto it = ab.numeric.find("true_sight");
         if (it == ab.numeric.end() || it->second <= 0.0f) continue;
@@ -182,6 +185,9 @@ bool Vision::is_unit_visible_to(const World& world, const Simulation& sim,
                                   u32 entity_id, Player player,
                                   bool remembered_ok) const {
     const u32 player_bit = 1u << player.id;
+
+    const auto* info = world.handle_infos.get(entity_id);
+    if (info && info->hidden) return false;
 
     // Friendly (own / allied) — always visible
     const auto* owner = world.owners.get(entity_id);

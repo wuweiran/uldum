@@ -48,6 +48,7 @@ struct IWorldView {
     // The client only ever receives health, so this is the one predicate that
     // agrees on host and client. Renderer/HUD read it for corpse pose + material.
     virtual bool                          is_dead(u32 id)        const = 0;
+    virtual bool                          is_hidden(u32 id)      const = 0;
     virtual const StatusFlags*            status(u32 id)         const = 0;
     virtual const UnitClassificationComp* classification(u32 id) const = 0;
     virtual const AbilitySet*             ability_set(u32 id)    const = 0;
@@ -110,6 +111,7 @@ struct WorldView final : IWorldView {
     const Construction*           construction(u32 id)   const override;
     const Selectable*             selectable(u32 id)     const override;
     bool                          is_dead(u32 id)        const override;
+    bool                          is_hidden(u32 id)      const override;
     const StatusFlags*            status(u32 id)         const override;
     const UnitClassificationComp* classification(u32 id) const override;
     const AbilitySet*             ability_set(u32 id)    const override;
@@ -212,6 +214,7 @@ struct LocalView final : IWorldView {
     const Construction*           construction(u32 id)   const override;
     const Selectable*             selectable(u32 id)     const override;
     bool                          is_dead(u32 id)        const override;
+    bool                          is_hidden(u32 id)      const override;
     const StatusFlags*            status(u32 id)         const override;
     const UnitClassificationComp* classification(u32 id) const override;
     const AbilitySet*             ability_set(u32 id)    const override;

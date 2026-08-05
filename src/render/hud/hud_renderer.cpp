@@ -1563,7 +1563,7 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
         const auto& tf = *world.transform(id);
 
         const auto* info = world.handle_info(id);
-        if (!info || info->category != simulation::Category::Unit) continue;
+        if (!info || info->hidden || info->category != simulation::Category::Unit) continue;
         if (const auto* hp = world.health(id); hp && hp->current <= 0.0f) continue;
 
         if (vision) {

@@ -380,6 +380,24 @@ void GameServer::wire_to_network(NetworkManager& net) {
             auto pkt = build_cold_health(entity_id, cur, mx);
             net.host_broadcast_update(entity_id, pkt);
         };
+    {
+        auto script_revived = std::move(world.on_unit_revived);
+        world.on_unit_revived =
+            [&net, &world, script_revived = std::move(script_revived)](
+                simulation::Unit unit) {
+                if (script_revived) script_revived(unit);
+                if (!world.contains(unit)) return;
+                const auto* health = world.healths.get(unit.id);
+                const auto* transform = world.transforms.get(unit.id);
+                if (!health || !transform) return;
+                net.host_broadcast_update(
+                    unit.id, build_cold_health(unit.id, health->current, health->max));
+                net.host_broadcast_update(
+                    unit.id, build_cold_transform(
+                        unit.id, transform->position.x, transform->position.y,
+                        transform->position.z, transform->facing));
+            };
+    }
 
     // Inventory pickup / drop → S_COLD. CHAIN onto the script's trigger
     // dispatch (init_game installed on_item_picked_up/_dropped to fire the
