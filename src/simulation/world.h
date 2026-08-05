@@ -217,8 +217,9 @@ struct World {
     // Internal pathfinder bridge used when an individual blocker leaves the
     // live world. Bulk world clears reset pathfinding separately and do not
     // invoke it.
-    using PathingUnblockCallback = std::function<void(i32 cx, i32 cy, u32 w, u32 h)>;
-    PathingUnblockCallback unblock_pathing;
+    using PathingBlockCallback = std::function<void(i32 cx, i32 cy, u32 w, u32 h)>;
+    PathingBlockCallback block_pathing;
+    PathingBlockCallback unblock_pathing;
 
     // Item events — fired by system_items after a pickup / drop completes.
     // Map Lua hooks these via the trigger system to drive consumption,

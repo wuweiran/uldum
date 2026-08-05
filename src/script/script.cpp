@@ -954,9 +954,6 @@ void ScriptEngine::bind_api() {
         f32 facing_rad = facing_deg.value_or(0.0f) * 0.0174532925f;
         auto unit = simulation::create_unit(world, type_id, owner, x, y, facing_rad);
         if (simulation::is_non_null_handle(unit)) {
-            // Z is sampled from terrain inside create_unit now (world.terrain).
-            auto* pth = world.pathings.get(unit.id);
-            if (pth) pth->cliff_level = sim.pathfinder().cliff_level_at(x, y);
             EventFrame frame;
             frame.entity = unit;
             frame.registered_entity = unit;

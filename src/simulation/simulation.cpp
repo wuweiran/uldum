@@ -61,13 +61,6 @@ void apply_scene_data(Simulation& sim, map::SceneData& scene) {
         // player was watching, so they never play birth.
         if (auto* r = world.renderables.get(unit.id)) r->skip_birth = true;
 
-        if (auto* t = world.transforms.get(unit.id)) t->position.z = sample_height(pu.x, pu.y);
-        if (auto* pth = world.pathings.get(unit.id)) {
-            u32 vx = std::min(static_cast<u32>(std::round((pu.x - td.origin_x()) / td.tile_size)), td.tiles_x);
-            u32 vy = std::min(static_cast<u32>(std::round((pu.y - td.origin_y()) / td.tile_size)), td.tiles_y);
-            pth->cliff_level = td.cliff_at(vx, vy);
-        }
-
         if (fw > 0 && fh > 0 && td.is_valid()) {
             f32 left_tx_f   = (pu.x - td.origin_x()) / td.tile_size - 0.5f * static_cast<f32>(fw);
             f32 bottom_ty_f = (pu.y - td.origin_y()) / td.tile_size - 0.5f * static_cast<f32>(fh);
@@ -212,6 +205,9 @@ bool Simulation::init(asset::AssetManager& /*assets*/) {
     // PathingBlocker stores its rect in cell units, so we forward directly
     // to unblock_cells. The parameter names below were tile-flavored
     // historically; they now carry cell coords.
+    m_world.block_pathing = [this](i32 cx, i32 cy, u32 w, u32 h) {
+        m_pathfinder.block_cells(cx, cy, w, h);
+    };
     m_world.unblock_pathing = [this](i32 cx, i32 cy, u32 w, u32 h) {
         m_pathfinder.unblock_cells(cx, cy, w, h);
     };

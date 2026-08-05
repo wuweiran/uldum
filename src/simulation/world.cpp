@@ -1,6 +1,7 @@
 #include "simulation/world.h"
 #include "simulation/type_registry.h"
 #include "simulation/ability_def.h"
+#include "simulation/pathfinding.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
 
@@ -74,6 +75,7 @@ void remove_all_components(World& world, u32 id) {
 static Unit build_unit(World& world, u32 id, std::string_view type_id,
                        const UnitTypeDef& def, Player owner,
                        f32 x, f32 y, f32 facing, const SpawnOpts& opts) {
+    assert(world.terrain);
     const f32 z = ground_height(world, x, y);
 
     // All game objects
@@ -119,7 +121,11 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
         m.type = def.move_type;
         world.movements.add(id, std::move(m));
     }
-    world.pathings.add(id, Pathing{});
+    if (def.move_type != MoveType::None) {
+        Pathing pathing;
+        pathing.cliff_level = world.terrain->cliff_level_at(x, y);
+        world.pathings.add(id, std::move(pathing));
+    }
     // Combat is opt-in: only units whose type declares a `weapon` get the
     // component. system_combat iterates world.combats.ids(), so a unit
     // without it is invisible to the entire combat loop — no auto-acquire,
@@ -145,7 +151,9 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
     world.sights.add(id, Sight{def.sight_range});
     world.order_queues.add(id, OrderQueue{});
     world.ability_sets.add(id, AbilitySet{});
-    world.classifications.add(id, UnitClassificationComp{def.classifications});
+    if (!def.classifications.empty()) {
+        world.classifications.add(id, UnitClassificationComp{def.classifications});
+    }
 
     // Seed ability_set from the unit type's `abilities` list.
     if (world.abilities && !def.abilities.empty()) {
@@ -402,14 +410,39 @@ static void destroy_handle(World& world, Handle h) {
     remove_all_components(world, h.id);
 }
 
+static void reconcile_unit_pathing_blocker(World& world, u32 id,
+                                           const UnitTypeDef& def) {
+    release_pathing_blocker(world, id);
+    if (!world.terrain || !world.terrain->is_valid() ||
+        def.pathing_footprint_w == 0 || def.pathing_footprint_h == 0) {
+        return;
+    }
+
+    auto* transform = world.transforms.get(id);
+    if (!transform) return;
+    f32 tx = (transform->position.x - world.terrain->origin_x()) /
+             world.terrain->tile_size - 0.5f * static_cast<f32>(def.pathing_footprint_w);
+    f32 ty = (transform->position.y - world.terrain->origin_y()) /
+             world.terrain->tile_size - 0.5f * static_cast<f32>(def.pathing_footprint_h);
+    PathingBlocker blocker;
+    blocker.cx = static_cast<i32>(std::round(tx)) * static_cast<i32>(PATHING_SUBDIV);
+    blocker.cy = static_cast<i32>(std::round(ty)) * static_cast<i32>(PATHING_SUBDIV);
+    blocker.w = def.pathing_footprint_w * PATHING_SUBDIV;
+    blocker.h = def.pathing_footprint_h * PATHING_SUBDIV;
+    if (world.block_pathing) {
+        world.block_pathing(blocker.cx, blocker.cy, blocker.w, blocker.h);
+    }
+    world.pathing_blockers.add(id, std::move(blocker));
+}
+
 void destroy(World& world, Unit unit)         { destroy_handle(world, unit); }
 void destroy(World& world, Destructable d)    { destroy_handle(world, d); }
 void destroy(World& world, Item item)         { destroy_handle(world, item); }
 void destroy(World& world, Doodad d)          { destroy_handle(world, d); }
 
 bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
-    // NETWORK NOTE: the type_id change isn't replicated — a client keeps the old
-    // type/model. Deferred: no current map calls MorphUnit.
+    // Type/model changes are not yet replicated to network clients.
+    assert(world.terrain);
     if (!world.contains(unit) || !world.types) return false;
     auto* hi = world.handle_infos.get(unit.id);
     if (!hi) return false;
@@ -482,60 +515,73 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
         world.attribute_blocks.add(id, std::move(ab));
     }
 
-    // Movement: swap the unit-property fields in place to preserve the component
-    // slot (so other systems holding pointers aren't invalidated).
-    if (auto* m = world.movements.get(id)) {
-        m->speed            = new_def->move_speed;
-        m->turn_rate        = new_def->turn_rate;
-        m->collision_radius = new_def->collision_radius;
-        m->type             = new_def->move_type;
-        m->moving           = false;
+    auto* movement = world.movements.get(id);
+    if (!movement) {
+        world.movements.add(id, Movement{});
+        movement = world.movements.get(id);
     }
-    // Pathing: clear in-flight path / approach scratch.
-    if (auto* p = world.pathings.get(id)) {
-        p->waypoint         = {0.0f, 0.0f};
-        p->has_waypoint     = false;
-        p->corridor.clear();
-        p->approach_target  = Unit{};
-        p->approach_goal    = {0.0f, 0.0f};
-        p->approach_range   = 0.0f;
+    movement->speed            = new_def->move_speed;
+    movement->turn_rate        = new_def->turn_rate;
+    movement->collision_radius = new_def->collision_radius;
+    movement->type             = new_def->move_type;
+    movement->moving           = false;
+
+    if (new_def->move_type != MoveType::None) {
+        auto* transform = world.transforms.get(id);
+        Pathing pathing;
+        pathing.cliff_level = world.terrain->cliff_level_at(
+            transform->position.x, transform->position.y);
+        if (world.pathings.has(id)) world.pathings.remove(id);
+        world.pathings.add(id, std::move(pathing));
+    } else {
+        world.pathings.remove(id);
     }
 
-    // Combat: presence tracks the new type. Morphing into a unit with a
-    // weapon adds the component; morphing into a weaponless type (e.g. a
-    // unit → building) removes it so it drops out of the combat loop;
-    // otherwise update fields in place and cancel any in-flight attack.
     if (new_def->weapon) {
         const auto& w = *new_def->weapon;
-        auto* c = world.combats.get(id);
-        if (!c) {
+        auto* combat = world.combats.get(id);
+        if (!combat) {
             world.combats.add(id, Combat{});
-            c = world.combats.get(id);
+            combat = world.combats.get(id);
         }
-        c->damage           = w.damage;
-        c->range            = w.attack_range;
-        c->attack_cooldown  = w.attack_cooldown;
-        c->dmg_time         = w.dmg_time;
-        c->backsw_time      = w.backsw_time;
-        c->dmg_pt           = new_def->dmg_pt;
-        c->projectile       = w.projectile;
-        c->acquire_range    = new_def->acquire_range;
-        c->target_mask      = w.target_mask;
-        c->target           = Unit{};
-        c->attack_state     = AttackState::Idle;
+        combat->damage           = w.damage;
+        combat->range            = w.attack_range;
+        combat->attack_cooldown  = w.attack_cooldown;
+        combat->dmg_time         = w.dmg_time;
+        combat->backsw_time      = w.backsw_time;
+        combat->dmg_pt           = new_def->dmg_pt;
+        combat->projectile       = w.projectile;
+        combat->acquire_range    = new_def->acquire_range;
+        combat->target_mask      = w.target_mask;
+        combat->target           = Unit{};
+        combat->attack_state     = AttackState::Idle;
     } else {
         world.combats.remove(id);
     }
 
-    // Sight (per-unit sight radius).
-    if (auto* v = world.sights.get(id)) {
-        v->sight_range = new_def->sight_range;
+    bool needs_guard = new_def->weapon && new_def->move_type != MoveType::None;
+    if (needs_guard) {
+        if (!world.guard_positions.has(id)) {
+            auto* transform = world.transforms.get(id);
+            world.guard_positions.add(
+                id, GuardPosition{{transform->position.x, transform->position.y}});
+        }
+    } else {
+        world.guard_positions.remove(id);
+    }
+
+    if (auto* sight = world.sights.get(id)) {
+        sight->sight_range = new_def->sight_range;
+    } else {
+        world.sights.add(id, Sight{new_def->sight_range});
     }
 
     // Clear order queue — old orders likely don't apply to new type.
     if (auto* oq = world.order_queues.get(id)) {
         oq->current.reset();
         oq->queued.clear();
+    } else {
+        world.order_queues.add(id, OrderQueue{});
     }
 
     // Ability set is deliberately untouched by morph — the engine
@@ -548,29 +594,37 @@ bool morph_unit(World& world, Unit unit, std::string_view new_type_id) {
     // The one exception is in-flight cast state, which is bound to the
     // old combat / movement parameters we just swapped — cancel it
     // cleanly so the next tick doesn't run with stale targets.
-    if (auto* aset = world.ability_sets.get(id)) {
-        aset->cast_state       = CastState::None;
-        aset->cast_timer       = 0;
-        aset->casting_id.clear();
-        aset->cast_target_unit = Unit{};
-        aset->cast_target_pos  = glm::vec3{0};
-        aset->cast_source_item = Item{};
+    auto* aset = world.ability_sets.get(id);
+    assert(aset);
+    aset->cast_state       = CastState::None;
+    aset->cast_timer       = 0;
+    aset->casting_id.clear();
+    aset->cast_target_unit = Unit{};
+    aset->cast_target_pos  = glm::vec3{0};
+    aset->cast_source_item = Item{};
+
+    if (world.classifications.has(id)) world.classifications.remove(id);
+    if (!new_def->classifications.empty()) {
+        world.classifications.add(id, UnitClassificationComp{new_def->classifications});
     }
 
-    // Classifications.
-    if (world.classifications.has(id)) world.classifications.remove(id);
-    world.classifications.add(id, UnitClassificationComp{new_def->classifications});
-
-    // Renderable / model.
+    world.anim_queues.remove(id);
     if (world.renderables.has(id)) world.renderables.remove(id);
     if (!new_def->model_path.empty()) {
-        world.renderables.add(id, Renderable{new_def->model_path, true});
+        world.renderables.add(id, Renderable{new_def->model_path, true, true});
     }
 
-    // BuildingComp follows the structure classification.
     bool is_structure = has_classification(new_def->classifications, "structure");
     if (is_structure && !world.buildings.has(id)) world.buildings.add(id, BuildingComp{});
     if (!is_structure &&  world.buildings.has(id)) world.buildings.remove(id);
+    reconcile_unit_pathing_blocker(world, id, *new_def);
+
+    if (new_def->inventory_size > 0 && !world.inventories.has(id)) {
+        Inventory inventory;
+        inventory.max_slots = new_def->inventory_size;
+        inventory.slots.resize(new_def->inventory_size);
+        world.inventories.add(id, std::move(inventory));
+    }
 
     // The attribute_block just got replaced wholesale, so any modifiers
     // previously summed in from passive abilities on the unit are gone.
@@ -1104,7 +1158,7 @@ bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
                  std::string_view ability_id, u32 level, Item granting_item) {
     if (!world.contains(unit)) return false;
     auto* aset = world.ability_sets.get(unit.id);
-    if (!aset) return false;
+    assert(aset);
 
     const auto* def = reg.get(ability_id);
     AbilitySource source;
@@ -1246,7 +1300,7 @@ bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target
                            std::string_view ability_id, Unit applier, f32 duration) {
     if (!world.contains(target)) return false;
     auto* aset = world.ability_sets.get(target.id);
-    if (!aset) return false;
+    assert(aset);
 
     const auto* def = reg.get(ability_id);
     AbilitySource source;

@@ -1189,7 +1189,7 @@ Flagged units get a status-icon strip near the HP bar, the conventional place fo
 - Stable handle id and `HandleInfo.category` (still Unit).
 - `Transform.position`, `facing`, `prev_position`, `prev_facing`.
 - Owning player (the `Player` in the `owners` pool).
-- `Inventory` contents (slot count not resized; map handles item drops if it cares).
+- `Inventory` contents and slot count. A unit without inventory gains an empty inventory when morphing into a type that has one.
 - **`AbilitySet`** — engine deliberately doesn't touch it. The map's morph helper handles Remove/Add of type-listed abilities. Lua-added abilities, item-granted passives, and applied buffs from other units survive unchanged.
 
 ### Replaced (from new type def)
@@ -1202,8 +1202,12 @@ Flagged units get a status-icon strip near the HP bar, the conventional place fo
 - `Combat` (damage, range, attack_cooldown, swing timings, projectile)
 - `Sight.sight_range`
 - `UnitClassificationComp.flags`
-- `Renderable.model_path`
-- `BuildingComp` added / removed based on whether the new type has the `structure` classification
+- `Renderable.model_path`; morph does not play the new type's birth animation
+- `Pathing` added for movable types and removed for `MoveType::None`
+- `Combat` added / removed based on whether the new type has a weapon
+- `GuardPosition` added for movable armed types and removed otherwise
+- `BuildingComp` and runtime pathing footprint reconciled from the new type
+- `Inventory` added if the new type introduces one; an existing inventory is preserved unchanged
 
 ### Attribute and state rules
 
@@ -1226,6 +1230,7 @@ Flagged units get a status-icon strip near the HP bar, the conventional place fo
 - In-flight cast (`cast_state` → `None`, casting_id cleared, cast_target_* cleared).
 - In-flight attack (`Combat.target` cleared, `attack_state` → `Idle`).
 - In-flight movement (waypoint, corridor, approach state).
+- Scripted animation queue.
 
 ### Map-side morph helper
 
