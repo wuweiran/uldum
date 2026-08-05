@@ -81,6 +81,7 @@ const std::unordered_map<std::string, std::string>& rts_default_bindings() {
     static const std::unordered_map<std::string, std::string> defaults = {
         {"stop",          "S"},
         {"hold",          "H"},
+        {"move",          "M"},
         {"attack",        "A"},
         {"patrol",        "P"},
         {"select_hero_1", "F1"},

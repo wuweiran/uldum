@@ -2564,32 +2564,12 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
         return;
     }
 
-    // Priority walk. A key letter fires at most one source per frame,
-    // even if it appears in multiple places. Order: command_bar ↓
-    // action_bar (declaration order) ↓ hidden abilities. Non-rising
-    // edges still update each slot's prev-down so a held key doesn't
-    // "re-fire" when it's claimed by a later source on a later frame.
+    // A key letter fires at most one ability per frame. Action-bar slots
+    // take priority over hidden abilities. Command-bar hotkeys are handled
+    // by the input preset so modifiers such as Shift reach the order.
     std::unordered_set<std::string> claimed;
 
-    // 1. Command bar.
-    {
-        auto& cfg = s.command_bar_cfg;
-        if (cfg.enabled && s.command_bar_rt.visible && s.command_bar_fn) {
-            for (auto& slot : cfg.slots) {
-                if (!slot.visible || slot.hotkey.empty() || slot.command.empty()) continue;
-                if (!command_bar_slot_applies(s, slot.command)) continue;
-                bool down   = input::InputBindings::resolve_key(slot.hotkey, input);
-                bool rising = down && !slot.hotkey_prev_down;
-                slot.hotkey_prev_down = down;
-                if (!rising) continue;
-                if (claimed.count(slot.hotkey)) continue;
-                claimed.insert(slot.hotkey);
-                s.command_bar_fn(slot.command);
-            }
-        }
-    }
-
-    // 2. Action bar. Slots iterate in declaration order; lower index
+    // Action bar. Slots iterate in declaration order; lower index
     // wins on conflict, per the authoring contract. While we're here,
     // collect the set of ability ids that *did* resolve to a slot —
     // stage 3 uses it to decide which unit abilities are "not on any

@@ -42,8 +42,8 @@ struct CommandBarSlot {
     std::string command;
     std::string icon;
     // Optional keyboard hotkey letter shown in the corner (A, M, S...).
-    // The preset's existing keyboard path already handles A / S / H
-    // independently of this bar — this field is display-only.
+    // Keyboard dispatch belongs to the input preset so Shift/Ctrl modifiers
+    // reach the order; this field is display-only.
     std::string hotkey;
     CommandBarSlotStyle style;
 

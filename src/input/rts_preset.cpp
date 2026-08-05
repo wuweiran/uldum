@@ -588,6 +588,11 @@ void RtsPreset::handle_hotkeys(const InputContext& ctx) {
         ctx.commands.submit(cmd);
     }
 
+    // Move mode (M hotkey).
+    if (bindings.action_pressed("move", input)) {
+        set_target_mode(TargetingMode::Move);
+    }
+
     // Attack / attack-move mode (A hotkey).
     if (bindings.action_pressed("attack", input)) {
         set_target_mode(TargetingMode::AttackMove);
