@@ -1674,6 +1674,12 @@ void ScriptEngine::bind_api() {
 
     // ── Spatial Query API ─────────────────────────────────────────────
 
+    lua["IsTerrainPathable"] = [&](f32 x, f32 y, const std::string& move_type) -> bool {
+        simulation::MoveType type = simulation::parse_move_type(move_type);
+        if (type == simulation::MoveType::None) return false;
+        return sim.pathfinder().pos_clear_for_radius(x, y, 0.0f, type);
+    };
+
     // Shared filter parser for spatial queries. Mirrors the keys
     // documented on GetUnitsInRange / GetUnitsInRect.
     auto parse_unit_filter = [](sol::optional<sol::table> filter_table) -> simulation::UnitFilter {

@@ -400,6 +400,10 @@ IsPlayerEnemy(player1, player2) → bool
 ### Spatial Query API
 
 ```lua
+-- Tests terrain + runtime blockers at one pathing cell.
+-- move_type: "ground", "fly", "amphibious", "water", or "none".
+IsTerrainPathable(x, y, move_type) → bool
+
 -- Filter table: { owner=player, enemy_of=player, classifications={"ground"}, alive_only=true }
 GetUnitsInRange(x, y, radius, filter?) → unit[]
 GetUnitsInRect(x, y, width, height, filter?) → unit[]

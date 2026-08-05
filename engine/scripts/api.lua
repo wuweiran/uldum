@@ -1064,6 +1064,16 @@ function SetSunDirection(x, y, z) end
 -- Spatial Queries
 --------------------------------------------------------------------------------
 
+--- Whether a pathing cell can be occupied at this world point. Includes terrain
+--- and runtime blockers, but not unit collision, collision radius, reachability,
+--- or building-placement rules. move_type: "ground" | "fly" | "amphibious" |
+--- "water" | "none".
+---@param x number
+---@param y number
+---@param move_type string
+---@return boolean
+function IsTerrainPathable(x, y, move_type) end
+
 --- Find all units within a radius.
 ---@param x number
 ---@param y number
