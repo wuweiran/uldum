@@ -134,6 +134,16 @@ static bool foreign_unit_blocks(const World& world, const SpatialGrid& grid,
     return false;
 }
 
+static void finish_order(World& world, u32 id) {
+    if (auto* guard = world.guard_positions.get(id)) {
+        const auto& position = world.transforms.get(id)->position;
+        guard->position = {position.x, position.y};
+        guard->return_timer = 0.0f;
+        guard->returning = false;
+    }
+    world.order_queues.get(id)->advance();
+}
+
 void system_guard_position(World& world, float dt, const Pathfinder& pathfinder) {
     f32 arrival_tolerance = pathfinder.tile_size() * 0.5f;
     for (u32 id : world.guard_positions.ids()) {
@@ -307,15 +317,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     transform->position.z = map::sample_height(*terrain, transform->position.x, transform->position.y);
                 }
                 pth.cliff_level = pathfinder.cliff_level_at(transform->position.x, transform->position.y);
-                if (guard) {
-                    guard->position = {transform->position.x, transform->position.y};
-                    guard->return_timer = 0.0f;
-                    guard->returning = false;
-                }
                 // Consume the order. The preset re-emits a fresh
                 // MoveDirection next frame if the player is still
                 // holding keys; otherwise the unit naturally idles.
-                oq->current.reset();
+                finish_order(world, id);
                 continue;
             }
         }
@@ -488,14 +493,6 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
         // tracking, not arriving — keep the timer reset so the next
         // point-Move starts from a clean slate).
         bool is_guard_return = guard && guard->returning;
-        auto begin_promoted_hold = [&] {
-            if (guard && oq->current &&
-                std::holds_alternative<orders::HoldPosition>(oq->current->payload)) {
-                guard->position = pos2d;
-                guard->return_timer = 0.0f;
-                guard->returning = false;
-            }
-        };
         if (!is_approach && !is_follow) {
             f32 progress = glm::length(pos2d - pth.stuck_anchor);
             if (progress >= Pathing::STUCK_PROGRESS_EPS) {
@@ -512,8 +509,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                         guard->return_timer = 0.0f;
                         guard->returning = false;
                     } else {
-                        oq->advance();
-                        begin_promoted_hold();
+                        finish_order(world, id);
                     }
                     continue;
                 }
@@ -549,17 +545,7 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     guard->return_timer = 0.0f;
                     guard->returning = false;
                 } else if (!is_follow) {
-                    bool completed_point_order = false;
-                    if (oq->current) {
-                        if (auto* move = std::get_if<orders::Move>(&oq->current->payload)) {
-                            completed_point_order = is_null_handle(move->target_widget);
-                        } else if (auto* attack = std::get_if<orders::Attack>(&oq->current->payload)) {
-                            completed_point_order = is_null_handle(attack->target_widget);
-                        }
-                    }
-                    if (guard && completed_point_order) guard->position = pos2d;
-                    oq->advance();
-                    begin_promoted_hold();
+                    finish_order(world, id);
                 } else {
                     // Follow in range: keep turning to face the followed
                     // target. The next tick's re-path immediately flips
@@ -1007,6 +993,22 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             target_valid = false;
         }
 
+        if (!target_valid && has_widget) {
+            combat.target = Unit{};
+            if (combat.attack_state != AttackState::Backswing &&
+                combat.attack_state != AttackState::Cooldown) {
+                combat.attack_state = AttackState::Idle;
+            }
+            if (combat.attack_state == AttackState::Idle) {
+                if (auto* pathing = world.pathings.get(id)) {
+                    pathing->approach_target = Unit{};
+                    pathing->approach_range = 0.0f;
+                }
+                finish_order(world, id);
+                continue;
+            }
+        }
+
         // Anti-leak last-seen capture: while a widget target is valid + visible,
         // keep atk->target on its position. If it then fogs/dies/frees, the unit
         // seeks THIS point (below) — never the live transform of a hidden entity.
@@ -1359,9 +1361,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                     aset->cast_target_unit = Unit{};
                     aset->cast_target_pos  = glm::vec3{0};
                     aset->cast_source_item = Item{};
-                    if (auto* oq2 = world.order_queues.get(id)) {
-                        oq2->current.reset();
-                    }
+                    world.order_queues.get(id)->current.reset();
                 }
                 continue;
             }
@@ -1378,7 +1378,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 aset->cast_target_unit = Unit{};
                 aset->cast_target_pos  = glm::vec3{0};
                 aset->cast_source_item = Item{};
-                if (auto* oq2 = world.order_queues.get(id)) oq2->current.reset();
+                world.order_queues.get(id)->current.reset();
             }
             continue;
         }
@@ -1409,7 +1409,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         // below. cost is empty for free abilities.
                         auto& lvl = def->level_data(inst->level);
                         if (!simulation::ability_can_afford(world, id, lvl.cost)) {
-                            oq->current.reset();  // can't afford — drop the order
+                            finish_order(world, id);  // can't afford — drop the order
                         } else {
                             aset->casting_id       = cast_order->ability_id;
                             aset->cast_target_unit = cast_order->target_unit;
@@ -1437,10 +1437,10 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                             }
                         }
                     } else {
-                        oq->current.reset();  // ability not available or on cooldown
+                        finish_order(world, id);  // ability not available or on cooldown
                     }
                 } else {
-                    oq->current.reset();  // unknown ability
+                    finish_order(world, id);  // unknown ability
                 }
             }
 
@@ -1452,7 +1452,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                 }
                 if (!def || !inst) {
                     aset->cast_state = CastState::None;
-                    oq->current.reset();
+                    finish_order(world, id);
                 } else {
                     auto& lvl = def->level_data(inst->level);
 
@@ -1600,7 +1600,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                             Item source_item = aset->cast_source_item;
                             aset->cast_state = CastState::None;
                             aset->casting_id.clear();
-                            oq->current.reset();
+                            finish_order(world, id);
                             if (world.on_ability_endcast) {
                                 world.on_ability_endcast(caster, ability_id, target,
                                                          target_pos, source_item);
@@ -1637,7 +1637,7 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         if (aset->cast_timer <= 0) {
                             aset->cast_state = CastState::None;
                             aset->casting_id.clear();
-                            oq->current.reset();
+                            finish_order(world, id);
                         }
                         break;
                     default: break;
@@ -1735,27 +1735,27 @@ void system_items(World& world, float /*dt*/) {
             Item item = po->item;
             // Gone, or dying on the ground (playing its death clip) → abandon.
             if (!world.contains(item) || world.corpses.has(item.id)) {
-                oq->current.reset();
                 if (auto* pth = world.pathings.get(id)) {
                     pth->approach_range = 0;
                     pth->approach_target = Unit{};
                 }
+                finish_order(world, id);
                 continue;
             }
             if (auto* car = world.carriables.get(item.id);
                 car && is_non_null_handle(car->carried_by)) {
-                oq->current.reset();
                 if (auto* pth = world.pathings.get(id)) {
                     pth->approach_range = 0;
                     pth->approach_target = Unit{};
                 }
+                finish_order(world, id);
                 continue;
             }
 
             const auto* tf_unit = world.transforms.get(id);
             const auto* tf_item = world.transforms.get(item.id);
             if (!tf_unit || !tf_item) {
-                oq->current.reset();
+                finish_order(world, id);
                 continue;
             }
 
@@ -1763,11 +1763,11 @@ void system_items(World& world, float /*dt*/) {
             f32 dy = tf_item->position.y - tf_unit->position.y;
             f32 dist2 = dx * dx + dy * dy;
             if (dist2 <= PICKUP_RANGE * PICKUP_RANGE) {
-                oq->current.reset();
                 if (auto* pth = world.pathings.get(id)) {
                     pth->approach_range = 0;
                     pth->approach_target = Unit{};
                 }
+                finish_order(world, id);
 
                 // Powerup: consumed on contact regardless of inventory space.
                 // The engine grants/casts nothing — it fires the pickup event
@@ -1806,13 +1806,13 @@ void system_items(World& world, float /*dt*/) {
                 }
             }
             if (slot < 0) {
-                oq->current.reset();
+                finish_order(world, id);
                 continue;
             }
 
             const auto* tf = world.transforms.get(id);
             if (!tf) {
-                oq->current.reset();
+                finish_order(world, id);
                 continue;
             }
 
@@ -1823,11 +1823,11 @@ void system_items(World& world, float /*dt*/) {
             f32 dy = pos.y - tf->position.y;
             f32 dist2 = dx * dx + dy * dy;
             if (dist2 <= DROP_RANGE * DROP_RANGE) {
-                oq->current.reset();
                 if (auto* pth = world.pathings.get(id)) {
                     pth->approach_range = 0;
                     pth->approach_target = Unit{};
                 }
+                finish_order(world, id);
 
                 if (drop_item_from_unit(world, unit_h, slot, pos) &&
                     world.on_item_dropped) {
@@ -1847,7 +1847,7 @@ void system_items(World& world, float /*dt*/) {
                     std::swap(inv->slots[swap->slot_a], inv->slots[swap->slot_b]);
                 }
             }
-            oq->current.reset();
+            finish_order(world, id);
         }
     }
 }
@@ -1894,10 +1894,10 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
         const std::string building_type = bo->building_type_id;
 
         const auto* def = world.types->get_unit_type(building_type);
-        if (!def) { oq->current.reset(); continue; }
+        if (!def) { finish_order(world, id); continue; }
 
         const auto* wt = world.transforms.get(id);
-        if (!wt) { oq->current.reset(); continue; }
+        if (!wt) { finish_order(world, id); continue; }
 
         // Snap the site to the footprint grid (defensive — the client
         // already snaps, but a Lua IssueOrder may pass a raw point).
@@ -1950,8 +1950,8 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
             }
         }
         if (!have_stand) {
-            oq->current.reset();
             if (world.on_construction_failed) world.on_construction_failed(worker, "no_space");
+            if (world.contains(worker)) finish_order(world, id);
             continue;   // no standable side → abandon
         }
 
@@ -2061,19 +2061,19 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
             if (wpth) {
                 wpth->build_clear_timer += dt;
                 if (wpth->build_clear_timer > BUILD_CLEAR_TIMEOUT) {
-                    oq->current.reset();
                     wpth->build_clear_timer = 0;
                     if (world.on_construction_failed) world.on_construction_failed(worker, "blocked");
+                    if (world.contains(worker)) finish_order(world, id);
                 }
             }
             continue;   // not constructable yet → wait (or abandoned on timeout)
         }
 
-        // Constructable → spawn. Terminal: reset the worker's order now
+        // Constructable → spawn. Terminal: finish the worker's order now
         // (building_type / sx / sy / owner are local copies), so even a failed
         // spawn ends the order instead of retrying forever.
         if (wpth) wpth->build_clear_timer = 0;
-        oq->current.reset();
+        finish_order(world, id);
 
         // Structures spawn at a fixed default facing, NOT the worker's heading
         // (which varies with the direction it walked in from): a
