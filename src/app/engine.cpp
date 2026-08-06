@@ -1957,7 +1957,7 @@ void Engine::run() {
                             std::vector<simulation::Unit> units;
                             units.reserve(live.size());
                             for (auto w : live) units.push_back(simulation::Unit{w.id});
-                            m_selection.select_multiple(std::move(units));
+                            m_selection.select_multiple(active_sim().world(), std::move(units));
                         } else {
                             m_selection.select(live.front());   // lone view widget
                         }

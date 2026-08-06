@@ -136,7 +136,7 @@ struct SelectionState {
 
 ### Selection rules (classic RTS)
 
-- **Click**: select single unit. Prefer highest priority within click radius.
+- **Click**: select the frontmost unit under the cursor; selection priority does not affect direct clicking.
 - **Box drag**: select all own units in box.
 - **Shift+click/box**: toggle add/remove from selection.
 - **Ctrl+click**: select all visible units of same type.

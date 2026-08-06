@@ -163,11 +163,11 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                     // Shift-drag stacks own units only.
                     for (auto& u : own) {
                         if (!sel.is_selected(u) && sel.count() < simulation::MAX_SELECTION) {
-                            sel.toggle(u);
+                            sel.toggle(ctx.simulation.world(), u);
                         }
                     }
                 } else if (!own.empty()) {
-                    sel.select_multiple(std::move(own));
+                    sel.select_multiple(ctx.simulation.world(), std::move(own));
                 } else if (simulation::is_non_null_handle(foreign)) {
                     sel.select(foreign);
                 }
@@ -193,7 +193,7 @@ void RtsPreset::handle_selection(const InputContext& ctx) {
                     auto* own = ctx.simulation.world().owners.get(unit.id);
                     bool is_own = own && own->id == sel.player().id;
                     if (is_own) {
-                        if (input.key_shift) sel.toggle(simulation::Unit{unit.id});
+                        if (input.key_shift) sel.toggle(ctx.simulation.world(), simulation::Unit{unit.id});
                         else                 sel.select(unit);
                     } else if (!input.key_shift) {
                         sel.select(unit);   // foreign unit / crate → view-only

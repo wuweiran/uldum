@@ -38,8 +38,8 @@ public:
     std::vector<Unit> selected_units(const World& world) const;
 
     void select(Widget widget);                    // single widget (any)
-    void select_multiple(std::vector<Unit> units); // own-units group
-    void toggle(Unit unit);                        // shift-click own unit
+    void select_multiple(const World& world, std::vector<Unit> units); // own-units group
+    void toggle(const World& world, Unit unit);    // shift-click own unit
     void clear();
     bool is_selected(Widget widget) const;
 

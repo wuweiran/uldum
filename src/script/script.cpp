@@ -3029,7 +3029,7 @@ void ScriptEngine::bind_input_api() {
                 units.push_back(simulation::Unit{id});
             }
         }
-        m_selection->select_multiple(std::move(units));
+        m_selection->select_multiple(m_sim->world(), std::move(units));
     };
 
     lua["ClearSelection"] = [this]() {

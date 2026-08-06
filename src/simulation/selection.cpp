@@ -11,20 +11,34 @@ void SelectionState::select(Widget widget) {
     if (on_change) on_change();
 }
 
-void SelectionState::select_multiple(std::vector<Unit> units) {
-    if (units.size() > MAX_SELECTION)
-        units.resize(MAX_SELECTION);
+static i32 selection_priority(const World& world, u32 id) {
+    const auto* selectable = world.selectables.get(id);
+    return selectable ? selectable->priority : 0;
+}
+
+static void sort_by_selection_priority(const World& world, std::vector<Unit>& units) {
+    std::stable_sort(units.begin(), units.end(), [&](Unit a, Unit b) {
+        return selection_priority(world, a.id) > selection_priority(world, b.id);
+    });
+}
+
+void SelectionState::select_multiple(const World& world, std::vector<Unit> units) {
+    sort_by_selection_priority(world, units);
+    if (units.size() > MAX_SELECTION) units.resize(MAX_SELECTION);
     m_selected.assign(units.begin(), units.end());   // Unit → Widget (upcast)
     if (on_change) on_change();
 }
 
-void SelectionState::toggle(Unit unit) {
+void SelectionState::toggle(const World& world, Unit unit) {
     Widget w{unit.id};
     auto it = std::find(m_selected.begin(), m_selected.end(), w);
     if (it != m_selected.end()) {
         m_selected.erase(it);
     } else if (m_selected.size() < MAX_SELECTION) {
         m_selected.push_back(w);
+        std::stable_sort(m_selected.begin(), m_selected.end(), [&](Widget a, Widget b) {
+            return selection_priority(world, a.id) > selection_priority(world, b.id);
+        });
     }
     if (on_change) on_change();
 }
@@ -77,6 +91,7 @@ void SelectionState::add_to_group(const World& world, u32 group) {
             m_groups[group].push_back(u);
         }
     }
+    sort_by_selection_priority(world, m_groups[group]);
 }
 
 } // namespace uldum::simulation
