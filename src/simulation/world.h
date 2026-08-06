@@ -449,14 +449,8 @@ void destroy_projectile(World& world, Projectile projectile);
 // reaches it via begin_destroy_projectile.
 void enter_projectile_dying(World& world, u32 id);
 
-// Status flag helpers. Read returns false for an invalid handle or
-// when the unit has no StatusFlags component (treated as "no flags").
-// set/clear lazy-add the component on first set; clear-all wipes the
-// bitset but keeps the component. `flag` is a `status::*` bitmask
-// value — single bit, not a combination.
+// Returns false for an invalid handle or a unit without status flags.
 bool     unit_has_status(const World& world, Unit unit, u32 flag);
-void     set_unit_status(World& world, Unit unit, u32 flag, bool on);
-void     clear_all_unit_status(World& world, Unit unit);
 f32      get_health(const World& world, Unit unit);
 void     set_health(World& world, Unit unit, f32 health);
 glm::vec3 get_position(const World& world, Unit unit);

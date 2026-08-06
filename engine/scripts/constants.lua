@@ -63,8 +63,8 @@ EVENT_PLAYER_LEAVE         = "player_leave"
 -- who clicked what.
 EVENT_BUTTON_PRESSED       = "button_pressed"
 
--- Status flags — pass to SetUnitStatus / GetUnitStatus. See
--- gameplay-model.md `## Status Flags` for per-flag semantics.
+-- Status flags — granted by passive_flag abilities and queried through
+-- GetUnitStatus. See gameplay-model.md `## Status Flags` for semantics.
 UNIT_STATUS_STUNNED      = "stunned"
 UNIT_STATUS_SILENCED     = "silenced"
 UNIT_STATUS_MUTED        = "muted"

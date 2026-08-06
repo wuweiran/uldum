@@ -1231,9 +1231,8 @@ enum class ColdKind : u8 {
     AbilityRemove   = 5,
     AbilityModifier = 6,   // SetAbilityModifier(unit, ability, key, value)
     Cooldown        = 7,   // SetAbilityCooldown / ResetAbilityCooldown
-    // identity / status / transform
+    // identity / transform
     Owner           = 8,   // ownership changed
-    Status          = 9,   // manual status bits (SetUnitStatus) — snapshot + on-change
     Transform       = 10,  // static teleport/facing (units self-heal via HOT S_UNIT_STATE)
     // items (item-entity cold state)
     ItemCharges     = 11,
@@ -1250,10 +1249,10 @@ struct ColdRecord {
     f32 value = 0;           // primary scalar (attr value, state current, cooldown secs, health current, …)
     f32 value2 = 0;          // secondary scalar (state/health max)
     std::string str_value;   // string attr value / ability modifier key
-    u32 uint_value = 0;      // ability level / owner / status flag / inventory slot
+    u32 uint_value = 0;      // ability level / owner / inventory slot
     u32 uint_value2 = 0;     // inventory item_id (UINT32_MAX = clear slot / drop)
     u8 byte_value = 0;       // AbilitySourceKind
-    bool bool_value = false; // all-instances mode / status on-off
+    bool bool_value = false; // all-instances mode / construction state
     f32 x = 0, y = 0, z = 0; // inventory drop pos / transform pos
     f32 facing = 0;          // transform facing
     std::string clip;        // Anim: terminal looping clip (empty = clear)
@@ -1290,9 +1289,6 @@ inline void write_cold_record(ByteWriter& w, const ColdRecord& rec) {
         break;
     case ColdKind::Owner:
         w.write_u8(static_cast<u8>(rec.uint_value));
-        break;
-    case ColdKind::Status:
-        w.write_u32(rec.uint_value); w.write_bool(rec.bool_value);
         break;
     case ColdKind::Transform:
         w.write_f32(rec.x); w.write_f32(rec.y); w.write_f32(rec.z); w.write_f32(rec.facing);
@@ -1346,9 +1342,6 @@ inline ColdRecord read_cold_record(ByteReader& r) {
         break;
     case ColdKind::Owner:
         rec.uint_value = r.read_u8();
-        break;
-    case ColdKind::Status:
-        rec.uint_value = r.read_u32(); rec.bool_value = r.read_bool();
         break;
     case ColdKind::Transform:
         rec.x = r.read_f32(); rec.y = r.read_f32(); rec.z = r.read_f32(); rec.facing = r.read_f32();
@@ -1441,9 +1434,6 @@ inline ColdRecord cold_cooldown_rec(std::string_view ability_id, f32 secs) {
 inline ColdRecord cold_owner_rec(u8 new_owner) {
     ColdRecord r; r.kind = ColdKind::Owner; r.uint_value = new_owner; return r;
 }
-inline ColdRecord cold_status_rec(u32 flag, bool on) {
-    ColdRecord r; r.kind = ColdKind::Status; r.uint_value = flag; r.bool_value = on; return r;
-}
 inline ColdRecord cold_transform_rec(f32 x, f32 y, f32 z, f32 facing) {
     ColdRecord r; r.kind = ColdKind::Transform; r.x = x; r.y = y; r.z = z; r.facing = facing; return r;
 }
@@ -1489,9 +1479,6 @@ inline std::vector<u8> build_cold_ability_remove(u32 entity_id, std::string_view
 inline std::vector<u8> build_cold_ability_modifier(u32 entity_id, std::string_view ability_id,
                                                     std::string_view modifier_key, f32 value) {
     return build_cold(entity_id, cold_ability_modifier_rec(ability_id, modifier_key, value));
-}
-inline std::vector<u8> build_cold_status(u32 entity_id, u32 flag, bool on) {
-    return build_cold(entity_id, cold_status_rec(flag, on));
 }
 inline std::vector<u8> build_cold_owner(u32 entity_id, u8 new_owner) {
     return build_cold(entity_id, cold_owner_rec(new_owner));

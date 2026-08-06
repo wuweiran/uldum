@@ -828,10 +828,6 @@ static std::vector<network::ColdRecord> collect_cold_records(
         }
     }
 
-    // Manual status bits (the ability-driven layer rides AbilityAdd above).
-    if (const auto* sf = world.status_flags.get(entity_id); sf && sf->manual_bits != 0)
-        recs.push_back(network::cold_status_rec(sf->manual_bits, true));
-
     // Item scalars — only when diverged from the item type's defaults.
     if (const auto* ii = world.item_infos.get(entity_id)) {
         const simulation::ItemTypeDef* idef =
@@ -1953,15 +1949,6 @@ static void apply_cold_record(simulation::World& world, u32 entity_id,
             }
         }
         if (changed) simulation::recalculate_modifiers(world, entity_id);
-        break;
-    }
-    case ColdKind::Status: {
-        // Mirror SetUnitStatus on the client — manual_bits layer only;
-        // ability-driven refcounts arrive through AbilityAdd/Remove
-        // already and compose with this via recompute_effective_flags
-        // inside set_unit_status.
-        simulation::Unit unit = world.unit(entity_id);
-        simulation::set_unit_status(world, unit, rec.uint_value, rec.bool_value);
         break;
     }
     case ColdKind::Transform: {

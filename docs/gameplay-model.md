@@ -1184,9 +1184,7 @@ Flagged units get a status-icon strip near the HP bar, the conventional place fo
 
 ### Lua API
 
-- `SetUnitStatus(unit, flag, on)` — set/clear a single flag. `flag` is a `UNIT_STATUS_*` constant from `constants.lua` (`UNIT_STATUS_STUNNED`, `UNIT_STATUS_SILENCED`, `UNIT_STATUS_MUTED`, `UNIT_STATUS_DISARMED`, `UNIT_STATUS_ROOTED`, `UNIT_STATUS_INVULNERABLE`, `UNIT_STATUS_MAGIC_IMMUNE`, `UNIT_STATUS_UNTARGETABLE`, `UNIT_STATUS_UNATTACKABLE`, `UNIT_STATUS_PAUSED`, `UNIT_STATUS_INVISIBLE`).
-- `GetUnitStatus(unit, flag) → bool` — query.
-- `ClearAllUnitStatus(unit)` — reset every flag.
+Status flags are granted and removed through `passive_flag` abilities. `GetUnitStatus(unit, flag) → bool` queries the effective flag using a `UNIT_STATUS_*` constant from `constants.lua`.
 
 ## Morph (Unit Transformation)
 

@@ -1488,11 +1488,8 @@ static u32 flag_bit_index(u32 flag) {
     return status::Count;
 }
 
-// Recompute the effective `flags` bitset from `manual_bits` and the
-// refcount array. Cheap (12 iterations); called whenever either layer
-// mutates so downstream readers always see a consistent OR-overlay.
 static void recompute_effective_flags(StatusFlags& sf) {
-    u32 effective = sf.manual_bits;
+    u32 effective = 0;
     for (u32 i = 0; i < status::Count; ++i) {
         if (sf.refcounts[i] > 0) effective |= (1u << i);
     }
@@ -1503,29 +1500,6 @@ bool unit_has_status(const World& world, Unit unit, u32 flag) {
     if (!world.contains(unit)) return false;
     auto* sf = world.status_flags.get(unit.id);
     return sf && (sf->flags & flag) != 0;
-}
-
-void set_unit_status(World& world, Unit unit, u32 flag, bool on) {
-    if (!world.contains(unit)) return;
-    auto* sf = world.status_flags.get(unit.id);
-    if (!sf) {
-        if (!on) return;  // clearing a bit that doesn't exist: no-op
-        world.status_flags.add(unit.id, StatusFlags{});
-        sf = world.status_flags.get(unit.id);
-        if (!sf) return;
-    }
-    if (on) sf->manual_bits |=  flag;
-    else    sf->manual_bits &= ~flag;
-    recompute_effective_flags(*sf);
-}
-
-void clear_all_unit_status(World& world, Unit unit) {
-    if (!world.contains(unit)) return;
-    auto* sf = world.status_flags.get(unit.id);
-    if (sf) {
-        sf->manual_bits = 0;
-        recompute_effective_flags(*sf);
-    }
 }
 
 u32 parse_status_flag_name(std::string_view s) {

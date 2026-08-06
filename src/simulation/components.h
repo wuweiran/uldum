@@ -400,18 +400,12 @@ namespace status {
     constexpr u32 Count = 13;  // number of distinct flag bits used above
 }
 
-// Effective `flags` is the OR of two layers:
-//   • manual_bits — set / cleared by direct `set_unit_status` calls
-//     (legacy imperative path; deprecated for ability-domain flags).
-//   • refcounts[bit_index] > 0 — incremented by each passive_flag
-//     AbilityInstance that names this flag, decremented on remove.
-// Two passive_flag instances both granting `silenced` keep silence in
-// effect until both are removed. The `flags` u32 is recomputed by
-// `recompute_effective_flags` whenever either layer changes, so all
-// downstream readers can keep using `sf->flags & status::X`.
+// Each passive_flag AbilityInstance increments the refcount for every flag it
+// grants and decrements it on removal. Two instances both granting `silenced`
+// keep silence in effect until both are removed. `flags` is the cached effective
+// bitset consumed by systems.
 struct StatusFlags {
-    u32 flags        = 0;   // effective view (kept in sync)
-    u32 manual_bits  = 0;   // imperative SetUnitStatus layer
+    u32 flags = 0;
     std::array<u8, status::Count> refcounts = {};
 };
 
