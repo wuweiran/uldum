@@ -55,8 +55,8 @@ public:
     void tick(float dt);
 
     // The network client's per-frame derivation pass — sibling of tick().
-    // Runs ONLY the derivation-safe subset (attack-cycle + ability-cooldown
-    // timer decay over the replicated mirror world); NEVER an authoritative
+    // Runs ONLY the derivation-safe subset (visual attack clocks, ability-cooldown
+    // decay, projectile death teardown, and fog); NEVER an authoritative
     // rules system. See the body comment in simulation.cpp for the invariant.
     void client_tick(float dt);
 

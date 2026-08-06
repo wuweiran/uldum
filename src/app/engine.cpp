@@ -990,9 +990,8 @@ bool Engine::start_session() {
                 };
         }
         // Birth-clip gate: a unit plays its birth animation only when
-        // spawned in the local player's sight. Mirrors the network
-        // client, which derives the same from the S_SPAWN newly_created
-        // flag. create_unit consults this; null on the headless server.
+        // spawned in the local player's sight. Mirrors the client's
+        // S_SPAWN/S_SHOW distinction. Null on the headless server.
         m_server.simulation().world().spawn_visible_to_viewer =
             [this](f32 x, f32 y) -> bool {
                 auto& sim = m_server.simulation();
@@ -1036,6 +1035,9 @@ bool Engine::start_session() {
     // is_in_fog_memory) — the client's replica sim or the authoritative one.
     m_renderer.set_simulation(&active_sim());
     m_renderer.set_local_player(m_args.local_slot);
+    m_renderer.set_sound_fn([this](std::string_view path, glm::vec3 position) {
+        m_audio.play_sfx(path, position);
+    });
 
     // HUD world-UI context: supplies world / fog / camera / picker / selection
     // / terrain / local player so draw_world_overlays() can iterate entities,
@@ -1158,6 +1160,31 @@ void Engine::wire_host_broadcasts() {
     // start_session and scene_switch_run_main (a scene re-init reinstalls the
     // script handlers, so this must re-run to re-chain onto them).
     m_server.wire_to_network(m_network);
+    {
+        auto send_event = std::move(m_server.script().anim_event_fn());
+        m_server.script().set_anim_event_fn(
+            [this, send_event = std::move(send_event)](
+                u32 entity_id, const std::vector<u8>& packet) {
+                if (send_event) send_event(entity_id, packet);
+                auto event = network::parse_anim_event(packet);
+                if (!event || event->kind == network::AnimEventKind::AttackStart) return;
+                switch (event->kind) {
+                case network::AnimEventKind::SetQueue:
+                    m_renderer.enqueue_animation(
+                        event->entity_id, event->clip, event->looping);
+                    break;
+                case network::AnimEventKind::QueueClip:
+                    m_renderer.enqueue_animation(
+                        event->entity_id, event->clip, false, true);
+                    break;
+                case network::AnimEventKind::Reset:
+                    m_renderer.reset_animation(event->entity_id);
+                    break;
+                case network::AnimEventKind::AttackStart:
+                    break;
+                }
+            });
+    }
 
     // Effect deliver/destroy: wire_to_network already SENT to every player (a
     // no-op for the host's own slot); add the host renderer apply for us.
@@ -1284,6 +1311,26 @@ void Engine::wire_host_broadcasts() {
 // header for why it lives in the App, not GameClient). Called once from
 // start_session's client branch; the recv callbacks persist for the connection.
 void Engine::wire_client_callbacks() {
+    m_network.on_anim_event = [this](const network::AnimEventData& event) {
+        switch (event.kind) {
+        case network::AnimEventKind::SetQueue:
+            m_renderer.enqueue_animation(
+                event.entity_id, event.clip, event.looping);
+            break;
+        case network::AnimEventKind::QueueClip:
+            m_renderer.enqueue_animation(
+                event.entity_id, event.clip, false, true);
+            break;
+        case network::AnimEventKind::Reset:
+            m_renderer.reset_animation(event.entity_id);
+            break;
+        case network::AnimEventKind::AttackStart:
+            break;
+        }
+    };
+    m_network.on_projectile_hit_animation = [this](u32 entity_id) {
+        m_renderer.enqueue_hit(entity_id);
+    };
     // Client sizes a dying projectile's death_timer to the real "death" clip (see
     // client_handle_projectile_dying), tearing it down when the clip finishes
     // instead of waiting for an S_DESTROY the host no longer sends for projectiles.

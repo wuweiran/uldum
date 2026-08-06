@@ -1176,6 +1176,11 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             // then fires.
             if (turn_rate <= 0.0f) {
                 begin_swing(combat);
+                if (world.on_attack_start) {
+                    world.on_attack_start(world.unit(id), target,
+                                          swing_dmg_time(combat),
+                                          swing_backsw_time(combat), combat.dmg_pt);
+                }
                 break;
             }
 
@@ -1190,6 +1195,11 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             }
             if (std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE) {
                 begin_swing(combat);
+                if (world.on_attack_start) {
+                    world.on_attack_start(world.unit(id), target,
+                                          swing_dmg_time(combat),
+                                          swing_backsw_time(combat), combat.dmg_pt);
+                }
             }
             break;
         }
@@ -1202,17 +1212,6 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
             if (combat.attack_state == AttackState::Backswing) {
                 Unit self = world.unit(id);
 
-                // Capture before spawning: create_projectile can reallocate
-                // the transform pool and dangle `transform`.
-                const glm::vec3 attack_pos = transform->position;
-
-                std::string attack_sound;
-                if (auto* info = world.handle_infos.get(id)) {
-                    if (auto* def = world.types->get_unit_type(info->type_id)) {
-                        attack_sound = def->sound_attack;
-                    }
-                }
-
                 if (combat.projectile) {
                     spawn_attack_projectile(world, self, target, combat.damage, *combat.projectile);
                 } else {
@@ -1220,10 +1219,6 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 }
                 if (!world.contains(self)) continue;
 
-                if (world.on_sound && !attack_sound.empty()) {
-                    world.on_sound(attack_sound, attack_pos);
-                    if (!world.contains(self)) continue;
-                }
                 break;
             }
 
@@ -1240,6 +1235,12 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                     || std::abs(angle_diff(transform->facing, desired)) <= ATTACK_FACING_TOLERANCE_RAD;
                 if (aligned) {
                     begin_swing(*current_combat);
+                    if (world.on_attack_start) {
+                        world.on_attack_start(world.unit(id), target,
+                                              swing_dmg_time(*current_combat),
+                                              swing_backsw_time(*current_combat),
+                                              current_combat->dmg_pt);
+                    }
                 } else {
                     current_combat->attack_state = AttackState::TurningToFace;
                 }

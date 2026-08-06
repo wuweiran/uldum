@@ -88,13 +88,14 @@ Message IDs are organized by top-nibble category: client/server direction + phas
 | `S_LOBBY_COMMIT` | 0x43 | reliable | (empty) — host locked the lobby, enter Loading |
 | `S_WELCOME` | 0x44 | reliable | `u32 player_id, u32 player_count, u32 tick_rate` — sent at end of Loading with the peer's finalized slot |
 | **Playing — entity sync** (tiers: materialize / hot / cold / event / dematerialize) | | | |
-| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, string type_id, u8 owner, f32 x, f32 y, f32 facing, …` — entity born in the player's sight (plays birth). Slim identity; cold state follows in an `S_COLD` batch |
-| `S_SHOW` | 0x51 | reliable | same slim payload as `S_SPAWN` (no birth) — an existing entity entered the player's sight |
+| `S_SPAWN` | 0x50 | reliable | `u32 entity_id, u8 category, string type_id, f32 x, f32 y, category payload` — entity born in the player's sight; always plays birth |
+| `S_SHOW` | 0x51 | reliable | same category-specific payload as `S_SPAWN` — an existing entity entered knowledge; never plays birth |
 | `S_UNIT_STATE` | 0x52 | unreliable | `u32 tick, u16 count, UnitState[]` — per-tick HOT snapshot for **units** (see below). Death is derived from the health field, not a separate flag |
 | `S_PROJECTILE_STATE` | 0x53 | unreliable | `u32 tick, u16 count, ProjectileState[]` — per-tick HOT snapshot for projectiles (position + facing only) |
-| `S_COLD` | 0x54 | reliable | `u32 entity_id, u16 count, ColdRecord[]` — on-change cold state (1 record) **and** the materialize batch (N records). One grouped envelope; a record is health, a state, an ability, a cooldown, an attribute, ownership, status, inventory, a transform, or a scripted animation |
-| `S_PROJECTILE_DYING` | 0x55 | reliable | `u32 entity_id` — projectile entered its dying window; client plays the death clip once |
+| `S_COLD` | 0x54 | reliable | `u32 entity_id, u16 count, ColdRecord[]` — on-change cold state (1 record) **and** the materialize batch (N records). One grouped envelope; scripted animation state carries only the terminal looping clip |
+| `S_PROJECTILE_DYING` | 0x55 | reliable | `u32 entity_id` — projectile entered its dying window; client plays its death clip and, for a normal-attack projectile, the target's hit animation |
 | `S_SOUND` | 0x56 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
+| `S_ANIM_EVENT` | 0x5B | reliable | visible-now attack starts and scripted animation commands; never replayed on materialization |
 | `S_HIDE` | 0x59 | reliable | `u32 entity_id` — entity left the player's sight (client decides whether to remember it) |
 | `S_DESTROY` | 0x5A | reliable | `u32 entity_id` — entity gone (removed from the world, or a corpse decayed). Client always removes |
 | **Playing — session events** | | | |

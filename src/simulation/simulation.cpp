@@ -416,25 +416,9 @@ void Simulation::client_tick(float dt) {
     if (dt <= 0) return;
     World& w = world();
 
-    // Attack cycle: advance the swing state machine so attack anims + flinch play
-    // (the timing half of system_combat; no acquisition/damage — host's job).
-    for (u32 i = 0; i < w.combats.count(); ++i) {
-        auto& combat = w.combats.data()[i];
-        if (combat.attack_state == AttackState::Idle) continue;
-
-        if (!advance_swing(combat, dt)) continue;
-
-        if (combat.attack_state == AttackState::Backswing) {
-            // Damage point — bump hit_count so the target's renderer plays
-            // the flinch clip, matching the host's system_health.
-            if (combat.target.id != UINT32_MAX) {
-                if (auto* thp = w.healths.get(combat.target.id)) {
-                    ++thp->hit_count;
-                }
-            }
-        } else if (combat.attack_state == AttackState::Idle) {
-            // The host owns target validity and streams attack_state.
-            begin_swing(combat);
+    for (auto& combat : w.combats.data()) {
+        if (combat.attack_state != AttackState::Idle) {
+            advance_swing(combat, dt);
         }
     }
 

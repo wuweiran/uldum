@@ -357,6 +357,30 @@ bool Renderer::init(rhi::Rhi& rhi) {
     return true;
 }
 
+void Renderer::enqueue_animation(u32 entity_id, std::string_view clip,
+                                 bool looping, bool queued) {
+    m_animation_events.push_back({
+        queued ? AnimationEventKind::Queue : AnimationEventKind::Set,
+        entity_id, std::string(clip), looping});
+}
+
+void Renderer::reset_animation(u32 entity_id) {
+    m_animation_events.push_back({AnimationEventKind::Reset, entity_id, {}, false});
+}
+
+void Renderer::enqueue_hit(u32 entity_id) {
+    m_animation_events.push_back({AnimationEventKind::Hit, entity_id, {}, false});
+}
+
+static void set_playback_queue(simulation::SparseSet<simulation::AnimQueue>& queues,
+                               u32 id, std::string_view clip, bool looping) {
+    simulation::AnimQueue queue;
+    queue.clips.emplace_back(clip);
+    queue.looping = looping;
+    if (auto* existing = queues.get(id)) *existing = std::move(queue);
+    else queues.add(id, std::move(queue));
+}
+
 void Renderer::clear_animations() {
     if (!m_rhi) return;
     // GPU must be idle before freeing any bone buffer still in flight.
@@ -370,6 +394,8 @@ void Renderer::clear_animations() {
         // # of units we run; revisit when sessions are very long-lived.
     }
     m_anim_instances.clear();
+    m_anim_queues.clear();
+    m_animation_events.clear();
 }
 
 void Renderer::end_session() {
@@ -659,32 +685,33 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
         return {AnimState::Spell, dur, false, info, true};
     }
 
-    // Attack — combat in WindUp/Backswing/Cooldown. Holds the last
-    // frame during Cooldown so the silhouette reads as "follow-through".
     auto* combat = world.combat(id);
-    if (combat && (combat->attack_state == AttackState::WindUp     ||
-                   combat->attack_state == AttackState::Backswing  ||
-                   combat->attack_state == AttackState::Cooldown)) {
-        // Detect a fresh swing (wind-up nearing damage point, swing_id
-        // changed since last frame) so the renderer retriggers the
-        // attack clip from frame 0.
-        bool new_swing = false;
-        f32 dmg_time = simulation::swing_dmg_time(*combat);
-        f32 backsw_time = simulation::swing_backsw_time(*combat);
-        if (combat->attack_state == AttackState::WindUp &&
-            combat->attack_timer > dmg_time * 0.8f) {
-            u32 swing_id = static_cast<u32>(combat->attack_timer * 1000);
-            if (swing_id != anim.attack_swing_id) {
-                anim.attack_swing_id = swing_id;
-                new_swing = true;
-            }
+    if (combat && combat->attack_state == AttackState::WindUp) {
+        f32 windup = simulation::swing_dmg_time(*combat);
+        f32 backswing = simulation::swing_backsw_time(*combat);
+        f32 dmg_fraction = std::clamp(combat->dmg_pt, 0.01f, 0.99f);
+        i32 attack_clip = anim.state_to_clip[static_cast<u8>(AnimState::Attack)];
+        f32 damage_clip_time = attack_clip >= 0
+            ? anim.model->animations[attack_clip].duration * dmg_fraction : 0.0f;
+        f32 windup_progress = windup > 0.0f
+            ? 1.0f - combat->attack_timer / windup : 1.0f;
+        f32 expected = windup_progress * damage_clip_time;
+        bool restart = anim.current_state != AnimState::Attack || anim.finished ||
+                       anim.time > anim.attack_dmg_time ||
+                       std::abs(anim.time - expected) > std::max(0.1f, damage_clip_time * 0.25f);
+        if (restart) {
+            AttackAnimInfo info;
+            info.dmg_point = combat->dmg_pt;
+            info.cast_point = windup;
+            info.backswing = backswing;
+            AnimStateInfo result{AnimState::Attack, windup + backswing, true, info, true};
+            result.seek_fraction = windup_progress * dmg_fraction;
+            return result;
         }
-        AttackAnimInfo info;
-        info.dmg_point  = combat->dmg_pt;
-        info.cast_point = dmg_time;
-        info.backswing  = backsw_time;
-        f32 dur = dmg_time + backsw_time;
-        return {AnimState::Attack, dur, new_swing, info, true};
+        return {AnimState::Attack, 0, false};
+    }
+    if (anim.current_state == AnimState::Attack && !anim.finished) {
+        return {AnimState::Attack, 0, false};
     }
 
     // Walk — either driven by an active Move (`mov->moving`) or by
@@ -724,21 +751,8 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
         return {AnimState::Birth, 0, false};
     }
 
-    // Hit — brief flinch when an otherwise-idle widget took damage and the
-    // model has a "hit" clip. Walk/Attack/Spell/Death outrank it (returned
-    // above), so a busy unit never flinches → no jitter, no throttle needed.
-    // A new damage event bumps Health.hit_count; restart the clip on that
-    // edge and hold the state until the clip finishes — its length is the
-    // timing, then derive falls through to Idle.
-    if (anim.state_to_clip[static_cast<u8>(AnimState::Hit)] >= 0) {
-        if (auto* hp = world.health(id)) {
-            bool new_hit = hp->hit_count != anim.last_hit_count;
-            anim.last_hit_count = hp->hit_count;
-            if (new_hit) return {AnimState::Hit, 0, true};
-            if (anim.current_state == AnimState::Hit && !anim.finished) {
-                return {AnimState::Hit, 0, false};
-            }
-        }
+    if (anim.current_state == AnimState::Hit && !anim.finished) {
+        return {AnimState::Hit, 0, false};
     }
 
     return {AnimState::Idle, 0, false};
@@ -3900,6 +3914,44 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
 
     bool has_skinned_pipeline = m_skinned_mesh_pipeline.is_valid();
 
+    while (!m_animation_events.empty()) {
+        AnimationEvent event = std::move(m_animation_events.front());
+        m_animation_events.pop_front();
+        if (!world.contains(event.entity_id)) continue;
+        switch (event.kind) {
+        case AnimationEventKind::Set:
+            set_playback_queue(m_anim_queues, event.entity_id, event.clip, event.looping);
+            if (auto it = m_anim_instances.find(event.entity_id); it != m_anim_instances.end()) {
+                it->second.script_controlled = false;
+                it->second.script_clip_name.clear();
+            }
+            break;
+        case AnimationEventKind::Queue:
+            if (auto* queue = m_anim_queues.get(event.entity_id)) {
+                queue->clips.push_back(std::move(event.clip));
+            } else {
+                set_playback_queue(m_anim_queues, event.entity_id, event.clip, false);
+            }
+            break;
+        case AnimationEventKind::Reset:
+            m_anim_queues.remove(event.entity_id);
+            if (auto it = m_anim_instances.find(event.entity_id); it != m_anim_instances.end()) {
+                it->second.script_controlled = false;
+                it->second.script_clip_name.clear();
+            }
+            break;
+        case AnimationEventKind::Hit:
+            if (auto it = m_anim_instances.find(event.entity_id); it != m_anim_instances.end()) {
+                auto& anim = it->second;
+                if (!anim.script_controlled && !world.is_dead(event.entity_id) &&
+                    anim.state_to_clip[static_cast<u8>(AnimState::Hit)] >= 0) {
+                    set_anim_state(anim, AnimState::Hit, 0, true);
+                }
+            }
+            break;
+        }
+    }
+
     // Clean up animation instances for entities that no longer exist in the
     // world. Scene swaps clear the whole set up front (clear_animations); this
     // handles the ordinary case of a unit despawning mid-scene.
@@ -3922,6 +3974,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 }
                 m_anim_instances.erase(it);
             }
+            m_anim_queues.remove(eid);
         }
     }
 
@@ -3946,13 +3999,9 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             if (!transform) continue;
             const simulation::FogVis fog = fog_visibility(world, id);
             if (fog == simulation::FogVis::Hidden) continue;
-            f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
-            if (!cull_frustum.is_sphere_visible(transform->interp_position(alpha),
-                                                cull_radius)) continue;
 
             // Birth plays only for a unit spawned in this viewer's sight.
-            //   * client world — skip_birth comes from the S_SPAWN
-            //     newly_created flag (born-this-tick AND visible-to-peer).
+            //   * client world — S_SPAWN plays birth; S_SHOW sets skip_birth.
             //   * server world (host / single-player) — create_unit set
             //     skip_birth from the spawn_visible_to_viewer predicate.
             // Either way the decision is made at spawn; here we just honor
@@ -3972,6 +4021,10 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             bool created = false;
             auto& anim = get_or_create_anim(id, *lm, play_birth, &created);
 
+            f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
+            if (!cull_frustum.is_sphere_visible(transform->interp_position(alpha),
+                                                cull_radius)) continue;
+
             // Fog-memory freeze: a static shown from memory is NOT being
             // simulated in the view — hold its skeleton on the last-seen frame
             // instead of advancing it (a burning building freezes mid-burn, a
@@ -3983,18 +4036,27 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             // is just "the last frame," same as every other state.
             if (fog == simulation::FogVis::Memory) continue;
 
-            // Script-driven animation override (SetUnitAnimation /
-            // QueueUnitAnimation). Death always wins — if the unit is
-            // dying we drop the queue so the death clip plays cleanly.
-            auto* aq = world.anim_queue_mut(id);
+            const auto* source_queue = world.anim_queue(id);
+            auto* aq = m_anim_queues.get(id);
+            if (source_queue && (!aq ||
+                (world.projectile(id) && world.projectile(id)->dying &&
+                 (aq->clips.empty() || aq->clips.front() != source_queue->clips.front())))) {
+                if (aq) *aq = *source_queue;
+                else m_anim_queues.add(id, simulation::AnimQueue{*source_queue});
+                aq = m_anim_queues.get(id);
+            }
             const bool is_dying = world.is_dead(id);
             if (aq && is_dying) {
-                world.clear_anim_queue(id);
+                m_anim_queues.remove(id);
                 aq = nullptr;
                 anim.script_controlled = false;
                 anim.script_clip_name.clear();
             }
             if (aq && !aq->clips.empty()) {
+                if (anim.script_controlled && aq->clips.front() == anim.script_clip_name) {
+                    anim.script_looping = aq->clips.size() == 1 && aq->looping;
+                    anim.looping = anim.script_looping;
+                }
                 // Resolve when entering script control, OR when the
                 // front-of-queue clip differs from the one currently
                 // bound (queue was swapped mid-play, e.g. projectile
@@ -4012,7 +4074,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                     } else {
                         log::warn(TAG, "SetUnitAnimation: clip '{}' not found on model '{}'",
                                   aq->clips.front(), anim.model->name);
-                        world.clear_anim_queue(id);
+                        m_anim_queues.remove(id);
                         aq = nullptr;
                     }
                 }
@@ -4030,9 +4092,8 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 set_anim_state(anim, anim_info.state, anim_info.duration, anim_info.force_restart,
                                anim_info.has_attack_info ? &anim_info.attack_info : nullptr);
 
-                // Mid-construction reveal: after set_anim_state reset the clip to
-                // time 0, advance it to the current build fraction so the ghost/
-                // building comes up partway assembled instead of restarting.
+                // A newly materialized construction or a corrected attack starts
+                // at its current visual progress instead of replaying from frame 0.
                 if (anim_info.seek_fraction >= 0.0f) {
                     i32 ci = anim.state_to_clip[static_cast<u8>(anim.current_state)];
                     if (ci >= 0 && ci < static_cast<i32>(anim.model->animations.size())) {
@@ -4051,9 +4112,8 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 // get_or_create_anim (Birth), so `created` here is already past
                 // it and Birth plays normally. This drops all death-specific
                 // special-casing — the `looping` flag IS the decision.
-                // EXCEPTION: a construction site (seek_fraction >= 0) is born in
-                // view and driven by build_progress — it must play FROM that
-                // point, not snap to the finished frame, so we skip the rule.
+                // A synchronized progress correction (seek_fraction >= 0) must
+                // keep that position rather than snapping to the final frame.
                 if (created && !anim.looping && anim_info.seek_fraction < 0.0f) {
                     i32 ci = anim.state_to_clip[static_cast<u8>(anim.current_state)];
                     if (ci >= 0 && ci < static_cast<i32>(anim.model->animations.size())) {
@@ -4063,13 +4123,32 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                     }
                 }
             }
+            f32 previous_anim_time = anim.time;
             update_animation(anim, frame_dt);
+            if (anim.current_state == AnimState::Attack &&
+                previous_anim_time < anim.attack_dmg_time && anim.time >= anim.attack_dmg_time) {
+                if (const auto* info = world.handle_info(id)) {
+                    if (const auto* types = world.type_registry()) {
+                        if (const auto* def = types->get_unit_type(info->type_id);
+                            def && !def->sound_attack.empty()) {
+                            if (const auto* sound_transform = world.transform(id)) {
+                                if (m_sound_fn) m_sound_fn(def->sound_attack, sound_transform->position);
+                            }
+                        }
+                    }
+                }
+                const auto* combat = world.combat(id);
+                if (combat && !combat->projectile &&
+                    simulation::is_non_null_handle(combat->target)) {
+                    enqueue_hit(combat->target.id);
+                }
+            }
 
             // Advance the queue if the script-driven clip just finished.
             if (anim.script_controlled && anim.finished && !anim.script_looping && aq) {
                 aq->clips.pop_front();
                 if (aq->clips.empty()) {
-                    world.clear_anim_queue(id);
+                    m_anim_queues.remove(id);
                     // script_controlled flips false on the next frame's
                     // pass, where derive_anim_state picks Idle/Walk and
                     // set_anim_state can crossfade out of Custom.
@@ -4083,7 +4162,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                     } else {
                         log::warn(TAG, "QueueUnitAnimation: clip '{}' not found",
                                   aq->clips.front());
-                        world.clear_anim_queue(id);
+                        m_anim_queues.remove(id);
                     }
                 }
             }

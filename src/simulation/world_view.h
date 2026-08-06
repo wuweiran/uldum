@@ -78,11 +78,7 @@ struct IWorldView {
     virtual std::span<const u32> item_info_ids()  const = 0;
 
     // ── Draw-time writes (per-viewer scratch, NOT world truth) ──────────
-    // These hit pools LocalView OWNS (its own selectables / anim_queues); on
-    // World they hit the real pools (host authoring path unchanged).
-    virtual void       size_selectable(u32 id, f32 radius, f32 height) = 0;
-    virtual void       clear_anim_queue(u32 id) = 0;
-    virtual AnimQueue* anim_queue_mut(u32 id) = 0;
+    virtual void size_selectable(u32 id, f32 radius, f32 height) = 0;
 };
 
 struct World;
@@ -134,9 +130,7 @@ struct WorldView final : IWorldView {
     std::span<const u32> selectable_ids() const override;
     std::span<const u32> item_info_ids()  const override;
 
-    void       size_selectable(u32 id, f32 radius, f32 height) override;
-    void       clear_anim_queue(u32 id) override;
-    AnimQueue* anim_queue_mut(u32 id) override;
+    void size_selectable(u32 id, f32 radius, f32 height) override;
 
     FogVis fog_mode(u32 /*id*/) const override { return FogVis::Live; }  // no fog
 
@@ -181,10 +175,8 @@ struct LocalView final : IWorldView {
     // interpolated (one-tick-behind) fog still reads the tile live.
     std::unordered_set<u32> snapshot_hidden_seen;
 
-    // Per-viewer render/pick scratch (NOT source): the renderer sizes selectables
-    // and advances anim queues here so it never mutates the authoritative world.
+    // Per-viewer pick scratch (NOT source): the renderer sizes selectables here.
     SparseSet<Selectable> own_selectables;
-    SparseSet<AnimQueue>  own_anim_queues;
 
     // Iteration id-lists, rebuilt each tick (visible ∪ snapshotted, per pool).
     std::vector<u32> iter_renderables;
@@ -237,9 +229,7 @@ struct LocalView final : IWorldView {
     std::span<const u32> selectable_ids() const override;
     std::span<const u32> item_info_ids()  const override;
 
-    void       size_selectable(u32 id, f32 radius, f32 height) override;
-    void       clear_anim_queue(u32 id) override;
-    AnimQueue* anim_queue_mut(u32 id) override;
+    void size_selectable(u32 id, f32 radius, f32 height) override;
 
     // snapshotted → Memory; live-visible → Live; else Hidden. Pure membership.
     FogVis fog_mode(u32 id) const override {

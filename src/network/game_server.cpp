@@ -256,6 +256,9 @@ void GameServer::wire_to_network(NetworkManager& net) {
     m_script.set_unit_update_fn([&net](u32 entity_id, const std::vector<u8>& pkt) {
         net.host_broadcast_update(entity_id, pkt);
     });
+    m_script.set_anim_event_fn([&net](u32 entity_id, const std::vector<u8>& pkt) {
+        net.host_broadcast_entity_event(entity_id, pkt);
+    });
     m_script.set_broadcast_fn([&net](const std::vector<u8>& pkt) {
         net.host_broadcast(pkt);
     });
@@ -339,6 +342,13 @@ void GameServer::wire_to_network(NetworkManager& net) {
     });
 
     // ── World → client sends ─────────────────────────────────────────────
+    world.on_attack_start =
+        [&net](simulation::Unit attacker, simulation::Widget target,
+               f32 windup, f32 backswing, f32 damage_point) {
+            auto pkt = build_anim_attack_start(
+                attacker.id, target.id, windup, backswing, damage_point);
+            net.host_broadcast_entity_event(attacker.id, pkt);
+        };
     world.on_ability_added =
         [&net](simulation::Unit unit, std::string_view ability_id, u32 level,
                const simulation::AbilitySource& source) {

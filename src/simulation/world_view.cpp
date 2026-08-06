@@ -41,8 +41,6 @@ std::span<const u32> WorldView::item_info_ids()  const { return m_world->item_in
 void WorldView::size_selectable(u32 id, f32 radius, f32 height) {
     if (auto* s = m_world->selectables.get(id)) { s->selection_radius = radius; s->selection_height = height; }
 }
-void WorldView::clear_anim_queue(u32 id) { m_world->anim_queues.remove(id); }
-AnimQueue* WorldView::anim_queue_mut(u32 id) { return m_world->anim_queues.get(id); }
 
 // ── LocalView ────────────────────────────────────────────────────────────────
 // Read resolver: snapshot → live auth → nullptr. `snapshot_pool` is the matching
@@ -126,11 +124,11 @@ const Carriable* LocalView::carriable(u32 id) const {
 const Inventory* LocalView::inventory(u32 id) const {
     return resolve<Inventory>(*this, id, nullptr, source->inventories);
 }
+const AnimQueue* LocalView::anim_queue(u32 id) const {
+    return resolve<AnimQueue>(*this, id, nullptr, source->anim_queues);
+}
 
-// Selectables + anim queues are owned scratch — read them directly (they exist
-// for both live and snapshotted entities, seeded by project_local_view).
 const Selectable* LocalView::selectable(u32 id) const { return own_selectables.get(id); }
-const AnimQueue*  LocalView::anim_queue(u32 id) const { return own_anim_queues.get(id); }
 
 bool LocalView::contains(u32 id) const { return snapshotted(id) || visible.count(id) != 0; }
 const TypeRegistry* LocalView::type_registry() const { return source ? source->types : nullptr; }
@@ -143,8 +141,6 @@ std::span<const u32> LocalView::item_info_ids()  const { return iter_item_infos;
 void LocalView::size_selectable(u32 id, f32 radius, f32 height) {
     if (auto* s = own_selectables.get(id)) { s->selection_radius = radius; s->selection_height = height; }
 }
-void LocalView::clear_anim_queue(u32 id) { own_anim_queues.remove(id); }
-AnimQueue* LocalView::anim_queue_mut(u32 id) { return own_anim_queues.get(id); }
 
 void LocalView::clear() {
     visible.clear();
@@ -155,7 +151,6 @@ void LocalView::clear() {
     snapshot.destructables.clear();
     snapshot_hidden_seen.clear();
     own_selectables.clear();
-    own_anim_queues.clear();
     iter_renderables.clear();
     iter_transforms.clear();
     iter_item_infos.clear();

@@ -12,16 +12,20 @@
 #include "render/effect.h"
 #include "core/handle.h"
 #include "asset/model.h"
+#include "simulation/components.h"
+#include "simulation/sparse_set.h"
 
 #include "rhi/rhi.h"
 #include "rhi/command_list.h"
 
 #include <glm/mat4x4.hpp>
 
+#include <deque>
 #include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 namespace uldum::simulation { struct World; struct IWorldView; struct Transform; class Simulation; enum class FogVis : uldum::u8; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentConfig; }
@@ -112,11 +116,18 @@ public:
     // Pass nullptr to disable fog rendering.
     void set_fog_grid(const f32* values, u32 tiles_x, u32 tiles_y);
 
-    // Set the simulation reference for fog visibility queries during draw.
+    // Set the simulation reference for session-local render data.
     void set_simulation(const simulation::Simulation* sim) { m_simulation = sim; }
 
     // Set the local player for fog-based unit filtering.
     void set_local_player(u32 player_id) { m_local_player_id = player_id; }
+
+    using SoundFn = std::function<void(std::string_view path, glm::vec3 position)>;
+    void set_sound_fn(SoundFn fn) { m_sound_fn = std::move(fn); }
+    void enqueue_animation(u32 entity_id, std::string_view clip,
+                           bool looping = false, bool queued = false);
+    void reset_animation(u32 entity_id);
+    void enqueue_hit(u32 entity_id);
 
     // Upload the fog texture to GPU. Must be called outside a render pass.
     void upload_fog(rhi::CommandList& cmd);
@@ -458,12 +469,24 @@ private:
     // Simulation reference for fog queries
     const simulation::Simulation* m_simulation = nullptr;
     u32 m_local_player_id = 0;
+    SoundFn m_sound_fn;
 
     // Terrain mesh
     TerrainMesh m_terrain{};
 
-    // Per-entity animation instances (entity id → AnimationInstance)
+    enum class AnimationEventKind : u8 { Set, Queue, Reset, Hit };
+
+    struct AnimationEvent {
+        AnimationEventKind kind;
+        u32 entity_id;
+        std::string clip;
+        bool looping;
+    };
+
+    // Per-entity animation playback owned by this renderer/viewer.
     std::unordered_map<u32, AnimationInstance> m_anim_instances;
+    simulation::SparseSet<simulation::AnimQueue> m_anim_queues;
+    std::deque<AnimationEvent> m_animation_events;
 
     // ── Model viewer (editor) ────────────────────────────────────────────
     // Offscreen target + isolated pipelines, built lazily by ensure_model_viewer.

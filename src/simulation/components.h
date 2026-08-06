@@ -59,7 +59,6 @@ struct Health {
     f32 max         = 0;
     f32 regen_per_sec = 0;
     f32 damage_taken = 1.0f; // incoming-damage multiplier, composed by recalculate_modifiers
-    u32 hit_count     = 0;   // bumped per normal-attack hit; renderer plays "hit" on change
     Unit killer{};
 };
 
@@ -243,8 +242,7 @@ inline void begin_swing(Combat& c) {
     c.cooldown_timer = swing_cooldown(c);
 }
 
-// Swing phase clock, shared by the host's system_combat and the client's
-// client_tick so the two can't drift. Returns true on the tick a phase
+// Authoritative swing phase clock. Returns true on the tick a phase
 // ends, leaving the new phase in attack_state: Backswing = damage point,
 // Idle = swing over.
 inline bool advance_swing(Combat& c, f32 dt) {

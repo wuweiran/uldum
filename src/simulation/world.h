@@ -53,7 +53,7 @@ struct World {
     SparseSet<ProjectileComp>       projectiles;
     SparseSet<Corpse>               corpses;
     SparseSet<Renderable>           renderables;
-    SparseSet<AnimQueue>            anim_queues;  // script-driven animation override (Lua writes, renderer advances)
+    SparseSet<AnimQueue>            anim_queues;
 
     // Regions — Lua-authored zones used to fire enter/leave triggers.
     // Defined out of band (not per-unit), so it lives flat on World
@@ -84,9 +84,8 @@ struct World {
     // local player; left null on the headless server and on the network
     // client. create_unit consults it to decide whether a newly-spawned
     // unit plays its birth clip — a unit born outside the viewer's sight
-    // comes up already Idle (skip_birth), matching the client, whose
-    // skip_birth arrives from the S_SPAWN newly_created flag. Null → birth
-    // plays (nothing renders headless; the client path governs itself).
+    // comes up already Idle. On clients, S_SPAWN plays birth and S_SHOW skips it.
+    // Null → birth plays (nothing renders headless; the client path governs itself).
     std::function<bool(f32 x, f32 y)> spawn_visible_to_viewer;
 
     // Type registry (not owned — set during init)
@@ -178,6 +177,10 @@ struct World {
     // Parameters: sound path, position. Empty path = no sound.
     using SoundCallback = std::function<void(std::string_view path, glm::vec3 position)>;
     SoundCallback on_sound;
+
+    using AttackStartCallback = std::function<void(
+        Unit attacker, Widget target, f32 windup, f32 backswing, f32 damage_point)>;
+    AttackStartCallback on_attack_start;
 
     // Ability lifecycle callbacks — fire when a source is added or removed.
     // Refreshing an existing source does not fire. Host mirrors source kind so
@@ -311,9 +314,8 @@ Doodad        create_doodad(World& world, std::string_view type_id, f32 x, f32 y
 // id, then run the identical builder create_* uses. This replaces the old
 // hand-copied NetworkManager::spawn_client_entity (which drifted repeatedly).
 //
-// SpawnOpts carries the only real host↔client deltas as DATA:
-//   skip_birth — true → materialize without the birth clip (client passes
-//                !newly_created; host derives from spawn_visible_to_viewer).
+// SpawnOpts carries the only real host↔client delta as data:
+//   skip_birth — true for S_SHOW, false for S_SPAWN.
 // (Model selection is by `variation` on the spawn_*_with_id calls, not here —
 // the client resolves the model from type + variation just like the host.)
 struct SpawnOpts {

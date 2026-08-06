@@ -53,16 +53,8 @@ struct AnimationInstance {
     // stale one.
     std::string script_clip_name;
 
-    // Track attack swings to restart animation on each new attack
-    u32 attack_swing_id = 0;
-
-    // Last Health.hit_count the renderer saw; a change means a new damage
-    // event, so the flinch ("hit" clip) restarts. Holds until the clip
-    // finishes, then derive falls back to Idle — clip length is the timing.
-    u32 last_hit_count = 0;
-
     // Two-phase attack animation: wind-up plays at one speed, backswing at another
-    f32 attack_dmg_time    = 0.0f;  // clip time where damage point is (dmg_point * clip_dur)
+    f32 attack_dmg_time     = 0.0f; // clip time where damage point is (dmg_point * clip_dur)
     f32 attack_phase1_speed = 1.0f; // playback speed for [0, dmg_time]
     f32 attack_phase2_speed = 1.0f; // playback speed for [dmg_time, clip_end]
 

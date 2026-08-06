@@ -850,19 +850,6 @@ void ScriptEngine::fire_player_event(std::string_view event_name, u32 player_id)
     dispatch(frame, event_name);
 }
 
-void ScriptEngine::emit_anim(u32 entity_id) {
-    if (!m_unit_update_fn) return;
-    auto& w = m_sim->world();
-    std::vector<std::string> clips;
-    bool looping = false;
-    if (const auto* q = w.anim_queues.get(entity_id)) {
-        for (const auto& c : q->clips) clips.push_back(c);
-        looping = q->looping;
-    }
-    auto pkt = network::build_cold_anim(entity_id, clips, looping);
-    m_unit_update_fn(entity_id, pkt);
-}
-
 void ScriptEngine::emit_static_transform(u32 entity_id) {
     if (!m_unit_update_fn) return;
     auto& w = m_sim->world();
@@ -1114,38 +1101,53 @@ void ScriptEngine::bind_api() {
                                    sol::optional<bool> looping) {
         auto& w = sim.world();
         if (!w.contains(u)) return;
-        auto* q = w.anim_queues.get(u.id);
-        if (q) {
-            q->clips.clear();
-            q->clips.push_back(clip);
-            q->looping = looping.value_or(false);
+        bool loop_last = looping.value_or(false);
+        if (loop_last) {
+            simulation::AnimQueue queue;
+            queue.clips.push_back(clip);
+            queue.looping = true;
+            if (auto* existing = w.anim_queues.get(u.id)) *existing = std::move(queue);
+            else w.anim_queues.add(u.id, std::move(queue));
         } else {
-            simulation::AnimQueue aq;
-            aq.clips.push_back(clip);
-            aq.looping = looping.value_or(false);
-            w.anim_queues.add(u.id, std::move(aq));
+            w.anim_queues.remove(u.id);
         }
-        emit_anim(u.id);
+        if (m_anim_event_fn) {
+            m_anim_event_fn(u.id, network::build_anim_set_queue(
+                u.id, clip, loop_last));
+        }
+        if (m_unit_update_fn) {
+            m_unit_update_fn(u.id, network::build_cold_anim(
+                u.id, loop_last ? clip : std::string_view{}));
+        }
     };
 
     lua["QueueUnitAnimation"] = [&](simulation::Unit u, const std::string& clip) {
         auto& w = sim.world();
         if (!w.contains(u)) return;
-        auto* q = w.anim_queues.get(u.id);
-        if (q) {
-            q->clips.push_back(clip);
-        } else {
-            simulation::AnimQueue aq;
-            aq.clips.push_back(clip);
-            w.anim_queues.add(u.id, std::move(aq));
+        auto* queue = w.anim_queues.get(u.id);
+        if (queue && queue->looping) {
+            queue->clips.clear();
+            queue->clips.push_back(clip);
         }
-        emit_anim(u.id);
+        if (m_anim_event_fn) {
+            m_anim_event_fn(u.id, network::build_anim_queue_clip(u.id, clip));
+        }
+        if (m_unit_update_fn) {
+            m_unit_update_fn(u.id, network::build_cold_anim(
+                u.id, queue && queue->looping ? clip : std::string_view{}));
+        }
     };
 
     lua["ResetUnitAnimation"] = [&](simulation::Unit u) {
-        if (!sim.world().contains(u)) return;
-        sim.world().anim_queues.remove(u.id);
-        emit_anim(u.id);   // empty clip list = reset on the client
+        auto& w = sim.world();
+        if (!w.contains(u)) return;
+        w.anim_queues.remove(u.id);
+        if (m_anim_event_fn) {
+            m_anim_event_fn(u.id, network::build_anim_reset(u.id));
+        }
+        if (m_unit_update_fn) {
+            m_unit_update_fn(u.id, network::build_cold_anim(u.id, {}));
+        }
     };
 
     // Health

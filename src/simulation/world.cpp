@@ -174,8 +174,8 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
     if (!model.empty()) {
         Renderable r{std::string(model), true};
         // Birth clip plays only for a unit spawned in the local viewer's sight.
-        // Suppress it when the caller says so (client: !newly_created) OR when a
-        // viewer predicate reports the spawn is out of sight.
+        // Suppress it for S_SHOW or when a viewer predicate reports the spawn is
+        // out of sight.
         if (opts.skip_birth ||
             (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y))) {
             r.skip_birth = true;
@@ -298,8 +298,8 @@ static Item build_item(World& world, u32 id, std::string_view type_id,
     if (!model.empty()) {
         Renderable r{std::string(model), true};
         // Birth ("materialize") plays only for an item dropped/created in the
-        // local viewer's sight. Suppress when the caller says so (client:
-        // !newly_created) or a viewer predicate reports out-of-sight.
+        // local viewer's sight. Suppress it for S_SHOW or when a viewer predicate
+        // reports out-of-sight.
         if (opts.skip_birth ||
             (world.spawn_visible_to_viewer && !world.spawn_visible_to_viewer(x, y))) {
             r.skip_birth = true;
@@ -697,8 +697,6 @@ void deal_damage(World& world, Unit source, Widget target, f32 amount, std::stri
     if (hp->current == 0) {
         hp->killer = world.contains(source) ? source : Unit{};
     }
-    if (damage_type == "attack") ++hp->hit_count;   // normal-attack flinch only
-
     // Fight-back: if target is idle (no order, no current target), attack the source.
     // Only fight back against enemies (different owner).
     if (is_non_null_handle(source) && world.contains(source)) {

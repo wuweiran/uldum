@@ -205,6 +205,7 @@ public:
 
     // Host: broadcast an on-change S_COLD to all clients that can see this entity.
     void host_broadcast_update(u32 entity_id, std::span<const u8> update_packet);
+    void host_broadcast_entity_event(u32 entity_id, std::span<const u8> packet);
 
     // Host: broadcast an arbitrary packet to every connected peer.
     // Used for non-entity-scoped sync (free-position PlayEffect, future
@@ -366,6 +367,8 @@ public:
 
     // ── Callbacks ───────────────────────────────────────────────────────
     std::function<void(std::string_view path, glm::vec3 pos)> on_sound;
+    std::function<void(const AnimEventData& event)> on_anim_event;
+    std::function<void(u32 entity_id)> on_projectile_hit_animation;
     // Script-initiated audio (Lua's PlaySound2D / PlayMusic / StopMusic /
     // PlayAmbientLoop / StopAmbientLoop). Each fires the matching
     // engine call on the client's AudioEngine. Ambient start/stop pass
@@ -494,8 +497,7 @@ private:
     PeerInfo* find_peer(u32 peer_id);
     const PeerInfo* find_peer(u32 peer_id) const;
     void host_send_spawn(PeerInfo& peer, u32 entity_id,
-                         const simulation::HandleInfo& info,
-                         bool newly_created);
+                         const simulation::HandleInfo& info);
     void host_send_show(PeerInfo& peer, u32 entity_id,
                         const simulation::HandleInfo& info);
     void host_send_inventory_state(PeerInfo& peer, u32 carrier_id);
@@ -577,11 +579,9 @@ private:
     void client_handle_cold(std::span<const u8> data);         // S_COLD: 1 record (on-change) or N (materialize)
     void client_apply_interpolation();
 
-    void spawn_client_entity(simulation::World& world, u32 entity_id,
-                             std::string_view type_id,
-                             u8 owner, f32 x, f32 y, f32 facing,
-                             bool newly_created,
-                             u8 variation = 0);
+    void spawn_client_entity(simulation::World& world,
+                             const MaterializeData& data,
+                             bool play_birth);
     void destroy_client_entity(u32 entity_id);
 
     // The host/offline local player's fog-projection scratch. project_local_view

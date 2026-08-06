@@ -25,7 +25,7 @@ Phase 29 (Message-layer redesign) complete — the wire protocol is sorted into 
 - **Asset pipeline.** glTF 2.0 models (`KHR_texture_basisu` supported), KTX2 + Basis Universal textures, OGG audio, JSON configs. Per-primitive materials on static meshes (`baseColorTexture` × `baseColorFactor`, `alphaMode=MASK`, `doubleSided`).
 - **GPU-driven static rendering.** Mega VB/IB, bindless textures, instance SSBO, multi-draw indirect partitioned by pipeline class × cull mode. 4× MSAA, frustum culling, PCF shadow maps with correctly silhouetted alpha-masked casters.
 - **Terrain.** Heightmap + cliffs + ramps, splatmap with 4 layers, SDF-based transitions with noise, sampler2DArray for layer textures, shallow + deep water with Gerstner waves and reflection.
-- **Skeletal animation.** GPU skinning, animation state machine driven by simulation, crossfade blending, skinned shadow casting.
+- **Skeletal animation.** GPU skinning, state-derived loops plus reliable visible-now one-shots, crossfade blending, skinned shadow casting.
 - **Effects + particles.** CPU-driven billboards with burst + continuous emitters, procedural shapes, `fire` plumes that lerp hot→cool and cast a flickering point light, glow-particle-seeded point lights, unit-attached effects with bone targeting.
 - **ECS simulation.** Monotonic typed handles (Unit / Item / Destructable / Projectile), paged sparse-set storage, data-driven types loaded from map JSON, deterministic 32 Hz tick. Unit facing + scale + alliances.
 - **Gameplay primitives.** Tile-grid A* + steering, attack-move + auto-acquire + guard-position return, abilities with typed innate/item/applied ownership, items as ability bundles, projectiles, persistent corpses + revival, cliff-aware fog of war with shared vision.
