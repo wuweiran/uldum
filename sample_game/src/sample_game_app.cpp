@@ -6,8 +6,6 @@
 #include "network/network.h"
 #include "shell/shell.h"
 
-#include <cstdio>
-
 namespace uldum {
 
 static constexpr const char* TAG = "SampleGameApp";
@@ -25,7 +23,7 @@ void SampleGameApp::on_state_changed(AppState /*prev*/, AppState next) {
         case AppState::Lobby:   show_lobby();                           break;
         case AppState::Loading: show_loading();                         break;
         case AppState::Playing: m_engine->shell().hide_current_document(); break;
-        case AppState::Results: show_results();                         break;
+        case AppState::Results: break;
     }
 }
 
@@ -74,14 +72,14 @@ void SampleGameApp::show_loading() {
     m_engine->shell().load_document("shell/loading.rml");
 }
 
+void SampleGameApp::on_session_ended() {
+    show_results();
+}
+
 void SampleGameApp::show_results() {
     auto& s = m_engine->shell();
     s.load_document("shell/results.rml");
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "Time: %.1f s",
-                  m_engine->last_session_elapsed_seconds());
-    s.set_element_text("time_label", buf);
-    s.bind("back", [this] { m_engine->set_state(AppState::Menu); });
+    s.bind("back", [this] { show_main_menu(); });
 }
 
 } // namespace uldum

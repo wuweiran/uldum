@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/app.h"
 #include "platform/platform.h"
 #include "rhi/rhi.h"
 #include "asset/asset.h"
@@ -32,7 +33,6 @@
 // types — this lets dev_console.h / ui/shell.h include app.h in turn
 // without a cycle.
 namespace uldum::shell { class Shell; }
-namespace uldum { class App; }
 
 namespace uldum {
 
@@ -41,7 +41,7 @@ enum class AppState {
     Lobby,      // manifest loaded, slot assignment in progress
     Loading,    // map content loading + waiting for all peers
     Playing,    // simulation running, rendering gameplay
-    Results,    // game ended, showing stats
+    Results,    // session ended; teardown runs before returning to Menu
 };
 
 struct LaunchArgs {
@@ -95,10 +95,6 @@ public:
     // responsible for loading RML documents and binding their click
     // handlers; the engine no longer hosts screen-specific logic.
     shell::Shell&              shell()    { return *m_shell; }
-    // Most recent end-of-session elapsed time (seconds). Stays at 0
-    // until the first session ends. Used by the App to populate the
-    // Results screen.
-    f32                        last_session_elapsed_seconds() const { return m_last_elapsed_seconds; }
 #endif
 
     // Launch args — apps mutate fields like map_path / net_mode before
@@ -108,8 +104,8 @@ public:
 
     // App-state read / write. Apps drive transitions that the engine
     // can't infer (Menu ↔ Lobby) by calling set_state directly; the
-    // engine auto-drives the rest (Loading on enter_lobby, Playing
-    // when the simulation comes up, Results on session end). set_state
+    // engine auto-drives Loading, Playing, and Results. Session end then
+    // fully tears down the session before returning to Menu. set_state
     // fires App::on_state_changed on actual transitions (no-op if the
     // new state equals the current one) — defined out-of-line because
     // it needs App to be a complete type.
@@ -193,7 +189,7 @@ private:
 
     // Host-side server→client wiring: calls GameServer::wire_to_network (the
     // shared sends the worker also installs) then chains the host's own
-    // local-player apply (renderer effects, Results screen) on top. Call AFTER
+    // local-player apply (renderer effects and camera) on top. Call AFTER
     // the script installs its handlers (init_game / scene re-init), from both
     // start_session and scene_switch_run_main.
     void wire_host_broadcasts();
@@ -212,14 +208,6 @@ private:
     // than in the RTS preset — so they'd otherwise miss the ping the preset
     // emits on desktop. Lua/AI orders never reach this, so they never ping.
     void fire_local_ping(const simulation::GameCommand& cmd);
-
-#ifdef ULDUM_SHELL_UI
-    // Most recent end-of-session elapsed time (seconds) pulled out of
-    // the Lua stats JSON. Stays at 0 until the first EndGame call. The
-    // App reads it via last_session_elapsed_seconds() (declared up in
-    // the public surface) to populate the Results screen.
-    f32 m_last_elapsed_seconds = 0.0f;
-#endif
 
     // Last safe-area insets we pushed to the HUD. Compared on each
     // refresh so the HUD doesn't re-resolve composites when nothing

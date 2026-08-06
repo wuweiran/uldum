@@ -12,7 +12,6 @@
 
 #ifdef ULDUM_SHELL_UI
 #include "shell/shell.h"
-#include <nlohmann/json.hpp>
 #endif
 
 #include "app/app.h"
@@ -1139,6 +1138,8 @@ void Engine::end_session() {
 
     m_session_active = false;
     m_lobby_active   = false;
+    set_state(AppState::Menu);
+    m_app->on_session_ended();
     log::info(TAG, "=== Session ended ===");
 }
 
@@ -1156,7 +1157,7 @@ void Engine::wire_host_broadcasts() {
     // pickup/drop, ability/cooldown/charge updates, EndGame S_END, unit updates,
     // player-leave); the worker installs exactly the same. Here the host, which
     // is also a player, wraps the mixed ones (effect deliver/destroy, EndGame)
-    // to additionally drive its renderer / Results transition. Called from both
+    // to additionally drive its renderer and camera. Called from both
     // start_session and scene_switch_run_main (a scene re-init reinstalls the
     // script handlers, so this must re-run to re-chain onto them).
     m_server.wire_to_network(m_network);
@@ -1216,27 +1217,6 @@ void Engine::wire_host_broadcasts() {
                 }
             });
     }
-    // EndGame: send half already fired S_END; chain the host's Results screen.
-    {
-        auto send_end = std::move(m_server.script().end_game_fn());
-        m_server.script().set_end_game_fn(
-            [this, send_end = std::move(send_end)](u32 winning_team, std::string_view stats) {
-                if (send_end) send_end(winning_team, stats);
-                log::info(TAG, "Game ended — winning team {}", winning_team);
-#ifdef ULDUM_SHELL_UI
-                f32 elapsed = 0.0f;
-                try {
-                    auto j = nlohmann::json::parse(stats);
-                    elapsed = j.value("elapsed", 0.0f);
-                } catch (...) {}
-                m_last_elapsed_seconds = elapsed;
-#else
-                (void)stats;
-#endif
-                set_state(AppState::Results);
-            });
-    }
-
     // Scripted-camera: wire_to_network installed the send-half (per-player
     // host_send_camera_*, a no-op for the host's own slot). Chain the host's
     // OWN camera-controller apply for the local slot on top — exactly the
@@ -1804,11 +1784,11 @@ void Engine::run() {
 
             m_network.update(frame_dt);
 
-            // Client: server disconnect handling lives in the UI. We stay
-            // in Playing (frozen scene) and let the dev/Shell UI render a
-            // "Lost connection" dialog. User picks End Session to return
-            // to Menu; no auto-transition here. client_on_disconnect has
-            // already logged the event.
+            if (is_client && !m_network.is_connected() &&
+                m_network.local_player().is_valid()) {
+                set_state(AppState::Results);
+                break;
+            }
 
             if (is_client && m_network.is_connected()) {
                 auto lp = m_network.local_player();
@@ -1818,7 +1798,7 @@ void Engine::run() {
                 }
             }
 
-            if (is_client && m_network.client_game_ended()) {
+            if (m_network.is_game_ended()) {
                 set_state(AppState::Results);
                 break;
             }
@@ -2195,21 +2175,7 @@ void Engine::run() {
         }
 
         case AppState::Results:
-#ifdef ULDUM_SHELL_UI
-            // Game build: end the session immediately (tear down sim /
-            // audio / network) on first entry. The App's
-            // on_state_changed has already loaded results.rml and
-            // populated the elapsed-time label.
-            if (m_session_active) {
-                end_session();
-            }
-#else
-            // Engine-dev build (no Shell): auto-return to Menu. uldum_dev's
-            // auto-start will kick the next session off on the following frame.
-            log::info(TAG, "Session complete → ending session → Menu");
             end_session();
-            set_state(AppState::Menu);
-#endif
             break;
         }
 

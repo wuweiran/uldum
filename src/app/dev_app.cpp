@@ -193,7 +193,7 @@ void DevApp::on_render(rhi::CommandList& cmd) {
     if (m_console) m_console->render(cmd);
 }
 
-void DevApp::on_session_ended(const SessionResult&) {
+void DevApp::on_session_ended() {
     // No-op for now. The dev console's results-screen rendering is
     // driven from `Engine::update_shell_for_state` based on the App
     // state, unchanged by this refactor.

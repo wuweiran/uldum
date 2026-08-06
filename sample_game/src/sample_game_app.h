@@ -16,6 +16,7 @@ class SampleGameApp final : public App {
 public:
     void on_init(Engine&) override;
     void on_state_changed(AppState prev, AppState next) override;
+    void on_session_ended() override;
 
 private:
     // Each `show_*` loads the screen's RML and binds its buttons.

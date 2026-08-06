@@ -330,8 +330,6 @@ void DevConsole::update([[maybe_unused]] f32 dt, AppState state, network::Networ
         break;
     }
     case AppState::Results:
-        // Dev build: Results falls through to Menu immediately in the App's
-        // main loop, so we never stay here long enough to draw anything.
         break;
     }
 

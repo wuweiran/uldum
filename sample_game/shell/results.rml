@@ -6,7 +6,6 @@
 <body class="screen">
     <div id="root">
         <div id="title">Mission Complete</div>
-        <div id="time_label">Time: --</div>
         <div id="menu">
             <div class="btn" id="back">Back to Menu</div>
         </div>

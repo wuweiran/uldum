@@ -79,7 +79,7 @@ public:
     // Host: has the game started? (all expected players connected)
     bool is_game_started() const { return m_game_started; }
 
-    // Host: signal game over. Broadcasts S_END to all clients. A game need
+    // Authoritative process: signal game over. A host broadcasts S_END to all clients; offline records the result locally. A game need
     // not have a winner (draw, or an abandoned session that ended because
     // everyone left) — omit winning_team for that. The no-winner value is the
     // invalid sentinel (UINT32_MAX) on the wire.

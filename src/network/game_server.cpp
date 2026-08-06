@@ -335,8 +335,8 @@ void GameServer::wire_to_network(NetworkManager& net) {
             }
         });
 
-    // EndGame(winning_team, stats) → S_END. SEND HALF: the host also chains a
-    // local Results transition on top.
+    // EndGame(winning_team, stats) records the authoritative result and sends
+    // S_END to clients in Host mode.
     m_script.set_end_game_fn([&net](u32 winning_team, std::string_view stats) {
         net.host_end_game(winning_team, stats);
     });

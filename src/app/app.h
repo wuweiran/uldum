@@ -25,7 +25,6 @@ namespace uldum::rhi { class CommandList; }
 namespace uldum {
 
 class Engine;
-class SessionResult;
 enum class AppState;
 
 class App {
@@ -55,16 +54,9 @@ public:
     // (the engine renders Shell UI separately).
     virtual void on_render(rhi::CommandList& cmd) { (void)cmd; }
 
-    // A session just ended. The result carries whatever the engine
-    // captured at session end. Default: empty.
-    virtual void on_session_ended(const SessionResult&) {}
+    // Called after the session is fully torn down and AppState is back at Menu.
+    virtual void on_session_ended() {}
 };
-
-// Forward declaration only — the actual struct lives wherever the
-// session result is materialized. Plumbed in as the App surface is
-// built out; for the dev refactor the on_session_ended hook is not
-// yet wired to anything that produces a populated result.
-class SessionResult {};
 
 // Trivial App that does nothing. Used as the default for game builds
 // that don't yet provide their own App implementation (today's

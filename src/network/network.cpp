@@ -1231,11 +1231,13 @@ void NetworkManager::host_send_to_player(u32 player_id, std::span<const u8> pack
 }
 
 void NetworkManager::host_end_game(u32 winning_team, std::string_view stats_json) {
-    if (m_mode != Mode::Host) return;
+    if (m_mode != Mode::Host && m_mode != Mode::Offline) return;
     m_game_ended = true;
     m_end_data = EndData{winning_team, std::string(stats_json)};
-    auto msg = build_end(winning_team, stats_json);
-    m_transport->broadcast(msg, true);
+    if (m_mode == Mode::Host) {
+        auto msg = build_end(winning_team, stats_json);
+        m_transport->broadcast(msg, true);
+    }
     if (winning_team == UINT32_MAX)
         log::info(TAG, "Game ended — no winner");
     else

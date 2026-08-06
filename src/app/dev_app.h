@@ -30,7 +30,7 @@ public:
     void on_init(Engine&) override;
     void on_update(f32 dt) override;
     void on_render(rhi::CommandList& cmd) override;
-    void on_session_ended(const SessionResult&) override;
+    void on_session_ended() override;
 
     // Locale-change subscriber routes the active locale into the dev
     // console so its text input reflects what the engine has applied.

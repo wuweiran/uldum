@@ -46,12 +46,9 @@ Engine auto-drives the transitions it can infer from facts it owns:
 - App calls `engine.set_state(AppState::Loading)` to commit out of
   Lobby → engine kicks off `start_session()` internally.
 - Simulation's first tick completes → engine sets `AppState::Playing`.
-- Session ends → engine sets `AppState::Results`.
+- Session completion or client disconnect → engine transitions through `AppState::Results`, tears the session down, then returns to `AppState::Menu`.
 
-App drives the transitions only it knows about — `Menu → Lobby` (user
-clicked Play), `Results → Menu` (user clicked Back). It does so by
-calling `engine.set_state(...)`. Every transition fires
-`App::on_state_changed(prev, next)` exactly once on the App.
+App drives transitions only it knows about, such as `Menu → Lobby` when the user clicks Play. Every transition fires `App::on_state_changed(prev, next)` exactly once on the App. After session teardown and the return to Menu, `App::on_session_ended()` runs while the old session is no longer reachable.
 
 `AppState` is intentionally **coarser** than the visible Shell UI
 screen. A game might show `login.rml`, `signup.rml`, `main_menu.rml`,
@@ -68,7 +65,6 @@ vocabulary, HUD library use, dev-console display, telemetry.
 namespace uldum {
 
 class Engine;
-class SessionResult;
 enum class AppState;
 
 class App {
@@ -87,8 +83,8 @@ public:
     // Per-frame render. ImGui-based apps submit draw data here.
     virtual void on_render(rhi::CommandList& cmd) {}
 
-    // Session ended. App reacts (load results screen, post stats).
-    virtual void on_session_ended(const SessionResult&) {}
+    // Session ended and fully torn down. App may show a post-session screen.
+    virtual void on_session_ended() {}
 };
 
 } // namespace uldum
@@ -126,9 +122,6 @@ public:
     void                     leave_lobby();
     void                     end_session();
     bool                     is_session_active() const;
-
-    // Per-session data the Results screen needs (game builds only)
-    f32                      last_session_elapsed_seconds() const;
 
     // Process lifecycle
     void                     request_quit();
@@ -290,10 +283,8 @@ user input, the App is idle.
 3. Once simulation's first tick is ready, engine sets
    `AppState::Playing` and `on_state_changed` fires.
 4. Subsequent main-loop iterations tick the simulation.
-5. Session ends (server S_END, win condition, App called
-   `engine.end_session()`). Engine sets `AppState::Results` and calls
-   `app->on_session_ended(result)` on the main thread.
-6. App loads its results screen via `on_state_changed`.
+5. Session completion or client disconnect transitions through `AppState::Results`.
+6. Engine completely tears down the session, returns to `AppState::Menu`, then calls `app->on_session_ended()` on the main thread. The App may show a post-session screen from that callback; no old session data remains reachable.
 
 ### Boot — Android
 
