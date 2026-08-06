@@ -99,12 +99,6 @@ public:
     script::ScriptEngine&         script()           { return m_script; }
     const script::ScriptEngine&   script() const     { return m_script; }
 
-    // Callback fired when Lua calls EndGame(winning_team, stats).
-    // Engine wires this to NetworkManager for broadcasting S_END.
-    using EndGameCallback = std::function<void(u32 winning_team, std::string_view stats_json)>;
-    void set_end_game_callback(EndGameCallback cb) { m_on_end_game = std::move(cb); }
-    EndGameCallback& end_game_callback() { return m_on_end_game; }
-
 private:
     // Shared "load this scene's scripts + run main()" tail used by both
     // init_game and switch_scene: set_player_count, pathing/grid, script paths,
@@ -117,7 +111,6 @@ private:
 
     simulation::Simulation  m_simulation;
     script::ScriptEngine    m_script;
-    EndGameCallback         m_on_end_game;
     audio::AudioEngine*     m_audio = nullptr;   // retained from init_game for switch_scene's VM re-init
 
     // Set in begin_scene_switch (phase 1), consumed in try_finish_scene_switch

@@ -91,16 +91,8 @@ public:
     void set_player_name(std::string_view name) { m_player_name = std::string{name}; }
     const std::string& player_name() const { return m_player_name; }
 
-    // Client: has the game started? (S_START received)
-    bool client_game_started() const { return m_game_started; }
-
-    // Client: has the game ended? (S_END received)
-    bool client_game_ended() const { return m_game_ended; }
-    const EndData& client_end_data() const { return m_end_data; }
-
-    // Host: has EndGame been called? (mirrors the flag set by host_end_game
-    // / received by clients via S_END). Workers poll this to detect when
-    // they should write the result to stdout and exit.
+    // True after the authoritative process calls EndGame or a client receives
+    // S_END. Workers poll this to report the authoritative result and exit.
     bool is_game_ended() const { return m_game_ended; }
     const EndData& end_data() const { return m_end_data; }
 
