@@ -54,10 +54,7 @@ struct IWorldView {
     virtual const AbilitySet*             ability_set(u32 id)    const = 0;
     virtual const StateBlock*             state_block(u32 id)    const = 0;
     virtual const ProjectileComp*         projectile(u32 id)     const = 0;
-    virtual const ForcedVisibility*       forced_visibility(u32 id) const = 0;
-    virtual const TrueSightVisibility*    true_sight(u32 id)     const = 0;
     virtual const DestructableComp*       destructable(u32 id)   const = 0;
-    virtual const DoodadComp*             doodad(u32 id)         const = 0;
     virtual const ItemInfo*               item_info(u32 id)      const = 0;
     virtual const Carriable*              carriable(u32 id)      const = 0;
     virtual const Inventory*              inventory(u32 id)      const = 0;
@@ -113,10 +110,7 @@ struct WorldView final : IWorldView {
     const AbilitySet*             ability_set(u32 id)    const override;
     const StateBlock*             state_block(u32 id)    const override;
     const ProjectileComp*         projectile(u32 id)     const override;
-    const ForcedVisibility*       forced_visibility(u32 id) const override;
-    const TrueSightVisibility*    true_sight(u32 id)     const override;
     const DestructableComp*       destructable(u32 id)   const override;
-    const DoodadComp*             doodad(u32 id)         const override;
     const ItemInfo*               item_info(u32 id)      const override;
     const Carriable*              carriable(u32 id)      const override;
     const Inventory*              inventory(u32 id)      const override;
@@ -157,7 +151,7 @@ struct LocalView final : IWorldView {
 
     // Frozen last-seen copies for statics out of live sight. Only the pools a
     // snapshotted static is read through on a view path (others resolve to null
-    // when snapshotted). owner/health/is_dead/doodad are intentionally absent:
+    // when snapshotted). owner/health/is_dead are intentionally absent:
     // every path that reads them first skips non-live entities, and the renderer
     // FREEZES a fog-memory static's animation (so "dead" needs no snapshot — the
     // last-seen frame holds the pose).
@@ -212,10 +206,7 @@ struct LocalView final : IWorldView {
     const AbilitySet*             ability_set(u32 id)    const override;
     const StateBlock*             state_block(u32 id)    const override;
     const ProjectileComp*         projectile(u32 id)     const override;
-    const ForcedVisibility*       forced_visibility(u32 id) const override;
-    const TrueSightVisibility*    true_sight(u32 id)     const override;
     const DestructableComp*       destructable(u32 id)   const override;
-    const DoodadComp*             doodad(u32 id)         const override;
     const ItemInfo*               item_info(u32 id)      const override;
     const Carriable*              carriable(u32 id)      const override;
     const Inventory*              inventory(u32 id)      const override;

@@ -21,10 +21,7 @@ const UnitClassificationComp* WorldView::classification(u32 id) const { return m
 const AbilitySet*             WorldView::ability_set(u32 id)    const { return m_world->ability_sets.get(id); }
 const StateBlock*             WorldView::state_block(u32 id)    const { return m_world->state_blocks.get(id); }
 const ProjectileComp*         WorldView::projectile(u32 id)     const { return m_world->projectiles.get(id); }
-const ForcedVisibility*       WorldView::forced_visibility(u32 id) const { return m_world->forced_vis.get(id); }
-const TrueSightVisibility*    WorldView::true_sight(u32 id)     const { return m_world->true_sight_vis.get(id); }
 const DestructableComp*       WorldView::destructable(u32 id)   const { return m_world->destructables.get(id); }
-const DoodadComp*             WorldView::doodad(u32 id)         const { return m_world->doodads.get(id); }
 const ItemInfo*               WorldView::item_info(u32 id)      const { return m_world->item_infos.get(id); }
 const Carriable*              WorldView::carriable(u32 id)      const { return m_world->carriables.get(id); }
 const Inventory*              WorldView::inventory(u32 id)      const { return m_world->inventories.get(id); }
@@ -103,17 +100,8 @@ const StateBlock* LocalView::state_block(u32 id) const {
 const ProjectileComp* LocalView::projectile(u32 id) const {
     return resolve<ProjectileComp>(*this, id, nullptr, source->projectiles);
 }
-const ForcedVisibility* LocalView::forced_visibility(u32 id) const {
-    return resolve<ForcedVisibility>(*this, id, nullptr, source->forced_vis);
-}
-const TrueSightVisibility* LocalView::true_sight(u32 id) const {
-    return resolve<TrueSightVisibility>(*this, id, nullptr, source->true_sight_vis);
-}
 const DestructableComp* LocalView::destructable(u32 id) const {
     return resolve(*this, id, &snapshot.destructables, source->destructables);
-}
-const DoodadComp* LocalView::doodad(u32 id) const {
-    return resolve<DoodadComp>(*this, id, nullptr, source->doodads);
 }
 const ItemInfo* LocalView::item_info(u32 id) const {
     return resolve<ItemInfo>(*this, id, nullptr, source->item_infos);
