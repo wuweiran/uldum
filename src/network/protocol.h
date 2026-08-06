@@ -549,9 +549,9 @@ inline std::vector<u8> build_music_stop(f32 fade_out) {
     return std::move(w.data());
 }
 
-// Looping positional ambient. `handle` is host-assigned and used by
-// the matching STOP. Clients keep their own handle → audio-engine
-// id map so the same handle stops the right loop on every peer.
+// Looping positional ambient. `handle` is assigned by the authoritative
+// script layer, independent of any local audio mixer. Each playing client maps
+// it to its own AudioEngine handle so the matching STOP finds the right loop.
 inline std::vector<u8> build_ambient_start(u32 handle, std::string_view path, f32 x, f32 y) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_AMBIENT_START));

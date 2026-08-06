@@ -515,6 +515,7 @@ void ScriptEngine::shutdown() {
     // them to the new map's player on its first tick, spawning ghost
     // particles (e.g. test_map's portal rim glowing on action_test).
     m_active_effects.clear();
+    m_active_ambients.clear();
     m_paused = false;
     m_lua.reset();
     m_sim = nullptr;
@@ -1971,20 +1972,23 @@ void ScriptEngine::bind_api() {
         if (m_broadcast_fn) m_broadcast_fn(network::build_music_stop(fo));
     };
 
-    // Ambient loop handle is host-assigned. The host's AudioEngine id
-    // ships in the start/stop packets; each client maintains a local
-    // host_id → client_audio_id map to route the matching stop call.
     lua["PlayAmbientLoop"] = [this](std::string_view path, f32 x, f32 y) -> u32 {
-        if (!m_audio) return 0;
-        u32 handle = m_audio->play_ambient(path, {x, y, 0}).id;
-        if (m_broadcast_fn) m_broadcast_fn(network::build_ambient_start(handle, path, x, y));
-        return handle;
+        u32 id = m_next_ambient_id++;
+        u32 local = m_audio ? m_audio->play_ambient(path, {x, y, 0}).id : 0;
+        m_active_ambients[id] = {local};
+        if (m_broadcast_fn) m_broadcast_fn(network::build_ambient_start(id, path, x, y));
+        return id;
     };
 
-    lua["StopAmbientLoop"] = [this](u32 handle_id, sol::optional<f32> fade_out) {
+    lua["StopAmbientLoop"] = [this](u32 id, sol::optional<f32> fade_out) {
+        auto it = m_active_ambients.find(id);
+        if (it == m_active_ambients.end()) return;
         f32 fo = fade_out.value_or(0.5f);
-        if (m_audio)        m_audio->stop_ambient({handle_id}, fo);
-        if (m_broadcast_fn) m_broadcast_fn(network::build_ambient_stop(handle_id, fo));
+        if (m_audio && it->second.local_handle != 0) {
+            m_audio->stop_ambient({it->second.local_handle}, fo);
+        }
+        if (m_broadcast_fn) m_broadcast_fn(network::build_ambient_stop(id, fo));
+        m_active_ambients.erase(it);
     };
 
     // SetVolume stays host-local: channel gain is a per-player setting

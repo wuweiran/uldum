@@ -974,7 +974,7 @@ function StopMusic(fade_out) end
 ---@param path string
 ---@param x number
 ---@param y number
----@return number   handle (0 on failure)
+---@return number   logical handle for StopAmbientLoop
 function PlayAmbientLoop(path, x, y) end
 
 --- Stop a looping ambient by handle.

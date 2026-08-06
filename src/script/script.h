@@ -300,6 +300,12 @@ private:
     std::vector<ActiveEffect> m_active_effects;
     u32                       m_next_effect_id = 1;
 
+    struct ActiveAmbient {
+        u32 local_handle = 0;
+    };
+    std::unordered_map<u32, ActiveAmbient> m_active_ambients;
+    u32 m_next_ambient_id = 1;
+
     // Visibility check for a single (player, effect) pair. Centralised
     // so the per-tick dispatcher and DestroyEffect's late-delivery
     // pass agree on what "visible" means.
