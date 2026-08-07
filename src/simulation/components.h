@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -302,6 +303,41 @@ struct OrderQueue {
     }
 };
 
+namespace status {
+    constexpr u32 Stunned      = 1u << 0;
+    constexpr u32 Silenced     = 1u << 1;
+    constexpr u32 Muted        = 1u << 2;
+    constexpr u32 Disarmed     = 1u << 3;
+    constexpr u32 Rooted       = 1u << 4;
+    constexpr u32 Invulnerable = 1u << 5;
+    constexpr u32 MagicImmune  = 1u << 6;
+    constexpr u32 Untargetable = 1u << 7;
+    constexpr u32 Unattackable = 1u << 8;
+    constexpr u32 Paused       = 1u << 9;
+    constexpr u32 Invisible    = 1u << 10;
+    constexpr u32 NoAcquire    = 1u << 11;
+    constexpr u32 Phased       = 1u << 12;
+
+    constexpr u32 Count = 13;
+}
+
+constexpr u32 parse_status_flag_name(std::string_view name) {
+    if (name == "stunned")      return status::Stunned;
+    if (name == "silenced")     return status::Silenced;
+    if (name == "muted")        return status::Muted;
+    if (name == "disarmed")     return status::Disarmed;
+    if (name == "rooted")       return status::Rooted;
+    if (name == "invulnerable") return status::Invulnerable;
+    if (name == "magic_immune") return status::MagicImmune;
+    if (name == "untargetable") return status::Untargetable;
+    if (name == "unattackable") return status::Unattackable;
+    if (name == "paused")       return status::Paused;
+    if (name == "invisible")    return status::Invisible;
+    if (name == "no_acquire")   return status::NoAcquire;
+    if (name == "phased")       return status::Phased;
+    return 0;
+}
+
 enum class AbilitySourceKind : u8 {
     Innate,
     Item,
@@ -329,7 +365,6 @@ struct AbilityInstance {
     f32         cooldown_remaining = 0;
     bool        auto_cast          = false;
     std::vector<AbilitySource> sources;
-    f32         tick_timer         = 0;
     u32         action_bar_slot    = UINT32_MAX;
 
     bool item_only() const {
@@ -340,10 +375,7 @@ struct AbilityInstance {
     }
     // Active modifiers from this ability's current level (passive_modifier)
     std::map<std::string, f32> active_modifiers;
-    // Status flags this instance contributes (passive_flag) — each name is
-    // a key into status::; while the instance lives, each flag's refcount
-    // on the carrier is incremented.
-    std::vector<std::string> active_flags;
+    u32 active_flags = 0;
 };
 
 // Cast state machine. A Cast order steps through these in order:
@@ -378,30 +410,6 @@ struct AbilitySet {
     // map Lua. Reset to invalid when cast_state returns to None.
     Item        cast_source_item;
 };
-
-// Engine-built status flags. Transient action gates set by spells /
-// effects / scripts, queried by sim systems each tick. See
-// gameplay-model.md "Status Flags" for the full semantics and
-// per-flag enforcement points.
-//
-// The bit values are part of the engine ABI — order matters.
-namespace status {
-    constexpr u32 Stunned      = 1u << 0;
-    constexpr u32 Silenced     = 1u << 1;
-    constexpr u32 Muted        = 1u << 2;
-    constexpr u32 Disarmed     = 1u << 3;
-    constexpr u32 Rooted       = 1u << 4;
-    constexpr u32 Invulnerable = 1u << 5;
-    constexpr u32 MagicImmune  = 1u << 6;
-    constexpr u32 Untargetable = 1u << 7;
-    constexpr u32 Unattackable = 1u << 8;
-    constexpr u32 Paused       = 1u << 9;
-    constexpr u32 Invisible    = 1u << 10;
-    constexpr u32 NoAcquire    = 1u << 11;  // Block auto-acquire scan; drop current auto-acquired target.
-    constexpr u32 Phased       = 1u << 12;  // Ignore unit-vs-unit collision (move/push through any unit). Terrain + buildings still block. DOTA "phased" (Phase Boots).
-
-    constexpr u32 Count = 13;  // number of distinct flag bits used above
-}
 
 // Each passive_flag AbilityInstance increments the refcount for every flag it
 // grants and decrements it on removal. Two instances both granting `silenced`

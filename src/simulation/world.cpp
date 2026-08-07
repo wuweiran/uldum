@@ -1547,16 +1547,6 @@ bool unit_clear_action_bar_slot(World& world, Unit unit, u32 slot) {
     return changed;
 }
 
-// Map a single-bit flag value (e.g. status::Invisible) to its refcount
-// array index. Returns status::Count when the value isn't a single bit
-// in range — callers should ignore it.
-static u32 flag_bit_index(u32 flag) {
-    for (u32 i = 0; i < status::Count; ++i) {
-        if (flag == (1u << i)) return i;
-    }
-    return status::Count;
-}
-
 static void recompute_effective_flags(StatusFlags& sf) {
     u32 effective = 0;
     for (u32 i = 0; i < status::Count; ++i) {
@@ -1571,48 +1561,19 @@ bool unit_has_status(const World& world, Unit unit, u32 flag) {
     return sf && (sf->flags & flag) != 0;
 }
 
-u32 parse_status_flag_name(std::string_view s) {
-    if (s == "stunned")      return status::Stunned;
-    if (s == "silenced")     return status::Silenced;
-    if (s == "muted")        return status::Muted;
-    if (s == "disarmed")     return status::Disarmed;
-    if (s == "rooted")       return status::Rooted;
-    if (s == "invulnerable") return status::Invulnerable;
-    if (s == "magic_immune") return status::MagicImmune;
-    if (s == "untargetable") return status::Untargetable;
-    if (s == "unattackable") return status::Unattackable;
-    if (s == "paused")       return status::Paused;
-    if (s == "invisible")    return status::Invisible;
-    if (s == "no_acquire")   return status::NoAcquire;
-    if (s == "phased")       return status::Phased;
-    return 0;
-}
-
-// Increment / decrement refcount for each flag named in `flag_names`.
-// Unknown names are logged and ignored. Adds a StatusFlags component on
-// first touch.
-void flag_refcount_delta(World& world, u32 id,
-                         const std::vector<std::string>& flag_names,
-                         i32 delta) {
-    if (flag_names.empty() || delta == 0) return;
+void flag_refcount_delta(World& world, u32 id, u32 flags, i32 delta) {
+    if (!flags || delta == 0) return;
     auto* sf = world.status_flags.get(id);
     if (!sf) {
         world.status_flags.add(id, StatusFlags{});
         sf = world.status_flags.get(id);
-        if (!sf) return;
     }
-    for (auto& name : flag_names) {
-        u32 bit = parse_status_flag_name(name);
-        if (!bit) {
-            log::warn(TAG, "flag_refcount: unknown flag '{}'", name);
-            continue;
-        }
-        u32 idx = flag_bit_index(bit);
-        if (idx >= status::Count) continue;
+    for (u32 i = 0; i < status::Count; ++i) {
+        if (!(flags & (1u << i))) continue;
         if (delta > 0) {
-            if (sf->refcounts[idx] < 0xFF) sf->refcounts[idx]++;
+            if (sf->refcounts[i] < 0xFF) sf->refcounts[i]++;
         } else {
-            if (sf->refcounts[idx] > 0)    sf->refcounts[idx]--;
+            if (sf->refcounts[i] > 0) sf->refcounts[i]--;
         }
     }
     recompute_effective_flags(*sf);

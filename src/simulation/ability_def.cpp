@@ -1,4 +1,5 @@
 #include "simulation/ability_def.h"
+#include "simulation/components.h"
 #include "asset/asset.h"
 #include "core/log.h"
 
@@ -82,8 +83,15 @@ static AbilityLevelDef parse_level(const nlohmann::json& j) {
     }
 
     if (j.contains("flags") && j["flags"].is_array()) {
-        for (auto& f : j["flags"]) {
-            if (f.is_string()) lvl.flags.push_back(f.get<std::string>());
+        for (const auto& value : j["flags"]) {
+            if (!value.is_string()) continue;
+            const std::string name = value.get<std::string>();
+            u32 flag = parse_status_flag_name(name);
+            if (!flag) {
+                log::warn(TAG, "Unknown status flag '{}'", name);
+                continue;
+            }
+            lvl.flags |= flag;
         }
     }
 

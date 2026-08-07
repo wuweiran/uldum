@@ -97,10 +97,7 @@ struct AbilityLevelDef {
     // unit-fraction (e.g. "move_speed_mult": -0.5 = -50% speed).
     std::map<std::string, f32> modifiers;
 
-    // Refcounted status flags (passive_flag). Each name maps to a bit in
-    // status:: (see components.h). While the instance is alive, each
-    // flag's refcount is incremented; on remove, decremented.
-    std::vector<std::string> flags;
+    u32 flags = 0;
 
     // -1 = permanent (default for innate passives). >= 0 = timed; the
     // instance is auto-removed when remaining_duration hits 0.

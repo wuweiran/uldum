@@ -428,17 +428,7 @@ bool     can_attack_target(const World& world, u8 target_mask, Widget target,
                            std::string* out_specifier = nullptr);
 void     recalculate_modifiers(World& world, u32 id);
 
-// Map a status flag name ("stunned", "no_acquire", ...) to its status::*
-// bit. Returns 0 for an unknown name.
-u32      parse_status_flag_name(std::string_view name);
-
-// Increment / decrement per-flag refcounts on a unit's StatusFlags by
-// `delta` for each named flag. Used by passive_flag ability lifecycle
-// (add / remove / expiry). Names are status:: keys ("invisible",
-// "no_acquire", etc.); unknown names are logged.
-void     flag_refcount_delta(World& world, u32 id,
-                             const std::vector<std::string>& flag_names,
-                             i32 delta);
+void     flag_refcount_delta(World& world, u32 id, u32 flags, i32 delta);
 
 // ── Projectile API ────────────────────────────────────────────────────
 // Two-stage: create allocates a handle + idle entity, emit configures
