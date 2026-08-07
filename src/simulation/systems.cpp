@@ -157,7 +157,12 @@ void system_guard_position(World& world, float dt, const Pathfinder& pathfinder)
         if (distance <= arrival_tolerance) {
             guard->return_timer = 0.0f;
             guard->returning = false;
-        } else if (guard->returning || distance > MAX_GUARD_DISTANCE) {
+            continue;
+        }
+
+        const auto* combat = world.combats.get(id);
+        bool has_target = combat && is_non_null_handle(combat->target);
+        if (!has_target || guard->returning || distance > MAX_GUARD_DISTANCE) {
             guard->returning = true;
         } else if (distance > GUARD_DISTANCE) {
             guard->return_timer += dt;
@@ -372,13 +377,10 @@ void system_movement(World& world, float dt, const Pathfinder& pathfinder,
                     goal_range = m->range;
                 }
             } else if (auto* atk = std::get_if<orders::Attack>(&oq->current->payload)) {
-                // Engaged (combat ran first this tick) → approach chases it. Else
-                // walk to atk->target: the A-move dest, or a lost target's last-seen
-                // point. Arrival-advance (below) ends the order on reaching it.
                 auto* combat = world.combats.get(id);
                 if (combat && is_non_null_handle(combat->target)) {
-                    // engaged — fall through to approach
-                } else {
+                    // Engaged — fall through to combat's approach target.
+                } else if (is_null_handle(atk->target_widget)) {
                     goal2d = {atk->target.x, atk->target.y};
                     has_goal = true;
                 }
@@ -1007,13 +1009,6 @@ void system_combat(World& world, float dt, const SpatialGrid& grid) {
                 finish_order(world, id);
                 continue;
             }
-        }
-
-        // Anti-leak last-seen capture: while a widget target is valid + visible,
-        // keep atk->target on its position. If it then fogs/dies/frees, the unit
-        // seeks THIS point (below) — never the live transform of a hidden entity.
-        if (target_valid && has_widget && attack_order) {
-            if (auto* tt = world.transforms.get(target.id)) attack_order->target = tt->position;
         }
 
         if (!target_valid) {

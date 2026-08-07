@@ -36,9 +36,8 @@ namespace orders {
         Widget    target_widget;
         f32       range = 0.0f;
     };
-    // Attack toward a point, preferring a widget — sibling of Move. Same
-    // last-seen seek on fog/death. target_widget is a Widget (a crate is a
-    // first-class attack target).
+    // Attack toward a point, preferring a widget — sibling of Move.
+    // target_widget is a Widget (a crate is a first-class attack target).
     struct Attack {
         static constexpr OrderId ID = OrderId::Attack;
         glm::vec3 target{0.0f};
