@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <unordered_map>
 
 namespace uldum::network {
 
@@ -51,7 +50,7 @@ static void apply_unit_state_scalars(simulation::World& world, const UnitState& 
 }
 
 template <typename Record>
-static void interpolate_transform(simulation::World& world, const Record& current,
+static void apply_interpolated_transform(simulation::World& world, const Record& current,
                                   const Record* previous, f32 alpha) {
     auto* transform = world.transforms.get(current.entity_id);
     if (!transform) return;
@@ -78,6 +77,25 @@ static void interpolate_transform(simulation::World& world, const Record& curren
     while (difference < -glm::pi<f32>()) difference += glm::two_pi<f32>();
     transform->facing = previous->facing + difference * alpha;
     transform->prev_facing = transform->facing - difference;
+}
+
+template <typename Record>
+static void interpolate_snapshot_transforms(simulation::World& world,
+                                   const std::vector<Record>& older,
+                                   const std::vector<Record>& newer,
+                                   f32 alpha) {
+    usize old_index = 0;
+    for (const auto& current : newer) {
+        while (old_index < older.size() &&
+               older[old_index].entity_id < current.entity_id) {
+            ++old_index;
+        }
+        const Record* previous = old_index < older.size() &&
+            older[old_index].entity_id == current.entity_id
+            ? &older[old_index]
+            : nullptr;
+        apply_interpolated_transform(world, current, previous, alpha);
+    }
 }
 
 bool GameClient::init_simulation(asset::AssetManager& assets) {
@@ -180,15 +198,24 @@ u32 GameClient::begin_snapshot_tick(u32 tick) {
 }
 
 void GameClient::apply_unit_state(UnitStateData state) {
+    for (const auto& unit : state.units) {
+        apply_unit_state_scalars(m_simulation.world(), unit);
+    }
+    std::sort(state.units.begin(), state.units.end(),
+              [](const UnitState& a, const UnitState& b) {
+                  return a.entity_id < b.entity_id;
+              });
     u32 index = begin_snapshot_tick(state.tick);
     m_snapshots[index].units = std::move(state.units);
-    apply_interpolation();
 }
 
 void GameClient::apply_projectile_state(ProjectileStateData state) {
+    std::sort(state.projectiles.begin(), state.projectiles.end(),
+              [](const ProjectileState& a, const ProjectileState& b) {
+                  return a.entity_id < b.entity_id;
+              });
     u32 index = begin_snapshot_tick(state.tick);
     m_snapshots[index].projectiles = std::move(state.projectiles);
-    apply_interpolation();
 }
 
 void GameClient::apply_attack_start(const AnimEventData& event) {
@@ -225,11 +252,10 @@ void GameClient::apply_interpolation() {
     if (!m_has_two_snaps) {
         auto& snapshot = m_snapshots[m_snap_idx];
         for (const auto& state : snapshot.units) {
-            interpolate_transform(world, state, static_cast<const UnitState*>(nullptr), 1.0f);
-            apply_unit_state_scalars(world, state);
+            apply_interpolated_transform(world, state, static_cast<const UnitState*>(nullptr), 1.0f);
         }
         for (const auto& state : snapshot.projectiles) {
-            interpolate_transform(
+            apply_interpolated_transform(
                 world, state, static_cast<const ProjectileState*>(nullptr), 1.0f);
         }
         return;
@@ -246,25 +272,8 @@ void GameClient::apply_interpolation() {
             0.0f, 1.0f);
     }
 
-    std::unordered_map<u32, const UnitState*> old_units;
-    for (const auto& state : older.units) old_units[state.entity_id] = &state;
-    for (const auto& state : newer.units) {
-        auto found = old_units.find(state.entity_id);
-        interpolate_transform(
-            world, state, found != old_units.end() ? found->second : nullptr, alpha);
-        apply_unit_state_scalars(world, state);
-    }
-
-    std::unordered_map<u32, const ProjectileState*> old_projectiles;
-    for (const auto& state : older.projectiles) {
-        old_projectiles[state.entity_id] = &state;
-    }
-    for (const auto& state : newer.projectiles) {
-        auto found = old_projectiles.find(state.entity_id);
-        interpolate_transform(
-            world, state,
-            found != old_projectiles.end() ? found->second : nullptr, alpha);
-    }
+    interpolate_snapshot_transforms(world, older.units, newer.units, alpha);
+    interpolate_snapshot_transforms(world, older.projectiles, newer.projectiles, alpha);
 }
 
 
