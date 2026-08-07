@@ -81,15 +81,8 @@ struct IWorldView {
 struct World;
 
 // Adapter presenting a plain World through the IWorldView read/scratch surface.
-// This is what active_world() hands the renderer / picker / HUD on the network
-// client (wrapping the client's mirror World) and, for now, on host/offline too
-// (wrapping the copy view-world). It holds a bare World* — same codegen as
-// direct pool access, zero per-entity cost — and keeps World a plain aggregate
-// (no vtable). The host/offline zero-copy projection is LocalView (a different
-// IWorldView impl, added later). Anything that runs on a remote client — and
-// the host's mirror of that same logic — reads through this; anything that
-// needs authoritative truth (simulation, scripting, the server-side send gate)
-// takes `World&` directly. Bodies live in world_view.cpp (needs the full World).
+// Used by the editor, which renders a World directly without player fog projection.
+// Runtime rendering uses LocalView instead.
 struct WorldView final : IWorldView {
     explicit WorldView(World& w) : m_world(&w) {}
     World& world() const { return *m_world; }
@@ -136,7 +129,7 @@ private:
 // The fog projection the renderer/picker/HUD read in EVERY mode. Live entities
 // resolve straight to `source` (the authoritative World on host/offline, the
 // network mirror on the client) — no per-tick copy; only statics that left live
-// sight carry a frozen `snapshot`. project_local_view() drives the stores each
+// sight carry a frozen `snapshot`. Engine::project_local_view drives the stores each
 // tick. Reads are GATED, never a blind fall-through:
 //   snapshotted(id) → frozen snapshot   (source may have deleted the entity)
 //   visible(id)     → source's live component
@@ -144,7 +137,7 @@ private:
 struct LocalView final : IWorldView {
     LocalView() = default;
 
-    // Rebuilt each tick by project_local_view. Public so the projector populates
+    // Rebuilt each tick by Engine::project_local_view. Public so the projector populates
     // them without a wide friend surface.
     World*                  source = nullptr;   // auth World (host/offline) or network mirror (client)
     std::unordered_set<u32> visible;            // ids live-visible this tick → read source
@@ -187,7 +180,7 @@ struct LocalView final : IWorldView {
     // Wipe every owned store — the snapshots, the visible set, the render/pick
     // scratch, and the per-tick iteration lists. Called on scene switch /
     // end_session (in lockstep with the auth world's clear_entities). Leaves
-    // `auth` pointing where it was; project_local_view re-wires it.
+    // `source` pointing where it was; Engine::project_local_view re-wires it.
     void clear();
 
     const Transform*              transform(u32 id)      const override;

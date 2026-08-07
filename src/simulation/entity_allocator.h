@@ -31,7 +31,7 @@ public:
     // survives the wipe — true at a scene boundary, where the world is
     // fully cleared and Lua state doesn't persist. This lets each scene's
     // placement entities occupy a deterministic [0, N) range on host and
-    // client alike (see NetworkManager::set_placement_count).
+    // client alike.
     void reset() { m_next_id = 0; }
 
 private:

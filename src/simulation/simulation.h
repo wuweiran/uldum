@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace uldum::asset { class AssetManager; }
-namespace uldum::map { struct TerrainData; struct SceneData; }
+namespace uldum::map { struct TerrainData; struct SceneData; struct MapManifest; }
 
 namespace uldum::simulation {
 
@@ -62,6 +62,8 @@ public:
 
     // Set terrain for pathfinding, height queries, and spatial grid sizing.
     void set_terrain(const map::TerrainData* terrain);
+    void init_map_state(const map::MapManifest& manifest,
+                        const map::TerrainData& terrain);
 
     // Apply all PathingBlocker components to the runtime pathing grid.
     // Call once after map entities are created.

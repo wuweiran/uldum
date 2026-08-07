@@ -32,7 +32,7 @@ struct InputContext {
     // The fog-projected view the picker resolves hits through (LocalView). Order
     // handlers classify a picked target through THIS, not simulation.world(): an
     // out-of-sight static is a snapshot here but was dropped from the mirror on
-    // S_HIDE. Set from the SAME active_world() the picker was init'd with, so a hit
+    // S_HIDE. Set from the same LocalView the picker was init'd with, so a hit
     // and its classification resolve against one view.
     const simulation::IWorldView& view;
     u32 screen_w;

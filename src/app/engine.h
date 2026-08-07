@@ -16,6 +16,7 @@
 #include "network/lobby.h"
 #include "simulation/command_system.h"
 #include "simulation/selection.h"
+#include "simulation/world_view.h"
 #include "input/picking.h"
 #include "input/input_preset.h"
 #include "input/input_bindings.h"
@@ -27,6 +28,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // Forward-declare UI types that Engine owns via unique_ptr. Engine's destructor
 // is defined out-of-line in engine.cpp, so the header doesn't need complete
@@ -131,12 +133,6 @@ private:
     // request via the AppState transition Lobby → Loading.
     bool start_session();
 
-    // The view-world the renderer / picker / HUD read — a fog-projected
-    // IWorldView in every mode (WorldView over the client mirror or the
-    // host/offline projection). Never the authoritative World: that's reached
-    // only through m_server.simulation().world() (systems + Lua).
-    simulation::IWorldView& active_world();
-
     // The Simulation that backs this process's game state: the client's replica
     // (GameClient) on a network client, the authoritative one (GameServer)
     // everywhere else. Render / picker / HUD / input read gameplay state
@@ -145,6 +141,9 @@ private:
     // during a session.
     simulation::Simulation&       active_sim();
     const simulation::Simulation& active_sim() const;
+    void project_local_view(simulation::Player local);
+    void seed_preplaced_local_discovery();
+    void clear_local_view();
 
     // Launch-mode predicates — the session's net_mode is fixed for its lifetime,
     // so these read cleaner than the raw `m_args.net_mode == Mode::X` compares
@@ -245,6 +244,8 @@ private:
     network::GameServer      m_server;
     network::GameClient      m_client;   // the replica sim on a network client (see active_sim)
     network::NetworkManager  m_network;
+    simulation::LocalView     m_local_view;
+    std::unordered_set<u32>   m_local_discovered;
     simulation::CommandSystem m_commands;
     simulation::SelectionState m_selection;
     input::Picker            m_picker;

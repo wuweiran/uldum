@@ -221,8 +221,8 @@ void Simulation::shutdown() {
     // from a clean slate. The Simulation instance itself is reused
     // across sessions, so nothing leaves scope on its own.
     m_world.clear_entities();
-    m_pathfinder.set_terrain(nullptr);   // drops runtime blocks too
-    m_terrain = nullptr;
+    set_terrain(nullptr);
+
     m_types.clear();
     m_abilities.clear();
     m_vision.init(0, 0, 0, 0, FogMode::None);  // releases per-player grids
@@ -244,6 +244,31 @@ void Simulation::set_terrain(const map::TerrainData* terrain) {
     if (terrain && terrain->is_valid()) {
         m_spatial_grid.init(terrain->world_width(), terrain->world_height(), 512.0f, this);
     }
+}
+
+void Simulation::init_map_state(const map::MapManifest& manifest,
+                                const map::TerrainData& terrain) {
+    const u32 player_count = static_cast<u32>(manifest.players.size());
+    init_alliances(player_count);
+    for (u32 a = 0; a < player_count; ++a) {
+        for (u32 b = 0; b < player_count; ++b) {
+            if (a == b || manifest.players[a].team != manifest.players[b].team) continue;
+            for (const auto& team : manifest.teams) {
+                if (team.id != manifest.players[a].team || !team.allied) continue;
+                set_alliance(Player{a}, Player{b}, true);
+                if (team.shared_vision) set_shared_vision(Player{a}, Player{b}, true);
+                break;
+            }
+        }
+    }
+
+    if (terrain.is_valid()) set_terrain(&terrain);
+
+    FogMode fog_mode = FogMode::None;
+    if (manifest.fog_of_war == "explored") fog_mode = FogMode::Explored;
+    else if (manifest.fog_of_war == "unexplored") fog_mode = FogMode::Unexplored;
+    m_vision.init(terrain.tiles_x, terrain.tiles_y, terrain.tile_size,
+                  player_count, fog_mode, &terrain);
 }
 
 void Simulation::sync_pathing_blockers() {

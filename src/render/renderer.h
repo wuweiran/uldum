@@ -229,7 +229,7 @@ private:
 
     // Fog classification for a view entity — now a pure membership read off the
     // view (LocalView.visible / .snapshot), NOT a vision query. The view already
-    // carries the answer (project_local_view computed it); the renderer just
+    // carries the answer (Engine::project_local_view computed it); the renderer just
     // reads it. See simulation::FogVis. Thin wrapper kept so the draw sites read
     // `fog_visibility(...)`; is_fog_hidden / is_in_fog_memory delegate to it.
     simulation::FogVis fog_visibility(const simulation::IWorldView& world, u32 id) const;

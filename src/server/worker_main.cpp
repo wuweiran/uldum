@@ -189,7 +189,7 @@ int main(int argc, char* argv[]) {
             uldum::log::error(TAG, "Failed to load map types for '{}'", args.map_path);
             return 1;
         }
-        sim.set_terrain(&map.terrain());
+        sim.init_map_state(map.manifest(), map.terrain());
         uldum::simulation::apply_scene_data(sim, map.mutable_scene());
     }
 
@@ -245,8 +245,7 @@ int main(int argc, char* argv[]) {
             network.host_hud_sync(pkt, mask);
         });
         server.script().set_hud(&hud);
-        network.set_script(&server.script());       // inbound C_NODE_EVENT → Lua
-        network.set_hud_replay_source(&hud);         // join-replay of persistent HUD
+        server.set_hud_replay_source(&hud);
         server.wire_to_network(network);             // effects/items/abilities/EndGame → clients
         // Next LoadScene: capture the target; the main loop drives the barrier.
         server.script().set_scene_switch_fn([&pending_scene](std::string_view scene) {
@@ -261,14 +260,15 @@ int main(int argc, char* argv[]) {
     uldum::simulation::CommandSystem commands;
     commands.init(&server.simulation().world());
     uldum::u32 max_players = static_cast<uldum::u32>(map.manifest().players.size());
-    if (!network.init_host(args.port, max_players, server.simulation(), commands)) {
+    server.set_command_system(commands);
+    if (!network.init_host(args.port, max_players, server)) {
         uldum::log::error(TAG, "Failed to init network on port {}", args.port);
         return 1;
     }
     // Publish the initial preplaced/dynamic boundary captured after load_map
     // (before init_game's main() created any dynamics). Shipped in S_WELCOME so
     // the client's boundary matches — fixes the PLACEMENT DESYNC (host=0).
-    network.set_placement_count(initial_placement_count);
+    server.set_placement_count(initial_placement_count);
 
     // init_game runs the initial scene's main(); wire_server as its pre_main so
     // callbacks are live when main() creates HUD nodes / fires effects. pre_main
@@ -397,29 +397,27 @@ int main(int argc, char* argv[]) {
             uldum::log::info(TAG, "All peers loaded — finishing start");
         }
 
-        // Scene switch (Lua LoadScene). Two-phase host barrier, driven by
-        // GameServer (shared with uldum_dev). Phase 1: drain the pending target
-        // → begin_scene_switch broadcasts + tears down our headless scene state
-        // + stashes it. Phase 2: try_finish_scene_switch closes the barrier once
-        // every peer acked, re-running the scene with wire_server as pre_main.
+        // Scene switch (Lua LoadScene). Phase 1 loads terrain and placements
+        // while clients do the same. Phase 2 resets Lua and runs main() after
+        // every peer acknowledges loading.
         if (!pending_scene.empty() && !network.is_scene_switching()) {
             std::string scene = std::move(pending_scene);
             pending_scene.clear();
             server.begin_scene_switch(network, scene,
                 [&](const std::string& s) {
-                    // Wipe entities + swap terrain so the world is empty across
-                    // the barrier. switch_scene re-wipes idempotently in phase 2.
-                    server.simulation().world().clear_entities();
+                    auto& sim = server.simulation();
+                    sim.world().clear_entities();
                     map.switch_scene_terrain_only(s, assets);
-                    network.reset_local_view();
-                    // Reset the headless HUD model too, or the previous scene's
-                    // Lua-created nodes / text tags linger in the worker's Hud
-                    // and get resurrected on clients by the phase-2 spawn-burst
-                    // replay — even though each client cleared them in teardown.
+                    sim.init_map_state(map.manifest(), map.terrain());
+                    uldum::simulation::apply_scene_data(sim, map.mutable_scene());
+                    server.set_placement_count(sim.world().entities.next_id());
+                    sim.sync_pathing_blockers();
+                    sim.spatial_grid().update(sim.world());
+                    server.clear_replication();
                     hud.reset_scene_state();
                 });
         }
-        server.try_finish_scene_switch(network, map, assets, wire_server);
+        server.try_finish_scene_switch(network, map, wire_server);
 
         // Tick simulation (paused while a scene switch is in flight).
         if (network.is_game_started() && !network.is_paused() &&
@@ -429,7 +427,7 @@ int main(int argc, char* argv[]) {
             while (accumulator >= TICK_DT) {
                 server.tick(TICK_DT);
                 tick_counter++;
-                network.host_broadcast_tick(tick_counter);
+                server.broadcast_tick(network, tick_counter);
                 accumulator -= TICK_DT;
             }
         }

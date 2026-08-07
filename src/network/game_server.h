@@ -1,11 +1,17 @@
 #pragma once
 
+#include "network/protocol.h"
 #include "simulation/simulation.h"
 #include "script/script.h"
+
+#include <span>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace uldum::asset { class AssetManager; }
 namespace uldum::map { class MapManager; }
 namespace uldum::audio { class AudioEngine; }
+namespace uldum::hud { class Hud; }
 
 namespace uldum::network {
 
@@ -31,29 +37,20 @@ public:
                    audio::AudioEngine* audio = nullptr,
                    PreMainHook pre_main_hook = {});
 
-    // Server-authoritative scene switch, shared by host (uldum_dev) and worker
-    // (uldum_worker): wipe + swap terrain, load the new scene's placements,
-    // reset the Lua VM, and re-run main() for `scene_name`. `pre_main` fires
-    // after the VM is re-inited + constants loaded but BEFORE main() runs — the
-    // caller MUST use it to re-install every callback the VM reset cleared
-    // (set_hud / set_script / wire_to_network / set_scene_switch_fn / render
-    // hooks / etc.), exactly as at initial init_game. Returns the new
-    // preplaced/dynamic id boundary (world().entities.next_id()) so the caller
-    // can set_placement_count; UINT32_MAX on failure. Does NOT touch the
-    // network barrier (broadcast / mark_self_loaded / finish) — that stays with
-    // the caller's loop.
-    u32 switch_scene(map::MapManager& map, asset::AssetManager& assets,
-                     std::string_view scene_name, PreMainHook pre_main = {});
+    // Finish a scene switch after terrain and preplaced entities are loaded:
+    // reset the Lua VM and re-run main() for `scene_name`. `pre_main` fires
+    // after the VM is re-inited + constants loaded but before main() runs.
+    bool switch_scene(map::MapManager& map, std::string_view scene_name,
+                      PreMainHook pre_main = {});
 
     // Host scene-switch barrier, shared by uldum_dev and uldum_worker. The
     // network transitions (broadcast, mark_self_loaded, finish) and the
     // finalize-scene bookkeeping live here; the caller injects only the two
     // parts that genuinely differ between host and worker.
     //
-    // `local_teardown` wipes the caller's own scene state after the barrier
-    // opens (host: sim + terrain + renderer/camera/HUD; worker: sim + terrain
-    // + headless HUD model). `pre_main` re-installs the caller's VM callbacks
-    // before the new scene's main() runs (see switch_scene).
+    // `local_teardown` loads terrain and preplaced entities while resetting the
+    // caller's local scene state. `pre_main` re-installs VM callbacks before the
+    // new scene's main() runs.
     using TeardownHook = std::function<void(const std::string& scene_name)>;
 
     // Phase 1: broadcast S_SCENE_SWITCH, run `local_teardown`, stash the target,
@@ -61,12 +58,9 @@ public:
     void begin_scene_switch(NetworkManager& net, std::string_view scene_name,
                             const TeardownHook& local_teardown);
 
-    // Phase 2, poll form: once every peer has acked, re-run the new scene
-    // (switch_scene + set_placement_count) and close the barrier. Safe to call
-    // every frame — self-guards on is_scene_switching + all_peers_loaded + a
-    // stashed target. Returns true only on the frame the switch completes.
+    // Phase 2, poll form: once every peer has acked, reset Lua, run the new
+    // scene's main(), and close the barrier. Safe to call every frame.
     bool try_finish_scene_switch(NetworkManager& net, map::MapManager& map,
-                                 asset::AssetManager& assets,
                                  const PreMainHook& pre_main = {});
 
     // True between begin_scene_switch and try_finish_scene_switch's completion.
@@ -85,12 +79,33 @@ public:
     // send/broadcast halves — never touches a renderer / camera / selection /
     // HUD, so it is safe on a headless worker. The host chains its own
     // local-player apply (play the effect on its renderer, etc.) ON TOP of
-    // these, capturing and calling through. Call AFTER init_game (which installs
-    // the script's own trigger dispatch that item-sync chains onto).
+    // these, capturing and calling through. Call from init_game's pre-main hook,
+    // after ScriptEngine::init installs trigger dispatch and before main() runs.
     // NOTE: HUD sync is NOT here — it must be wired at set_hud time (before
     // init_game runs main()), by whoever owns the Hud. See worker_main /
     // Engine::start_session.
     void wire_to_network(NetworkManager& net);
+    void set_command_system(simulation::CommandSystem& commands) {
+        m_commands = &commands;
+    }
+    void set_hud_replay_source(hud::Hud* hud) { m_hud_replay = hud; }
+    void set_placement_count(u32 count) { m_placement_count = count; }
+    u32 placement_count() const { return m_placement_count; }
+    bool receive_order(simulation::Player player, std::span<const u8> packet);
+    void receive_node_event(simulation::Player player, std::span<const u8> packet);
+    void peer_disconnected(u32 player_id);
+    void player_dropped(u32 player_id);
+    void broadcast_tick(NetworkManager& net, u32 tick);
+    void send_spawn_burst(NetworkManager& net, u32 peer_id,
+                          simulation::Player player);
+    void broadcast_update(NetworkManager& net, u32 entity_id,
+                          std::span<const u8> packet);
+    void broadcast_entity_event(NetworkManager& net, u32 entity_id,
+                                std::span<const u8> packet);
+    void replay_persistent_state(NetworkManager& net, u32 peer_id,
+                                 simulation::Player player);
+    void clear_replication();
+    void clear_replication(simulation::Player player);
 
     // ── Accessors ────────────────────────────────────────────────────────
     simulation::Simulation&       simulation()       { return m_simulation; }
@@ -108,10 +123,23 @@ private:
     // (missing / erroring main).
     bool run_scene_scripts(map::MapManager& map, std::string_view scene_name,
                            const PreMainHook& pre_main);
+    MaterializeData materialize_data(u32 entity_id) const;
+    std::vector<ColdRecord> collect_cold_records(u32 entity_id) const;
+    void send_spawn(NetworkManager& net, u32 peer_id,
+                    simulation::Player player, u32 entity_id, bool born);
+    void send_cold_batch(NetworkManager& net, u32 peer_id, u32 entity_id);
+    void send_inventory_state(NetworkManager& net, u32 peer_id, u32 carrier_id);
+    bool is_visible_to(u32 entity_id, simulation::Player player) const;
 
     simulation::Simulation  m_simulation;
     script::ScriptEngine    m_script;
     audio::AudioEngine*     m_audio = nullptr;   // retained from init_game for switch_scene's VM re-init
+    hud::Hud*               m_hud_replay = nullptr;
+    simulation::CommandSystem* m_commands = nullptr;
+    u32 m_placement_count = 0;
+    std::unordered_map<u32, std::unordered_set<u32>> m_known_by_player;
+    std::unordered_map<u32, u32> m_controlled_unit_by_player;
+    std::unordered_set<u32> m_prev_tick_entities;
 
     // Set in begin_scene_switch (phase 1), consumed in try_finish_scene_switch
     // (phase 2). Non-empty == a scene switch is mid-barrier. Replaces the copies

@@ -1002,7 +1002,7 @@ void Renderer::upload_fog(rhi::CommandList& cmd) {
 }
 
 simulation::FogVis Renderer::fog_visibility(const simulation::IWorldView& world, u32 id) const {
-    // Pure membership read off the view — NO vision query. project_local_view
+    // Pure membership read off the view — NO vision query. Engine::project_local_view
     // already classified this id (LocalView.visible → Live, .snapshot → Memory,
     // neither → Hidden); we just read it. This is the single place the draw
     // paths decide dim / freeze / cull. Do NOT reintroduce a vision query here.

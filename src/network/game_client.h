@@ -1,9 +1,12 @@
 #pragma once
 
+#include "network/protocol.h"
 #include "simulation/simulation.h"
 
+#include <optional>
+
 namespace uldum::asset { class AssetManager; }
-namespace uldum::map   { class MapManager; }
+namespace uldum::simulation { struct LocalView; }
 
 namespace uldum::network {
 
@@ -20,29 +23,46 @@ public:
     // this sim's world, exactly as the host builds into GameServer's.
     bool init_simulation(asset::AssetManager& assets);
 
-    // Post-map-load, non-scripting subset of GameServer::init_game: alliances,
-    // terrain, and fog-of-war vision on the client sim.
-    bool init_game(map::MapManager& map);
-
-    // Re-run the alliances + terrain + vision setup after a scene switch.
-    void reinit_after_scene_switch(map::MapManager& map);
-
     void shutdown();
 
     // Per-frame client derivation — the twin of GameServer::tick(). The client
     // never runs the authoritative rules; this forwards to Simulation::client_tick
     // (timer decay + fog), which is correct at any variable dt (linear /
     // idempotent), so it runs per FRAME, not on the host's fixed TICK_DT step.
-    void tick(f32 dt) { m_simulation.client_tick(dt); }
+    void tick(f32 dt);
+    void set_view(simulation::LocalView& view) { m_view = &view; }
+
+    void apply_spawn(const MaterializeData& data, bool play_birth);
+    void apply_hide(u32 entity_id);
+    void apply_destroy(u32 entity_id);
+    void apply_unit_state(UnitStateData state);
+    void apply_projectile_state(ProjectileStateData state);
+    void apply_attack_start(const AnimEventData& event);
+    std::optional<u32> apply_projectile_dying(u32 entity_id);
+    void apply_cold(ColdData cold);
 
     simulation::Simulation&       simulation()       { return m_simulation; }
     const simulation::Simulation& simulation() const { return m_simulation; }
 
 private:
-    void init_alliances_from_manifest(map::MapManager& map);
-    void init_vision_from_manifest(map::MapManager& map);
+    void spawn_entity(const MaterializeData& data, bool play_birth);
+    void destroy_entity(u32 entity_id);
+    void apply_cold_record(u32 entity_id, const ColdRecord& record);
+    u32 begin_snapshot_tick(u32 tick);
+    void apply_interpolation();
+
+    struct Snapshot {
+        u32 tick = 0;
+        f64 receive_time = 0;
+        std::vector<UnitState> units;
+        std::vector<ProjectileState> projectiles;
+    };
 
     simulation::Simulation m_simulation;
+    simulation::LocalView* m_view = nullptr;
+    Snapshot m_snapshots[2];
+    u32 m_snap_idx = 0;
+    bool m_has_two_snaps = false;
 };
 
 } // namespace uldum::network
