@@ -262,20 +262,6 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
                 }
             }
 
-            // Binding mode: who fills slots with abilities. Auto is the
-            // RTS default (derived from selection); manual is Lua-driven
-            // (action/MOBA-style maps that pick specific abilities).
-            if (auto bm = ab->find("binding_mode"); bm != ab->end() && bm->is_string()) {
-                const std::string s = bm->get<std::string>();
-                if (s == "auto") {
-                    cfg.binding_mode = ActionBarBindingMode::Auto;
-                } else if (s == "manual") {
-                    cfg.binding_mode = ActionBarBindingMode::Manual;
-                } else {
-                    log::warn(TAG, "action_bar: unknown binding_mode '{}', using auto", s);
-                }
-            }
-
             if (auto sp = ab->find("style_params"); sp != ab->end() && sp->is_object()) {
                 if (auto v = sp->find("bg");                  v != sp->end()) cfg.style.bg                  = parse_color(*v);
                 if (auto v = sp->find("cooldown_overlay");    v != sp->end()) cfg.style.cooldown_overlay    = parse_color(*v);

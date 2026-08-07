@@ -152,17 +152,6 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
         hud.display_message(std::move(loc), duration);
         return true;
     }
-    case network::MsgType::S_HUD_ACTION_BAR_SET_SLOT: {
-        network::ByteReader r(data);
-        r.read_u8();
-        u32 slot = r.read_u32();
-        std::string ability_id = r.read_string();
-        // Empty ability_id = clear. action_bar_set_slot re-calls emit_sync, but
-        // the client's sync_fn is null so there's no echo loop.
-        if (ability_id.empty()) hud.action_bar_clear_slot(slot);
-        else                    hud.action_bar_set_slot(slot, ability_id);
-        return true;
-    }
     default:
         return false;
     }

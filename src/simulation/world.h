@@ -187,12 +187,15 @@ struct World {
     // clients preserve item-only UI behavior and non-stackable provenance.
     using AbilityAddedCallback =
         std::function<void(Unit unit, std::string_view ability_id, u32 level,
-                           const AbilitySource& source)>;
+                           const AbilitySource& source, u32 action_bar_slot)>;
     using AbilityRemovedCallback =
         std::function<void(Unit unit, std::string_view ability_id,
                            const AbilitySource& source, bool all_instances)>;
-    AbilityAddedCallback   on_ability_added;
-    AbilityRemovedCallback on_ability_removed;
+    using AbilityActionBarSlotChangedCallback =
+        std::function<void(Unit unit, std::string_view ability_id, u32 slot)>;
+    AbilityAddedCallback                on_ability_added;
+    AbilityRemovedCallback              on_ability_removed;
+    AbilityActionBarSlotChangedCallback on_ability_action_bar_slot_changed;
 
     // Fired when an ability's cooldown STARTS (a cast resolved and began its
     // cooldown). The host mirrors this to clients so the action-bar / item slot
@@ -389,6 +392,11 @@ bool     apply_passive_ability(World& world, const AbilityRegistry& reg, Unit ta
 bool     has_ability(const World& world, Unit unit, std::string_view ability_id);
 u32      get_ability_stack_count(const World& world, Unit unit, std::string_view ability_id);
 u32      get_ability_level(const World& world, Unit unit, std::string_view ability_id);
+bool     set_unit_ability_action_bar_slot(World& world, Unit unit,
+                                          std::string_view ability_id, u32 slot);
+u32      get_unit_ability_action_bar_slot(const World& world, Unit unit,
+                                          std::string_view ability_id);
+bool     unit_clear_action_bar_slot(World& world, Unit unit, u32 slot);
 // Change the level of the first matching ability instance. Re-populates
 // active modifiers / flags from the new level (with flag refcount
 // bookkeeping) and re-runs `recalculate_modifiers`. Returns false when

@@ -271,9 +271,6 @@ struct Hud::Impl {
     };
     TooltipState tooltip{};
 
-    // Rising-edge tracking for hidden-ability hotkeys.
-    std::unordered_map<std::string, bool> hidden_hotkey_prev;
-
     // Box-select marquee — per-map style, authored in hud.json.
     Hud::MarqueeStyle marquee_style{};
 

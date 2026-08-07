@@ -293,7 +293,6 @@ void Hud::reset_scene_state() {
 
     // Edge-tracking for ability hotkeys — stale entries would mis-fire
     // on the new scene's first frame.
-    s.hidden_hotkey_prev.clear();
 
     // Lua-created tree instances are tied to the just-cleared node tree.
     s.instantiated_trees.clear();
@@ -368,7 +367,6 @@ void Hud::reset_session_state() {
     // Edge-tracking for hidden-ability hotkeys (rising-edge map keyed
     // by ability id). Stale entries from session A would mis-fire
     // (or fail to fire) on session B's first frame.
-    s.hidden_hotkey_prev.clear();
 
     // Pointer state — fresh session, no in-progress press.
     s.pointer_x = 0;
@@ -576,18 +574,6 @@ void Hud::emit_state_to(const ReplaySend& send) {
                  t.speed, t.spread, t.scale_end,
                  t.lifespan, t.fade),
              t.players_mask);
-    }
-
-    // Manual-mode action-bar slot bindings (ActionBarSetSlot, host/worker Lua
-    // only). Replay the bound slots so a late joiner's manual bar isn't empty.
-    // Global config → UINT32_MAX mask, same as the live emit_sync.
-    {
-        const auto& slots = s.action_bar_cfg.slots;
-        for (u32 i = 0; i < slots.size(); ++i) {
-            if (slots[i].bound_ability.empty()) continue;
-            send(uldum::network::build_hud_action_bar_set_slot(i, slots[i].bound_ability),
-                 UINT32_MAX);
-        }
     }
 }
 
@@ -930,46 +916,7 @@ void Hud::destroy_text_tag(simulation::TextTag id) {
 void Hud::set_action_bar_config(const ActionBarConfig& cfg) {
     if (!m_impl) return;
     m_impl->action_bar_cfg = cfg;
-    // Reset transient runtime state. Visibility defaults to "shown" so a
-    // declared bar renders immediately once a unit is selected — nothing
-    // else to prime.
     m_impl->action_bar_rt = ActionBarRuntime{};
-}
-
-void Hud::action_bar_set_visible(bool visible) {
-    if (!m_impl) return;
-    m_impl->action_bar_rt.visible = visible;
-}
-
-void Hud::action_bar_set_slot_visible(u32 slot, bool visible) {
-    if (!m_impl) return;
-    auto& slots = m_impl->action_bar_cfg.slots;
-    if (slot >= slots.size()) return;
-    slots[slot].visible = visible;
-}
-
-void Hud::action_bar_set_slot(u32 slot, std::string_view ability_id) {
-    if (!m_impl) return;
-    auto& slots = m_impl->action_bar_cfg.slots;
-    if (slot >= slots.size()) return;
-    slots[slot].bound_ability.assign(ability_id);
-    // Sync to ALL clients (global HUD config — the action bar comes from
-    // hud.json, shared by every player; a client whose selected unit lacks the
-    // bound ability just renders the slot empty). Host-only; clients no-op
-    // (sync_fn null). Without this a manual-mode bar is empty on every client.
-    emit_sync(*m_impl,
-              uldum::network::build_hud_action_bar_set_slot(slot, ability_id),
-              UINT32_MAX);
-}
-
-void Hud::action_bar_clear_slot(u32 slot) {
-    if (!m_impl) return;
-    auto& slots = m_impl->action_bar_cfg.slots;
-    if (slot >= slots.size()) return;
-    slots[slot].bound_ability.clear();
-    emit_sync(*m_impl,
-              uldum::network::build_hud_action_bar_set_slot(slot, std::string_view{}),
-              UINT32_MAX);
 }
 
 void Hud::set_action_bar_cast_fn(ActionBarCastFn fn) {
@@ -2565,28 +2512,22 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
     }
 
     // A key letter fires at most one ability per frame. Action-bar slots
-    // take priority over hidden abilities. Command-bar hotkeys are handled
+    // take priority over off-layout slotted abilities. Command-bar hotkeys are handled
     // by the input preset so modifiers such as Shift reach the order.
     std::unordered_set<std::string> claimed;
 
     // Action bar. Slots iterate in declaration order; lower index
-    // wins on conflict, per the authoring contract. While we're here,
-    // collect the set of ability ids that *did* resolve to a slot —
-    // stage 3 uses it to decide which unit abilities are "not on any
-    // slot" and therefore free to dispatch via their def->hotkey.
-    std::unordered_set<std::string> slotted_abilities;
+    // wins on conflicting hotkeys.
     {
         auto& cfg = s.action_bar_cfg;
-        if (cfg.enabled && s.action_bar_rt.visible && s.world_ctx && s.action_bar_cast_fn) {
+        if (cfg.enabled && s.world_ctx && s.action_bar_cast_fn) {
             for (u32 i = 0; i < cfg.slots.size(); ++i) {
                 auto& slot = cfg.slots[i];
 
                 const simulation::AbilityDef* def = nullptr;
                 const simulation::AbilityInstance* inst =
                     resolve_slot_ability(i, cfg, *s.world_ctx, def);
-                if (inst) slotted_abilities.insert(inst->ability_id);
 
-                if (!slot.visible) continue;
                 // Which key triggers this slot depends on the keymap
                 // mode: Positional → slot.hotkey (Q/W/E/R from layout);
                 // Ability → def->hotkey (the letter authored on the
@@ -2623,54 +2564,12 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
         }
     }
 
-    // 3. Hidden abilities on the selected unit. "Hidden" here means
-    // either explicitly `hidden: true` in the type def OR simply not
-    // resolved into any action_bar slot this frame (e.g. slot count
-    // too small in positional mode, no slot matches its letter in
-    // ability mode, or Lua didn't bind it in manual mode). Both cases
-    // fall out naturally from the slotted_abilities set above — any
-    // non-slotted ability is fair game to dispatch via its own hotkey.
-    if (s.world_ctx && s.world_ctx->world && s.world_ctx->abilities
-        && s.world_ctx->selection && s.action_bar_cast_fn) {
-        const auto& sel = s.world_ctx->selection->selected();
-        if (!sel.empty()) {
-            const auto* aset = s.world_ctx->world->ability_set(sel.front().id);
-            if (aset) {
-                u32 unit_id = sel.front().id;
-                for (const auto& inst : aset->abilities) {
-                    if (slotted_abilities.count(inst.ability_id)) continue;
-                    if (inst.item_only()) continue;
-
-                    const auto* def = s.world_ctx->abilities->get(inst.ability_id);
-                    if (!def || def->hotkey.empty()) continue;
-                    if (!is_castable_form(def->form)) continue;  // passive/aura aren't triggerable
-
-                    bool down   = input::InputBindings::resolve_key(def->hotkey, input);
-                    bool& prev  = s.hidden_hotkey_prev[def->hotkey];
-                    bool rising = down && !prev;
-                    prev = down;
-                    if (!rising) continue;
-                    if (claimed.count(def->hotkey)) continue;
-                    if (auto rej = slot_cast_reject(*s.world_ctx, unit_id, inst, *def)) {
-                        emit_order_error(rej->base, rej->specifier, rej->args);
-                        continue;
-                    }
-
-                    claimed.insert(def->hotkey);
-                    s.action_bar_cast_fn(inst.ability_id);
-                }
-            }
-        }
-    }
 }
 
 // Return the slot index under the given pointer coords, or -1 if none.
-// Only enabled, visible slots participate — invisible slots (Lua
-// ActionBarSetSlotVisible(false)) and a disabled bar itself are skipped
-// so clicks fall through to the world underneath.
 static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     const auto& cfg = s.action_bar_cfg;
-    if (!cfg.enabled || !s.action_bar_rt.visible) return -1;
+    if (!cfg.enabled) return -1;
     // While the build sub-panel is open the action bar is DISABLED
     // (command-card behavior): no hover / press / click. The build_bar takes
     // over input; right-click / Esc / selection-change close it and restore
@@ -2678,7 +2577,6 @@ static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     if (s.build_panel_open) return -1;
     for (u32 i = 0; i < cfg.slots.size(); ++i) {
         const auto& slot = cfg.slots[i];
-        if (!slot.visible) continue;
         const Rect& r = slot.rect;
         if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
             return static_cast<i32>(i);
@@ -2687,25 +2585,6 @@ static i32 action_bar_hit_test(const Hud::Impl& s, f32 x, f32 y) {
     return -1;
 }
 
-// Pick the ability the given slot should display, based on the local
-// player's selection, the bar's binding mode, and (in Auto mode) the
-// user's hotkey-mode preference.
-//
-// Manual mode: the slot has an `bound_ability` id set by Lua. Return
-// the instance of that ability on the selected unit if it owns it,
-// else nullptr — the slot renders as "ability not available" (empty).
-//
-// Auto mode: slot assignment is ALWAYS positional — the slot's index
-// selects the Nth non-hidden ability in the unit's registration order.
-// `hotkey_mode` does NOT affect *which* ability fills *which* slot —
-// it only governs which keyboard key triggers the slot and which letter
-// gets drawn in the badge. (Earlier code path matched by hotkey letter
-// here, which meant changing an ability's `hotkey` in JSON re-shuffled
-// or hid abilities entirely. That was a bug; slot binding is decoupled
-// from the keymap-mode setting.)
-//
-// Returns nullptr when there's no selection, no ability fills that
-// slot, or the registry lookup fails.
 static const simulation::AbilityInstance*
 resolve_slot_ability(u32 slot_index,
                      const ActionBarConfig& cfg,
@@ -2719,37 +2598,12 @@ resolve_slot_ability(u32 slot_index,
     const auto* aset = ctx.world->ability_set(sel.front().id);
     if (!aset) return nullptr;
 
-    const auto& slot = cfg.slots[slot_index];
-
-    if (cfg.binding_mode == ActionBarBindingMode::Manual) {
-        if (slot.bound_ability.empty()) return nullptr;
-        for (const auto& inst : aset->abilities) {
-            if (inst.ability_id == slot.bound_ability) {
-                const auto* def = ctx.abilities->get(inst.ability_id);
-                if (!def) return nullptr;
-                out_def = def;
-                return &inst;
-            }
-        }
-        return nullptr;
-    }
-
-    // Auto mode (regardless of hotkey_mode): Nth non-hidden ability in
-    // registration order. The keymap setting only affects which key
-    // triggers each slot and which letter the badge shows — see the
-    // hotkey dispatch loop and the slot draw site for those branches.
-    // Passives / auras count toward slot positions (they show their
-    // icon command-card style, just don't fire on click); only
-    // explicitly hidden abilities are skipped.
-    u32 nth = 0;
     for (const auto& inst : aset->abilities) {
+        if (inst.action_bar_slot != slot_index) continue;
         const auto* def = ctx.abilities->get(inst.ability_id);
-        if (!def || def->hidden || inst.item_only()) continue;
-        if (nth == slot_index) {
-            out_def = def;
-            return &inst;
-        }
-        ++nth;
+        if (!def) return nullptr;
+        out_def = def;
+        return &inst;
     }
     return nullptr;
 }

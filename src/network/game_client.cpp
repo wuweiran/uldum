@@ -356,6 +356,7 @@ void GameClient::apply_cold_record(u32 entity_id, const ColdRecord& rec) {
         }
 
         if (instance) {
+            instance->action_bar_slot = rec.uint_value2;
             if (source_kind == simulation::AbilitySourceKind::Item) {
                 instance->sources.push_back(source);
             } else {
@@ -375,6 +376,7 @@ void GameClient::apply_cold_record(u32 entity_id, const ColdRecord& rec) {
             created.ability_id = rec.key;
             created.level = rec.uint_value;
             created.sources.push_back(source);
+            created.action_bar_slot = rec.uint_value2;
             if (def) {
                 auto& lvl = def->level_data(rec.uint_value);
                 created.active_modifiers = lvl.modifiers;
@@ -428,6 +430,10 @@ void GameClient::apply_cold_record(u32 entity_id, const ColdRecord& rec) {
         }
         break;
     }
+    case ColdKind::AbilityActionBarSlot:
+        simulation::set_unit_ability_action_bar_slot(
+            world, simulation::Unit{entity_id}, rec.key, rec.uint_value);
+        break;
     case ColdKind::Owner: {
         auto* owner = world.owners.get(entity_id);
         if (owner) owner->id = rec.uint_value;

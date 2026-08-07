@@ -321,6 +321,8 @@ inline AbilitySourceKind ability_source_kind(const AbilitySource& source) {
     return static_cast<AbilitySourceKind>(source.value.index());
 }
 
+constexpr u32 MAX_ABILITY_SLOTS = 16;
+
 struct AbilityInstance {
     std::string ability_id;
     u32         level              = 1;
@@ -328,6 +330,7 @@ struct AbilityInstance {
     bool        auto_cast          = false;
     std::vector<AbilitySource> sources;
     f32         tick_timer         = 0;
+    u32         action_bar_slot    = UINT32_MAX;
 
     bool item_only() const {
         return !sources.empty() &&

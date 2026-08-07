@@ -317,20 +317,6 @@ public:
     // runtime state so stale state from a previous map can't leak.
     void set_action_bar_config(const ActionBarConfig& cfg);
 
-    // Visibility — bar-level (hides the whole composite) and per-slot
-    // (hides a single slot while leaving others visible). No-op when the
-    // config is disabled or the slot index is out of range.
-    void action_bar_set_visible(bool visible);
-    void action_bar_set_slot_visible(u32 slot, bool visible);
-
-    // Manual slot → ability binding (takes effect when the bar's
-    // `binding_mode == Manual`). No-op on out-of-range slot index.
-    // Passive abilities can be bound but shouldn't be (convention) —
-    // nothing fires when the slot is triggered. Clearing removes the
-    // binding so the slot renders empty again.
-    void action_bar_set_slot(u32 slot, std::string_view ability_id);
-    void action_bar_clear_slot(u32 slot);
-
     // Hotkey mode — driven by the global `input.action_bar_hotkey_mode`
     // setting. App subscribes to the key on init and pushes the value
     // here; resolve + keyboard dispatch consult it every frame so
@@ -534,10 +520,8 @@ public:
     void set_cast_indicator_config(const CastIndicatorConfig& cfg);
     const CastIndicatorStyle& cast_indicator_style() const;
 
-    // Keyboard hotkey dispatch for every HUD-owned source — command_bar
-    // slots, action_bar slots, and hidden abilities on the selected
-    // unit. Walks them in that priority order and claims keys as it
-    // goes, so if two sources share a letter only the highest-priority
+    // Keyboard hotkey dispatch for the action bar. Slots claim keys in
+    // declaration order, so if two slots share a letter only the first
     // one fires. Call once per frame (alongside handle_pointer) before
     // the input preset's update so queued actions are consumed in the
     // same frame.

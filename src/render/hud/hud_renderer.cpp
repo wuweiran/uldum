@@ -685,30 +685,12 @@ resolve_slot_ability(u32 slot_index,
     const auto* aset = ctx.world->ability_set(sel.front().id);
     if (!aset) return nullptr;
 
-    const auto& slot = cfg.slots[slot_index];
-
-    if (cfg.binding_mode == ActionBarBindingMode::Manual) {
-        if (slot.bound_ability.empty()) return nullptr;
-        for (const auto& inst : aset->abilities) {
-            if (inst.ability_id == slot.bound_ability) {
-                const auto* def = ctx.abilities->get(inst.ability_id);
-                if (!def) return nullptr;
-                out_def = def;
-                return &inst;
-            }
-        }
-        return nullptr;
-    }
-
-    u32 nth = 0;
     for (const auto& inst : aset->abilities) {
+        if (inst.action_bar_slot != slot_index) continue;
         const auto* def = ctx.abilities->get(inst.ability_id);
-        if (!def || def->hidden || inst.item_only()) continue;
-        if (nth == slot_index) {
-            out_def = def;
-            return &inst;
-        }
-        ++nth;
+        if (!def) return nullptr;
+        out_def = def;
+        return &inst;
     }
     return nullptr;
 }
@@ -935,7 +917,6 @@ static void draw_action_bar_classic_rts(HudRenderer::Impl& r, Hud::Impl& s) {
 
     for (u32 i = 0; i < cfg.slots.size(); ++i) {
         const auto& slot = cfg.slots[i];
-        if (!slot.visible) continue;
 
         const simulation::AbilityDef* def = nullptr;
         const simulation::AbilityInstance* inst = nullptr;
@@ -1056,7 +1037,6 @@ static void draw_action_bar_moba(HudRenderer::Impl& r, Hud::Impl& s) {
 
     for (u32 i = 0; i < cfg.slots.size(); ++i) {
         const auto& slot = cfg.slots[i];
-        if (!slot.visible) continue;
 
         const simulation::AbilityDef* def = nullptr;
         const simulation::AbilityInstance* inst = nullptr;
@@ -1210,7 +1190,6 @@ static void draw_action_bar_cancel_zone(HudRenderer::Impl& r, Hud::Impl& s) {
 static void draw_action_bar(HudRenderer::Impl& r, Hud::Impl& s) {
     const auto& cfg = s.action_bar_cfg;
     if (!cfg.enabled) return;
-    if (!s.action_bar_rt.visible) return;
 
     if ((cfg.style.bg.rgba >> 24) != 0) {
         emit_rect(r, cfg.rect, cfg.style.bg);

@@ -88,13 +88,6 @@ function main()
     SetControlledUnit(paladin)
     Log("[Action] Hero designated — paladin")
 
-    -- Manual slot binding: the action bar uses `binding_mode: manual`
-    -- so slots map to abilities the author picks explicitly. Only
-    -- non-passive abilities make sense here (passive abilities bound
-    -- to a slot draw the icon but ignore clicks/hotkeys).
-    ActionBarSetSlot(1, "holy_light")
-    ActionBarSetSlot(2, "consecration")
-
     -- One rune_book seeded next to the hero so the pickup path is testable
     -- without waiting on a creep drop. Creeps drop more via register_rune_system.
     local hero_x = GetUnitX(paladin)

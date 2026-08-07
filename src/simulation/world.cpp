@@ -1244,6 +1244,18 @@ static f32 default_ability_duration(const AbilityDef* def, u32 level) {
     return def ? def->level_data(level).duration : -1.0f;
 }
 
+static u32 next_action_bar_slot(const AbilitySet& abilities) {
+    for (u32 slot = 0; slot < MAX_ABILITY_SLOTS; ++slot) {
+        bool occupied = std::ranges::any_of(
+            abilities.abilities,
+            [slot](const AbilityInstance& ability) {
+                return ability.action_bar_slot == slot;
+            });
+        if (!occupied) return slot;
+    }
+    return UINT32_MAX;
+}
+
 static bool same_ability_source(const AbilitySource& source,
                                 const AbilitySource& candidate) {
     if (source.value.index() != candidate.value.index()) return false;
@@ -1278,7 +1290,8 @@ bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
 
             instance.sources.push_back(source);
             if (world.on_ability_added) {
-                world.on_ability_added(unit, ability_id, level, source);
+                world.on_ability_added(
+                    unit, ability_id, level, source, instance.action_bar_slot);
             }
             return true;
         }
@@ -1288,6 +1301,9 @@ bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
     instance.ability_id = std::string(ability_id);
     instance.level = level;
     instance.sources.push_back(source);
+    if (def && !def->hidden && !is_non_null_handle(granting_item)) {
+        instance.action_bar_slot = next_action_bar_slot(*aset);
+    }
     populate_instance_from_def(instance, def, level);
 
     auto flags_snapshot = instance.active_flags;
@@ -1296,7 +1312,9 @@ bool add_ability(World& world, const AbilityRegistry& reg, Unit unit,
     flag_refcount_delta(world, unit.id, flags_snapshot, +1);
     recalculate_modifiers(world, unit.id);
     if (world.on_ability_added) {
-        world.on_ability_added(unit, ability_id, level, source);
+        const auto& added = aset->abilities.back();
+        world.on_ability_added(
+            unit, ability_id, level, source, added.action_bar_slot);
     }
 
     log::trace(TAG, "AddAbility: unit {} + '{}' (level {})", unit.id, ability_id, level);
@@ -1423,7 +1441,8 @@ bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target
 
             instance.sources.push_back(source);
             if (world.on_ability_added) {
-                world.on_ability_added(target, ability_id, 1, source);
+                world.on_ability_added(
+                    target, ability_id, 1, source, instance.action_bar_slot);
             }
             return true;
         }
@@ -1433,6 +1452,9 @@ bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target
     instance.ability_id = std::string(ability_id);
     instance.level = 1;
     instance.sources.push_back(source);
+    if (def && !def->hidden) {
+        instance.action_bar_slot = next_action_bar_slot(*aset);
+    }
     populate_instance_from_def(instance, def, 1);
 
     auto flags_snapshot = instance.active_flags;
@@ -1441,7 +1463,9 @@ bool apply_passive_ability(World& world, const AbilityRegistry& reg, Unit target
     flag_refcount_delta(world, target.id, flags_snapshot, +1);
     recalculate_modifiers(world, target.id);
     if (world.on_ability_added) {
-        world.on_ability_added(target, ability_id, 1, source);
+        const auto& added = aset->abilities.back();
+        world.on_ability_added(
+            target, ability_id, 1, source, added.action_bar_slot);
     }
 
     return true;
@@ -1476,6 +1500,51 @@ u32 get_ability_level(const World& world, Unit unit, std::string_view ability_id
         if (a.ability_id == ability_id) return a.level;
     }
     return 0;
+}
+
+bool set_unit_ability_action_bar_slot(World& world, Unit unit,
+                                      std::string_view ability_id, u32 slot) {
+    if (!world.contains(unit) ||
+        (slot != UINT32_MAX && slot >= MAX_ABILITY_SLOTS)) return false;
+    auto* abilities = world.ability_sets.get(unit.id);
+    if (!abilities) return false;
+    for (auto& ability : abilities->abilities) {
+        if (ability.ability_id != ability_id) continue;
+        ability.action_bar_slot = slot;
+        if (world.on_ability_action_bar_slot_changed) {
+            world.on_ability_action_bar_slot_changed(unit, ability_id, slot);
+        }
+        return true;
+    }
+    return false;
+}
+
+u32 get_unit_ability_action_bar_slot(const World& world, Unit unit,
+                                     std::string_view ability_id) {
+    if (!world.contains(unit)) return UINT32_MAX;
+    const auto* abilities = world.ability_sets.get(unit.id);
+    if (!abilities) return UINT32_MAX;
+    for (const auto& ability : abilities->abilities) {
+        if (ability.ability_id == ability_id) return ability.action_bar_slot;
+    }
+    return UINT32_MAX;
+}
+
+bool unit_clear_action_bar_slot(World& world, Unit unit, u32 slot) {
+    if (!world.contains(unit) || slot >= MAX_ABILITY_SLOTS) return false;
+    auto* abilities = world.ability_sets.get(unit.id);
+    if (!abilities) return false;
+    bool changed = false;
+    for (auto& ability : abilities->abilities) {
+        if (ability.action_bar_slot != slot) continue;
+        ability.action_bar_slot = UINT32_MAX;
+        changed = true;
+        if (world.on_ability_action_bar_slot_changed) {
+            world.on_ability_action_bar_slot_changed(
+                unit, ability.ability_id, UINT32_MAX);
+        }
+    }
+    return changed;
 }
 
 // Map a single-bit flag value (e.g. status::Invisible) to its refcount

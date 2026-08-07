@@ -68,7 +68,7 @@ Criterion: *"is this widget's behavior the same across every game that uses this
 ### Style vs content — static vs dynamic
 
 - **Style** (colors, icons, sizes, fonts, slot positions) is **static**. Declared in `hud.json`, frozen at map load. Lua cannot change style at runtime — not for composites, not for custom nodes.
-- **Content** (text, bar fill fraction, bound ability id, actor reference, visibility) is **dynamic**. Lua mutates it freely via node handles.
+- **Content** (text, bar fill fraction, actor reference, visibility) is **dynamic**. Lua mutates it freely via node handles.
 
 This lets the engine bake style into GPU resources up-front (descriptor sets for icon textures, pre-sized atlases) and keeps the hot per-frame path to content updates only.
 
@@ -112,7 +112,7 @@ Engine composites are singletons. All have a Lua content API; none accept style 
 
 | Composite | Role | Content API |
 |---|---|---|
-| `action_bar` | ability-button slot group. Each slot shows icon / cooldown ring / hotkey badge / disabled overlay for its bound ability. Click / hotkey issues the ability. | `ActionBarSetActor`, `ActionBarSetSlot`, ... |
+| `action_bar` | ability-button slot group. Each slot shows icon / cooldown ring / hotkey badge / disabled overlay for the selected unit ability assigned to it. Click / hotkey issues the ability. | unit ability slot APIs |
 | `command_bar` | engine-command slot group (Attack, Move, Stop, Hold, Patrol). Click / hotkey issues the order. | no Lua binding — purely map-authored |
 | `minimap` | Scaled terrain + fog + entity dots + click-to-pan. | `MinimapSetVisible` |
 | `joystick` | Virtual analog stick (mobile only; desktop skips it at load). | reads output vector; no Lua binding needed |
@@ -130,10 +130,11 @@ Deferred composites (may ship later; v1 doesn't include them):
 
 Slots inside `action_bar` (and any future slot-bearing composite) are declared as an array of full slot specs in `hud.json` — each with its own `(x, y, w, h)` and `style`. The composite gives no opinion about grid-vs-row layout; map authors arrange slots however they want. `ability_button` is **not** a standalone node type — slot entries only exist inside composites.
 
-Behaviors the engine does **not** own (maps implement in Lua if they want them):
+Each unit ability owns its action-bar slot. Selection-following is automatic: the action bar reads the lead selected unit every frame. Maps can change a unit's layout with `SetUnitAbilityActionBarSlot`, `UnitHideAbility`, and `UnitClearActionBarSlot`.
 
-- Selection-following: when selection changes, re-bind `action_bar` slots to the new unit's abilities. → `on_select` event + `SetAbilitySlot`.
-- Subgroup paging: cycle through subgroups of a mixed selection. → Lua tracks the active subgroup and re-binds.
+Behaviors the engine does **not** own:
+
+- Subgroup paging for mixed selections.
 - Multi-bar hotkey pages (WoW-style): one `action_bar` per map; maps wanting more use atoms + Lua.
 
 **Observer events on composites are deferred.** Atoms (`button`) emit events for Lua to subscribe via the trigger system. Composite observer events (e.g., "a slot was clicked", "minimap was pinged") aren't needed for v1 — hardcoded behavior covers the common case. We can add observer events per-composite when a real use case appears; the trigger system is already the right shape.
@@ -193,7 +194,7 @@ This applies to every visual style field across every atom and composite. A few 
 HUD Lua follows the same flat global-function naming as the rest of the engine's scripting API. No OOP-style `Object:Method()` — every function is a global with a verb-noun-ish name, first argument is the subject when relevant.
 
 - Node handles are values returned by `GetNode` / `CreateNode` / composite accessors; pass them as arguments.
-- Composites are singletons; their APIs are named-prefixed (`ActionBarSetSlot`, `MinimapSetVisible`).
+- Composites are singletons; their APIs are named-prefixed (for example, `MinimapSetVisible`).
 - Atoms' content setters take a node handle (`SetLabelText(node, text)`).
 
 ```lua
@@ -227,12 +228,12 @@ MinimapSetVisible(true)
 
 ```
 
-Hardcoded action_bar behavior (no Lua wiring required):
+Hardcoded action_bar behavior:
 
-- Each slot shows its bound ability's icon, cooldown radial, hotkey badge, disabled overlay (out-of-range, no mana, no target, etc.).
-- Click / hotkey press → issues the ability on the bound actor through CommandSystem.
-- Empty slot binding → slot renders empty.
-- No bound actor → entire bar renders at `disabled_tint`.
+- Each slot shows the lead selected unit ability assigned to it: icon, cooldown radial, hotkey badge, and disabled overlay.
+- Click / hotkey press issues that ability through CommandSystem.
+- Slots with no assigned ability render empty.
+- Empty selection produces an empty bar.
 
 ### `joystick`
 

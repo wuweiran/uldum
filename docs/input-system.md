@@ -62,30 +62,29 @@ UI (conventionally the bottom row of the command card).
 
 ### Ability Slots
 
-Everything else: active spells, passive auras, channels. These
-go into numbered **slots** (0 through `MAX_ABILITY_SLOTS - 1`, currently 16).
+Everything else: active spells, passive auras, channels. These go into 16
+numbered slots (1–16 on the Lua surface).
 
 Initial slot assignment comes from the `"abilities"` list order in the unit
 type definition. Lua scripts can modify slots at runtime:
 
 ```lua
-AddAbility(unit, "berserk")         -- auto-assigns to first empty slot
-RemoveAbility(unit, "berserk")      -- removes ability, clears its slot
-SetAbilitySlot(unit, "berserk", 3)  -- move existing ability to slot 3
-ClearSlot(unit, 3)                  -- unslot (ability stays on unit, not in UI)
-UnslotAbility(unit, "berserk")      -- same but by ability ID
-SwapSlots(unit, 2, 4)               -- swap two slots (either can be empty)
-GetAbilitySlot(unit, "berserk")     -- returns slot index, or -1
-GetSlotAbility(unit, 3)             -- returns ability ID, or nil
+AddAbility(unit, "berserk")                         -- first empty slot
+RemoveAbility(unit, "berserk")                      -- removes the ability
+SetUnitAbilityActionBarSlot(unit, "berserk", 3)     -- slots are 1-based
+GetUnitAbilityActionBarSlot(unit, "berserk")        -- 0 when hidden/not found
+UnitHideAbility(unit, "berserk")                    -- ability stays functional
+UnitClearActionBarSlot(unit, 3)                      -- hide everything in slot 3
 ```
 
 **Slot rules:**
-- Slots are a fixed-size array (16 entries). Empty slots are allowed.
-- `RemoveAbility` clears the slot — no shifting. Other slots keep their indices.
+- There are 16 slots. Empty slots are allowed.
+- `RemoveAbility` does not shift other abilities.
 - `AddAbility` auto-assigns to the first empty slot if the ability is not hidden.
-- If all slots are full, the ability is still added (functional) but not slotted.
-- `hidden` abilities (see ability-system.md) bypass slot assignment entirely.
-- Passive abilities can be slotted — they show in the UI with icon/tooltip.
+- If all slots are full, the ability is still added but hidden.
+- `hidden` abilities bypass automatic slot assignment.
+- Passive abilities can be slotted and shown.
+- Slot collisions are unspecified authoring behavior.
 
 ## 3. Game Commands
 
@@ -387,18 +386,10 @@ selection state are completely unaware of networking.
 
 ## 9. UI System Interaction
 
-The HUD consumes the slot system — it never drives input. Both presets use the
-same `action_bar` composite (see [ui.md](ui.md)): a slot group where each slot
-shows icon / cooldown ring / hotkey badge / disabled overlay for its bound
-ability. Click or hotkey fires a Lua callback that issues the command.
-
-The differences between presets are in **how slots get bound**, not in which
-composite is drawn:
-
-- **RTS**: Lua hooks `on_select` and rebinds `action_bar` slots to the primary
-  selected unit's slot array. Empty selection → slots show empty.
-- **Action**: Lua binds `action_bar` slots once from the hero's abilities; the
-  binding stays until Lua updates it (level up, ability swap).
+Both presets use the same `action_bar` composite (see [ui.md](ui.md)). Each
+ability instance stores its own slot on its unit. The bar reads the lead selected
+unit and resolves its abilities into the map-authored slot layout. Empty
+selection produces an empty bar.
 
 Input presets and HUD composites are independent readers of the same underlying
 data — commands list, ability slots, ability definitions. The HUD never bypasses

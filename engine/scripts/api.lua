@@ -592,6 +592,31 @@ function ApplyPassiveAbility(target, ability_id, source, duration) end
 ---@return boolean
 function HasAbility(unit, ability_id) end
 
+--- Assign an ability to a unit's action-bar slot. Slots are 1-based.
+---@param unit unit
+---@param ability_id string
+---@param slot number
+---@return boolean
+function SetUnitAbilityActionBarSlot(unit, ability_id, slot) end
+
+--- Return the ability's 1-based action-bar slot, or 0 when hidden/not found.
+---@param unit unit
+---@param ability_id string
+---@return number
+function GetUnitAbilityActionBarSlot(unit, ability_id) end
+
+--- Remove an ability from the unit's action bar without disabling it.
+---@param unit unit
+---@param ability_id string
+---@return boolean
+function UnitHideAbility(unit, ability_id) end
+
+--- Hide every ability assigned to this 1-based slot on the unit.
+---@param unit unit
+---@param slot number
+---@return boolean
+function UnitClearActionBarSlot(unit, slot) end
+
 --------------------------------------------------------------------------------
 --- Projectiles (agents — handles, not widgets)
 --------------------------------------------------------------------------------
@@ -1493,31 +1518,6 @@ function TriggerRegisterNodeEvent(trig, node, event_name) end
 --------------------------------------------------------------------------------
 -- HUD: composites
 --------------------------------------------------------------------------------
--- Composites are engine-authored node groups whose layout comes from
--- hud.json. These calls only toggle visibility / bindings; styling is
--- not script-driven.
-
---- Show / hide the action_bar composite (whole bar).
----@param visible boolean
-function ActionBarSetVisible(visible) end
-
---- Show / hide a single action_bar slot. Slot indices are 1-based.
----@param slot number
----@param visible boolean
-function ActionBarSetSlotVisible(slot, visible) end
-
---- Bind a specific ability to a slot (action_bar's `binding_mode` must
---- be "manual" for this to take effect). Passive abilities can be
---- bound but won't fire when triggered — a log warning surfaces if
---- the ability is passive / aura.
----@param slot number
----@param ability_id string
-function ActionBarSetSlot(slot, ability_id) end
-
---- Remove a manual slot → ability binding. The slot renders empty
---- afterward (in manual mode).
----@param slot number
-function ActionBarClearSlot(slot) end
 
 --- Show / hide the minimap composite.
 ---@param visible boolean

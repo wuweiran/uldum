@@ -262,7 +262,7 @@ Spellbook-style "icon that opens a sub-bar of contained abilities" (class kits, 
 
 ## Ability Slots
 
-Units have a fixed-size slot array (16 slots max, engine constant). Slots
+Each ability instance stores a slot number. Slots 1–16 on the Lua surface
 connect abilities to the UI and input system. See `docs/input-system.md`
 for the full input/UI design.
 
@@ -281,23 +281,21 @@ When a unit is created, its `"abilities"` list determines initial slot layout:
 
 | Function | Behavior |
 |----------|----------|
-| `AddAbility(unit, id)` | Add ability. Auto-slots to first empty slot if not hidden. |
-| `RemoveAbility(unit, id)` | Remove ability entirely. Clears its slot if it had one. |
-| `SetAbilitySlot(unit, id, slot)` | Move an existing ability to a specific slot. |
-| `ClearSlot(unit, slot)` | Unslot whatever is in that slot (ability stays on unit). |
-| `UnslotAbility(unit, id)` | Unslot a specific ability by ID (ability stays on unit). |
-| `SwapSlots(unit, a, b)` | Swap two slots. Either or both can be empty. |
-| `GetAbilitySlot(unit, id)` | Returns slot index, or -1 if not slotted. |
-| `GetSlotAbility(unit, slot)` | Returns ability ID, or nil if empty. |
+| `AddAbility(unit, id)` | Add an ability and assign the first empty slot when it is not hidden. |
+| `RemoveAbility(unit, id)` | Remove the ability entirely. |
+| `SetUnitAbilityActionBarSlot(unit, id, slot)` | Assign the ability to a 1-based slot. |
+| `GetUnitAbilityActionBarSlot(unit, id)` | Return its 1-based slot, or 0 when hidden/not found. |
+| `UnitHideAbility(unit, id)` | Remove its slot while keeping the ability functional. |
+| `UnitClearActionBarSlot(unit, slot)` | Hide every ability assigned to the 1-based slot. |
 
 ### Slot Rules
 
-- `RemoveAbility` clears the slot without shifting — other slots keep their indices.
+- `RemoveAbility` does not shift other abilities.
 - `AddAbility` auto-assigns to the first empty slot if `hidden` is false.
-- If all slots are full, the ability still gets added (functional) but not slotted.
-- `hidden` abilities bypass auto-slot assignment. They function normally but have no UI presence.
-- Aura-applied buffs (transient `passive_modifier` / `passive_flag` instances added by `aura` ticks) are never slotted.
-- Passive abilities that are not hidden CAN be slotted — they show icon/tooltip in the UI.
+- If all 16 slots are full, the ability is still added but hidden.
+- `hidden` abilities bypass auto-slot assignment.
+- Passive abilities can be slotted and shown.
+- Slot collisions are unspecified authoring behavior.
 
 ### Hotkey
 

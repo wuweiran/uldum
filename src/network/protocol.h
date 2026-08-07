@@ -147,7 +147,6 @@ enum class MsgType : u8 {
     S_HUD_CREATE_TEXT_TAG     = 0x77,
     S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
     S_HUD_DESTROY_TEXT_TAG    = 0x79, // remove a permanent text tag by shared ECS id
-    S_HUD_ACTION_BAR_SET_SLOT = 0x7A, // manual-mode slot→ability binding (empty ability = clear)
     S_HUD_SET_TEXT_TAG_TEXT   = 0x7B,
 
     // Playing — audio (script-initiated). Sim sound effects from the
@@ -1231,6 +1230,7 @@ enum class ColdKind : u8 {
     AbilityRemove   = 5,
     AbilityModifier = 6,   // SetAbilityModifier(unit, ability, key, value)
     Cooldown        = 7,   // SetAbilityCooldown / ResetAbilityCooldown
+    AbilityActionBarSlot = 9,
     // identity / transform
     Owner           = 8,   // ownership changed
     Transform       = 10,  // static teleport/facing (units self-heal via HOT S_UNIT_STATE)
@@ -1277,6 +1277,10 @@ inline void write_cold_record(ByteWriter& w, const ColdRecord& rec) {
         break;
     case ColdKind::AbilityAdd:
         w.write_string(rec.key); w.write_u32(rec.uint_value); w.write_u8(rec.byte_value);
+        w.write_u32(rec.uint_value2);
+        break;
+    case ColdKind::AbilityActionBarSlot:
+        w.write_string(rec.key); w.write_u32(rec.uint_value);
         break;
     case ColdKind::AbilityRemove:
         w.write_string(rec.key); w.write_u8(rec.byte_value); w.write_bool(rec.bool_value);
@@ -1330,6 +1334,10 @@ inline ColdRecord read_cold_record(ByteReader& r) {
         break;
     case ColdKind::AbilityAdd:
         rec.key = r.read_string(); rec.uint_value = r.read_u32(); rec.byte_value = r.read_u8();
+        rec.uint_value2 = r.read_u32();
+        break;
+    case ColdKind::AbilityActionBarSlot:
+        rec.key = r.read_string(); rec.uint_value = r.read_u32();
         break;
     case ColdKind::AbilityRemove:
         rec.key = r.read_string(); rec.byte_value = r.read_u8(); rec.bool_value = r.read_bool();
@@ -1419,8 +1427,15 @@ inline ColdRecord cold_attr_rec(std::string_view key, f32 value) {
 inline ColdRecord cold_str_attr_rec(std::string_view key, std::string_view value) {
     ColdRecord r; r.kind = ColdKind::StringAttribute; r.key = key; r.str_value = value; return r;
 }
-inline ColdRecord cold_ability_add_rec(std::string_view ability_id, u32 level, u8 source_kind) {
-    ColdRecord r; r.kind = ColdKind::AbilityAdd; r.key = ability_id; r.uint_value = level; r.byte_value = source_kind; return r;
+inline ColdRecord cold_ability_add_rec(std::string_view ability_id, u32 level,
+                                       u8 source_kind, u32 action_bar_slot) {
+    ColdRecord r; r.kind = ColdKind::AbilityAdd; r.key = ability_id;
+    r.uint_value = level; r.byte_value = source_kind;
+    r.uint_value2 = action_bar_slot; return r;
+}
+inline ColdRecord cold_ability_action_bar_slot_rec(std::string_view ability_id, u32 slot) {
+    ColdRecord r; r.kind = ColdKind::AbilityActionBarSlot;
+    r.key = ability_id; r.uint_value = slot; return r;
 }
 inline ColdRecord cold_ability_remove_rec(std::string_view ability_id, u8 source_kind, bool all_instances) {
     ColdRecord r; r.kind = ColdKind::AbilityRemove; r.key = ability_id; r.byte_value = source_kind; r.bool_value = all_instances; return r;
@@ -1470,8 +1485,16 @@ inline std::vector<u8> build_cold_str_attr(u32 entity_id, std::string_view key, 
 inline std::vector<u8> build_cold_state(u32 entity_id, std::string_view state_id, f32 current, f32 max) {
     return build_cold(entity_id, cold_state(state_id, current, max));
 }
-inline std::vector<u8> build_cold_ability_add(u32 entity_id, std::string_view ability_id, u32 level, u8 source_kind) {
-    return build_cold(entity_id, cold_ability_add_rec(ability_id, level, source_kind));
+inline std::vector<u8> build_cold_ability_add(u32 entity_id, std::string_view ability_id,
+                                              u32 level, u8 source_kind,
+                                              u32 action_bar_slot) {
+    return build_cold(
+        entity_id,
+        cold_ability_add_rec(ability_id, level, source_kind, action_bar_slot));
+}
+inline std::vector<u8> build_cold_ability_action_bar_slot(
+    u32 entity_id, std::string_view ability_id, u32 slot) {
+    return build_cold(entity_id, cold_ability_action_bar_slot_rec(ability_id, slot));
 }
 inline std::vector<u8> build_cold_ability_remove(u32 entity_id, std::string_view ability_id, u8 source_kind, bool all_instances) {
     return build_cold(entity_id, cold_ability_remove_rec(ability_id, source_kind, all_instances));
@@ -1669,19 +1692,6 @@ inline std::vector<u8> build_hud_display_message(
         wr.write_string(loc_args[i].second);
     }
     wr.write_f32(duration);
-    return std::move(wr.data());
-}
-
-// Manual-mode action-bar slot binding (ActionBarSetSlot / ClearSlot). Runs in
-// host/worker Lua only, so it must be synced to clients + replayed on join —
-// otherwise the client's slots keep the hud.json default (empty bound_ability)
-// and the manual-mode bar renders nothing. slot is 0-based; empty ability_id
-// clears the slot.
-inline std::vector<u8> build_hud_action_bar_set_slot(u32 slot, std::string_view ability_id) {
-    ByteWriter wr;
-    wr.write_u8(static_cast<u8>(MsgType::S_HUD_ACTION_BAR_SET_SLOT));
-    wr.write_u32(slot);
-    wr.write_string(ability_id);
     return std::move(wr.data());
 }
 

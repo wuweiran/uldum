@@ -6,7 +6,6 @@
       "anchor": "br", "x": -16, "y": -16, "w": 240, "h": 240,
 
       "style": "moba",
-      "binding_mode": "manual",
       "style_params": {
         "bg":                  "#00000000",
         "cooldown_overlay":    "#000000B0",

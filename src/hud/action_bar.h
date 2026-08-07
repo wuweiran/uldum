@@ -2,15 +2,8 @@
 
 // Engine composite: ability-button slot group. One per map, singleton.
 // Slot positions + styling come from the map's hud.json `composites.action_bar`
-// block. Slot contents are automatic: each frame the bar reads the local
-// player's selection, picks the first selected unit, and matches each of
-// that unit's non-hidden abilities to a slot by hotkey letter (the slot's
-// `hotkey` authored in hud.json == the ability's `hotkey` in its type
-// def). No Lua binding is required for the common case.
-//
-// Lua control (cinematic / tutorial):
-//   ActionBarSetVisible(bool)           -- hide the whole bar
-//   ActionBarSetSlotVisible(slot, bool) -- hide / re-show a specific slot
+// block. Each frame the bar reads the local player's selection, picks the
+// first selected unit, and displays its abilities by action_bar_slot.
 //
 // Each slot shows, at render time:
 //   - the matched ability's icon
@@ -56,16 +49,6 @@ struct ActionBarSlot {
     std::string hotkey;
     ActionBarSlotStyle style;
 
-    // Manual-binding target: ability id set by Lua via
-    // `ActionBarSetSlot(slot, id)`. Ignored in Auto binding mode. When
-    // Manual + the selected unit actually owns this ability, the slot
-    // renders + fires that ability.
-    std::string bound_ability;
-
-    // Visibility: Lua (ActionBarSetSlotVisible) can hide an individual
-    // slot for cinematics / tutorials.
-    bool visible = true;
-
     // Transient input state (not synced). `hotkey_prev_down` is used for
     // rising-edge detection of the keyboard bind so auto-repeat doesn't
     // re-fire a cast every frame the key is held.
@@ -87,34 +70,14 @@ enum class ActionBarStyleId : u8 {
 // How the bar routes keyboard input → ability. A player-level setting
 // (`input.action_bar_hotkey_mode` in the settings store), not a per-map
 // decision — lets users pick between per-ability mnemonics and MOBA-style
-// positional grids once and have it apply everywhere. Only consulted
-// when `binding_mode == Auto`; manual binding uses `slot.bound_ability`
-// directly and ignores this.
+// positional grids once and have it apply everywhere.
 enum class ActionBarHotkeyMode : u8 {
-    // Each ability declares its own `hotkey` letter in its type def;
-    // slots match abilities by that letter. Pressing "T" triggers
-    // whatever ability has hotkey="T" on the selected unit.
+    // Each ability declares its own `hotkey` letter in its type def.
+    // Pressing "T" triggers the slotted ability whose hotkey is "T".
     Ability    = 0,
-    // Slots bind by position. Slot 1 (hotkey="Q") always triggers the
-    // selected unit's 1st non-hidden ability in registration order,
-    // slot 2 the 2nd, etc. Ability def's own `hotkey` is ignored.
+    // Each slot uses its authored hotkey. Ability def hotkeys are ignored.
     // MOBA / SC2 grid style.
     Positional = 1,
-};
-
-// Where slot → ability comes from. Per-map, authored in hud.json.
-// Different genres want different shapes: RTS auto-populates from the
-// selected unit's ability list; action / MOBA-style maps explicitly
-// assign specific abilities to specific slots via Lua.
-enum class ActionBarBindingMode : u8 {
-    // Resolve each frame from selection + hotkey mode above. Default,
-    // matches the RTS preset's expectation.
-    Auto    = 0,
-    // Slot holds an `bound_ability` id set via Lua (ActionBarSetSlot).
-    // The bound ability shows + fires only when the selected unit
-    // actually owns it. Passive abilities can be bound but shouldn't be
-    // (convention, not enforced): nothing fires when triggered.
-    Manual  = 1,
 };
 
 // Parameters consumed by the classic_rts render path. Unused fields of
@@ -175,8 +138,7 @@ struct ActionBarStyle {
 
 struct ActionBarConfig {
     bool enabled = false;
-    ActionBarStyleId     style_id     = ActionBarStyleId::ClassicRts;
-    ActionBarBindingMode binding_mode = ActionBarBindingMode::Auto;
+    ActionBarStyleId style_id = ActionBarStyleId::ClassicRts;
     // Absolute screen rect for the whole bar (for optional bg draw).
     // Resolved from `placement` against the viewport rect.
     Rect      rect{};
@@ -196,12 +158,9 @@ struct ActionBarConfig {
     bool      cancel_zone_authored = false;
 };
 
-// Runtime state — separate from config because it changes at runtime
-// (bar visibility, hotkey mode) while config is frozen. The selected
-// unit that actually drives slot contents is read live from
-// WorldContext each frame, so it doesn't need storage here.
+// Runtime state — separate from config because the player's hotkey mode
+// changes at runtime while the config is frozen.
 struct ActionBarRuntime {
-    bool                visible      = true;
     // Sourced from the global settings store (`input.action_bar_hotkey_mode`).
     // Drives both the render-time ability resolution and the keyboard
     // dispatch. Default Ability so a map that ships ability-authored

@@ -1433,6 +1433,32 @@ void ScriptEngine::bind_api() {
         return simulation::has_ability(sim.world(), u, ability_id);
     };
 
+    lua["SetUnitAbilityActionBarSlot"] = [&](simulation::Unit unit,
+                                                const std::string& ability_id,
+                                                u32 slot) -> bool {
+        if (slot == 0) return false;
+        return simulation::set_unit_ability_action_bar_slot(
+            sim.world(), unit, ability_id, slot - 1);
+    };
+
+    lua["GetUnitAbilityActionBarSlot"] = [&](simulation::Unit unit,
+                                                const std::string& ability_id) -> u32 {
+        u32 slot = simulation::get_unit_ability_action_bar_slot(
+            sim.world(), unit, ability_id);
+        return slot == UINT32_MAX ? 0 : slot + 1;
+    };
+
+    lua["UnitHideAbility"] = [&](simulation::Unit unit,
+                                    const std::string& ability_id) -> bool {
+        return simulation::set_unit_ability_action_bar_slot(
+            sim.world(), unit, ability_id, UINT32_MAX);
+    };
+
+    lua["UnitClearActionBarSlot"] = [&](simulation::Unit unit, u32 slot) -> bool {
+        if (slot == 0) return false;
+        return simulation::unit_clear_action_bar_slot(sim.world(), unit, slot - 1);
+    };
+
     // ── Projectile API ────────────────────────────────────────────────
     // Agent (not widget). Lifecycle: CreateProjectile spawns the
     // entity at the source's position; the projectile is idle until
@@ -3292,58 +3318,6 @@ void ScriptEngine::bind_hud_api() {
         m_hud->destroy_text_tag(tag);
     };
 
-    // ── Action-bar composite ─────────────────────────────────────────────
-    // The bar is declared in hud.json (`composites.action_bar`). Two
-    // binding modes determine how slots fill with abilities:
-    //
-    //   auto   — slot contents come from the local player's selection,
-    //            resolved by the global hotkey-mode setting. No Lua
-    //            wiring needed. Default for RTS-style maps.
-    //   manual — each slot is explicitly bound to an ability by Lua
-    //            (ActionBarSetSlot). The slot renders + fires only
-    //            when the selected unit actually owns that ability.
-    //            Intended for action / MOBA-style maps where the
-    //            author curates the skill lineup.
-    //
-    // Passive abilities can be bound in manual mode but shouldn't —
-    // nothing fires when the slot is triggered (convention, not
-    // enforced). Slot indices are 1-based in Lua (by convention),
-    // 0-based internally.
-
-    lua["ActionBarSetVisible"] = [this](bool visible) {
-        if (!m_hud) return;
-        m_hud->action_bar_set_visible(visible);
-    };
-    lua["ActionBarSetSlotVisible"] = [this](u32 slot_1based, bool visible) {
-        if (!m_hud || slot_1based == 0) return;
-        m_hud->action_bar_set_slot_visible(slot_1based - 1, visible);
-    };
-
-    // ActionBarSetSlot(slot, ability_id) — manual-mode binding. A log
-    // warning is issued if the ability is passive, but the binding
-    // still takes effect (no-op at cast time).
-    lua["ActionBarSetSlot"] = [this](u32 slot_1based, const std::string& ability_id) {
-        if (!m_hud || slot_1based == 0) return;
-        if (m_sim) {
-            if (const auto* def = m_sim->abilities().get(ability_id)) {
-                if (def->form == simulation::AbilityForm::PassiveModifier ||
-                    def->form == simulation::AbilityForm::PassiveFlag ||
-                    def->form == simulation::AbilityForm::Aura) {
-                    log::warn("HUD", "ActionBarSetSlot({}, '{}'): ability is passive/aura, nothing will fire",
-                              slot_1based, ability_id);
-                }
-            } else {
-                log::warn("HUD", "ActionBarSetSlot({}, '{}'): ability not in registry",
-                          slot_1based, ability_id);
-            }
-        }
-        m_hud->action_bar_set_slot(slot_1based - 1, ability_id);
-    };
-
-    lua["ActionBarClearSlot"] = [this](u32 slot_1based) {
-        if (!m_hud || slot_1based == 0) return;
-        m_hud->action_bar_clear_slot(slot_1based - 1);
-    };
 }
 
 } // namespace uldum::script

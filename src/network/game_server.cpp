@@ -315,12 +315,16 @@ std::vector<ColdRecord> GameServer::collect_cold_records(u32 entity_id) const {
                 for (const auto& source : ability.sources) {
                     records.push_back(cold_ability_add_rec(
                         ability.ability_id, ability.level,
-                        static_cast<u8>(simulation::ability_source_kind(source))));
+                        static_cast<u8>(simulation::ability_source_kind(source)),
+                        ability.action_bar_slot));
                 }
                 for (const auto& [key, value] : ability.active_modifiers) {
                     records.push_back(cold_ability_modifier_rec(
                         ability.ability_id, key, value));
                 }
+            } else {
+                records.push_back(cold_ability_action_bar_slot_rec(
+                    ability.ability_id, ability.action_bar_slot));
             }
             if (ability.cooldown_remaining > 0.0f) {
                 records.push_back(cold_cooldown_rec(
@@ -641,10 +645,11 @@ void GameServer::wire_to_network(NetworkManager& net) {
         };
     world.on_ability_added =
         [this, &net](simulation::Unit unit, std::string_view ability_id, u32 level,
-               const simulation::AbilitySource& source) {
+               const simulation::AbilitySource& source, u32 action_bar_slot) {
             auto pkt = build_cold_ability_add(
                 unit.id, ability_id, level,
-                static_cast<u8>(simulation::ability_source_kind(source)));
+                static_cast<u8>(simulation::ability_source_kind(source)),
+                action_bar_slot);
             broadcast_update(net,unit.id, pkt);
         };
     world.on_ability_removed =
@@ -655,6 +660,11 @@ void GameServer::wire_to_network(NetworkManager& net) {
                 static_cast<u8>(simulation::ability_source_kind(source)),
                 all_instances);
             broadcast_update(net,unit.id, pkt);
+        };
+    world.on_ability_action_bar_slot_changed =
+        [this, &net](simulation::Unit unit, std::string_view ability_id, u32 slot) {
+            auto pkt = build_cold_ability_action_bar_slot(unit.id, ability_id, slot);
+            broadcast_update(net, unit.id, pkt);
         };
     world.on_ability_cooldown_started =
         [this, &net](simulation::Unit unit, std::string_view ability_id, f32 seconds) {
