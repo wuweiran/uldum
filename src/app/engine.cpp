@@ -655,6 +655,7 @@ bool Engine::start_session() {
               m_args.map_path, m_args.local_slot);
 
     bool is_client = this->is_client();
+    m_camera_controller.reset();
 
     // The mirror was already set in enter_lobby (client only). We build preplaced
     // into active_sim()'s world — on the client that IS the mirror, so it
@@ -1195,6 +1196,7 @@ void Engine::end_session() {
     if (m_platform) m_platform->set_cursor_visible(true);
 
     // Input — drop the preset (RTS / Action) and reset its dependents.
+    m_camera_controller.reset();
     m_input_preset.reset();
     m_bindings  = input::InputBindings{};
     m_commands  = simulation::CommandSystem{};

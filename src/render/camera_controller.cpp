@@ -322,20 +322,22 @@ void CameraController::unlock_unit() {
 }
 
 void CameraController::reset() {
-    m_target_tween   = {};
-    m_pan_at_rate = false;
+    stop();
+    m_target_tween = {};
     m_distance_tween = {};
-    m_pitch_tween    = {};
-    m_yaw_tween      = {};
-    m_fov_tween      = {};
+    m_pitch_tween = {};
+    m_yaw_tween = {};
+    m_fov_tween = {};
     m_shake_intensity = 0;
-    m_shake_duration  = 0;
-    m_shake_elapsed   = 0;
-    m_shake_offset    = {0, 0};
-    m_lock_unit       = {};
-    m_lock_x_offset = 0.0f;
-    m_lock_y_offset = 0.0f;
-    m_lock_inherit_orientation = false;
+    m_shake_duration = 0;
+    m_shake_elapsed = 0;
+    if (m_camera && (m_shake_offset.x != 0 || m_shake_offset.y != 0)) {
+        glm::vec3 target = m_camera->target();
+        m_camera->set_target_xy(target.x - m_shake_offset.x,
+                                target.y - m_shake_offset.y);
+    }
+    m_shake_offset = {0, 0};
+    unlock_unit();
 }
 
 } // namespace uldum::render
