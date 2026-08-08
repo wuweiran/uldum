@@ -2226,8 +2226,13 @@ void Engine::run() {
             if (!is_client) {
                 auto& vision = m_server.simulation().vision();
                 if (vision.enabled()) {
-                    const f32* visual = vision.update_visual(simulation::Player{m_args.local_slot}, frame_dt);
+                    simulation::Player local{m_args.local_slot};
+                    const f32* visual = vision.update_visual(local, frame_dt);
                     m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
+                    m_hud_renderer.set_minimap_fog(
+                        vision.grid(local), vision.tiles_x(), vision.tiles_y());
+                } else {
+                    m_hud_renderer.set_minimap_fog(nullptr, 0, 0);
                 }
             } else {
                 // Fog fade grid the renderer draws — the visual half of fog, per
@@ -2235,9 +2240,13 @@ void Engine::run() {
                 // tick block above; this is only the smooth fade.)
                 auto& vision = m_client.simulation().vision();
                 if (vision.enabled()) {
-                    const f32* visual = vision.update_visual(
-                        simulation::Player{m_args.local_slot}, frame_dt);
+                    simulation::Player local{m_args.local_slot};
+                    const f32* visual = vision.update_visual(local, frame_dt);
                     m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
+                    m_hud_renderer.set_minimap_fog(
+                        vision.grid(local), vision.tiles_x(), vision.tiles_y());
+                } else {
+                    m_hud_renderer.set_minimap_fog(nullptr, 0, 0);
                 }
             }
             break;
@@ -2269,6 +2278,7 @@ void Engine::run() {
             rhi::CommandList cmd = m_rhi.begin_frame();
             if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_renderer.upload_fog(cmd);
+                m_hud_renderer.upload_minimap_fog(cmd);
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
 

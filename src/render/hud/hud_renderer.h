@@ -63,6 +63,8 @@ public:
     void set_minimap_terrain(const map::TerrainData& terrain,
                              const map::Tileset& tileset,
                              std::string_view map_root);
+    void set_minimap_fog(const u8* visibility, u32 tiles_x, u32 tiles_y);
+    void upload_minimap_fog(rhi::CommandList& cmd);
 
     // begin_frame() resets CPU-side draw lists and stashes the viewport
     // (physical framebuffer pixels). It also updates the bound Hud's

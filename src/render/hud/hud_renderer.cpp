@@ -103,6 +103,11 @@ struct HudRenderer::Impl {
     std::unique_ptr<Font> font;
     std::unordered_map<std::string, std::unique_ptr<HudImage>> images;
     std::unique_ptr<HudImage> minimap_terrain;
+    std::unique_ptr<HudImage> minimap_fog;
+    rhi::BufferHandle minimap_fog_staging{};
+    u32 minimap_fog_width = 0;
+    u32 minimap_fog_height = 0;
+    bool minimap_fog_dirty = false;
 };
 
 // ── Shader loading helper ─────────────────────────────────────────────────
@@ -1548,6 +1553,11 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
         ensure_batch(r, PIPE_SOLID, r.minimap_terrain->set);
         append_quad(r, content, 0.0f, 0.0f, 1.0f, 1.0f,
                     premul_rgba(rgba(255, 255, 255, 255)));
+        if (r.minimap_fog) {
+            ensure_batch(r, PIPE_SOLID, r.minimap_fog->set);
+            append_quad(r, content, 0.0f, 0.0f, 1.0f, 1.0f,
+                        premul_rgba(rgba(255, 255, 255, 255)));
+        }
     }
     f32 bw = cfg.style.border_width;
     if (bw > 0.0f && (cfg.style.border_color.rgba >> 24) != 0) {
@@ -2341,6 +2351,8 @@ void HudRenderer::shutdown() {
             }
             destroy_hud_images(r);
             destroy_hud_image(r, r.minimap_terrain);
+            destroy_hud_image(r, r.minimap_fog);
+            r.rhi->destroy_buffer(r.minimap_fog_staging);
             if (r.white_set.is_valid()) r.rhi->free_descriptor_set(r.white_set);
             r.rhi->destroy_texture(r.white_image);
             r.rhi->destroy_pipeline(r.pipe_text);
@@ -2585,6 +2597,109 @@ void HudRenderer::reset_session_images() {
     if (r.rhi) r.rhi->wait_idle();
     destroy_hud_images(r);
     destroy_hud_image(r, r.minimap_terrain);
+    destroy_hud_image(r, r.minimap_fog);
+    r.rhi->destroy_buffer(r.minimap_fog_staging);
+    r.minimap_fog_staging = {};
+    r.minimap_fog_width = 0;
+    r.minimap_fog_height = 0;
+    r.minimap_fog_dirty = false;
+}
+
+void HudRenderer::set_minimap_fog(const u8* visibility, u32 tiles_x, u32 tiles_y) {
+    if (!m_impl) return;
+    auto& r = *m_impl;
+    if (!visibility || tiles_x == 0 || tiles_y == 0) {
+        if (r.minimap_fog || r.minimap_fog_staging.is_valid()) {
+            r.rhi->wait_idle();
+            destroy_hud_image(r, r.minimap_fog);
+            r.rhi->destroy_buffer(r.minimap_fog_staging);
+            r.minimap_fog_staging = {};
+            r.minimap_fog_width = 0;
+            r.minimap_fog_height = 0;
+            r.minimap_fog_dirty = false;
+        }
+        return;
+    }
+
+    if (tiles_x != r.minimap_fog_width || tiles_y != r.minimap_fog_height) {
+        r.rhi->wait_idle();
+        destroy_hud_image(r, r.minimap_fog);
+        r.rhi->destroy_buffer(r.minimap_fog_staging);
+        r.minimap_fog_staging = {};
+
+        std::vector<u8> empty(static_cast<usize>(tiles_x) * tiles_y * 4);
+        auto image = std::make_unique<HudImage>();
+        if (!create_hud_image(r, empty.data(), tiles_x, tiles_y, *image)) return;
+        rhi::WriteDescriptor descriptor{};
+        descriptor.binding = 0;
+        descriptor.type = rhi::DescriptorType::CombinedImageSampler;
+        descriptor.texture = image->handle;
+        descriptor.sampler = r.sampler;
+        r.rhi->update_descriptor_set(image->set, std::span{&descriptor, 1});
+        r.minimap_fog = std::move(image);
+
+        rhi::BufferDesc desc{};
+        desc.size = static_cast<u64>(tiles_x) * tiles_y * 4;
+        desc.usage = rhi::BufferUsage::TransferSrc;
+        desc.memory = rhi::MemoryUsage::HostSequential;
+        r.minimap_fog_staging = r.rhi->create_buffer(desc);
+        r.minimap_fog_width = tiles_x;
+        r.minimap_fog_height = tiles_y;
+    }
+
+    auto* pixels = static_cast<u8*>(r.rhi->mapped_ptr(r.minimap_fog_staging));
+    for (u32 row = 0; row < tiles_y; ++row) {
+        u32 ty = tiles_y - 1 - row;
+        for (u32 tx = 0; tx < tiles_x; ++tx) {
+            u8 state = visibility[ty * tiles_x + tx];
+            u8 alpha = state == static_cast<u8>(simulation::Visibility::Visible)
+                ? 0
+                : state == static_cast<u8>(simulation::Visibility::Explored)
+                    ? 153
+                    : 255;
+            usize offset = (static_cast<usize>(row) * tiles_x + tx) * 4;
+            pixels[offset] = 0;
+            pixels[offset + 1] = 0;
+            pixels[offset + 2] = 0;
+            pixels[offset + 3] = alpha;
+        }
+    }
+    r.minimap_fog_dirty = true;
+}
+
+void HudRenderer::upload_minimap_fog(rhi::CommandList& cmd) {
+    if (!m_impl) return;
+    auto& r = *m_impl;
+    if (!r.minimap_fog_dirty || !r.minimap_fog ||
+        !r.minimap_fog_staging.is_valid()) return;
+
+    rhi::ImageBarrier to_transfer{};
+    to_transfer.image = r.minimap_fog->handle;
+    to_transfer.src_stage = rhi::PipelineStage::FragmentShader;
+    to_transfer.src_access = rhi::AccessFlag::ShaderRead;
+    to_transfer.dst_stage = rhi::PipelineStage::Transfer;
+    to_transfer.dst_access = rhi::AccessFlag::TransferWrite;
+    to_transfer.old_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    to_transfer.new_layout = rhi::ImageLayout::TransferDstOptimal;
+    cmd.image_barrier(to_transfer);
+
+    rhi::BufferImageCopy copy{};
+    copy.image_extent_w = r.minimap_fog_width;
+    copy.image_extent_h = r.minimap_fog_height;
+    cmd.copy_buffer_to_image(
+        r.minimap_fog_staging, r.minimap_fog->handle, std::span{&copy, 1});
+
+    rhi::ImageBarrier to_shader{};
+    to_shader.image = r.minimap_fog->handle;
+    to_shader.src_stage = rhi::PipelineStage::Transfer;
+    to_shader.src_access = rhi::AccessFlag::TransferWrite;
+    to_shader.dst_stage = rhi::PipelineStage::FragmentShader;
+    to_shader.dst_access = rhi::AccessFlag::ShaderRead;
+    to_shader.old_layout = rhi::ImageLayout::TransferDstOptimal;
+    to_shader.new_layout = rhi::ImageLayout::ShaderReadOnlyOptimal;
+    cmd.image_barrier(to_shader);
+
+    r.minimap_fog_dirty = false;
 }
 
 void HudRenderer::set_minimap_terrain(const map::TerrainData& terrain,
@@ -2594,6 +2709,12 @@ void HudRenderer::set_minimap_terrain(const map::TerrainData& terrain,
     auto& r = *m_impl;
     if (r.rhi) r.rhi->wait_idle();
     destroy_hud_image(r, r.minimap_terrain);
+    destroy_hud_image(r, r.minimap_fog);
+    r.rhi->destroy_buffer(r.minimap_fog_staging);
+    r.minimap_fog_staging = {};
+    r.minimap_fog_width = 0;
+    r.minimap_fog_height = 0;
+    r.minimap_fog_dirty = false;
 
     struct LayerColor { u8 r = 100, g = 100, b = 100; };
     std::array<LayerColor, 256> colors{};
