@@ -690,10 +690,6 @@ bool Engine::start_session() {
     m_renderer.set_environment(m_map.manifest().environment);
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(&m_map.terrain());
-        if (m_hud.minimap_enabled()) {
-            m_hud_renderer.set_minimap_terrain(
-                m_map.terrain(), m_map.tileset(), m_map.map_root());
-        }
     }
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
@@ -719,6 +715,10 @@ bool Engine::start_session() {
         std::string hud_path = m_map.map_root() + "/hud.json";
         hud::load_from_asset(m_hud, hud_path,
                              m_rhi.extent().width, m_rhi.extent().height);
+    }
+    if (m_hud.minimap_enabled() && m_map.terrain().is_valid()) {
+        m_hud_renderer.set_minimap_terrain(
+            m_map.terrain(), m_map.tileset(), m_map.map_root());
     }
     // Apply per-slot world-overlay texture overrides declared in
     // hud.json. Empty strings keep the engine's procedural defaults;
