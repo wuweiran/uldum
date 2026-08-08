@@ -679,6 +679,8 @@ bool Engine::start_session() {
     m_renderer.set_environment(m_map.manifest().environment);
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(&m_map.terrain());
+        m_hud_renderer.set_minimap_terrain(
+            m_map.terrain(), m_map.tileset(), m_map.map_root());
     }
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
@@ -1551,6 +1553,8 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
 
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(&m_map.terrain());
+        m_hud_renderer.set_minimap_terrain(
+            m_map.terrain(), m_map.tileset(), m_map.map_root());
     }
 
     // Re-pose camera from the new scene's authored start camera.

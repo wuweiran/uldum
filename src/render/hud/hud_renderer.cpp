@@ -16,6 +16,7 @@
 #include "simulation/simulation.h"
 #include "simulation/type_registry.h"
 #include "simulation/vision.h"
+#include "map/map.h"
 #include "map/terrain_data.h"
 #include "simulation/selection.h"
 #include "render/camera.h"
@@ -83,6 +84,7 @@ struct HudRenderer::Impl {
 
     rhi::DescriptorSetLayoutHandle desc_layout{};
     rhi::SamplerHandle             sampler{};
+    rhi::SamplerHandle             nearest_sampler{};
     rhi::PipelineLayoutHandle      pipe_layout{};
     rhi::PipelineHandle            pipe_solid{};
     rhi::PipelineHandle            pipe_text{};
@@ -100,6 +102,7 @@ struct HudRenderer::Impl {
 
     std::unique_ptr<Font> font;
     std::unordered_map<std::string, std::unique_ptr<HudImage>> images;
+    std::unique_ptr<HudImage> minimap_terrain;
 };
 
 // ── Shader loading helper ─────────────────────────────────────────────────
@@ -136,13 +139,19 @@ static bool create_descriptor_layout(HudRenderer::Impl& r) {
     return r.desc_layout.is_valid();
 }
 
-static bool create_sampler(HudRenderer::Impl& r) {
+static bool create_samplers(HudRenderer::Impl& r) {
     rhi::SamplerDesc sd{};
     sd.address_u = rhi::AddressMode::ClampToEdge;
     sd.address_v = rhi::AddressMode::ClampToEdge;
     sd.address_w = rhi::AddressMode::ClampToEdge;
     r.sampler = r.rhi->create_sampler(sd);
-    return r.sampler.is_valid();
+    if (!r.sampler.is_valid()) return false;
+
+    sd.mag_filter = rhi::Filter::Nearest;
+    sd.min_filter = rhi::Filter::Nearest;
+    sd.mipmap_mode = rhi::MipmapMode::Nearest;
+    r.nearest_sampler = r.rhi->create_sampler(sd);
+    return r.nearest_sampler.is_valid();
 }
 
 static bool create_pipeline_layout(HudRenderer::Impl& r) {
@@ -370,6 +379,15 @@ static bool create_hud_image(HudRenderer::Impl& r, const u8* rgba, u32 w, u32 h,
     out.w = w;
     out.h = h;
     return true;
+}
+
+static void destroy_hud_image(HudRenderer::Impl& r, std::unique_ptr<HudImage>& image) {
+    if (!image) return;
+    if (r.rhi) {
+        if (image->set.is_valid()) r.rhi->free_descriptor_set(image->set);
+        r.rhi->destroy_texture(image->handle);
+    }
+    image.reset();
 }
 
 static void destroy_hud_images(HudRenderer::Impl& r) {
@@ -1524,6 +1542,13 @@ static void draw_minimap(HudRenderer::Impl& r, Hud::Impl& s) {
     if (!cfg.enabled || !s.minimap_rt.visible) return;
 
     emit_rect(r, cfg.rect, cfg.style.bg);
+    if (s.world_ctx && s.world_ctx->terrain && r.minimap_terrain) {
+        const Rect content = hud::minimap_content_rect(
+            cfg.rect, *s.world_ctx->terrain);
+        ensure_batch(r, PIPE_SOLID, r.minimap_terrain->set);
+        append_quad(r, content, 0.0f, 0.0f, 1.0f, 1.0f,
+                    premul_rgba(rgba(255, 255, 255, 255)));
+    }
     f32 bw = cfg.style.border_width;
     if (bw > 0.0f && (cfg.style.border_color.rgba >> 24) != 0) {
         const Rect& rc = cfg.rect;
@@ -2280,7 +2305,7 @@ bool HudRenderer::init(Hud& hud, rhi::Rhi& rhi) {
     r.inds.reserve(MAX_INDS);
 
     if (!create_descriptor_layout(r)) { log::error(TAG, "desc layout create failed");   return false; }
-    if (!create_sampler(r))           { log::error(TAG, "sampler create failed");       return false; }
+    if (!create_samplers(r))          { log::error(TAG, "sampler create failed");       return false; }
     if (!create_pipeline_layout(r))   { log::error(TAG, "pipeline layout create failed"); return false; }
     if (!create_pipeline_variant(r, "engine/shaders/hud.frag.spv", r.pipe_solid)) {
         log::error(TAG, "solid pipeline create failed"); return false;
@@ -2314,17 +2339,14 @@ void HudRenderer::shutdown() {
                 r.rhi->destroy_buffer(ring.vb);
                 r.rhi->destroy_buffer(ring.ib);
             }
-            for (auto& [path, img] : r.images) {
-                if (!img) continue;
-                if (img->set.is_valid()) r.rhi->free_descriptor_set(img->set);
-                r.rhi->destroy_texture(img->handle);
-            }
-            r.images.clear();
+            destroy_hud_images(r);
+            destroy_hud_image(r, r.minimap_terrain);
             if (r.white_set.is_valid()) r.rhi->free_descriptor_set(r.white_set);
             r.rhi->destroy_texture(r.white_image);
             r.rhi->destroy_pipeline(r.pipe_text);
             r.rhi->destroy_pipeline(r.pipe_solid);
             r.rhi->destroy_pipeline_layout(r.pipe_layout);
+            r.rhi->destroy_sampler(r.nearest_sampler);
             r.rhi->destroy_sampler(r.sampler);
             r.rhi->destroy_descriptor_set_layout(r.desc_layout);
         }
@@ -2562,6 +2584,91 @@ void HudRenderer::reset_session_images() {
     auto& r = *m_impl;
     if (r.rhi) r.rhi->wait_idle();
     destroy_hud_images(r);
+    destroy_hud_image(r, r.minimap_terrain);
+}
+
+void HudRenderer::set_minimap_terrain(const map::TerrainData& terrain,
+                                      const map::Tileset& tileset,
+                                      std::string_view map_root) {
+    if (!m_impl || !terrain.is_valid()) return;
+    auto& r = *m_impl;
+    if (r.rhi) r.rhi->wait_idle();
+    destroy_hud_image(r, r.minimap_terrain);
+
+    struct LayerColor { u8 r = 100, g = 100, b = 100; };
+    std::array<LayerColor, 256> colors{};
+    static constexpr LayerColor fallbacks[] = {
+        {60, 140, 40}, {140, 100, 50}, {130, 130, 120}, {30, 70, 150},
+        {180, 170, 130}, {200, 200, 200}, {80, 60, 40}, {100, 100, 100},
+    };
+    colors.fill(fallbacks[7]);
+
+    auto* assets = asset::AssetManager::instance();
+    for (usize index = 0; index < tileset.layers.size(); ++index) {
+        const auto& layer = tileset.layers[index];
+        LayerColor color = fallbacks[std::min(index, std::size(fallbacks) - 1)];
+        bool sampled = false;
+        if (assets && !layer.diffuse_path.empty()) {
+            std::string path = std::string(map_root) + "/" + layer.diffuse_path;
+            auto bytes = assets->read_file_bytes(path);
+            auto texture = bytes.empty()
+                ? std::expected<asset::TextureData, std::string>(
+                      std::unexpect, "not in package")
+                : asset::load_texture_from_memory(
+                      bytes.data(), static_cast<u32>(bytes.size()));
+            if (texture && texture->channels >= 3 && !texture->pixels.empty()) {
+                u64 red = 0, green = 0, blue = 0;
+                usize pixels = static_cast<usize>(texture->width) * texture->height;
+                for (usize pixel = 0; pixel < pixels; ++pixel) {
+                    usize offset = pixel * texture->channels;
+                    red += texture->pixels[offset];
+                    green += texture->pixels[offset + 1];
+                    blue += texture->pixels[offset + 2];
+                }
+                color = {
+                    static_cast<u8>(red / pixels),
+                    static_cast<u8>(green / pixels),
+                    static_cast<u8>(blue / pixels),
+                };
+                sampled = true;
+            }
+        }
+        if (!sampled && (layer.type == map::LayerType::WaterShallow ||
+                         layer.type == map::LayerType::WaterDeep)) {
+            color = {
+                static_cast<u8>(std::clamp(layer.water_color.x * 255.0f, 0.0f, 255.0f)),
+                static_cast<u8>(std::clamp(layer.water_color.y * 255.0f, 0.0f, 255.0f)),
+                static_cast<u8>(std::clamp(layer.water_color.z * 255.0f, 0.0f, 255.0f)),
+            };
+        }
+        if (layer.id < colors.size()) colors[layer.id] = color;
+    }
+
+    u32 width = terrain.verts_x();
+    u32 height = terrain.verts_y();
+    std::vector<u8> pixels(static_cast<usize>(width) * height * 4);
+    for (u32 row = 0; row < height; ++row) {
+        u32 vy = height - 1 - row;
+        for (u32 vx = 0; vx < width; ++vx) {
+            const auto& color = colors[terrain.tile_layer[vy * width + vx]];
+            usize offset = (static_cast<usize>(row) * width + vx) * 4;
+            pixels[offset] = color.r;
+            pixels[offset + 1] = color.g;
+            pixels[offset + 2] = color.b;
+            pixels[offset + 3] = 255;
+        }
+    }
+
+    auto image = std::make_unique<HudImage>();
+    if (create_hud_image(r, pixels.data(), width, height, *image)) {
+        rhi::WriteDescriptor descriptor{};
+        descriptor.binding = 0;
+        descriptor.type = rhi::DescriptorType::CombinedImageSampler;
+        descriptor.texture = image->handle;
+        descriptor.sampler = r.nearest_sampler;
+        r.rhi->update_descriptor_set(image->set, std::span{&descriptor, 1});
+        r.minimap_terrain = std::move(image);
+    }
 }
 
 } // namespace uldum::hud

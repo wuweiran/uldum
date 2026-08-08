@@ -25,6 +25,7 @@
 #include <string_view>
 
 namespace uldum::rhi { class Rhi; }
+namespace uldum::map { struct TerrainData; struct Tileset; }
 
 namespace uldum::hud {
 
@@ -58,6 +59,10 @@ public:
     // entry from the previous map shows the wrong icon. Called by
     // App::end_session between maps.
     void reset_session_images();
+
+    void set_minimap_terrain(const map::TerrainData& terrain,
+                             const map::Tileset& tileset,
+                             std::string_view map_root);
 
     // begin_frame() resets CPU-side draw lists and stashes the viewport
     // (physical framebuffer pixels). It also updates the bound Hud's
