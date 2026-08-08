@@ -2097,18 +2097,15 @@ void Engine::run() {
                     m_input_preset ? m_input_preset->active_command_id()
                                    : std::string_view{});
 
-                // OS cursor visibility — hide only when the HUD is
-                // actually drawing its own. Both cursor textures
-                // default to empty (no engine-shipped assets), so
-                // the OS cursor stays in every state unless the map
-                // opts in via `targeting.cursors.{default,target}`
-                // in hud.json. Non-cursor platforms (Android) no-op.
+                // OS cursor visibility — EnableUserControl follows the WC3
+                // convention and hides it entirely while gameplay control is off.
                 const auto& cs = m_hud.cast_indicator_style();
                 bool targeting = m_hud.aim_state().active;
                 bool hud_cursor_active =
                     (targeting && !cs.cursor_target_path.empty()) ||
                     (!targeting && !cs.cursor_default_path.empty());
-                m_platform->set_cursor_visible(!hud_cursor_active);
+                m_platform->set_cursor_visible(
+                    m_hud.user_control_enabled() && !hud_cursor_active);
 
                 // Same sub-tick interpolation factor the renderer uses.
                 // Clients don't run the tick loop locally, so they pin
@@ -2135,6 +2132,7 @@ void Engine::run() {
                     m_platform->input(), m_selection, m_commands, m_picker,
                     m_renderer.camera(), m_bindings, active_sim(), m_local_view,
                     m_platform->width(), m_platform->height(),
+                    m_hud.user_control_enabled(),
                     m_hud.input_captured(),
                     minimap_hovered,
                     m_hud.is_minimap_dragging(),
@@ -2320,7 +2318,8 @@ void Engine::run() {
                     // Gated on the preset: action-style presets suppress
                     // them since the camera already tracks the
                     // controlled hero.
-                    if (terrain && (!m_input_preset || m_input_preset->show_selection_circles())) {
+                    if (m_hud.origin_hud_visible() && terrain &&
+                        (!m_input_preset || m_input_preset->show_selection_circles())) {
                         constexpr u32  kSelectionSamples = 48;
                         constexpr f32  kSelectionStroke  = 4.0f;
                         constexpr glm::vec4 kColorLocal{ 0.24f, 1.00f, 0.36f, 0.8f };
@@ -2380,7 +2379,7 @@ void Engine::run() {
                     // preset auto/manual lock — see Hud::update_focus).
                     // Sits OUTSIDE the unit's selection radius so it
                     // doesn't fight the selection ring visually.
-                    if (terrain) {
+                    if (m_hud.origin_hud_visible() && terrain) {
                         auto focus = m_hud.focus_target();
                         if (simulation::is_non_null_handle(focus) && world.contains(focus.id)) {
                             const auto* tf  = world.transform(focus.id);
@@ -2420,7 +2419,8 @@ void Engine::run() {
                     // friendly / pickup. Follows the unit if the handle
                     // is still valid (so a moving target reads cleanly);
                     // falls back to the captured world position if not.
-                    if (terrain && m_target_ping.age < m_target_ping.lifespan) {
+                    if (m_hud.origin_hud_visible() && terrain &&
+                        m_target_ping.age < m_target_ping.lifespan) {
                         m_target_ping.age += frame_dt;
                         if (m_target_ping.age < m_target_ping.lifespan) {
                             f32 t = m_target_ping.age / m_target_ping.lifespan;
@@ -2501,7 +2501,7 @@ void Engine::run() {
                     // Per-tile footprint tint under the armed/dragged build
                     // point (green = legal, red = blocked). The ghost model is
                     // a separate deferred draw.
-                    if (terrain) {
+                    if (m_hud.origin_hud_visible() && terrain) {
                         // Two sources feed the footprint/ghost:
                         //  • mobile build drag — a structure slot dragged onto
                         //    the map; type + world point come from the HUD drag.
@@ -2573,7 +2573,7 @@ void Engine::run() {
                     // Drawn after selection rings so a snapped target's
                     // ring sits on top of its selection ring.
                     auto aim = m_hud.aim_state();
-                    if (aim.active) {
+                    if (m_hud.origin_hud_visible() && aim.active) {
                         using Phase = hud::Hud::AimPhase;
                         const auto& s = m_hud.cast_indicator_style();
                         auto unpack = [](hud::Color c) -> glm::vec4 {
@@ -2738,12 +2738,14 @@ void Engine::run() {
                     }
                 }
                 m_renderer.draw(cmd, m_rhi.extent(), world, alpha, [&]() {
-                    m_world_overlays.draw(cmd, m_renderer.camera().view_projection());
+                    if (m_hud.origin_hud_visible()) {
+                        m_world_overlays.draw(cmd, m_renderer.camera().view_projection());
+                    }
                 });
                 // Translucent building ghost over the placed footprint — after
                 // draw() so it composites atop opaque units. Green=valid tint,
                 // red=blocked. Render-only (no sim entity), so it's MP-safe.
-                if (!ghost_model.empty()) {
+                if (m_hud.origin_hud_visible() && !ghost_model.empty()) {
                     glm::vec4 tint = ghost_valid ? glm::vec4{0.55f, 1.0f, 0.6f, 1.0f}
                                                  : glm::vec4{1.0f, 0.5f, 0.5f, 1.0f};
                     m_renderer.draw_ghost_model(cmd, ghost_model,
@@ -2773,7 +2775,7 @@ void Engine::run() {
                     // pixels (same space the Picker takes for world
                     // hits); HUD draw calls take dp. Convert once here
                     // so the rectangle tracks the cursor at any ui_scale.
-                    if (m_input_preset) {
+                    if (m_hud.origin_hud_visible() && m_input_preset) {
                         auto bs = m_input_preset->box_selection();
                         if (bs.active) {
                             f32 inv = 1.0f / m_hud.ui_scale();

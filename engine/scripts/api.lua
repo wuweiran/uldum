@@ -1516,20 +1516,21 @@ function SetButtonEnabled(id, enabled) end
 function TriggerRegisterNodeEvent(trig, node, event_name) end
 
 --------------------------------------------------------------------------------
--- HUD: composites
+-- HUD and user control
 --------------------------------------------------------------------------------
 
---- Show / hide the minimap composite.
----@param visible boolean
-function MinimapSetVisible(visible) end
+--- Enable or disable gameplay control for selected players. Disabling blocks
+--- selection, unit orders, abilities, command/inventory actions, and gameplay
+--- hotkeys while leaving camera control and simulation active.
+---@param players player | table | nil
+---@param enabled boolean
+function EnableUserControl(players, enabled) end
 
---- Show / hide the mobile joystick composite. Inert on desktop maps.
+--- Show or hide engine-owned gameplay HUD for selected players. Custom nodes
+--- and text tags remain visible for cinematic subtitles and skip controls.
+---@param players player | table | nil
 ---@param visible boolean
-function JoystickSetVisible(visible) end
-
---- Show / hide the mobile nearby-item pickup bar. Inert on desktop maps.
----@param visible boolean
-function PickupBarSetVisible(visible) end
+function SetOriginHUDVisible(players, visible) end
 
 --------------------------------------------------------------------------------
 -- Game flow & session

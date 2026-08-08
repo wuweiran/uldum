@@ -38,28 +38,30 @@ void RtsPreset::commit(const InputContext& ctx, const GameCommand& cmd) {
 }
 
 void RtsPreset::update(const InputContext& ctx, f32 dt) {
-    handle_selection(ctx);
-    handle_orders(ctx);
-    handle_hotkeys(ctx);
-    // Service any HUD-button cast requests queued last frame. Runs after
-    // handle_orders so a targeting-mode click started last frame still
-    // resolves first, and before handle_camera because this call may
-    // submit a command or enter targeting mode that subsequent frame-
-    // based logic should see.
-    if (!m_pending_ability.empty()) {
-        std::string id = std::move(m_pending_ability);
+    if (ctx.user_control_enabled) {
+        handle_selection(ctx);
+        handle_orders(ctx);
+        handle_hotkeys(ctx);
+        if (!m_pending_ability.empty()) {
+            std::string id = std::move(m_pending_ability);
+            m_pending_ability.clear();
+            dispatch_ability(ctx, id, false);
+        }
+        if (!m_pending_command.empty()) {
+            std::string id = std::move(m_pending_command);
+            m_pending_command.clear();
+            dispatch_command(ctx, id);
+        }
+        if (!m_pending_build.empty()) {
+            std::string id = std::move(m_pending_build);
+            m_pending_build.clear();
+            dispatch_build(ctx, id);
+        }
+    } else {
         m_pending_ability.clear();
-        dispatch_ability(ctx, id, false);
-    }
-    if (!m_pending_command.empty()) {
-        std::string id = std::move(m_pending_command);
         m_pending_command.clear();
-        dispatch_command(ctx, id);
-    }
-    if (!m_pending_build.empty()) {
-        std::string id = std::move(m_pending_build);
         m_pending_build.clear();
-        dispatch_build(ctx, id);
+        cancel_targeting();
     }
     handle_camera(ctx, dt);
 }

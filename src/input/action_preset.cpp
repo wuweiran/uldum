@@ -11,55 +11,49 @@ namespace uldum::input {
 using simulation::GameCommand;
 
 void ActionPreset::update(const InputContext& ctx, f32 /*dt*/) {
-    // Targeting first so a click commits the armed ability before any
-    // other handler sees it. Movement runs only when the click wasn't
-    // consumed — otherwise the click frame's "no WASD" reading would
-    // emit a Stop and override the Cast we just submitted. Queued
-    // ability flushes last; camera follow runs after so it sees any
-    // position change the tick will produce.
-    bool click_consumed = handle_targeting(ctx);
-    if (!click_consumed) handle_focus_click(ctx);
-    if (!click_consumed) handle_movement(ctx);
-    // Skipped when targeting consumed this frame's right-click (cancel > pickup).
-    if (!click_consumed) handle_pickup_click(ctx);
+    if (ctx.user_control_enabled) {
+        bool click_consumed = handle_targeting(ctx);
+        if (!click_consumed) handle_focus_click(ctx);
+        if (!click_consumed) handle_movement(ctx);
+        if (!click_consumed) handle_pickup_click(ctx);
 
-    if (!m_pending_ability.empty()) {
-        std::string id = std::move(m_pending_ability);
-        m_pending_ability.clear();
-        dispatch_ability(ctx, id, false);
-    }
+        if (!m_pending_ability.empty()) {
+            std::string id = std::move(m_pending_ability);
+            m_pending_ability.clear();
+            dispatch_ability(ctx, id, false);
+        }
 
-    if (!m_pending_command.empty()) {
-        std::string id = std::move(m_pending_command);
-        m_pending_command.clear();
-        // Action preset's command bar fires through here. Targets resolve
-        // via the HUD's focus_target so a tap on "Attack" switches the
-        // unit to whatever the reticle is on. Without focus we drop the
-        // command — desktop attack-targeting via "click slot, then click
-        // world" isn't part of the Action preset's mental model.
-        if (id == "stop") {
-            GameCommand cmd;
-            cmd.player = ctx.selection.player();
-            cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
-            cmd.order  = simulation::orders::Stop{};
-            ctx.commands.submit(cmd);
-        } else if (id == "hold_position") {
-            GameCommand cmd;
-            cmd.player = ctx.selection.player();
-            cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
-            cmd.order  = simulation::orders::HoldPosition{};
-            ctx.commands.submit(cmd);
-        } else if (id == "attack" && ctx.hud) {
-            auto focus = ctx.hud->focus_target();
-            if (simulation::is_non_null_handle(focus) && ctx.simulation.world().contains(focus) &&
-                !ctx.selection.empty()) {
+        if (!m_pending_command.empty()) {
+            std::string id = std::move(m_pending_command);
+            m_pending_command.clear();
+            if (id == "stop") {
                 GameCommand cmd;
                 cmd.player = ctx.selection.player();
                 cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
-                cmd.order  = simulation::orders::Attack{focus};
+                cmd.order  = simulation::orders::Stop{};
                 ctx.commands.submit(cmd);
+            } else if (id == "hold_position") {
+                GameCommand cmd;
+                cmd.player = ctx.selection.player();
+                cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
+                cmd.order  = simulation::orders::HoldPosition{};
+                ctx.commands.submit(cmd);
+            } else if (id == "attack" && ctx.hud) {
+                auto focus = ctx.hud->focus_target();
+                if (simulation::is_non_null_handle(focus) && ctx.simulation.world().contains(focus) &&
+                    !ctx.selection.empty()) {
+                    GameCommand cmd;
+                    cmd.player = ctx.selection.player();
+                    cmd.units  = ctx.selection.selected_units(ctx.simulation.world());
+                    cmd.order  = simulation::orders::Attack{focus};
+                    ctx.commands.submit(cmd);
+                }
             }
         }
+    } else {
+        m_pending_ability.clear();
+        m_pending_command.clear();
+        cancel_targeting();
     }
 
     handle_camera_gestures(ctx);

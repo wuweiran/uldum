@@ -122,6 +122,13 @@ public:
     // running for every map.
     void set_preset_name(std::string_view name);
 
+    void set_user_control_enabled_for(u32 players_mask, bool enabled,
+                                      bool synchronize = true);
+    bool user_control_enabled() const;
+    void set_origin_hud_visible_for(u32 players_mask, bool visible,
+                                    bool synchronize = true);
+    bool origin_hud_visible() const;
+
     // Real-world-sized HUD authoring. The canonical unit is Android's
     // `dp` (1 dp = 1/160 inch). Every `"w": 50` in hud.json renders at
     // 50/160 inch on any device, regardless of resolution or density.
@@ -530,7 +537,6 @@ public:
     // Minimap composite — schematic top-down view of the world. v1 is
     // bg + border + unit dots (fog-filtered) + click-to-jump camera.
     void set_minimap_config(const MinimapConfig& cfg);
-    void minimap_set_visible(bool visible);
     bool minimap_enabled() const;
 
     // Fired when the player clicks inside the minimap. Coords are world
@@ -577,7 +583,6 @@ public:
     void inventory_set_visible(bool visible);
 
     void set_pickup_bar_config(const PickupBarConfig& cfg);
-    void pickup_bar_set_visible(bool visible);
     void pickup_bar_update();
 
     using PickupFn = std::function<void(simulation::Unit unit, simulation::Item item)>;
@@ -685,7 +690,6 @@ public:
     // and feeds it to the camera. Touch-and-mouse input both drive it;
     // desktop maps simply don't declare the composite.
     void set_joystick_config(const JoystickConfig& cfg);
-    void joystick_set_visible(bool visible);
     void joystick_update(const platform::InputState& input);
     void joystick_vector(f32& dx, f32& dy) const;
     // True if the joystick currently owns a finger / mouse button. Used

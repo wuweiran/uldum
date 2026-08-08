@@ -114,10 +114,10 @@ Engine composites are singletons. All have a Lua content API; none accept style 
 |---|---|---|
 | `action_bar` | ability-button slot group. Each slot shows icon / cooldown ring / hotkey badge / disabled overlay for the selected unit ability assigned to it. Click / hotkey issues the ability. | unit ability slot APIs |
 | `command_bar` | engine-command slot group (Attack, Move, Stop, Hold, Patrol). Click / hotkey issues the order. | no Lua binding — purely map-authored |
-| `minimap` | Scaled terrain + fog + entity dots + click-to-pan. | `MinimapSetVisible` |
+| `minimap` | Scaled terrain + fog + entity dots + click-to-pan. | engine-driven |
 | `joystick` | Virtual analog stick (mobile only; desktop skips it at load). | reads output vector; no Lua binding needed |
 | `inventory` | Selected unit's carried-item slots. | engine-driven |
-| `pickup_bar` | Nearby ground-item buttons for the lead selected unit (mobile only). | `PickupBarSetVisible` |
+| `pickup_bar` | Nearby ground-item buttons for the lead selected unit (mobile only). | engine-driven |
 
 Deferred composites (may ship later; v1 doesn't include them):
 
@@ -194,8 +194,10 @@ This applies to every visual style field across every atom and composite. A few 
 HUD Lua follows the same flat global-function naming as the rest of the engine's scripting API. No OOP-style `Object:Method()` — every function is a global with a verb-noun-ish name, first argument is the subject when relevant.
 
 - Node handles are values returned by `GetNode` / `CreateNode` / composite accessors; pass them as arguments.
-- Composites are singletons; their APIs are named-prefixed (for example, `MinimapSetVisible`).
+- Composites are singletons; `SetOriginHUDVisible` controls their cinematic visibility as one group.
 - Atoms' content setters take a node handle (`SetLabelText(node, text)`).
+
+`EnableUserControl(players, enabled)` disables gameplay selection, orders, ability/command/inventory actions, and gameplay hotkeys while camera movement and simulation remain active. `SetOriginHUDVisible(players, visible)` hides engine composites, world health/name overlays, selection and targeting feedback, and origin tooltips/cursors. Custom nodes and text tags remain visible; maps close custom shop/menu trees explicitly when entering a cinematic. Both states are per-player and replay on reconnect.
 
 ```lua
 -- Node lookup
@@ -222,9 +224,6 @@ DestroyNode(id)
 local trig = CreateTrigger()
 TriggerRegisterNodeEvent(trig, GetNode("ready_button"), EVENT_BUTTON_PRESSED)
 TriggerAddAction(trig, function() StartGame() end)
-
--- minimap composite
-MinimapSetVisible(true)
 
 ```
 
@@ -277,7 +276,7 @@ Hardcoded behavior:
 - Output vector is `(knob_offset / max_radius)` with magnitude in `[0, 1]`; magnitudes below `dead_zone` report as zero.
 - Release → knob returns to center, output zeros.
 
-Lua API: `JoystickSetVisible(bool)`. No content API for reading the vector — the input preset handles that internally.
+The input preset reads the joystick vector internally. `SetOriginHUDVisible` hides it with the other engine-owned HUD during cinematics.
 
 ### `pickup_bar`
 
@@ -318,7 +317,7 @@ The `list` style generates full-width rows automatically. Each whole row is tapp
 
 For list style, `h` is derived from padding, row height, gap, and `max_rows`; an authored `slots` array is ignored. `discovery_radius` only controls when entries appear—the simulation remains responsible for walking into claim range and completing the transfer.
 
-Lua API: `PickupBarSetVisible(bool)`. The declaration is ignored on desktop, where world-item right-click already issues the same order.
+The declaration is ignored on desktop, where world-item right-click already issues the same order. `SetOriginHUDVisible` hides it with the other engine-owned HUD during cinematics.
 
 Deferred:
 
@@ -355,7 +354,7 @@ Hardcoded behavior:
 - Left-click (or tap on mobile) → pans camera to that world point.
 - Dot color picked by alliance relationship (self / ally / enemy / neutral). `structure` size overrides for buildings regardless of alliance; color still follows relationship.
 
-Lua API: `MinimapSetVisible(bool)`. No per-entity marker API, no programmatic ping — additions land when a real use case appears.
+`SetOriginHUDVisible` hides the minimap with the other engine-owned HUD during cinematics. There is no per-entity marker API or programmatic ping.
 
 ## Subphase design
 

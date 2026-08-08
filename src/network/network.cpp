@@ -856,8 +856,7 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         if (m_set_controlled_unit_recv_fn) m_set_controlled_unit_recv_fn(entity_id);
         break;
     }
-
-    // HUD sync — opcodes 0x70..0x78. Forward the raw payload to the
+    // HUD sync — opcodes 0x70..0x7D. Forward the raw payload to the
     // App-installed handler (which invokes hud::apply_network_message).
     // Keeping the decode out of NetworkManager lets the server drop the
     // hud library entirely.
@@ -871,7 +870,9 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
     case MsgType::S_HUD_CREATE_TEXT_TAG:
     case MsgType::S_HUD_DESTROY_TEXT_TAG:
     case MsgType::S_HUD_SET_TEXT_TAG_TEXT:
-    case MsgType::S_HUD_DISPLAY_MESSAGE: {
+    case MsgType::S_HUD_DISPLAY_MESSAGE:
+    case MsgType::S_USER_CONTROL_ENABLED:
+    case MsgType::S_ORIGIN_HUD_VISIBLE: {
         if (m_hud_message_fn) m_hud_message_fn(data);
         break;
     }

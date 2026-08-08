@@ -152,6 +152,26 @@ bool apply_network_message(Hud& hud, std::span<const u8> data) {
         hud.display_message(std::move(loc), duration);
         return true;
     }
+    case network::MsgType::S_USER_CONTROL_ENABLED: {
+        network::ByteReader r(data);
+        r.read_u8();
+        u32 player = hud.local_player();
+        if (player < 32) {
+            hud.set_user_control_enabled_for(
+                1u << player, r.read_bool(), false);
+        }
+        return true;
+    }
+    case network::MsgType::S_ORIGIN_HUD_VISIBLE: {
+        network::ByteReader r(data);
+        r.read_u8();
+        u32 player = hud.local_player();
+        if (player < 32) {
+            hud.set_origin_hud_visible_for(
+                1u << player, r.read_bool(), false);
+        }
+        return true;
+    }
     default:
         return false;
     }

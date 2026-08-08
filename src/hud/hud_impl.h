@@ -50,6 +50,10 @@ struct Hud::Impl {
     u32 physical_h = 0;
     f32 ui_scale = 1.0f;
     bool is_mobile = false;
+    bool user_control_enabled = true;
+    bool origin_hud_visible = true;
+    u32 user_control_disabled_mask = 0;
+    u32 origin_hud_hidden_mask = 0;
     Hud::SafeInsets safe_insets{};
 
     // Retained widget tree. Root Panel is always present; its rect is

@@ -2455,6 +2455,8 @@ void HudRenderer::draw_tree() {
     if (!s.root) return;
 
     s.root->draw(*this);
+    if (!s.origin_hud_visible) return;
+
     draw_action_bar(r, s);
     draw_command_bar(r, s);
     draw_inventory(r, s);
@@ -2529,8 +2531,10 @@ void HudRenderer::draw_world_overlays(f32 alpha) {
     if (!r.frame_open) return;
     auto& s = *m_hud->impl();
     if (!s.world_ctx) return;
-    draw_entity_bars_impl(*this, s.screen_w, s.screen_h, s.world_cfg, *s.world_ctx, alpha);
-    draw_unit_name_label_impl(*this, s.screen_w, s.screen_h, s.world_cfg, *s.world_ctx, alpha);
+    if (s.origin_hud_visible) {
+        draw_entity_bars_impl(*this, s.screen_w, s.screen_h, s.world_cfg, *s.world_ctx, alpha);
+        draw_unit_name_label_impl(*this, s.screen_w, s.screen_h, s.world_cfg, *s.world_ctx, alpha);
+    }
     draw_text_tags(r, s, *s.world_ctx, alpha);
 }
 

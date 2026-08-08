@@ -150,7 +150,6 @@ public:
     void set_set_controlled_unit_fn(SetControlledUnitFn fn) { m_set_controlled_unit_fn = std::move(fn); }
     SetControlledUnitFn& set_controlled_unit_fn() { return m_set_controlled_unit_fn; }
 
-
     // Per-player scripted-camera routing. App installs these and routes
     // the `players_mask` (parsed from Lua's `players` arg via
     // parse_players_mask) per set bit — applying locally for the host's

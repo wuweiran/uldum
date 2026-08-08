@@ -3174,12 +3174,16 @@ void ScriptEngine::bind_hud_api() {
     lua["ShowNode"] = [this](const std::string& id) { if (m_hud) m_hud->set_node_visible(id, true);  };
     lua["HideNode"] = [this](const std::string& id) { if (m_hud) m_hud->set_node_visible(id, false); };
 
-    // ── Composite visibility ─────────────────────────────────────────
-    // No content API beyond visibility for these — the engine drives
-    // their per-frame state internally.
-    lua["MinimapSetVisible"]  = [this](bool v) { if (m_hud) m_hud->minimap_set_visible(v);  };
-    lua["JoystickSetVisible"] = [this](bool v) { if (m_hud) m_hud->joystick_set_visible(v); };
-    lua["PickupBarSetVisible"] = [this](bool v) { if (m_hud) m_hud->pickup_bar_set_visible(v); };
+    lua["EnableUserControl"] = [this](sol::object players, bool enabled) {
+        if (!m_hud) return;
+        u32 mask = parse_players_mask(players);
+        m_hud->set_user_control_enabled_for(mask, enabled);
+    };
+    lua["SetOriginHUDVisible"] = [this](sol::object players, bool visible) {
+        if (!m_hud) return;
+        u32 mask = parse_players_mask(players);
+        m_hud->set_origin_hud_visible_for(mask, visible);
+    };
 
     // CreateNode(template_id, { anchor, x, y, w, h, owner }): instantiate
     // a template defined in the map's hud.json `nodes` block at the

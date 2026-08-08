@@ -37,6 +37,7 @@ struct InputContext {
     const simulation::IWorldView& view;
     u32 screen_w;
     u32 screen_h;
+    bool user_control_enabled = true;
     // True when the HUD has captured pointer input for this frame (hover
     // over a slot or tree widget, or a press ongoing over one). Presets
     // use this to skip pointer-initiated gameplay actions — selection

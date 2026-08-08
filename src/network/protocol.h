@@ -148,6 +148,8 @@ enum class MsgType : u8 {
     S_HUD_DISPLAY_MESSAGE     = 0x78, // queue one line into composites.display_message
     S_HUD_DESTROY_TEXT_TAG    = 0x79, // remove a permanent text tag by shared ECS id
     S_HUD_SET_TEXT_TAG_TEXT   = 0x7B,
+    S_USER_CONTROL_ENABLED    = 0x7C, // enabled: bool
+    S_ORIGIN_HUD_VISIBLE      = 0x7D, // visible: bool
 
     // Playing — audio (script-initiated). Sim sound effects from the
     // combat / ability systems use S_SOUND directly; these mirror the
@@ -1137,6 +1139,20 @@ inline std::vector<u8> build_set_controlled_unit(u32 entity_id) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_SET_CONTROLLED_UNIT));
     w.write_u32(entity_id);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_user_control_enabled(bool enabled) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_USER_CONTROL_ENABLED));
+    w.write_bool(enabled);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_origin_hud_visible(bool visible) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_ORIGIN_HUD_VISIBLE));
+    w.write_bool(visible);
     return std::move(w.data());
 }
 

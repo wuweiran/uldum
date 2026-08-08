@@ -372,6 +372,10 @@ void Hud::reset_session_state() {
     s.pointer_x = 0;
     s.pointer_y = 0;
     s.pointer_down_prev = false;
+    s.user_control_enabled = true;
+    s.origin_hud_visible = true;
+    s.user_control_disabled_mask = 0;
+    s.origin_hud_hidden_mask = 0;
 
     // Local player will be set again by App on session start.
     s.local_player = UINT32_MAX;
@@ -401,11 +405,94 @@ void Hud::reset_session_state() {
 }
 
 void Hud::set_local_player(u32 player_id) {
-    if (m_impl) m_impl->local_player = player_id;
+    if (!m_impl) return;
+    m_impl->local_player = player_id;
+    if (player_id < 32) {
+        u32 bit = 1u << player_id;
+        m_impl->user_control_enabled = !(m_impl->user_control_disabled_mask & bit);
+        m_impl->origin_hud_visible = !(m_impl->origin_hud_hidden_mask & bit);
+    }
 }
 void Hud::set_preset_name(std::string_view name) {
     if (m_impl) m_impl->preset.assign(name);
 }
+
+void Hud::set_user_control_enabled_for(u32 players_mask, bool enabled,
+                                       bool synchronize) {
+    if (!m_impl) return;
+    if (enabled) m_impl->user_control_disabled_mask &= ~players_mask;
+    else m_impl->user_control_disabled_mask |= players_mask;
+    if (synchronize) {
+        emit_sync(*m_impl, uldum::network::build_user_control_enabled(enabled), players_mask);
+    }
+    if (m_impl->local_player >= 32 ||
+        !(players_mask & (1u << m_impl->local_player))) return;
+
+    m_impl->user_control_enabled = enabled;
+    if (m_impl->hover) {
+        m_impl->hover->on_hover_change(false);
+        m_impl->hover = nullptr;
+    }
+    m_impl->pressed = nullptr;
+    if (!enabled) {
+        m_impl->drag_cast = Impl::DragCastState{};
+        m_impl->build_panel_open = false;
+        m_impl->minimap_dragging = false;
+        m_impl->joystick_rt = JoystickRuntime{};
+        m_impl->action_bar_hover_slot = -1;
+        m_impl->action_bar_pressed_slot = -1;
+        m_impl->command_bar_hover_slot = -1;
+        m_impl->command_bar_pressed_slot = -1;
+        m_impl->build_bar_hover_slot = -1;
+        m_impl->build_bar_pressed_slot = -1;
+        m_impl->inventory_hover_slot = -1;
+        m_impl->inventory_pressed_slot = -1;
+        m_impl->pickup_bar_hover_slot = -1;
+        m_impl->pickup_bar_pressed_slot = -1;
+        cancel_held_item();
+    }
+}
+
+bool Hud::user_control_enabled() const {
+    return m_impl && m_impl->user_control_enabled;
+}
+
+void Hud::set_origin_hud_visible_for(u32 players_mask, bool visible,
+                                     bool synchronize) {
+    if (!m_impl) return;
+    if (visible) m_impl->origin_hud_hidden_mask &= ~players_mask;
+    else m_impl->origin_hud_hidden_mask |= players_mask;
+    if (synchronize) {
+        emit_sync(*m_impl, uldum::network::build_origin_hud_visible(visible), players_mask);
+    }
+    if (m_impl->local_player >= 32 ||
+        !(players_mask & (1u << m_impl->local_player))) return;
+
+    m_impl->origin_hud_visible = visible;
+    if (!visible) {
+        m_impl->drag_cast = Impl::DragCastState{};
+        m_impl->build_panel_open = false;
+        m_impl->minimap_dragging = false;
+        m_impl->joystick_rt = JoystickRuntime{};
+        m_impl->tooltip = Impl::TooltipState{};
+        m_impl->action_bar_hover_slot = -1;
+        m_impl->action_bar_pressed_slot = -1;
+        m_impl->command_bar_hover_slot = -1;
+        m_impl->command_bar_pressed_slot = -1;
+        m_impl->build_bar_hover_slot = -1;
+        m_impl->build_bar_pressed_slot = -1;
+        m_impl->inventory_hover_slot = -1;
+        m_impl->inventory_pressed_slot = -1;
+        m_impl->pickup_bar_hover_slot = -1;
+        m_impl->pickup_bar_pressed_slot = -1;
+        cancel_held_item();
+    }
+}
+
+bool Hud::origin_hud_visible() const {
+    return m_impl && m_impl->origin_hud_visible;
+}
+
 u32 Hud::local_player() const {
     return m_impl ? m_impl->local_player : UINT32_MAX;
 }
@@ -513,6 +600,15 @@ void Hud::register_instantiated_tree(std::string id, std::string_view anchor,
 void Hud::emit_state_to(const ReplaySend& send) {
     if (!m_impl) return;
     auto& s = *m_impl;
+
+    if (s.user_control_disabled_mask) {
+        send(uldum::network::build_user_control_enabled(false),
+             s.user_control_disabled_mask);
+    }
+    if (s.origin_hud_hidden_mask) {
+        send(uldum::network::build_origin_hud_visible(false),
+             s.origin_hud_hidden_mask);
+    }
 
     // Persistent Lua-created node trees: re-emit the create, then the current
     // imperative state read back from the LIVE node (identical to the packets a
@@ -1000,10 +1096,6 @@ void Hud::set_minimap_config(const MinimapConfig& cfg) {
     m_impl->minimap_rt  = MinimapRuntime{};
 }
 
-void Hud::minimap_set_visible(bool visible) {
-    if (m_impl) m_impl->minimap_rt.visible = visible;
-}
-
 bool Hud::minimap_enabled() const {
     return m_impl && m_impl->minimap_cfg.enabled;
 }
@@ -1074,10 +1166,6 @@ void Hud::set_pickup_bar_config(const PickupBarConfig& cfg) {
     m_impl->pickup_bar_rt = PickupBarRuntime{};
     m_impl->pickup_bar_hover_slot = -1;
     m_impl->pickup_bar_pressed_slot = -1;
-}
-
-void Hud::pickup_bar_set_visible(bool visible) {
-    if (m_impl) m_impl->pickup_bar_rt.visible = visible;
 }
 
 void Hud::set_pickup_fn(PickupFn fn) {
@@ -1334,6 +1422,7 @@ void Hud::set_inventory_swap_fn(InventorySwapFn fn) {
 bool Hud::handle_right_click(f32 x, f32 y) {
     if (!m_impl) return false;
     auto& s = *m_impl;
+    if (!s.user_control_enabled) return false;
     f32 inv_s = 1.0f / s.ui_scale;  // ui_scale clamped > 0 at its sole writer (set_ui_scale)
     f32 dpx = x * inv_s, dpy = y * inv_s;
 
@@ -1496,10 +1585,6 @@ const CastIndicatorStyle& Hud::cast_indicator_style() const {
     return m_impl ? m_impl->cast_indicator_cfg.style : kDefaultFallback;
 }
 
-void Hud::joystick_set_visible(bool visible) {
-    if (m_impl) m_impl->joystick_rt.visible = visible;
-}
-
 void Hud::joystick_vector(f32& dx, f32& dy) const {
     if (!m_impl) { dx = 0; dy = 0; return; }
     dx = m_impl->joystick_rt.out_x;
@@ -1529,6 +1614,10 @@ void Hud::joystick_update(const platform::InputState& input) {
     auto& s = *m_impl;
     auto& cfg = s.joystick_cfg;
     auto& rt  = s.joystick_rt;
+    if (!s.user_control_enabled) {
+        rt = JoystickRuntime{};
+        return;
+    }
 
     // Default: no output. Set below if a finger is driving the stick.
     rt.out_x = 0.0f;
@@ -1760,6 +1849,7 @@ static bool action_bar_cancel_zone_contains(const Hud::Impl& s,
 void Hud::action_bar_drag_update(const platform::InputState& input) {
     if (!m_impl) return;
     auto& s = *m_impl;
+    if (!s.user_control_enabled) return;
     if (!s.is_mobile) return;
     if (s.drag_cast.phase == Impl::DragCastPhase::Idle) return;
     if (!s.world_ctx || !s.world_ctx->camera || !s.world_ctx->world) return;
@@ -2489,6 +2579,7 @@ Hud::AbilityAimState Hud::aim_state() const {
 void Hud::handle_hotkeys(const platform::InputState& input) {
     if (!m_impl) return;
     auto& s = *m_impl;
+    if (!s.user_control_enabled) return;
 
     // Build sub-panel owns the keyboard while open. Auto-close if the
     // selected unit no longer owns the Build ability that opened it (e.g.
@@ -2793,16 +2884,18 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
     // panel is closed, so this is a no-op otherwise. Note: build_bar_hit_test
     // can return BUILD_CANCEL_HIT (-2) for the dismiss button, so "hit" is
     // `!= -1`, not `>= 0`.
-    i32  build_slot  = allow_hit_test ? build_bar_hit_test(s, x, y) : -1;
+    bool origin_hit_test = allow_hit_test && s.user_control_enabled &&
+                           s.origin_hud_visible;
+    i32  build_slot  = origin_hit_test ? build_bar_hit_test(s, x, y) : -1;
     bool build_hit   = (build_slot != -1);
-    i32  pickup_slot = (allow_hit_test && !build_hit) ? pickup_bar_hit_test(s, x, y) : -1;
-    i32  inv_slot    = (allow_hit_test && !build_hit && pickup_slot < 0) ? inventory_hit_test(s, x, y) : -1;
-    i32  cmd_slot    = (allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
-    i32  bar_slot    = (allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0)
+    i32  pickup_slot = (origin_hit_test && !build_hit) ? pickup_bar_hit_test(s, x, y) : -1;
+    i32  inv_slot    = (origin_hit_test && !build_hit && pickup_slot < 0) ? inventory_hit_test(s, x, y) : -1;
+    i32  cmd_slot    = (origin_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0) ? command_bar_hit_test(s, x, y) : -1;
+    i32  bar_slot    = (origin_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0)
                          ? action_bar_hit_test(s, x, y) : -1;
-    bool on_minimap  = allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
+    bool on_minimap  = origin_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
                         bar_slot < 0 && minimap_hit_test(s, x, y);
-    bool on_joystick = allow_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
+    bool on_joystick = origin_hit_test && !build_hit && pickup_slot < 0 && inv_slot < 0 && cmd_slot < 0 &&
                        bar_slot < 0 && !on_minimap &&
                        (s.joystick_rt.captured_slot == 0
                         || joystick_hit_test_point(s.joystick_cfg, x, y));
