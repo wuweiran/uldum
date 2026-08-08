@@ -531,6 +531,7 @@ public:
     // bg + border + unit dots (fog-filtered) + click-to-jump camera.
     void set_minimap_config(const MinimapConfig& cfg);
     void minimap_set_visible(bool visible);
+    bool minimap_enabled() const;
 
     // Fired when the player clicks inside the minimap. Coords are world
     // X / Y in the ground plane (z = 0). App wires this to a camera

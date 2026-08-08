@@ -679,8 +679,10 @@ bool Engine::start_session() {
     m_renderer.set_environment(m_map.manifest().environment);
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(&m_map.terrain());
-        m_hud_renderer.set_minimap_terrain(
-            m_map.terrain(), m_map.tileset(), m_map.map_root());
+        if (m_hud.minimap_enabled()) {
+            m_hud_renderer.set_minimap_terrain(
+                m_map.terrain(), m_map.tileset(), m_map.map_root());
+        }
     }
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
@@ -1553,8 +1555,10 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
 
     if (m_map.terrain().is_valid()) {
         m_renderer.set_terrain(&m_map.terrain());
-        m_hud_renderer.set_minimap_terrain(
-            m_map.terrain(), m_map.tileset(), m_map.map_root());
+        if (m_hud.minimap_enabled()) {
+            m_hud_renderer.set_minimap_terrain(
+                m_map.terrain(), m_map.tileset(), m_map.map_root());
+        }
     }
 
     // Re-pose camera from the new scene's authored start camera.
@@ -2229,9 +2233,11 @@ void Engine::run() {
                     simulation::Player local{m_args.local_slot};
                     const f32* visual = vision.update_visual(local, frame_dt);
                     m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
-                    m_hud_renderer.set_minimap_fog(
-                        vision.grid(local), vision.tiles_x(), vision.tiles_y());
-                } else {
+                    if (m_hud.minimap_enabled()) {
+                        m_hud_renderer.set_minimap_fog(
+                            vision.grid(local), vision.tiles_x(), vision.tiles_y());
+                    }
+                } else if (m_hud.minimap_enabled()) {
                     m_hud_renderer.set_minimap_fog(nullptr, 0, 0);
                 }
             } else {
@@ -2243,9 +2249,11 @@ void Engine::run() {
                     simulation::Player local{m_args.local_slot};
                     const f32* visual = vision.update_visual(local, frame_dt);
                     m_renderer.set_fog_grid(visual, vision.tiles_x(), vision.tiles_y());
-                    m_hud_renderer.set_minimap_fog(
-                        vision.grid(local), vision.tiles_x(), vision.tiles_y());
-                } else {
+                    if (m_hud.minimap_enabled()) {
+                        m_hud_renderer.set_minimap_fog(
+                            vision.grid(local), vision.tiles_x(), vision.tiles_y());
+                    }
+                } else if (m_hud.minimap_enabled()) {
                     m_hud_renderer.set_minimap_fog(nullptr, 0, 0);
                 }
             }
@@ -2278,7 +2286,9 @@ void Engine::run() {
             rhi::CommandList cmd = m_rhi.begin_frame();
             if (cmd.is_valid() && m_rhi.extent().width > 0 && m_rhi.extent().height > 0) {
                 m_renderer.upload_fog(cmd);
-                m_hud_renderer.upload_minimap_fog(cmd);
+                if (m_hud.minimap_enabled()) {
+                    m_hud_renderer.upload_minimap_fog(cmd);
+                }
                 m_renderer.draw_shadows(cmd, world, alpha);
                 m_rhi.begin_rendering();
 

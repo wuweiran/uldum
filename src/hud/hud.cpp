@@ -1004,6 +1004,10 @@ void Hud::minimap_set_visible(bool visible) {
     if (m_impl) m_impl->minimap_rt.visible = visible;
 }
 
+bool Hud::minimap_enabled() const {
+    return m_impl && m_impl->minimap_cfg.enabled;
+}
+
 void Hud::set_minimap_jump_fn(MinimapJumpFn fn) {
     if (m_impl) m_impl->minimap_jump_fn = std::move(fn);
 }
