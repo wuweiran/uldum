@@ -150,40 +150,37 @@ public:
     void set_set_controlled_unit_fn(SetControlledUnitFn fn) { m_set_controlled_unit_fn = std::move(fn); }
     SetControlledUnitFn& set_controlled_unit_fn() { return m_set_controlled_unit_fn; }
 
-    // Per-player scripted-camera routing. App installs these and routes
-    // the `players_mask` (parsed from Lua's `players` arg via
-    // parse_players_mask) per set bit — applying locally for the host's
-    // own slot and sending a packet to each remote slot. Pitch/yaw are
-    // radians on the C++ side; Lua converts from degrees.
-    // Lua surface: GetCameraSetup, CameraSetupApply,
-    // CameraSetTargetPosition, CameraSetSourceDistance,
-    // CameraSetTargetController, CameraShake.
-    using CameraApplySetupFn         = std::function<void(u32 players_mask,
-                                                           f32 tx, f32 ty, f32 tz,
-                                                           f32 distance,
-                                                           f32 pitch_rad, f32 yaw_rad,
-                                                           f32 duration)>;
-    using CameraSetTargetPositionFn  = std::function<void(u32 players_mask,
-                                                           f32 x, f32 y, f32 z, f32 duration)>;
-    using CameraSetSourceDistanceFn  = std::function<void(u32 players_mask,
-                                                           f32 distance, f32 duration)>;
-    using CameraShakeFn              = std::function<void(u32 players_mask,
-                                                           f32 intensity, f32 duration)>;
-    using CameraSetTargetControllerFn = std::function<void(u32 players_mask,
-                                                            simulation::Unit unit)>;
-    void set_camera_apply_setup_fn        (CameraApplySetupFn fn)         { m_camera_apply_setup_fn          = std::move(fn); }
-    void set_camera_set_target_position_fn(CameraSetTargetPositionFn fn)  { m_camera_set_target_position_fn  = std::move(fn); }
-    void set_camera_set_source_distance_fn(CameraSetSourceDistanceFn fn)  { m_camera_set_source_distance_fn  = std::move(fn); }
-    void set_camera_shake_fn              (CameraShakeFn fn)              { m_camera_shake_fn                = std::move(fn); }
-    void set_camera_set_target_controller_fn(CameraSetTargetControllerFn fn) { m_camera_set_target_controller_fn = std::move(fn); }
+    using CameraApplySetupFn = std::function<void(
+        u32 players_mask, f32 tx, f32 ty, f32 tz, f32 distance,
+        f32 pitch_rad, f32 yaw_rad, f32 duration)>;
+    using CameraPanFn = std::function<void(
+        u32 players_mask, u8 mode, f32 x, f32 y, f32 z, f32 duration)>;
+    using CameraFieldFn = std::function<void(
+        u32 players_mask, u8 field, f32 value, f32 duration)>;
+    using CameraTargetControllerFn = std::function<void(
+        u32 players_mask, simulation::Unit unit, f32 x_offset,
+        f32 y_offset, bool inherit_orientation)>;
+    using CameraSimpleFn = std::function<void(u32 players_mask)>;
+    using CameraResetFn = std::function<void(u32 players_mask, f32 duration)>;
+    using CameraShakeFn = std::function<void(
+        u32 players_mask, f32 intensity, f32 duration)>;
+    void set_camera_apply_setup_fn(CameraApplySetupFn fn) { m_camera_apply_setup_fn = std::move(fn); }
+    void set_camera_pan_fn(CameraPanFn fn) { m_camera_pan_fn = std::move(fn); }
+    void set_camera_field_fn(CameraFieldFn fn) { m_camera_field_fn = std::move(fn); }
+    void set_camera_adjust_field_fn(CameraFieldFn fn) { m_camera_adjust_field_fn = std::move(fn); }
+    void set_camera_target_controller_fn(CameraTargetControllerFn fn) { m_camera_target_controller_fn = std::move(fn); }
+    void set_camera_stop_fn(CameraSimpleFn fn) { m_camera_stop_fn = std::move(fn); }
+    void set_camera_reset_fn(CameraResetFn fn) { m_camera_reset_fn = std::move(fn); }
+    void set_camera_shake_fn(CameraShakeFn fn) { m_camera_shake_fn = std::move(fn); }
 
-    // Getters for chaining: wire_to_network installs the send-half, the host
-    // wraps it with a local camera-controller apply (see wire_host_broadcasts).
-    CameraApplySetupFn&          camera_apply_setup_fn()          { return m_camera_apply_setup_fn; }
-    CameraSetTargetPositionFn&   camera_set_target_position_fn()  { return m_camera_set_target_position_fn; }
-    CameraSetSourceDistanceFn&   camera_set_source_distance_fn()  { return m_camera_set_source_distance_fn; }
-    CameraShakeFn&               camera_shake_fn()                { return m_camera_shake_fn; }
-    CameraSetTargetControllerFn& camera_set_target_controller_fn(){ return m_camera_set_target_controller_fn; }
+    CameraApplySetupFn& camera_apply_setup_fn() { return m_camera_apply_setup_fn; }
+    CameraPanFn& camera_pan_fn() { return m_camera_pan_fn; }
+    CameraFieldFn& camera_field_fn() { return m_camera_field_fn; }
+    CameraFieldFn& camera_adjust_field_fn() { return m_camera_adjust_field_fn; }
+    CameraTargetControllerFn& camera_target_controller_fn() { return m_camera_target_controller_fn; }
+    CameraSimpleFn& camera_stop_fn() { return m_camera_stop_fn; }
+    CameraResetFn& camera_reset_fn() { return m_camera_reset_fn; }
+    CameraShakeFn& camera_shake_fn() { return m_camera_shake_fn; }
 
 
     // Connect input systems (call after input is initialized, before scripts run).
@@ -316,11 +313,14 @@ private:
     bool effect_visible_to(const ActiveEffect& e, u32 player_id) const;
     SceneSwitchFn            m_scene_switch_fn;
     SetControlledUnitFn      m_set_controlled_unit_fn;
-    CameraApplySetupFn          m_camera_apply_setup_fn;
-    CameraSetTargetPositionFn   m_camera_set_target_position_fn;
-    CameraSetSourceDistanceFn   m_camera_set_source_distance_fn;
-    CameraShakeFn               m_camera_shake_fn;
-    CameraSetTargetControllerFn m_camera_set_target_controller_fn;
+    CameraApplySetupFn       m_camera_apply_setup_fn;
+    CameraPanFn              m_camera_pan_fn;
+    CameraFieldFn            m_camera_field_fn;
+    CameraFieldFn            m_camera_adjust_field_fn;
+    CameraTargetControllerFn m_camera_target_controller_fn;
+    CameraSimpleFn           m_camera_stop_fn;
+    CameraResetFn            m_camera_reset_fn;
+    CameraShakeFn            m_camera_shake_fn;
 
     // Input (set via set_input)
     simulation::SelectionState* m_selection = nullptr;

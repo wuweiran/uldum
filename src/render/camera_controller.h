@@ -26,9 +26,17 @@ namespace uldum::render {
 // One controller per camera. App creates one for the local Camera; the
 // host's ScriptEngine routes per-player camera commands through it
 // (own player) or onto the wire (remote players).
+enum class CameraField : u8 {
+    TargetDistance = 0,
+    AngleOfAttack  = 2,
+    FieldOfView    = 3,
+    Rotation       = 5,
+    ZOffset        = 6,
+};
+
 class CameraController {
 public:
-    using UnitPosFn = std::function<glm::vec2(simulation::Unit unit)>;
+    using UnitPoseFn = std::function<glm::vec3(simulation::Unit unit)>;
 
     void attach(Camera* cam) { m_camera = cam; }
 
@@ -36,27 +44,33 @@ public:
     // active, the target.xy is overwritten with the unit's position
     // each frame (so target tweens on x/y get superseded). Pitch / yaw /
     // distance tweens still apply under a lock.
-    void update(f32 dt, const UnitPosFn& get_unit_xy);
+    void update(f32 dt, const UnitPoseFn& get_unit_pose);
 
     // ── Script-driven commands ───────────────────────────────────────
     // Per-axis live setters. `duration` ≤ 0 snaps the axis instantly;
     // > 0 starts a smoothstep tween on that axis over the given seconds.
     // Other axes keep their current state (no implicit reset).
 
-    // Pan target point. (x, y, z) is the world point the camera looks
-    // at; z is typically 0 (ground) but can be raised for elevated
-    // looks. Cancels the lock.
+    void set_position(f32 x, f32 y);
+    void pan_to(f32 x, f32 y);
+    void pan_to(f32 x, f32 y, f32 duration);
+    void pan_to_with_z(f32 x, f32 y, f32 z);
+    void pan_to_with_z(f32 x, f32 y, f32 z, f32 duration);
+    void set_field(CameraField field, f32 value, f32 duration);
+    void adjust_field(CameraField field, f32 delta, f32 duration);
+    void stop();
+    void reset_to_game_camera(f32 duration);
+    void set_game_camera(f32 distance, f32 pitch_rad,
+                         f32 yaw_rad, f32 fov_rad);
+
+    void set_target_controller(simulation::Unit unit, f32 x_offset,
+                               f32 y_offset, bool inherit_orientation);
+
     void set_target_position(f32 x, f32 y, f32 z, f32 duration);
-
-    // Adjust eye-to-target distance (the camera "zoom").
     void set_source_distance(f32 distance, f32 duration);
-
-    // Adjust pitch (angle of attack, radians). Future API may expose
-    // this from Lua; today it's used by setup-apply.
     void set_source_pitch_rad(f32 pitch_rad, f32 duration);
-
-    // Adjust yaw (rotation, radians). Same: used by setup-apply today.
     void set_source_yaw_rad(f32 yaw_rad, f32 duration);
+    void set_field_of_view_rad(f32 fov_rad, f32 duration);
 
     // Apply a whole CameraSetup (the cinematic primitive). Starts
     // an independent tween on every axis using the same duration.
@@ -114,9 +128,17 @@ private:
     }
 
     AxisTween<glm::vec3> m_target_tween;
+    bool m_pan_at_rate = false;
     AxisTween<f32>       m_distance_tween;
     AxisTween<f32>       m_pitch_tween;
     AxisTween<f32>       m_yaw_tween;
+    AxisTween<f32>       m_fov_tween;
+
+    f32 m_game_target_z = 0.0f;
+    f32 m_game_distance = 1650.0f;
+    f32 m_game_pitch = -0.977f;
+    f32 m_game_yaw = 0.0f;
+    f32 m_game_fov = 0.698f;
 
     // Trauma shake (applied to target.xy each frame; undone before the
     // next frame's tweens / lock to avoid compounding).
@@ -127,6 +149,9 @@ private:
 
     // Lock-to-unit (.id == UINT32_MAX = unlocked).
     simulation::Unit m_lock_unit{};
+    f32 m_lock_x_offset = 0.0f;
+    f32 m_lock_y_offset = 0.0f;
+    bool m_lock_inherit_orientation = false;
 };
 
 } // namespace uldum::render

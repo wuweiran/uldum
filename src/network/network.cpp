@@ -826,16 +826,21 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
             m_camera_apply_setup_recv_fn(tx, ty, tz, distance, pitch_rad, yaw_rad, duration);
         break;
     }
-    case MsgType::S_CAMERA_SET_TARGET_POSITION: {
+    case MsgType::S_CAMERA_PAN: {
         ByteReader r(data); r.read_u8();
+        u8 mode = r.read_u8();
         f32 x = r.read_f32(), y = r.read_f32(), z = r.read_f32(), dur = r.read_f32();
-        if (m_camera_set_target_position_recv_fn) m_camera_set_target_position_recv_fn(x, y, z, dur);
+        if (m_camera_pan_recv_fn) m_camera_pan_recv_fn(mode, x, y, z, dur);
         break;
     }
-    case MsgType::S_CAMERA_SET_SOURCE_DISTANCE: {
+    case MsgType::S_CAMERA_SET_FIELD:
+    case MsgType::S_CAMERA_ADJUST_FIELD: {
         ByteReader r(data); r.read_u8();
-        f32 distance = r.read_f32(), dur = r.read_f32();
-        if (m_camera_set_source_distance_recv_fn) m_camera_set_source_distance_recv_fn(distance, dur);
+        u8 field = r.read_u8();
+        f32 value = r.read_f32(), dur = r.read_f32();
+        auto& fn = type == MsgType::S_CAMERA_SET_FIELD
+            ? m_camera_field_recv_fn : m_camera_adjust_field_recv_fn;
+        if (fn) fn(field, value, dur);
         break;
     }
     case MsgType::S_CAMERA_SHAKE: {
@@ -844,10 +849,23 @@ void NetworkManager::client_on_receive(u32 /*peer_id*/, std::span<const u8> data
         if (m_camera_shake_recv_fn) m_camera_shake_recv_fn(intensity, dur);
         break;
     }
-    case MsgType::S_CAMERA_SET_TARGET_CONTROLLER: {
+    case MsgType::S_CAMERA_TARGET_CONTROLLER: {
         ByteReader r(data); r.read_u8();
         u32 entity_id = r.read_u32();
-        if (m_camera_set_target_controller_recv_fn) m_camera_set_target_controller_recv_fn(entity_id);
+        f32 x_offset = r.read_f32(), y_offset = r.read_f32();
+        bool inherit_orientation = r.read_bool();
+        if (m_camera_target_controller_recv_fn) {
+            m_camera_target_controller_recv_fn(
+                entity_id, x_offset, y_offset, inherit_orientation);
+        }
+        break;
+    }
+    case MsgType::S_CAMERA_STOP:
+        if (m_camera_stop_recv_fn) m_camera_stop_recv_fn();
+        break;
+    case MsgType::S_CAMERA_RESET: {
+        ByteReader r(data); r.read_u8();
+        if (m_camera_reset_recv_fn) m_camera_reset_recv_fn(r.read_f32());
         break;
     }
     case MsgType::S_SET_CONTROLLED_UNIT: {

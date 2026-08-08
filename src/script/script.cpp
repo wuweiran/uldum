@@ -2077,38 +2077,63 @@ void ScriptEngine::bind_api() {
             duration.value_or(0.0f));
     };
 
-    lua["CameraSetTargetPosition"] = [this](sol::object players,
-                                              f32 x, f32 y, f32 z,
-                                              sol::optional<f32> duration) {
-        if (!m_camera_set_target_position_fn) return;
-        u32 mask = parse_players_mask(players);
-        m_camera_set_target_position_fn(mask, x, y, z, duration.value_or(0.0f));
+    lua["SetCameraPosition"] = [this](sol::object players, f32 x, f32 y) {
+        if (m_camera_pan_fn) m_camera_pan_fn(parse_players_mask(players), 0, x, y, 0.0f, 0.0f);
     };
-
-    lua["CameraSetSourceDistance"] = [this](sol::object players,
-                                              f32 distance,
-                                              sol::optional<f32> duration) {
-        if (!m_camera_set_source_distance_fn) return;
-        u32 mask = parse_players_mask(players);
-        m_camera_set_source_distance_fn(mask, distance, duration.value_or(0.0f));
+    lua["PanCameraTo"] = [this](sol::object players, f32 x, f32 y) {
+        if (m_camera_pan_fn) m_camera_pan_fn(parse_players_mask(players), 1, x, y, 0.0f, 0.0f);
     };
-
+    lua["PanCameraToTimed"] = [this](sol::object players, f32 x, f32 y, f32 duration) {
+        if (m_camera_pan_fn) m_camera_pan_fn(parse_players_mask(players), 2, x, y, 0.0f, duration);
+    };
+    lua["PanCameraToWithZ"] = [this](sol::object players, f32 x, f32 y, f32 z) {
+        if (m_camera_pan_fn) m_camera_pan_fn(parse_players_mask(players), 3, x, y, z, 0.0f);
+    };
+    lua["PanCameraToTimedWithZ"] = [this](sol::object players, f32 x, f32 y,
+                                            f32 z, f32 duration) {
+        if (m_camera_pan_fn) m_camera_pan_fn(parse_players_mask(players), 4, x, y, z, duration);
+    };
+    lua["SetCameraField"] = [this](sol::object players, u8 field,
+                                     f32 value, sol::optional<f32> duration) {
+        if (m_camera_field_fn) {
+            m_camera_field_fn(parse_players_mask(players), field, value,
+                              duration.value_or(0.0f));
+        }
+    };
+    lua["AdjustCameraField"] = [this](sol::object players, u8 field,
+                                        f32 delta, sol::optional<f32> duration) {
+        if (m_camera_adjust_field_fn) {
+            m_camera_adjust_field_fn(parse_players_mask(players), field, delta,
+                                     duration.value_or(0.0f));
+        }
+    };
+    lua["StopCamera"] = [this](sol::object players) {
+        if (m_camera_stop_fn) m_camera_stop_fn(parse_players_mask(players));
+    };
+    lua["ResetToGameCamera"] = [this](sol::object players,
+                                        sol::optional<f32> duration) {
+        if (m_camera_reset_fn) {
+            m_camera_reset_fn(parse_players_mask(players), duration.value_or(0.0f));
+        }
+    };
     lua["CameraShake"] = [this](sol::object players, f32 intensity, f32 duration) {
-        if (!m_camera_shake_fn) return;
-        u32 mask = parse_players_mask(players);
-        m_camera_shake_fn(mask, intensity, duration);
+        if (m_camera_shake_fn) {
+            m_camera_shake_fn(parse_players_mask(players), intensity, duration);
+        }
     };
-
-    // Lock target to a unit. Pass nil to release the lock; the
-    // default-constructed Unit has id = UINT32_MAX which the controller
-    // reads as "unlock".
-    lua["CameraSetTargetController"] = [this](sol::object players,
-                                                sol::optional<simulation::Unit> u) {
-        if (!m_camera_set_target_controller_fn) return;
-        u32 mask = parse_players_mask(players);
+    lua["SetCameraTargetController"] = [this](sol::object players,
+                                                sol::optional<simulation::Unit> u,
+                                                sol::optional<f32> x_offset,
+                                                sol::optional<f32> y_offset,
+                                                sol::optional<bool> inherit_orientation) {
+        if (!m_camera_target_controller_fn) return;
         simulation::Unit unit = u.value_or(simulation::Unit{});
-        if (simulation::is_non_null_handle(unit) && (!m_sim || !m_sim->world().contains(unit))) return;
-        m_camera_set_target_controller_fn(mask, unit);
+        if (simulation::is_non_null_handle(unit) &&
+            (!m_sim || !m_sim->world().contains(unit))) return;
+        m_camera_target_controller_fn(
+            parse_players_mask(players), unit,
+            x_offset.value_or(0.0f), y_offset.value_or(0.0f),
+            inherit_orientation.value_or(false));
     };
 
     // ── Vision API ────────────────────────────────────────────────────────

@@ -94,19 +94,49 @@ function main()
     local hero_y = GetUnitY(paladin)
     CreateItem("rune_book", hero_x + 50, hero_y + 60)
 
-    -- Periodic creep spawner so there's something to hit. Waves cap at
-    -- a modest count to keep the scene readable for preset testing.
-    local wave          = 0
-    local TOTAL_WAVES   = 10
-    local SPAWN_INTERVAL = 8.0
+    local function play_victory_cinematic()
+        EnableUserControl(nil, false)
+        SetOriginHUDVisible(nil, false)
 
-    -- Creeps spawn on a ring ~800–1000 units from the hero so they're
-    -- visible on-screen and engaged within a few seconds. Full map is
-    -- ±4096 but the edges are water; keep well inside.
-    CreateTimer(SPAWN_INTERVAL, true, function()
-        if wave >= TOTAL_WAVES then return end
+        local x = GetUnitX(paladin)
+        local y = GetUnitY(paladin)
+        local facing = GetUnitFacing(paladin)
+        PanCameraToTimedWithZ(nil, x, y, 208, 1.0)
+        SetCameraField(nil, CAMERA_FIELD_TARGET_DISTANCE, 260, 1.0)
+        SetCameraField(nil, CAMERA_FIELD_ANGLE_OF_ATTACK, 0, 1.0)
+        SetCameraField(nil, CAMERA_FIELD_ROTATION, facing + 180, 1.0)
+
+        CreateTimer(1.0, false, function()
+            SetUnitAnimation(paladin, "spell", true)
+        end)
+
+        CreateTimer(4.0, false, function()
+            ResetUnitAnimation(paladin)
+            ResetToGameCamera(nil, 1.0)
+            CreateTimer(1.0, false, function()
+                SetCameraTargetController(nil, paladin, 0, 0, false)
+                SetOriginHUDVisible(nil, true)
+                EnableUserControl(nil, true)
+            end)
+        end)
+    end
+
+    local wave = 0
+    local living_creeps = 0
+    local TOTAL_WAVES = 10
+    local SPAWN_INTERVAL = 8.0
+    local victory_started = false
+
+    local wave_timer
+    wave_timer = CreateTimer(SPAWN_INTERVAL, true, function()
+        if wave >= TOTAL_WAVES then
+            DestroyTimer(wave_timer)
+            return
+        end
+
         wave = wave + 1
         local count = 2 + math.floor(wave / 2)
+        living_creeps = living_creeps + count
         for i = 1, count do
             local edge = RandomInt(0, 3)
             local x, y
@@ -116,12 +146,30 @@ function main()
             else                  x, y = RandomFloat(-600, 600),  1000
             end
             local creep = CreateUnit("creep", player1, x, y, 0)
-            if creep then IssueOrder(creep, "attack", 0, 0) end
+            if creep then
+                IssueOrder(creep, "attack", 0, 0)
+            else
+                living_creeps = living_creeps - 1
+            end
         end
         Log(string.format("[Action] Wave %d/%d — %d creeps", wave, TOTAL_WAVES, count))
     end)
 
-    Log("[Action] Setup complete — use WASD to move, left-click to attack, Q for Holy Light")
+    local victory_trig = CreateTrigger()
+    TriggerRegisterEvent(victory_trig, EVENT_GLOBAL_DEATH)
+    TriggerAddCondition(victory_trig, function()
+        local unit = GetTriggerUnit()
+        return unit and GetUnitTypeId(unit) == "creep"
+    end)
+    TriggerAddAction(victory_trig, function()
+        living_creeps = living_creeps - 1
+        if not victory_started and wave >= TOTAL_WAVES and living_creeps <= 0 then
+            victory_started = true
+            play_victory_cinematic()
+        end
+    end)
+
+    Log("[Action] Setup complete — defeat every creep wave for the victory cinematic")
 end
 
 -- Rune system: enemies have a 1-in-3 chance to drop a rune_book on death.

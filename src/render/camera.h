@@ -65,6 +65,7 @@ public:
     }
     void set_pitch_rad(f32 p) { m_pitch_rad = p; m_dirty = true; }
     void set_yaw_rad(f32 y)   { m_yaw_rad   = y; m_dirty = true; }
+    void set_fov_rad(f32 f)   { m_fov = f; m_dirty = true; }
 
     // Bounds for clamped xy gestures. Default = unbounded. Scene load
     // calls `set_bounds` with the scene's authored camera-bounds rect.
@@ -91,6 +92,8 @@ public:
     f32       distance()  const { return m_distance; }
     f32       pitch_rad() const { return m_pitch_rad; }
     f32       yaw_rad()   const { return m_yaw_rad; }
+    f32       fov_rad()   const { return m_fov; }
+    f32       move_speed() const { return m_move_speed; }
     glm::vec3 forward_dir() const;
 
     // Frustum culling: 6 planes extracted from the VP matrix (Gribb/Hartmann).

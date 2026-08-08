@@ -1016,62 +1016,74 @@ function SetVolume(channel, volume) end
 --------------------------------------------------------------------------------
 -- Camera
 --------------------------------------------------------------------------------
--- Target-based pose: a `CameraSetup` is (target_x, target_y, target_z) +
--- distance + pitch + yaw (degrees on the Lua surface). The eye position
--- is derived as `target - distance * forward_dir`.
---
--- Each call takes a `players` arg that accepts:
---   nil               → all players (broadcast)
---   Player handle     → just that player
---   {Player, ...}     → a list
---
--- Distance is the eye-to-target world distance. Pitch / yaw are degrees
--- (matches the in-engine world editor convention).
 
---- Look up a named CameraSetup authored in the current scene's
---- `placements.bin` (cameras section). Returns nil if no setup with
---- that id exists. The handle is read-only — its fields (id,
---- target_x, target_y, target_z, distance, pitch, yaw) can be
---- inspected but not mutated. Use CameraSetupApply to apply.
---- Note: ids are capped at 255 bytes on disk.
 ---@param id string
 ---@return CameraSetup?
 function GetCameraSetup(id) end
 
---- Apply a whole CameraSetup. `duration` ≤ 0 / nil snaps every axis;
---- > 0 interpolates target, distance, pitch, yaw together.
 ---@param setup CameraSetup
 ---@param players player | table | nil
 ---@param duration number?
 function CameraSetupApply(setup, players, duration) end
 
---- Pan the look-at point. Other axes (distance, pitch, yaw) stay put.
---- `duration` ≤ 0 / nil snaps; > 0 tweens.
 ---@param players player | table | nil
 ---@param x number
 ---@param y number
----@param z number
----@param duration number?
-function CameraSetTargetPosition(players, x, y, z, duration) end
+function SetCameraPosition(players, x, y) end
 
---- Adjust eye-to-target distance ("zoom").
 ---@param players player | table | nil
----@param distance number
----@param duration number?
-function CameraSetSourceDistance(players, distance, duration) end
+---@param x number
+---@param y number
+function PanCameraTo(players, x, y) end
 
---- Hard-lock target to a unit — the look-at XY follows the unit each
---- frame. Pass nil to release. While locked, the player's WASD pan
---- does nothing; the camera tracks the unit until released.
+---@param players player | table | nil
+---@param x number
+---@param y number
+---@param duration number
+function PanCameraToTimed(players, x, y, duration) end
+
+---@param players player | table | nil
+---@param x number
+---@param y number
+---@param z_offset number
+function PanCameraToWithZ(players, x, y, z_offset) end
+
+---@param players player | table | nil
+---@param x number
+---@param y number
+---@param z_offset number
+---@param duration number
+function PanCameraToTimedWithZ(players, x, y, z_offset, duration) end
+
+---@param players player | table | nil
+---@param field number CAMERA_FIELD_*
+---@param value number
+---@param duration number?
+function SetCameraField(players, field, value, duration) end
+
+---@param players player | table | nil
+---@param field number CAMERA_FIELD_*
+---@param delta number
+---@param duration number?
+function AdjustCameraField(players, field, delta, duration) end
+
+---@param players player | table | nil
+function StopCamera(players) end
+
+---@param players player | table | nil
+---@param duration number?
+function ResetToGameCamera(players, duration) end
+
 ---@param players player | table | nil
 ---@param unit unit?
-function CameraSetTargetController(players, unit) end
+---@param x_offset number?
+---@param y_offset number?
+---@param inherit_orientation boolean?
+function SetCameraTargetController(players, unit, x_offset, y_offset, inherit_orientation) end
 
---- Trauma-decay shake. Re-calling mid-shake takes the max intensity
---- and the longer remaining window. `intensity` in world units.
 ---@param players player | table | nil
 ---@param intensity number
----@param duration number   seconds
+---@param duration number
 function CameraShake(players, intensity, duration) end
 
 --------------------------------------------------------------------------------

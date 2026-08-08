@@ -224,15 +224,22 @@ public:
                                                                f32 distance,
                                                                f32 pitch_rad, f32 yaw_rad,
                                                                f32 duration)>;
-    using CameraSetTargetPositionRecvFn  = std::function<void(f32 x, f32 y, f32 z, f32 duration)>;
-    using CameraSetSourceDistanceRecvFn  = std::function<void(f32 distance, f32 duration)>;
-    using CameraShakeRecvFn              = std::function<void(f32 intensity, f32 duration)>;
-    using CameraSetTargetControllerRecvFn = std::function<void(u32 entity_id)>;
-    void set_camera_apply_setup_recv_fn        (CameraApplySetupRecvFn fn)        { m_camera_apply_setup_recv_fn         = std::move(fn); }
-    void set_camera_set_target_position_recv_fn(CameraSetTargetPositionRecvFn fn) { m_camera_set_target_position_recv_fn = std::move(fn); }
-    void set_camera_set_source_distance_recv_fn(CameraSetSourceDistanceRecvFn fn) { m_camera_set_source_distance_recv_fn = std::move(fn); }
-    void set_camera_shake_recv_fn              (CameraShakeRecvFn fn)             { m_camera_shake_recv_fn               = std::move(fn); }
-    void set_camera_set_target_controller_recv_fn(CameraSetTargetControllerRecvFn fn) { m_camera_set_target_controller_recv_fn = std::move(fn); }
+    using CameraPanRecvFn = std::function<void(u8 mode, f32 x, f32 y,
+                                                f32 z, f32 duration)>;
+    using CameraFieldRecvFn = std::function<void(u8 field, f32 value, f32 duration)>;
+    using CameraShakeRecvFn = std::function<void(f32 intensity, f32 duration)>;
+    using CameraTargetControllerRecvFn = std::function<void(
+        u32 entity_id, f32 x_offset, f32 y_offset, bool inherit_orientation)>;
+    using CameraSimpleRecvFn = std::function<void()>;
+    using CameraResetRecvFn = std::function<void(f32 duration)>;
+    void set_camera_apply_setup_recv_fn(CameraApplySetupRecvFn fn) { m_camera_apply_setup_recv_fn = std::move(fn); }
+    void set_camera_pan_recv_fn(CameraPanRecvFn fn) { m_camera_pan_recv_fn = std::move(fn); }
+    void set_camera_field_recv_fn(CameraFieldRecvFn fn) { m_camera_field_recv_fn = std::move(fn); }
+    void set_camera_adjust_field_recv_fn(CameraFieldRecvFn fn) { m_camera_adjust_field_recv_fn = std::move(fn); }
+    void set_camera_shake_recv_fn(CameraShakeRecvFn fn) { m_camera_shake_recv_fn = std::move(fn); }
+    void set_camera_target_controller_recv_fn(CameraTargetControllerRecvFn fn) { m_camera_target_controller_recv_fn = std::move(fn); }
+    void set_camera_stop_recv_fn(CameraSimpleRecvFn fn) { m_camera_stop_recv_fn = std::move(fn); }
+    void set_camera_reset_recv_fn(CameraResetRecvFn fn) { m_camera_reset_recv_fn = std::move(fn); }
 
     // Client: registered by App to apply an incoming controlled-unit lock to the
     // local SelectionState (the Action-preset hero). entity_id UINT32_MAX clears.
@@ -363,11 +370,14 @@ private:
     SceneSwitchRecvFn m_scene_switch_recv_fn;
 
     // Client: scripted-camera apply callbacks.
-    CameraApplySetupRecvFn          m_camera_apply_setup_recv_fn;
-    CameraSetTargetPositionRecvFn   m_camera_set_target_position_recv_fn;
-    CameraSetSourceDistanceRecvFn   m_camera_set_source_distance_recv_fn;
-    CameraShakeRecvFn               m_camera_shake_recv_fn;
-    CameraSetTargetControllerRecvFn m_camera_set_target_controller_recv_fn;
+    CameraApplySetupRecvFn       m_camera_apply_setup_recv_fn;
+    CameraPanRecvFn              m_camera_pan_recv_fn;
+    CameraFieldRecvFn            m_camera_field_recv_fn;
+    CameraFieldRecvFn            m_camera_adjust_field_recv_fn;
+    CameraShakeRecvFn            m_camera_shake_recv_fn;
+    CameraTargetControllerRecvFn m_camera_target_controller_recv_fn;
+    CameraSimpleRecvFn           m_camera_stop_recv_fn;
+    CameraResetRecvFn            m_camera_reset_recv_fn;
 
     // Client: apply an incoming controlled-unit lock to the local selection.
     SetControlledUnitRecvFn         m_set_controlled_unit_recv_fn;

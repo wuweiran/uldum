@@ -13,7 +13,7 @@ f32 frand() { return static_cast<f32>(std::rand()) / static_cast<f32>(RAND_MAX);
 
 } // namespace
 
-void CameraController::update(f32 dt, const UnitPosFn& get_unit_xy) {
+void CameraController::update(f32 dt, const UnitPoseFn& get_unit_pose) {
     if (!m_camera) return;
 
     // Step 1: undo last frame's shake offset so it doesn't compound
@@ -29,7 +29,17 @@ void CameraController::update(f32 dt, const UnitPosFn& get_unit_xy) {
     // (e.g.) interpolate distance while target tweens to a new point
     // and yaw spins separately.
     glm::vec3 next_target = m_camera->target();
-    if (tick_tween(m_target_tween, dt, next_target)) {
+    if (m_pan_at_rate) {
+        glm::vec3 delta = m_target_tween.target - next_target;
+        f32 distance = glm::length(delta);
+        f32 step = m_camera->move_speed() * dt;
+        if (distance <= step || distance <= 1e-4f) {
+            m_camera->set_target(m_target_tween.target);
+            m_pan_at_rate = false;
+        } else {
+            m_camera->set_target(next_target + delta * (step / distance));
+        }
+    } else if (tick_tween(m_target_tween, dt, next_target)) {
         m_camera->set_target(next_target);
     }
     f32 next_distance = m_camera->distance();
@@ -44,16 +54,29 @@ void CameraController::update(f32 dt, const UnitPosFn& get_unit_xy) {
     if (tick_tween(m_yaw_tween, dt, next_yaw)) {
         m_camera->set_yaw_rad(next_yaw);
     }
+    f32 next_fov = m_camera->fov_rad();
+    if (tick_tween(m_fov_tween, dt, next_fov)) {
+        m_camera->set_fov_rad(next_fov);
+    }
 
     // Step 3: lock wins over the target tween for xy. The lock writes
     // unit.xy into target.xy each frame — target.z stays at whatever
     // tween / authored value put it there.
     if (m_lock_unit.id != UINT32_MAX) {
-        glm::vec2 unit_xy = get_unit_xy(m_lock_unit);
-        if (std::isnan(unit_xy.x) || std::isnan(unit_xy.y)) {
+        glm::vec3 pose = get_unit_pose(m_lock_unit);
+        if (std::isnan(pose.x) || std::isnan(pose.y)) {
             m_lock_unit = {};
         } else {
-            m_camera->set_target_xy(unit_xy.x, unit_xy.y);
+            f32 x_offset = m_lock_x_offset;
+            f32 y_offset = m_lock_y_offset;
+            if (m_lock_inherit_orientation) {
+                f32 c = std::cos(pose.z);
+                f32 s = std::sin(pose.z);
+                x_offset = m_lock_x_offset * c - m_lock_y_offset * s;
+                y_offset = m_lock_x_offset * s + m_lock_y_offset * c;
+                m_camera->set_yaw_rad(pose.z);
+            }
+            m_camera->set_target_xy(pose.x + x_offset, pose.y + y_offset);
         }
     }
 
@@ -80,8 +103,116 @@ void CameraController::update(f32 dt, const UnitPosFn& get_unit_xy) {
     }
 }
 
+void CameraController::set_position(f32 x, f32 y) {
+    stop();
+    m_lock_unit = {};
+    if (m_camera) m_camera->set_target_xy(x, y);
+}
+
+void CameraController::pan_to(f32 x, f32 y) {
+    if (!m_camera) return;
+    m_lock_unit = {};
+    m_target_tween.active = false;
+    m_target_tween.target = {x, y, m_camera->target().z};
+    m_pan_at_rate = true;
+}
+
+void CameraController::pan_to(f32 x, f32 y, f32 duration) {
+    if (!m_camera) return;
+    glm::vec3 target = m_camera->target();
+    set_target_position(x, y, target.z, duration);
+}
+
+void CameraController::pan_to_with_z(f32 x, f32 y, f32 z) {
+    if (!m_camera) return;
+    m_lock_unit = {};
+    m_target_tween.active = false;
+    m_target_tween.target = {x, y, z};
+    m_pan_at_rate = true;
+}
+
+void CameraController::pan_to_with_z(f32 x, f32 y, f32 z, f32 duration) {
+    set_target_position(x, y, z, duration);
+}
+
+void CameraController::set_field(CameraField field, f32 value, f32 duration) {
+    if (!m_camera) return;
+    constexpr f32 DEG_TO_RAD = 0.0174532925f;
+    switch (field) {
+    case CameraField::TargetDistance:
+        set_source_distance(value, duration);
+        break;
+    case CameraField::AngleOfAttack:
+        set_source_pitch_rad(std::remainder(value, 360.0f) * DEG_TO_RAD, duration);
+        break;
+    case CameraField::FieldOfView:
+        set_field_of_view_rad(value * DEG_TO_RAD, duration);
+        break;
+    case CameraField::Rotation:
+        set_source_yaw_rad(value * DEG_TO_RAD, duration);
+        break;
+    case CameraField::ZOffset: {
+        glm::vec3 target = m_camera->target();
+        set_target_position(target.x, target.y, value, duration);
+        break;
+    }
+    }
+}
+
+void CameraController::adjust_field(CameraField field, f32 delta, f32 duration) {
+    if (!m_camera) return;
+    constexpr f32 RAD_TO_DEG = 57.2957795f;
+    f32 current = 0.0f;
+    switch (field) {
+    case CameraField::TargetDistance: current = m_camera->distance(); break;
+    case CameraField::AngleOfAttack: current = m_camera->pitch_rad() * RAD_TO_DEG; break;
+    case CameraField::FieldOfView: current = m_camera->fov_rad() * RAD_TO_DEG; break;
+    case CameraField::Rotation: current = m_camera->yaw_rad() * RAD_TO_DEG; break;
+    case CameraField::ZOffset: current = m_camera->target().z; break;
+    }
+    set_field(field, current + delta, duration);
+}
+
+void CameraController::stop() {
+    m_target_tween.active = false;
+    m_pan_at_rate = false;
+    m_distance_tween.active = false;
+    m_pitch_tween.active = false;
+    m_yaw_tween.active = false;
+    m_fov_tween.active = false;
+}
+
+void CameraController::set_game_camera(f32 distance, f32 pitch_rad,
+                                       f32 yaw_rad, f32 fov_rad) {
+    m_game_target_z = m_camera ? m_camera->target().z : 0.0f;
+    m_game_distance = distance;
+    m_game_pitch = pitch_rad;
+    m_game_yaw = yaw_rad;
+    m_game_fov = fov_rad;
+}
+
+void CameraController::reset_to_game_camera(f32 duration) {
+    if (!m_camera) return;
+    m_lock_unit = {};
+    glm::vec3 target = m_camera->target();
+    target.z = m_game_target_z;
+    apply_setup(target, m_game_distance, m_game_pitch, m_game_yaw, duration);
+    set_field_of_view_rad(m_game_fov, duration);
+}
+
+void CameraController::set_target_controller(simulation::Unit unit, f32 x_offset,
+                                             f32 y_offset, bool inherit_orientation) {
+    m_target_tween.active = false;
+    m_pan_at_rate = false;
+    m_lock_unit = unit;
+    m_lock_x_offset = x_offset;
+    m_lock_y_offset = y_offset;
+    m_lock_inherit_orientation = inherit_orientation;
+}
+
 void CameraController::set_target_position(f32 x, f32 y, f32 z, f32 duration) {
     m_lock_unit = {};
+    m_pan_at_rate = false;
     if (!m_camera) return;
     if (duration <= 0) {
         m_target_tween.active = false;
@@ -137,9 +268,24 @@ void CameraController::set_source_yaw_rad(f32 yaw_rad, f32 duration) {
     m_yaw_tween.elapsed  = 0;
 }
 
+void CameraController::set_field_of_view_rad(f32 fov_rad, f32 duration) {
+    if (!m_camera) return;
+    if (duration <= 0) {
+        m_fov_tween.active = false;
+        m_camera->set_fov_rad(fov_rad);
+        return;
+    }
+    m_fov_tween.active = true;
+    m_fov_tween.start = m_camera->fov_rad();
+    m_fov_tween.target = fov_rad;
+    m_fov_tween.duration = duration;
+    m_fov_tween.elapsed = 0;
+}
+
 void CameraController::apply_setup(glm::vec3 target, f32 distance,
                                     f32 pitch_rad, f32 yaw_rad, f32 duration) {
     m_lock_unit = {};
+    m_pan_at_rate = false;
     if (!m_camera) return;
     if (duration <= 0) {
         // Snap: stop any in-flight tweens, slam the whole pose.
@@ -165,27 +311,31 @@ void CameraController::shake(f32 intensity, f32 duration) {
 }
 
 void CameraController::lock_unit(simulation::Unit unit) {
-    // Lock overrides target.xy — cancel any in-flight target tween on
-    // those axes (z component of a tween still completes if the script
-    // mid-tween wants to lift the target while locking).
-    m_target_tween.active = false;
-    m_lock_unit = unit;
+    set_target_controller(unit, 0.0f, 0.0f, false);
 }
 
 void CameraController::unlock_unit() {
     m_lock_unit = {};
+    m_lock_x_offset = 0.0f;
+    m_lock_y_offset = 0.0f;
+    m_lock_inherit_orientation = false;
 }
 
 void CameraController::reset() {
     m_target_tween   = {};
+    m_pan_at_rate = false;
     m_distance_tween = {};
     m_pitch_tween    = {};
     m_yaw_tween      = {};
+    m_fov_tween      = {};
     m_shake_intensity = 0;
     m_shake_duration  = 0;
     m_shake_elapsed   = 0;
     m_shake_offset    = {0, 0};
     m_lock_unit       = {};
+    m_lock_x_offset = 0.0f;
+    m_lock_y_offset = 0.0f;
+    m_lock_inherit_orientation = false;
 }
 
 } // namespace uldum::render

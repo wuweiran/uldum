@@ -122,14 +122,17 @@ enum class MsgType : u8 {
     // Playing — scripted-camera commands. Target-based pose
     // (target xyz + distance + pitch + yaw). Each is targeted at a
     // single recipient; the host sends per-player. Lua scripts produce
-    // these via CameraSetupApply / CameraSetTargetPosition / etc.
+    // these via CameraSetupApply / PanCameraTo / SetCameraField / etc.
     // Pitch / yaw on the wire are radians (matches Camera's internal
     // storage); Lua's degree values are converted at the host.
-    S_CAMERA_APPLY_SETUP            = 0x64,  // target xyz, distance, pitch_rad, yaw_rad, duration: 7 × f32
-    S_CAMERA_SET_TARGET_POSITION    = 0x65,  // x, y, z, duration: 4 × f32
-    S_CAMERA_SET_SOURCE_DISTANCE    = 0x66,  // distance, duration: 2 × f32
-    S_CAMERA_SHAKE                  = 0x67,  // intensity, duration: 2 × f32
-    S_CAMERA_SET_TARGET_CONTROLLER  = 0x68,  // entity_id: u32 (UINT32_MAX = unlock)
+    S_CAMERA_APPLY_SETUP      = 0x64,
+    S_CAMERA_PAN              = 0x65, // mode, x, y, z, duration
+    S_CAMERA_SET_FIELD        = 0x66, // field: u8, value, duration
+    S_CAMERA_SHAKE            = 0x67,
+    S_CAMERA_TARGET_CONTROLLER = 0x68, // entity, offsets, inherit orientation
+    S_CAMERA_ADJUST_FIELD     = 0x6A, // field: u8, delta, duration
+    S_CAMERA_STOP             = 0x6B,
+    S_CAMERA_RESET            = 0x6C, // duration
 
     // Playing — scripted selection lock. SetControlledUnit(unit) is routed to the
     // unit's owner only (a P1 client never inherits P0's hero) and replayed on join
@@ -1104,18 +1107,21 @@ inline std::vector<u8> build_camera_apply_setup(f32 tx, f32 ty, f32 tz,
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_camera_set_target_position(f32 x, f32 y, f32 z, f32 duration) {
+inline std::vector<u8> build_camera_pan(u8 mode, f32 x, f32 y, f32 z,
+                                         f32 duration) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_TARGET_POSITION));
-    w.write_f32(x); w.write_f32(y); w.write_f32(z);
-    w.write_f32(duration);
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_PAN));
+    w.write_u8(mode);
+    w.write_f32(x); w.write_f32(y); w.write_f32(z); w.write_f32(duration);
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_camera_set_source_distance(f32 distance, f32 duration) {
+inline std::vector<u8> build_camera_field(MsgType type, u8 field,
+                                          f32 value, f32 duration) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_SOURCE_DISTANCE));
-    w.write_f32(distance);
+    w.write_u8(static_cast<u8>(type));
+    w.write_u8(field);
+    w.write_f32(value);
     w.write_f32(duration);
     return std::move(w.data());
 }
@@ -1128,10 +1134,28 @@ inline std::vector<u8> build_camera_shake(f32 intensity, f32 duration) {
     return std::move(w.data());
 }
 
-inline std::vector<u8> build_camera_set_target_controller(u32 entity_id) {
+inline std::vector<u8> build_camera_target_controller(u32 entity_id,
+                                                       f32 x_offset, f32 y_offset,
+                                                       bool inherit_orientation) {
     ByteWriter w;
-    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_SET_TARGET_CONTROLLER));
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_TARGET_CONTROLLER));
     w.write_u32(entity_id);
+    w.write_f32(x_offset);
+    w.write_f32(y_offset);
+    w.write_bool(inherit_orientation);
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_stop() {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_STOP));
+    return std::move(w.data());
+}
+
+inline std::vector<u8> build_camera_reset(f32 duration) {
+    ByteWriter w;
+    w.write_u8(static_cast<u8>(MsgType::S_CAMERA_RESET));
+    w.write_f32(duration);
     return std::move(w.data());
 }
 

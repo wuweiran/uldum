@@ -42,6 +42,17 @@ static constexpr const char* TAG = "App";
 static constexpr float TICK_RATE = network::SIM_TICK_RATE;
 static constexpr float TICK_DT  = network::SIM_TICK_DT;
 
+static void apply_camera_pan(render::CameraController& camera, u8 mode,
+                             f32 x, f32 y, f32 z, f32 duration) {
+    switch (mode) {
+    case 0: camera.set_position(x, y); break;
+    case 1: camera.pan_to(x, y); break;
+    case 2: camera.pan_to(x, y, duration); break;
+    case 3: camera.pan_to_with_z(x, y, z); break;
+    case 4: camera.pan_to_with_z(x, y, z, duration); break;
+    }
+}
+
 void Engine::project_local_view(simulation::Player local) {
     auto& simulation = active_sim();
     auto& world = simulation.world();
@@ -686,11 +697,12 @@ bool Engine::start_session() {
     }
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
-        m_renderer.camera().set_pose(
-            {cam.target_x, cam.target_y, cam.target_z},
-            cam.distance,
-            glm::radians(cam.pitch_deg),
-            glm::radians(cam.yaw_deg));
+        glm::vec3 target{cam.target_x, cam.target_y, cam.target_z};
+        f32 pitch = glm::radians(cam.pitch_deg);
+        f32 yaw = glm::radians(cam.yaw_deg);
+        m_renderer.camera().set_pose(target, cam.distance, pitch, yaw);
+        m_camera_controller.set_game_camera(
+            cam.distance, pitch, yaw, m_renderer.camera().fov_rad());
     }
     if (const auto& b = m_map.scene().camera_bounds) {
         m_renderer.camera().set_bounds({b->min_x, b->min_y}, {b->max_x, b->max_y});
@@ -1327,21 +1339,36 @@ void Engine::wire_host_broadcasts() {
             });
     }
     {
-        auto send = std::move(m_server.script().camera_set_target_position_fn());
-        m_server.script().set_camera_set_target_position_fn(
-            [this, send = std::move(send)](u32 mask, f32 x, f32 y, f32 z, f32 dur) {
-                if (send) send(mask, x, y, z, dur);
-                if (mask & (1u << m_args.local_slot))
-                    m_camera_controller.set_target_position(x, y, z, dur);
+        auto send = std::move(m_server.script().camera_pan_fn());
+        m_server.script().set_camera_pan_fn(
+            [this, send = std::move(send)](u32 mask, u8 mode, f32 x, f32 y,
+                                           f32 z, f32 duration) {
+                if (send) send(mask, mode, x, y, z, duration);
+                if (mask & (1u << m_args.local_slot)) {
+                    apply_camera_pan(m_camera_controller, mode, x, y, z, duration);
+                }
             });
     }
     {
-        auto send = std::move(m_server.script().camera_set_source_distance_fn());
-        m_server.script().set_camera_set_source_distance_fn(
-            [this, send = std::move(send)](u32 mask, f32 dist, f32 dur) {
-                if (send) send(mask, dist, dur);
-                if (mask & (1u << m_args.local_slot))
-                    m_camera_controller.set_source_distance(dist, dur);
+        auto send = std::move(m_server.script().camera_field_fn());
+        m_server.script().set_camera_field_fn(
+            [this, send = std::move(send)](u32 mask, u8 field, f32 value, f32 duration) {
+                if (send) send(mask, field, value, duration);
+                if (mask & (1u << m_args.local_slot)) {
+                    m_camera_controller.set_field(
+                        static_cast<render::CameraField>(field), value, duration);
+                }
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_adjust_field_fn());
+        m_server.script().set_camera_adjust_field_fn(
+            [this, send = std::move(send)](u32 mask, u8 field, f32 value, f32 duration) {
+                if (send) send(mask, field, value, duration);
+                if (mask & (1u << m_args.local_slot)) {
+                    m_camera_controller.adjust_field(
+                        static_cast<render::CameraField>(field), value, duration);
+                }
             });
     }
     {
@@ -1354,13 +1381,33 @@ void Engine::wire_host_broadcasts() {
             });
     }
     {
-        auto send = std::move(m_server.script().camera_set_target_controller_fn());
-        m_server.script().set_camera_set_target_controller_fn(
-            [this, send = std::move(send)](u32 mask, simulation::Unit unit) {
-                if (send) send(mask, unit);
+        auto send = std::move(m_server.script().camera_target_controller_fn());
+        m_server.script().set_camera_target_controller_fn(
+            [this, send = std::move(send)](u32 mask, simulation::Unit unit,
+                                           f32 x_offset, f32 y_offset,
+                                           bool inherit_orientation) {
+                if (send) send(mask, unit, x_offset, y_offset, inherit_orientation);
+                if (!(mask & (1u << m_args.local_slot))) return;
+                if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
+                else m_camera_controller.set_target_controller(
+                    unit, x_offset, y_offset, inherit_orientation);
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_stop_fn());
+        m_server.script().set_camera_stop_fn(
+            [this, send = std::move(send)](u32 mask) {
+                if (send) send(mask);
+                if (mask & (1u << m_args.local_slot)) m_camera_controller.stop();
+            });
+    }
+    {
+        auto send = std::move(m_server.script().camera_reset_fn());
+        m_server.script().set_camera_reset_fn(
+            [this, send = std::move(send)](u32 mask, f32 duration) {
+                if (send) send(mask, duration);
                 if (mask & (1u << m_args.local_slot)) {
-                    if (unit.id == UINT32_MAX) m_camera_controller.unlock_unit();
-                    else                       m_camera_controller.lock_unit(unit);
+                    m_camera_controller.reset_to_game_camera(duration);
                 }
             });
     }
@@ -1477,23 +1524,39 @@ void Engine::wire_client_callbacks() {
             m_camera_controller.apply_setup({tx, ty, tz}, distance,
                                               pitch_rad, yaw_rad, duration);
         });
-    m_network.set_camera_set_target_position_recv_fn(
-        [this](f32 x, f32 y, f32 z, f32 d) {
-            m_camera_controller.set_target_position(x, y, z, d);
+    m_network.set_camera_pan_recv_fn(
+        [this](u8 mode, f32 x, f32 y, f32 z, f32 duration) {
+            apply_camera_pan(m_camera_controller, mode, x, y, z, duration);
         });
-    m_network.set_camera_set_source_distance_recv_fn(
-        [this](f32 distance, f32 d) {
-            m_camera_controller.set_source_distance(distance, d);
+    m_network.set_camera_field_recv_fn(
+        [this](u8 field, f32 value, f32 duration) {
+            m_camera_controller.set_field(
+                static_cast<render::CameraField>(field), value, duration);
+        });
+    m_network.set_camera_adjust_field_recv_fn(
+        [this](u8 field, f32 value, f32 duration) {
+            m_camera_controller.adjust_field(
+                static_cast<render::CameraField>(field), value, duration);
         });
     m_network.set_camera_shake_recv_fn([this](f32 i, f32 d) {
         m_camera_controller.shake(i, d);
     });
-    m_network.set_camera_set_target_controller_recv_fn([this](u32 entity_id) {
-        if (entity_id == UINT32_MAX) {
-            m_camera_controller.unlock_unit();
-        } else {
-            m_camera_controller.lock_unit(simulation::Unit{entity_id});
-        }
+    m_network.set_camera_target_controller_recv_fn(
+        [this](u32 entity_id, f32 x_offset, f32 y_offset,
+               bool inherit_orientation) {
+            if (entity_id == UINT32_MAX) {
+                m_camera_controller.unlock_unit();
+            } else {
+                m_camera_controller.set_target_controller(
+                    simulation::Unit{entity_id}, x_offset, y_offset,
+                    inherit_orientation);
+            }
+        });
+    m_network.set_camera_stop_recv_fn([this]() {
+        m_camera_controller.stop();
+    });
+    m_network.set_camera_reset_recv_fn([this](f32 duration) {
+        m_camera_controller.reset_to_game_camera(duration);
     });
     // Action-preset hero lock from the server's SetControlledUnit. The Action
     // preset reads m_selection (no separate controlled field), so a plain select
@@ -1561,27 +1624,22 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
         }
     }
 
+    m_camera_controller.reset();
     // Re-pose camera from the new scene's authored start camera.
     if (!m_map.scene().cameras.empty()) {
         const auto& cam = m_map.scene().cameras.front();
-        m_renderer.camera().set_pose(
-            {cam.target_x, cam.target_y, cam.target_z},
-            cam.distance,
-            glm::radians(cam.pitch_deg),
-            glm::radians(cam.yaw_deg));
+        glm::vec3 target{cam.target_x, cam.target_y, cam.target_z};
+        f32 pitch = glm::radians(cam.pitch_deg);
+        f32 yaw = glm::radians(cam.yaw_deg);
+        m_renderer.camera().set_pose(target, cam.distance, pitch, yaw);
+        m_camera_controller.set_game_camera(
+            cam.distance, pitch, yaw, m_renderer.camera().fov_rad());
     }
     if (const auto& b = m_map.scene().camera_bounds) {
         m_renderer.camera().set_bounds({b->min_x, b->min_y}, {b->max_x, b->max_y});
     } else {
         m_renderer.camera().clear_bounds();
     }
-    // Drop any in-flight pan / shake / lock from the previous scene.
-    // Lock targets (entity ids) belong to the old world and won't
-    // resolve in the new one anyway; clearing keeps the camera under
-    // player input control until the new scene's main() decides to
-    // grab it.
-    m_camera_controller.reset();
-
     // Drop the previous scene's persistent VFX. Without this,
     // CreateEffect emitters (e.g. portal-rim glow) keep spawning
     // particles into the new scene's world.
@@ -2196,7 +2254,7 @@ void Engine::run() {
             // Scripted-camera overlay. Runs after the input preset so
             // a script's lock / pan / shake silently overrides player
             // input the same frame. Lookup function returns the unit's
-            // current XY for lock-tracking; NaN on stale handle so the
+            // current XY/facing for lock-tracking; NaN on stale handle so the
             // controller drops the lock.
             {
                 // AUTHORITATIVE world here (H5), not m_local_view: a scripted
@@ -2206,17 +2264,17 @@ void Engine::run() {
                 // is a sim-authoring concern, not a fog-of-war display concern.
                 auto& world = active_sim().world();
                 m_camera_controller.update(frame_dt,
-                    [&world](simulation::Unit unit) -> glm::vec2 {
+                    [&world](simulation::Unit unit) -> glm::vec3 {
                         if (!world.contains(unit)) {
                             f32 nan = std::numeric_limits<f32>::quiet_NaN();
-                            return { nan, nan };
+                            return { nan, nan, nan };
                         }
                         const auto* t = world.transforms.get(unit.id);
                         if (!t) {
                             f32 nan = std::numeric_limits<f32>::quiet_NaN();
-                            return { nan, nan };
+                            return { nan, nan, nan };
                         }
-                        return { t->position.x, t->position.y };
+                        return { t->position.x, t->position.y, t->facing };
                     });
             }
 

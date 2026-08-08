@@ -588,16 +588,25 @@ void GameServer::wire_to_network(NetworkManager& net) {
                     if (mask & (1u << p)) net.host_send_to_player(p, packet);
                 }
             });
-        m_script.set_camera_set_target_position_fn(
-            [this, &net](u32 mask, f32 x, f32 y, f32 z, f32 dur) {
-                auto packet = build_camera_set_target_position(x, y, z, dur);
+        m_script.set_camera_pan_fn(
+            [this, &net](u32 mask, u8 mode, f32 x, f32 y, f32 z, f32 dur) {
+                auto packet = build_camera_pan(mode, x, y, z, dur);
                 for (u32 p = 0; p < 32; ++p) {
                     if (mask & (1u << p)) net.host_send_to_player(p, packet);
                 }
             });
-        m_script.set_camera_set_source_distance_fn(
-            [this, &net](u32 mask, f32 dist, f32 dur) {
-                auto packet = build_camera_set_source_distance(dist, dur);
+        m_script.set_camera_field_fn(
+            [this, &net](u32 mask, u8 field, f32 value, f32 dur) {
+                auto packet = build_camera_field(
+                    MsgType::S_CAMERA_SET_FIELD, field, value, dur);
+                for (u32 p = 0; p < 32; ++p) {
+                    if (mask & (1u << p)) net.host_send_to_player(p, packet);
+                }
+            });
+        m_script.set_camera_adjust_field_fn(
+            [this, &net](u32 mask, u8 field, f32 value, f32 dur) {
+                auto packet = build_camera_field(
+                    MsgType::S_CAMERA_ADJUST_FIELD, field, value, dur);
                 for (u32 p = 0; p < 32; ++p) {
                     if (mask & (1u << p)) net.host_send_to_player(p, packet);
                 }
@@ -609,13 +618,27 @@ void GameServer::wire_to_network(NetworkManager& net) {
                     if (mask & (1u << p)) net.host_send_to_player(p, packet);
                 }
             });
-        m_script.set_camera_set_target_controller_fn(
-            [this, &net](u32 mask, simulation::Unit unit) {
-                auto packet = build_camera_set_target_controller(unit.id);
+        m_script.set_camera_target_controller_fn(
+            [this, &net](u32 mask, simulation::Unit unit, f32 x_offset,
+                         f32 y_offset, bool inherit_orientation) {
+                auto packet = build_camera_target_controller(
+                    unit.id, x_offset, y_offset, inherit_orientation);
                 for (u32 p = 0; p < 32; ++p) {
                     if (mask & (1u << p)) net.host_send_to_player(p, packet);
                 }
             });
+        m_script.set_camera_stop_fn([&net](u32 mask) {
+            auto packet = build_camera_stop();
+            for (u32 p = 0; p < 32; ++p) {
+                if (mask & (1u << p)) net.host_send_to_player(p, packet);
+            }
+        });
+        m_script.set_camera_reset_fn([&net](u32 mask, f32 duration) {
+            auto packet = build_camera_reset(duration);
+            for (u32 p = 0; p < 32; ++p) {
+                if (mask & (1u << p)) net.host_send_to_player(p, packet);
+            }
+        });
 
         m_script.set_set_controlled_unit_fn(
             [this, &net](u32 mask, simulation::Unit unit) {

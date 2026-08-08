@@ -373,7 +373,7 @@ function main()
 
         Log("[Scene02] Portal entered — panning camera")
         dialog_open = true   -- block re-entries during the pan window
-        CameraSetTargetPosition(Player(0), portal_x, portal_y, 0, PORTAL_PAN_DURATION)
+        PanCameraToTimedWithZ(Player(0), portal_x, portal_y, 0, PORTAL_PAN_DURATION)
 
         CreateTimer(PORTAL_PAN_DURATION, false, function()
             Log("[Scene02] Pan complete — opening dialog")
