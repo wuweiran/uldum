@@ -103,7 +103,7 @@ function main()
         local facing = GetUnitFacing(paladin)
         PanCameraToTimedWithZ(nil, x, y, 208, 1.0)
         SetCameraField(nil, CAMERA_FIELD_TARGET_DISTANCE, 260, 1.0)
-        SetCameraField(nil, CAMERA_FIELD_ANGLE_OF_ATTACK, 0, 1.0)
+        SetCameraField(nil, CAMERA_FIELD_ANGLE_OF_ATTACK, -25, 1.0)
         SetCameraField(nil, CAMERA_FIELD_ROTATION, facing + 180, 1.0)
 
         CreateTimer(1.0, false, function()

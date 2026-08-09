@@ -6,7 +6,7 @@
     "description": "Test bed for the Action input preset: single controlled hero, WASD movement, click-to-attack, positional ability slots.",
     "version": "1.0.0",
     "game_mode": "test",
-    "fog_of_war": "explored",
+    "fog_of_war": "unexplored",
 
     "input": { "preset": "action" },
 
