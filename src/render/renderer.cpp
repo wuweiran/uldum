@@ -710,7 +710,8 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
         }
         return {AnimState::Attack, 0, false};
     }
-    if (anim.current_state == AnimState::Attack && !anim.finished) {
+    if (anim.current_state == AnimState::Attack && !anim.finished && combat &&
+        combat->attack_state != AttackState::Idle) {
         return {AnimState::Attack, 0, false};
     }
 
