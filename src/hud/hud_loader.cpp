@@ -864,7 +864,6 @@ bool load_from_json(Hud& hud, const nlohmann::json& doc,
         WorldOverlayConfig cfg{};
         if (auto eb = wo->find("entity_bars"); eb != wo->end() && eb->is_object()) {
             cfg.entity_bars_enabled = true;
-            cfg.entity_bars.z_offset = eb->value("z_offset", 2.0f);
             cfg.entity_bars.spacing  = eb->value("spacing", 1u);
             if (auto sz = eb->find("size"); sz != eb->end() && sz->is_object()) {
                 cfg.entity_bars.width  = sz->value("w", 30u);

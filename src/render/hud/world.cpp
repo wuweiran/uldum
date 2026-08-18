@@ -4,11 +4,13 @@
 #include "hud/hud.h"
 #include "hud/text_tag.h"
 
+#include "asset/model.h"
 #include "simulation/world.h"
 #include "simulation/components.h"
 #include "simulation/vision.h"
 #include "simulation/type_registry.h"
 #include "render/camera.h"
+#include "render/renderer.h"
 #include "simulation/selection.h"
 #include "map/terrain_data.h"
 #include "core/log.h"
@@ -144,11 +146,13 @@ void draw_entity_bars_impl(HudRenderer& r,
         if (auto* hi = world.handle_info(id);
             !hi || hi->hidden || hi->category != simulation::Category::Unit) continue;
 
-        // Interpolated world position for the bar anchor — matches how
-        // the renderer (and selection circles) draw moving units so the
-        // bar tracks smoothly instead of snapping per tick.
-        glm::vec3 anchor_world = tf.interp_position(alpha)
-                               + glm::vec3(0.0f, 0.0f, ebc.z_offset);
+        glm::vec3 anchor_world = tf.interp_position(alpha);
+        anchor_world.z += simulation::unit_fly_height(world, id);
+        const auto* renderable = world.renderable(id);
+        if (!renderable || !ctx.renderer) continue;
+        const auto* bounds = ctx.renderer->model_bounds(renderable->model_path);
+        if (!bounds) continue;
+        anchor_world.z += bounds->max.z * tf.scale;
         f32 cx = 0.0f, cy = 0.0f;
         if (!project_to_screen(vp, anchor_world, screen_w, screen_h, cx, cy)) continue;
 

@@ -131,6 +131,15 @@ struct AnimationClip {
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
+struct ModelBounds {
+    // Bind-pose bounds in game-space axes relative to the model origin,
+    // before instance scale.
+    glm::vec3 min{0.0f};
+    glm::vec3 max{0.0f};
+    f32 radius = 0.0f;
+    bool valid = false;
+};
+
 struct ModelData {
     std::vector<MeshData>        meshes;
     std::vector<SkinnedMeshData> skinned_meshes;
@@ -139,6 +148,7 @@ struct ModelData {
     std::string                  name;
     std::vector<TextureData>     textures;   // extracted diffuse images (one per cgltf_image)
     std::vector<MaterialDef>     materials;  // one per cgltf_material; MeshData.material indexes here
+    ModelBounds                  bounds;
 
     bool has_skeleton() const { return !skeleton.empty(); }
 };

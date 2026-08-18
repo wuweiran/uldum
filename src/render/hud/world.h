@@ -17,7 +17,7 @@
 #include <vector>
 
 namespace uldum::simulation { struct World; struct IWorldView; class Vision; class TypeRegistry; class AbilityRegistry; class Simulation; }
-namespace uldum::render     { class Camera; }
+namespace uldum::render     { class Camera; class Renderer; }
 namespace uldum::simulation { class SelectionState; }
 namespace uldum::map        { struct TerrainData; }
 
@@ -46,7 +46,6 @@ struct WorldBarTemplate {
 };
 
 struct EntityBarsConfig {
-    f32  z_offset = 2.0f;   // world units above unit pivot (where the stack's top starts)
     u32  width    = 30;     // pixels per bar
     u32  height   = 3;      // pixels per bar
     u32  spacing  = 1;      // pixels between stacked bars
@@ -90,6 +89,7 @@ struct WorldContext {
     const simulation::TypeRegistry*    types     = nullptr;   // for resolving `type_id` → display_name
     const simulation::AbilityRegistry* abilities = nullptr;   // for resolving ability_id → icon / cost / cooldown
     const simulation::Simulation*      simulation = nullptr;  // for canonical target_filter eval (alliance lookups)
+    render::Renderer*               renderer  = nullptr;
     const render::Camera*           camera    = nullptr;
     const simulation::SelectionState* selection = nullptr;
     const map::TerrainData*         terrain   = nullptr;

@@ -1,7 +1,9 @@
 #include "input/picking.h"
 #include "simulation/world_view.h"
 
+#include "asset/model.h"
 #include "map/terrain_data.h"
+#include "render/renderer.h"
 #include "simulation/vision.h"
 #include "simulation/simulation.h"   // is_static_remembered_entity
 
@@ -40,9 +42,10 @@ static bool fog_visible(const simulation::Vision* vision,
         : vision->is_visible(local, static_cast<u32>(tx), static_cast<u32>(ty));
 }
 
-void Picker::init(const render::Camera* camera, const map::TerrainData* terrain,
+void Picker::init(render::Renderer* renderer, const map::TerrainData* terrain,
                   const simulation::IWorldView* world, u32 screen_w, u32 screen_h) {
-    m_camera   = camera;
+    m_renderer = renderer;
+    m_camera   = renderer ? &renderer->camera() : nullptr;
     m_terrain  = terrain;
     m_world    = world;
     m_screen_w = screen_w;
@@ -234,17 +237,26 @@ simulation::Widget Picker::pick_widget(f32 screen_x, f32 screen_y,
         }
 
         f32 ray_t;
-        // Lift the hit-cylinder to the unit's visual height (fly_height for air,
-        // 0 otherwise) so clicking the flying model selects it — the sim
-        // position is at ground Z but the mesh + ring are up at hull height.
         glm::vec3 base = transform->position;
         base.z += simulation::unit_fly_height(*m_world, id);
-        f32 dist = ray_cylinder_dist(origin, dir, base, sel->selection_height, ray_t);
-
-
-        // Pick radius covers both the ground circle and the visual model body.
-        // transform->scale approximates the model's visual width.
-        f32 pick_radius = std::max(sel->selection_radius, transform->scale);
+        f32 pick_radius = sel->selection_radius;
+        f32 pick_height = sel->selection_height;
+        if (const auto* renderable = m_world->renderable(id); renderable && m_renderer) {
+            if (const auto* bounds = m_renderer->model_bounds(renderable->model_path)) {
+                if (pick_radius <= 0.0f) {
+                    pick_radius = 0.5f * std::max(
+                        bounds->max.x - bounds->min.x,
+                        bounds->max.y - bounds->min.y) * transform->scale;
+                }
+                if (pick_height <= 0.0f) {
+                    base.z += bounds->min.z * transform->scale;
+                    pick_height = (bounds->max.z - bounds->min.z) * transform->scale;
+                }
+            }
+        }
+        pick_radius = std::max(pick_radius, 32.0f);
+        pick_height = std::max(pick_height, 48.0f);
+        f32 dist = ray_cylinder_dist(origin, dir, base, pick_height, ray_t);
         if (dist > pick_radius) continue;
 
         // Depth-only: the frontmost unit under the cursor wins (smallest ray_t
@@ -291,9 +303,25 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
         if (!fog_visible(m_vision, m_local_player, m_terrain, transform->position)) continue;
 
         f32 ray_t;
-        f32 dist = ray_cylinder_dist(origin, dir, transform->position,
-                                     sel->selection_height, ray_t);
-        f32 pick_radius = std::max(sel->selection_radius, transform->scale);
+        glm::vec3 base = transform->position;
+        f32 pick_radius = sel->selection_radius;
+        f32 pick_height = sel->selection_height;
+        if (const auto* renderable = m_world->renderable(id); renderable && m_renderer) {
+            if (const auto* bounds = m_renderer->model_bounds(renderable->model_path)) {
+                if (pick_radius <= 0.0f) {
+                    pick_radius = 0.5f * std::max(
+                        bounds->max.x - bounds->min.x,
+                        bounds->max.y - bounds->min.y) * transform->scale;
+                }
+                if (pick_height <= 0.0f) {
+                    base.z += bounds->min.z * transform->scale;
+                    pick_height = (bounds->max.z - bounds->min.z) * transform->scale;
+                }
+            }
+        }
+        pick_radius = std::max(pick_radius, 32.0f);
+        pick_height = std::max(pick_height, 48.0f);
+        f32 dist = ray_cylinder_dist(origin, dir, base, pick_height, ray_t);
         if (dist > pick_radius) continue;
 
         if (ray_t < best_ray_t) {

@@ -11,6 +11,7 @@
 
 #include <vector>
 
+namespace uldum::render { class Renderer; }
 namespace uldum::simulation { class Vision; }
 
 namespace uldum::input {
@@ -20,7 +21,7 @@ namespace uldum::input {
 // and world (for entity positions and selectable components).
 class Picker {
 public:
-    void init(const render::Camera* camera, const map::TerrainData* terrain,
+    void init(render::Renderer* renderer, const map::TerrainData* terrain,
               const simulation::IWorldView* world, u32 screen_w, u32 screen_h);
 
     void set_screen_size(u32 w, u32 h) { m_screen_w = w; m_screen_h = h; }
@@ -83,10 +84,11 @@ private:
     glm::vec3 screen_to_ray(f32 sx, f32 sy) const;
     glm::vec3 ray_origin(f32 sx, f32 sy) const;
 
-    const render::Camera*         m_camera  = nullptr;
-    const map::TerrainData*       m_terrain = nullptr;
-    const simulation::IWorldView* m_world   = nullptr;
-    const simulation::Vision*     m_vision  = nullptr;
+    render::Renderer*             m_renderer = nullptr;
+    const render::Camera*         m_camera   = nullptr;
+    const map::TerrainData*       m_terrain  = nullptr;
+    const simulation::IWorldView* m_world    = nullptr;
+    const simulation::Vision*     m_vision   = nullptr;
     simulation::Player            m_local_player{};
     u32 m_screen_w = 1;
     u32 m_screen_h = 1;

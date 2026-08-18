@@ -29,6 +29,9 @@
 namespace uldum::render {
 
 static constexpr const char* TAG = "Render";
+static constexpr f32 kPlaceholderHalfWidth = 16.0f;
+static constexpr f32 kPlaceholderHeight = 64.0f;
+static constexpr f32 kPlaceholderRadius = 67.88225f;
 
 // Multiplier applied to a unit's visual_alpha when it carries
 // UNIT_STATUS_INVISIBLE AND is being rendered (which only happens for
@@ -282,8 +285,8 @@ bool Renderer::init(rhi::Rhi& rhi) {
     // Create a placeholder box mesh for entities without a real model.
     // Defined directly in Z-up game coordinates: base at Z=0, top at Z=2.
     asset::MeshData placeholder;
-    const float s = 16.0f;   // half-width (~32 game units, typical collision size)
-    const float h = 64.0f;  // height
+    const float s = kPlaceholderHalfWidth;
+    const float h = kPlaceholderHeight;
     // UVs map to the default texture (white with warm tint from texture)
     placeholder.vertices = {
         // Top face (Z+)
@@ -316,11 +319,6 @@ bool Renderer::init(rhi::Rhi& rhi) {
     };
     m_placeholder_mesh = upload_to_mega(placeholder);
     m_placeholder_mesh.native_z_up = true;
-    // The box is authored Z-up (height along Z), but upload_to_mega derives pick
-    // dims assuming Y-up glTF. Override with the true Z-up values so placeholder
-    // units get a correct selection cylinder: footprint = half-width, height = h.
-    m_placeholder_mesh.footprint_radius = s;   // 16 → ~32-wide cylinder
-    m_placeholder_mesh.pick_height      = h;   // 64
 
     // Create a small projectile mesh (elongated diamond shape in Z-up game coords)
     {
@@ -1163,24 +1161,6 @@ GpuMesh Renderer::upload_to_mega(const asset::MeshData& mesh) {
     gpu.index_count   = ic;
     gpu.first_vertex  = m_mega_vb_used;
     gpu.first_index   = m_mega_ib_used;
-
-    // Compute bounding sphere radius (max distance from origin in model space)
-    // and the model AABB. glTF models are Y-up; the renderer flips Y→Z at draw,
-    // so for pick sizing: game-height = model-Y extent, game-footprint = model
-    // X/Z extents. (These upload paths only carry real glTF meshes — always Y-up.)
-    f32 max_r2 = 0.0f;
-    glm::vec3 aabb_min{1e30f}, aabb_max{-1e30f};
-    for (const auto& v : mesh.vertices) {
-        f32 r2 = glm::dot(v.position, v.position);
-        if (r2 > max_r2) max_r2 = r2;
-        aabb_min = glm::min(aabb_min, v.position);
-        aabb_max = glm::max(aabb_max, v.position);
-    }
-    gpu.bounding_radius = std::sqrt(max_r2);
-    if (mesh.vertices.empty()) { aabb_min = glm::vec3{0}; aabb_max = glm::vec3{0}; }
-    glm::vec3 ext = aabb_max - aabb_min;               // model-space extents
-    gpu.footprint_radius = 0.5f * std::max(ext.x, ext.z);  // game XY ← model X,Z
-    gpu.pick_height      = ext.y;                          // game Z  ← model Y
 
     auto* vb_dst = static_cast<u8*>(m_rhi->mapped_ptr(m_mega_vb))
                  + m_mega_vb_used * sizeof(asset::Vertex);
@@ -2330,6 +2310,11 @@ bool Renderer::create_skybox_pipeline() {
     return true;
 }
 
+const asset::ModelBounds* Renderer::model_bounds(std::string_view model_path) {
+    auto* lm = get_or_load_model(std::string(model_path));
+    return lm && lm->data.bounds.valid ? &lm->data.bounds : &m_placeholder_bounds;
+}
+
 f32 Renderer::clip_duration(std::string_view model_path, std::string_view clip_name) {
     auto* lm = get_or_load_model(std::string(model_path));
     if (!lm) return 0.0f;
@@ -2352,7 +2337,14 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     // back-fill) get its bounds. Not skinned; rendered via the static path.
     if (model_path == "placeholder" || model_path == "projectile") {
         LoadedModel lm;
-        lm.mesh = (model_path == "projectile") ? m_projectile_mesh : m_placeholder_mesh;
+        if (model_path == "projectile") {
+            lm.mesh = m_projectile_mesh;
+            lm.data.bounds = {{-8.0f, -24.0f, -8.0f},
+                              { 8.0f,  24.0f,  8.0f}, 24.0f, true};
+        } else {
+            lm.mesh = m_placeholder_mesh;
+            lm.data.bounds = m_placeholder_bounds;
+        }
         lm.is_skinned = false;
         m_model_cache[model_path] = std::move(lm);
         return &m_model_cache[model_path];
@@ -2482,9 +2474,7 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
     } else if (!lm.data.meshes.empty()) {
         // Static: each primitive gets its own slice of the mega buffer +
         // its own bindless texture + material data. The model-wide
-        // `lm.mesh` covers the union (for the frustum-cull bounding
-        // radius); individual draws read each submesh's range.
-        f32 model_radius_sq = 0.0f;
+        // `lm.mesh` covers the union; individual draws read each submesh's range.
         bool first = true;
         for (auto& mdat : lm.data.meshes) {
             GpuMesh prim_gpu = upload_to_mega(mdat);
@@ -2498,18 +2488,12 @@ LoadedModel* Renderer::get_or_load_model(const std::string& model_path) {
             }
             lm.mesh.vertex_count += prim_gpu.vertex_count;
             lm.mesh.index_count  += prim_gpu.index_count;
-            f32 r = prim_gpu.bounding_radius;
-            if (r * r > model_radius_sq) model_radius_sq = r * r;
-            // Pick dims: largest footprint / tallest prim across the model.
-            lm.mesh.footprint_radius = std::max(lm.mesh.footprint_radius, prim_gpu.footprint_radius);
-            lm.mesh.pick_height      = std::max(lm.mesh.pick_height, prim_gpu.pick_height);
 
             Submesh sm;
             sm.mesh = prim_gpu;
             fill_submesh_material(sm, mdat.material, false);
             lm.submeshes.push_back(sm);
         }
-        lm.mesh.bounding_radius = std::sqrt(model_radius_sq);
         lm.is_skinned = false;
         log::info(TAG, "Loaded static model '{}': {} primitives, {} verts (mega @{}/{})",
                   model_path, lm.submeshes.size(), lm.mesh.vertex_count,
@@ -2944,7 +2928,7 @@ void Renderer::viewer_set_model(std::string_view path) {
     m_mv_path.assign(path);
 
     // Auto-frame: distance from the model's bounding radius, target at center-ish.
-    f32 r = lm->mesh.bounding_radius > 0.0f ? lm->mesh.bounding_radius : 64.0f;
+    f32 r = lm->data.bounds.radius > 0.0f ? lm->data.bounds.radius : 64.0f;
     m_mv_distance     = r * 3.0f;
     m_mv_dist_min     = r * 1.2f;                    // ~model surface — don't clip inside
     m_mv_dist_max     = r * 12.0f;                   // far enough to see it shrink
@@ -3530,7 +3514,7 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
             if (!mesh.vertex_buffer.is_valid() || !mesh.index_buffer.is_valid()) continue;
 
             glm::vec3 pos = lerp_position(*transform, alpha);
-            if (!frustum.is_sphere_visible(pos, mesh.bounding_radius * transform->scale)) continue;
+            if (!frustum.is_sphere_visible(pos, kPlaceholderRadius * transform->scale)) continue;
 
             // Build the synthetic single submesh on the fly.
             Submesh fallback{};
@@ -3579,7 +3563,7 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
         // Frustum cull on the model-wide bounding sphere (one test per
         // entity instead of per submesh).
         glm::vec3 vis_pos = lerp_position(*transform, alpha);
-        if (!frustum.is_sphere_visible(vis_pos, lm->mesh.bounding_radius * transform->scale)) continue;
+        if (!frustum.is_sphere_visible(vis_pos, lm->data.bounds.radius * transform->scale)) continue;
 
         // Compute the per-entity model matrix once.
         glm::mat4 model = build_entity_model_matrix(m_terrain_data, world, id, *transform, alpha, lm->mesh.native_z_up);
@@ -3733,37 +3717,6 @@ void Renderer::build_static_draw_batches(const simulation::IWorldView& world, f3
 void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWorldView& world, f32 alpha,
                     const std::function<void()>& on_after_entities) {
     if (extent.width == 0 || extent.height == 0) return;
-
-    // Auto-size selection cylinders from the model. A Selectable with
-    // radius/height ≤ 0 hasn't been sized yet; once its model is loaded, fill
-    // the click volume from the model AABB × instance scale. One-time per unit
-    // (filled values are > 0). Lazy: models load on first draw, and a unit is
-    // never clickable before it's drawn, so the timing is always fine.
-    {
-        for (u32 id : world.selectable_ids()) {
-            const auto* s = world.selectable(id);
-            if (!s || (s->selection_radius > 0.0f && s->selection_height > 0.0f)) continue;
-            const auto* r = world.renderable(id);
-            const auto* t = world.transform(id);
-            if (!r || !t) continue;
-            auto* lm = get_or_load_model(r->model_path);
-            if (!lm) continue;
-            f32 sc = t->scale;
-            // Size the click volume from the MODEL (AABB × instance scale).
-            // A constant floor keeps it clickable/pingable when the
-            // model is tiny (the generic placeholder box) or flat — NOT
-            // collision_radius, which can be 0 (destructables have no Movement)
-            // and would collapse the circle to nothing. Real unit models exceed
-            // the floor, so model size wins for them.
-            constexpr f32 MIN_SELECT_R = 32.0f;
-            constexpr f32 MIN_SELECT_H = 48.0f;
-            f32 radius = s->selection_radius > 0.0f ? s->selection_radius
-                       : std::max(lm->mesh.footprint_radius * sc, MIN_SELECT_R);
-            f32 height = s->selection_height > 0.0f ? s->selection_height
-                       : std::max(lm->mesh.pick_height * sc, MIN_SELECT_H);
-            world.size_selectable(id, radius, height);
-        }
-    }
 
     // Collect one point light per live glow effect. Glows are the engine's
     // light-emitting effect; particles never emit light (sparks/spray are
@@ -4022,7 +3975,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             bool created = false;
             auto& anim = get_or_create_anim(id, *lm, play_birth, &created);
 
-            f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
+            f32 cull_radius = lm->data.bounds.radius * transform->scale;
             if (!cull_frustum.is_sphere_visible(transform->interp_position(alpha),
                                                 cull_radius)) continue;
 
@@ -4197,7 +4150,7 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
             // Frustum cull: same bounding-sphere test the static draw
             // batches do. The skinned path was missing this and was
             // re-binding + re-uploading bones for off-screen units.
-            f32 cull_radius = lm->mesh.bounding_radius * transform->scale;
+            f32 cull_radius = lm->data.bounds.radius * transform->scale;
             if (!draw_frustum.is_sphere_visible(transform->interp_position(alpha),
                                                 cull_radius)) continue;
 

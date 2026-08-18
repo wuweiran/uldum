@@ -117,7 +117,6 @@
 
   "world_overlays": {
     "entity_bars": {
-      "z_offset": 140.0,
       "size":     { "w": 34, "h": 4 },
       "spacing":  1,
       "bars": [

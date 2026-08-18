@@ -35,10 +35,6 @@ std::span<const u32> WorldView::transform_ids()  const { return m_world->transfo
 std::span<const u32> WorldView::selectable_ids() const { return m_world->selectables.ids(); }
 std::span<const u32> WorldView::item_info_ids()  const { return m_world->item_infos.ids(); }
 
-void WorldView::size_selectable(u32 id, f32 radius, f32 height) {
-    if (auto* s = m_world->selectables.get(id)) { s->selection_radius = radius; s->selection_height = height; }
-}
-
 // ── LocalView ────────────────────────────────────────────────────────────────
 // Read resolver: snapshot → live auth → nullptr. `snapshot_pool` is the matching
 // snapshot SparseSet, or nullptr for pools a snapshotted static doesn't carry
@@ -125,10 +121,6 @@ std::span<const u32> LocalView::renderable_ids() const { return iter_renderables
 std::span<const u32> LocalView::transform_ids()  const { return iter_transforms; }
 std::span<const u32> LocalView::selectable_ids() const { return own_selectables.ids(); }
 std::span<const u32> LocalView::item_info_ids()  const { return iter_item_infos; }
-
-void LocalView::size_selectable(u32 id, f32 radius, f32 height) {
-    if (auto* s = own_selectables.get(id)) { s->selection_radius = radius; s->selection_height = height; }
-}
 
 void LocalView::clear() {
     visible.clear();

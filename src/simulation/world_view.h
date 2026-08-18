@@ -73,9 +73,6 @@ struct IWorldView {
     virtual std::span<const u32> transform_ids()  const = 0;
     virtual std::span<const u32> selectable_ids() const = 0;
     virtual std::span<const u32> item_info_ids()  const = 0;
-
-    // ── Draw-time writes (per-viewer scratch, NOT world truth) ──────────
-    virtual void size_selectable(u32 id, f32 radius, f32 height) = 0;
 };
 
 struct World;
@@ -116,8 +113,6 @@ struct WorldView final : IWorldView {
     std::span<const u32> transform_ids()  const override;
     std::span<const u32> selectable_ids() const override;
     std::span<const u32> item_info_ids()  const override;
-
-    void size_selectable(u32 id, f32 radius, f32 height) override;
 
     FogVis fog_mode(u32 /*id*/) const override { return FogVis::Live; }  // no fog
 
@@ -212,8 +207,6 @@ struct LocalView final : IWorldView {
     std::span<const u32> transform_ids()  const override;
     std::span<const u32> selectable_ids() const override;
     std::span<const u32> item_info_ids()  const override;
-
-    void size_selectable(u32 id, f32 radius, f32 height) override;
 
     // snapshotted → Memory; live-visible → Live; else Hidden. Pure membership.
     FogVis fog_mode(u32 id) const override {

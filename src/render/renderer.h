@@ -162,6 +162,8 @@ public:
     // Get attachment point position in model-local space for a unit. Returns {0,0,0} if not found.
     glm::vec3 get_attachment_point(u32 entity_id, std::string_view bone_name) const;
 
+    const asset::ModelBounds* model_bounds(std::string_view model_path);
+
     // Resolve a clip's duration on a model (used by simulation to size
     // projectile death timers to the actual animation length).
     // Returns 0 if the model or clip is missing.
@@ -349,6 +351,8 @@ private:
     // Cached loaded models (model_path → LoadedModel)
     std::unordered_map<std::string, LoadedModel> m_model_cache;
     std::unordered_set<std::string> m_model_failed;  // paths that failed to load
+    asset::ModelBounds m_placeholder_bounds{
+        {-16.0f, -16.0f, 0.0f}, {16.0f, 16.0f, 64.0f}, 67.88225f, true};
 
     // Cached GPU meshes for special built-in meshes (projectile, etc.)
     std::unordered_map<std::string, GpuMesh> m_mesh_cache;

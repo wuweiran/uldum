@@ -5,10 +5,14 @@
 #include <cgltf.h>
 #include <stb_image.h>
 
+#include <glm/common.hpp>
+#include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -613,6 +617,25 @@ static std::expected<ModelData, std::string> build_model_from_cgltf(cgltf_data* 
                 model.meshes.push_back(std::move(md));
             }
         }
+    }
+
+    auto include_position = [&](const glm::vec3& position) {
+        glm::vec3 game_position{position.z, position.x, position.y};
+        if (!model.bounds.valid) {
+            model.bounds.min = game_position;
+            model.bounds.max = game_position;
+            model.bounds.valid = true;
+        } else {
+            model.bounds.min = glm::min(model.bounds.min, game_position);
+            model.bounds.max = glm::max(model.bounds.max, game_position);
+        }
+        model.bounds.radius = std::max(model.bounds.radius, glm::length(game_position));
+    };
+    for (const auto& mesh : model.meshes) {
+        for (const auto& vertex : mesh.vertices) include_position(vertex.position);
+    }
+    for (const auto& mesh : model.skinned_meshes) {
+        for (const auto& vertex : mesh.vertices) include_position(vertex.position);
     }
 
     return model;

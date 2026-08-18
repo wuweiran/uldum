@@ -1125,8 +1125,7 @@ bool Engine::start_session() {
     }
 
     // Picking: needs camera + terrain, both ready after map content load.
-    m_picker.init(&m_renderer.camera(), &m_map.terrain(),
-                  &m_local_view,
+    m_picker.init(&m_renderer, &m_map.terrain(), &m_local_view,
                   m_platform->width(), m_platform->height());
     // Fog filter — entities in unscouted tiles drop out of pick_*. active_sim()
     // .vision() is the local player's fog (client replica or authoritative).
@@ -1157,6 +1156,7 @@ bool Engine::start_session() {
         m_hud_world_ctx.types        = &active_sim().types();
         m_hud_world_ctx.abilities    = &active_sim().abilities();
         m_hud_world_ctx.simulation   = &active_sim();
+        m_hud_world_ctx.renderer     = &m_renderer;
         m_hud_world_ctx.camera       = &m_renderer.camera();
         m_hud_world_ctx.selection    = &m_selection;
         m_hud_world_ctx.terrain      = m_map.terrain().is_valid() ? &m_map.terrain() : nullptr;
@@ -1664,7 +1664,7 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     m_selection = simulation::SelectionState{};
     m_selection.set_player(simulation::Player{m_args.local_slot});
     m_hud.reset_scene_state();
-    m_picker.init(&m_renderer.camera(), &m_map.terrain(), &m_local_view,
+    m_picker.init(&m_renderer, &m_map.terrain(), &m_local_view,
                   m_platform->width(), m_platform->height());
 
     if (is_client() && m_map.terrain().is_valid()) {
