@@ -470,18 +470,21 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
         fan_out(unit, ItemEvent{item}, "global_item_dropped", "unit_item_dropped");
     };
 
-    // Construction events fired by system_build. The registered entity is
-    // the structure (so GetTriggerUnit() returns it); GetConstructionBuilder()
-    // exposes the worker (invalid on finish).
-    sim.world().on_construction_start = [fan_out](simulation::Unit structure,
-                                                  simulation::Unit builder) {
-        fan_out(structure, ConstructionEvent{builder},
-                "global_construction_start", "unit_construction_start");
+    auto fan_out_construction = [fan_out](simulation::Unit builder,
+                                           simulation::Unit structure,
+                                           std::string_view global,
+                                           std::string_view scoped) {
+        fan_out(builder, ConstructionEvent{structure}, global, scoped);
     };
-    sim.world().on_construction_finish = [fan_out](simulation::Unit structure,
-                                                   simulation::Unit builder) {
-        fan_out(structure, ConstructionEvent{builder},
-                "global_construction_finish", "unit_construction_finish");
+    sim.world().on_construction_start = [fan_out_construction](
+            simulation::Unit builder, simulation::Unit structure) {
+        fan_out_construction(builder, structure,
+                             "global_construction_start", "unit_construction_start");
+    };
+    sim.world().on_construction_finish = [fan_out_construction](
+            simulation::Unit builder, simulation::Unit structure) {
+        fan_out_construction(builder, structure,
+                             "global_construction_finish", "unit_construction_finish");
     };
 
     // Region events fired by system_regions per tick. Region id is
@@ -2624,12 +2627,10 @@ void ScriptEngine::bind_trigger_api() {
         return {};
     };
 
-    // Construction events: the worker that placed the structure. Invalid
-    // (nil) on the finish event, where GetTriggerUnit() is the structure.
-    lua["GetConstructionBuilder"] = [&, unit_or_nil]() -> sol::object {
+    lua["GetTriggerStructure"] = [&, unit_or_nil]() -> sol::object {
         if (!m_event_frame) return sol::make_object(*m_lua, sol::nil);
         if (auto* event = std::get_if<ConstructionEvent>(&m_event_frame->payload)) {
-            return unit_or_nil(event->builder);
+            return unit_or_nil(event->structure);
         }
         return sol::make_object(*m_lua, sol::nil);
     };

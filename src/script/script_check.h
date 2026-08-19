@@ -1,16 +1,8 @@
 #pragma once
 
 // Lua script validation — dev/editor only, NEVER linked into the shipping
-// game (see src/script/CMakeLists.txt: uldum_scriptcheck is added only to
-// uldum_dev and uldum_editor). Two tiers:
-//
-//   Tier 1 — check_syntax: compile with luaL_loadbuffer (parse, don't run) to
-//            catch syntax errors. Depends on the Lua C API only.
-//   Tier 2 — check_globals: a hand-rolled Lua 5.4 lexer + scope-tracking parser
-//            (NO Lua internals, NO external tool) that flags reads of globals
-//            not in a known set. The known set is extracted from engine source
-//            (script.cpp bindings + constants.lua) so it can't drift. Catches
-//            the "typo'd API name" regression class (PanCamera → CameraSet...).
+// game (see src/script/CMakeLists.txt). Syntax uses Lua's parser; semantic
+// checks use the Lua-facing declarations in engine/scripts/api.lua.
 
 #include <optional>
 #include <string>
@@ -84,6 +76,26 @@ std::vector<UndefinedGlobal> check_globals(std::string_view source,
 // check_globals would false-positive on legitimate cross-file globals.
 std::vector<UndefinedGlobal> check_globals_project(const std::vector<NamedSource>& scripts,
                                                    const GlobalSet& known);
+
+struct ScriptTypeError {
+    std::string chunk;
+    int         line = 0;
+    int         column = 0;
+    std::string message;
+};
+
+std::vector<ScriptTypeError> check_types_project(
+    const std::vector<NamedSource>& scripts,
+    std::string_view api_declarations);
+
+struct ApiConsistencyError {
+    std::string name;
+    std::string message;
+};
+
+std::vector<ApiConsistencyError> check_api_consistency(
+    std::string_view script_cpp_src,
+    std::string_view api_declarations);
 
 } // namespace uldum::script
 

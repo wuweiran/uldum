@@ -17,6 +17,9 @@
 
 --- Constants (TRIGGER_PRIORITY_*, EVENT_*) are defined in constants.lua.
 --- See that file for all available event names and priority levels.
+--- Construction events expose the builder through GetTriggerUnit() and the
+--- structure through GetTriggerStructure(). Unit-scoped registrations target
+--- the builder.
 
 --- Create a trigger — a lifecycle scope for events, conditions, actions, and data.
 ---@param priority? number   TRIGGER_PRIORITY_* constant. Default: TRIGGER_PRIORITY_NORMAL.
@@ -54,7 +57,7 @@ function TriggerRegisterDestructableEvent(trig, destructable, event_name) end
 --- Register an event scoped to a specific projectile. The trigger is
 --- automatically dropped when the projectile is destroyed.
 ---@param trig trigger
----@param projectile unit
+---@param projectile projectile
 ---@param event_name string  EVENT_PROJECTILE_HIT or EVENT_PROJECTILE_DESTROYED
 function TriggerRegisterProjectileEvent(trig, projectile, event_name) end
 
@@ -120,6 +123,11 @@ function GetTriggerNode() end
 --- consumption / level-up.
 ---@return item?
 function GetTriggerItem() end
+
+--- The structure associated with the current construction start or finish
+--- event. GetTriggerUnit() returns the builder.
+---@return unit?
+function GetTriggerStructure() end
 
 --- The region id of the firing region_enter / region_leave action.
 --- Returns UINT32_MAX outside that context.
@@ -229,13 +237,6 @@ function RemoveUnit(unit) end
 ---@param new_type_id string
 ---@return boolean
 function MorphUnit(unit, new_type_id) end
-
---- Read the cooldown remaining (seconds) on a unit's ability.
---- Returns 0 if the unit doesn't have the ability.
----@param unit unit
----@param ability_id string
----@return number
-function GetAbilityCooldown(unit, ability_id) end
 
 --- Set the cooldown remaining (seconds) on a unit's ability. No-op
 --- when the unit doesn't have the ability. Used by morph helpers to
@@ -629,12 +630,12 @@ function UnitClearActionBarSlot(unit, slot) end
 --- to set Lua-side side-table state keyed by the handle.
 ---@param source unit
 ---@param model string     glTF path (empty falls back to engine "projectile" mesh)
----@return unit            projectile handle (or nil)
+---@return projectile?     projectile handle (or nil)
 function CreateProjectile(source, model) end
 
 --- Launch a homing projectile at `target`. Auto-destroys on impact;
 --- fires PROJECTILE_HIT once with the target as `GetTriggerUnit()`.
----@param projectile unit
+---@param projectile projectile
 ---@param target unit
 ---@param speed number
 ---@param arc_height number?  (reserved; arc rendering pending)
@@ -645,7 +646,7 @@ function EmitProjectileTarget(projectile, target, speed, arc_height) end
 --- path (pierce-by-default). Auto-destroys at `max_distance`. Stops
 --- on first hit only if the trigger handler calls
 --- `DestroyProjectile(GetTriggerProjectile())`.
----@param projectile unit
+---@param projectile projectile
 ---@param x number
 ---@param y number
 ---@param z number
@@ -655,13 +656,13 @@ function EmitProjectileTarget(projectile, target, speed, arc_height) end
 function EmitProjectileLoc(projectile, x, y, z, speed, hit_radius, max_distance) end
 
 --- Manually destroy a projectile. Fires PROJECTILE_DESTROYED.
----@param projectile unit
+---@param projectile projectile
 function DestroyProjectile(projectile) end
 
 --- Read the damage carried by a projectile. The engine consumes this
 --- for auto-attack projectiles; ability projectiles can use it as a
 --- payload slot.
----@param projectile unit
+---@param projectile projectile
 ---@return number
 function GetProjectileDamage(projectile) end
 
@@ -669,37 +670,37 @@ function GetProjectileDamage(projectile) end
 --- changes what the engine deals at hit time — intercept in
 --- PROJECTILE_HIT to apply crit/lifesteal multipliers before the
 --- engine commits damage.
----@param projectile unit
+---@param projectile projectile
 ---@param damage number
 function SetProjectileDamage(projectile, damage) end
 
 --- True when the engine spawned this projectile from an auto-attack.
 --- Filter use: a global PROJECTILE_HIT trigger that only modifies
 --- auto-attack damage without touching ability projectiles.
----@param projectile unit
+---@param projectile projectile
 ---@return boolean
 function IsProjectileNormalAttack(projectile) end
 
 --- Projectile world X — the impact point when read inside a PROJECTILE_HIT
 --- handler (splash / AoE centers here). X/Y only, by convention (no Z).
----@param projectile unit
+---@param projectile projectile
 ---@return number
 function GetProjectileX(projectile) end
 
 --- Projectile world Y — the impact point when read inside a PROJECTILE_HIT
 --- handler. X/Y only, by convention (no Z).
----@param projectile unit
+---@param projectile projectile
 ---@return number
 function GetProjectileY(projectile) end
 
 --- Inside a PROJECTILE_HIT or PROJECTILE_DESTROYED handler, returns
 --- the projectile that fired the event. Nil outside those handlers.
----@return unit
+---@return projectile?
 function GetTriggerProjectile() end
 
 --- Inside a PROJECTILE_HIT or PROJECTILE_DESTROYED handler, returns
 --- the unit that emitted the projectile (from CreateProjectile).
----@return unit
+---@return unit?
 function GetProjectileSource() end
 
 --- Mutate a modifier value on every active instance of `ability_id`
@@ -1484,9 +1485,9 @@ function CreateNode(template_id, placement) end
 ---@return boolean
 function DestroyNode(id) end
 
---- Whether a node with this id currently exists in the tree.
+--- Return the node id when it exists, or nil.
 ---@param id string
----@return boolean
+---@return string?
 function GetNode(id) end
 
 --- Show / hide nodes.

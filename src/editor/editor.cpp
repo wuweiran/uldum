@@ -1869,10 +1869,7 @@ std::vector<std::string> Editor::check_script_syntax(const std::string& rel) {
     return out;
 }
 
-// Full validation for one scene: syntax + undefined-engine-calls over the exact
-// script set that shares the scene's runtime VM — the scene's own scripts, the
-// shared map scripts, and the engine library (matching how the engine runs one
-// scene at a time). Returns display lines.
+// Full validation for one scene over the exact script set that shares its VM.
 std::vector<std::string> Editor::validate_scene_scripts(const std::string& scene) {
     namespace fs = std::filesystem;
     std::vector<std::string> out;
@@ -1917,8 +1914,9 @@ std::vector<std::string> Editor::validate_scene_scripts(const std::string& scene
     fs::path srcroot = ULDUM_SOURCE_DIR;
     std::string binds  = slurp(srcroot / "src" / "script" / "script.cpp");
     std::string consts = slurp(srcroot / "engine" / "scripts" / "constants.lua");
-    if (binds.empty()) {
-        out.push_back(std::format("All {} script(s) parse. (undefined-global check skipped: engine source not found)", scripts.size()));
+    std::string api    = slurp(srcroot / "engine" / "scripts" / "api.lua");
+    if (binds.empty() || api.empty()) {
+        out.push_back(std::format("All {} script(s) parse. (semantic checks skipped: engine source not found)", scripts.size()));
         return out;
     }
     script::GlobalSet known = script::extract_known_globals(binds, consts);
@@ -1932,17 +1930,30 @@ std::vector<std::string> Editor::validate_scene_scripts(const std::string& scene
         if (it->path().filename() == "api.lua") continue;
         project.push_back({it->path().filename().string(), slurp(it->path())});
     }
+    auto api_errors = script::check_api_consistency(binds, api);
+    for (const auto& error : api_errors) {
+        out.push_back(std::format("[api] {}: {}", error.name, error.message));
+    }
+
     auto undefined = script::check_globals_project(project, known);
+    auto type_errors = script::check_types_project(project, api);
     // Only surface flags in MAP scripts (relative paths); engine libs are trusted.
     std::erase_if(undefined, [](const script::UndefinedGlobal& u) {
         return u.chunk.find('/') == std::string::npos &&
                u.chunk.find('\\') == std::string::npos;
     });
-    if (undefined.empty()) {
-        out.push_back(std::format("All {} script(s) OK — no syntax errors, no undefined globals.", scripts.size()));
-    } else {
-        for (const auto& u : undefined)
-            out.push_back(std::format("[global] {}:{}:{}: undefined global '{}'", u.chunk, u.line, u.column, u.name));
+    std::erase_if(type_errors, [](const script::ScriptTypeError& error) {
+        return error.chunk.find('/') == std::string::npos &&
+               error.chunk.find('\\') == std::string::npos;
+    });
+    for (const auto& u : undefined)
+        out.push_back(std::format("[global] {}:{}:{}: undefined global '{}'", u.chunk, u.line, u.column, u.name));
+    for (const auto& error : type_errors)
+        out.push_back(std::format("[type] {}:{}:{}: {}", error.chunk, error.line,
+                                  error.column, error.message));
+
+    if (api_errors.empty() && undefined.empty() && type_errors.empty()) {
+        out.push_back(std::format("All {} script(s) OK — no syntax, global, or type errors.", scripts.size()));
     }
 #else
     out.push_back(std::format("All {} script(s) parse. (undefined-global check unavailable in this build)", scripts.size()));

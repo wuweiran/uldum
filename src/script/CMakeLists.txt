@@ -9,11 +9,8 @@ if(MSVC)
     target_compile_options(uldum_script PRIVATE /bigobj)
 endif()
 
-# Tier-1 Lua syntax checker — dev/editor tooling only. Deliberately a SEPARATE
-# library from uldum_script: it depends on lua54 alone (no sol2, no engine
-# libs), and is linked ONLY into uldum_dev and uldum_editor (see their
-# CMakeLists), never uldum_game / the Android game flavor. Keeping it out of
-# uldum_script guarantees the shipping game can't pull it in — "runtime free".
+# Lua syntax and semantic checker — dev/editor tooling only. Deliberately a
+# separate library from uldum_script and never linked into shipping targets.
 add_library(uldum_scriptcheck STATIC
     script_check.cpp
 )

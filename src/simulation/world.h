@@ -246,14 +246,8 @@ struct World {
     using ItemChargesChangedCallback = std::function<void(Item item, i32 charges)>;
     ItemChargesChangedCallback on_item_charges_changed;
 
-    // Construction events — fired by system_build. `on_construction_start`
-    // when a worker reaches the site and the structure spawns (the builder
-    // is passed so map Lua can decide worker fate: keep, consume, free).
-    // `on_construction_finish` when build_progress reaches 1. `builder` may
-    // be invalid on finish (the worker could have died / moved on). Map Lua
-    // hooks these via the trigger system; the engine takes no further action.
     using ConstructionCallback =
-        std::function<void(Unit structure, Unit builder)>;
+        std::function<void(Unit builder, Unit structure)>;
     ConstructionCallback on_construction_start;
     ConstructionCallback on_construction_finish;
 

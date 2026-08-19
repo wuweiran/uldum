@@ -467,6 +467,7 @@ struct Construction {
     f32  build_progress   = 0;
     bool under_construction = false;
     f32  build_time_total = 0;
+    Unit builder;
 };
 
 // ── Destructable Components ────────────────────────────────────────────────

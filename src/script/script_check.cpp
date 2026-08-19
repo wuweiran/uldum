@@ -5,8 +5,11 @@ extern "C" {
 #include "lauxlib.h"
 }
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <memory>
+#include <unordered_map>
 
 namespace uldum::script {
 
@@ -638,8 +641,6 @@ std::vector<UndefinedGlobal> check_globals(std::string_view source,
 
 std::vector<UndefinedGlobal> check_globals_project(const std::vector<NamedSource>& scripts,
                                                    const GlobalSet& known) {
-    // Pass 1: parse every file, accumulate reads and the UNION of all file-scope
-    // global writes (the shared global env the engine builds by loading them all).
     struct Parsed { std::vector<UndefinedGlobal> reads; bool ok; };
     std::vector<Parsed> parsed;
     parsed.reserve(scripts.size());
@@ -652,8 +653,6 @@ std::vector<UndefinedGlobal> check_globals_project(const std::vector<NamedSource
         parsed.push_back({std::move(reads), ok});
     }
 
-    // Pass 2: a read is undefined only if it's neither a known global nor
-    // written anywhere across the whole project.
     std::vector<UndefinedGlobal> out;
     for (auto& p : parsed) {
         if (!p.ok) continue;
@@ -666,5 +665,715 @@ std::vector<UndefinedGlobal> check_globals_project(const std::vector<NamedSource
     return out;
 }
 
+namespace {
+
+struct LuaType {
+    std::unordered_set<std::string> names;
+
+    static LuaType one(std::string name) {
+        LuaType type;
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        type.names.insert(std::move(name));
+        return type;
+    }
+
+    static LuaType any() { return one("any"); }
+
+    bool contains(std::string_view name) const {
+        return names.contains(std::string(name));
+    }
+};
+
+LuaType combine(LuaType a, const LuaType& b) {
+    a.names.insert(b.names.begin(), b.names.end());
+    return a;
+}
+
+std::string type_name(const LuaType& type) {
+    if (type.names.empty() || type.contains("any")) return "any";
+    std::vector<std::string> names(type.names.begin(), type.names.end());
+    std::sort(names.begin(), names.end());
+    std::string result;
+    for (const auto& name : names) {
+        if (!result.empty()) result += "|";
+        result += name;
+    }
+    return result;
+}
+
+bool is_table_type(std::string_view name) {
+    return name == "table" || name.ends_with("[]");
+}
+
+bool compatible(const LuaType& actual, const LuaType& expected) {
+    if (actual.names.empty() || expected.names.empty() ||
+        actual.contains("any") || expected.contains("any")) return true;
+
+    for (const auto& a : actual.names) {
+        for (const auto& e : expected.names) {
+            if (a == e) return true;
+            if (is_table_type(a) && is_table_type(e)) return true;
+        }
+    }
+    return false;
+}
+
+struct ApiParam {
+    std::string name;
+    LuaType     type = LuaType::any();
+    bool        optional = false;
+};
+
+struct ApiFunction {
+    std::string name;
+    std::vector<ApiParam> params;
+    std::vector<LuaType>  returns;
+    bool variadic = false;
+};
+
+using ApiMap = std::unordered_map<std::string, ApiFunction>;
+
+void skip_spaces(std::string_view text, size_t& pos) {
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) ++pos;
+}
+
+std::string parse_identifier(std::string_view text, size_t& pos) {
+    skip_spaces(text, pos);
+    size_t begin = pos;
+    while (pos < text.size() &&
+           (std::isalnum(static_cast<unsigned char>(text[pos])) ||
+            text[pos] == '_' || text[pos] == '.')) ++pos;
+    if (pos + 1 < text.size() && text[pos] == '[' && text[pos + 1] == ']') pos += 2;
+    if (pos < text.size() && text[pos] == '?') ++pos;
+    return std::string(text.substr(begin, pos - begin));
+}
+
+LuaType parse_annotation_type(std::string_view text, size_t& pos) {
+    LuaType result;
+    for (;;) {
+        std::string atom = parse_identifier(text, pos);
+        if (atom.empty()) break;
+        bool nullable = atom.ends_with('?');
+        if (nullable) atom.pop_back();
+        std::transform(atom.begin(), atom.end(), atom.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        result.names.insert(std::move(atom));
+        if (nullable) result.names.insert("nil");
+        skip_spaces(text, pos);
+        if (pos >= text.size() || text[pos] != '|') break;
+        ++pos;
+    }
+    return result.names.empty() ? LuaType::any() : result;
+}
+
+ApiMap parse_api(std::string_view source,
+                 std::unordered_set<std::string>* duplicates = nullptr) {
+    ApiMap api;
+    std::vector<ApiParam> pending_params;
+    std::vector<LuaType> pending_returns;
+
+    size_t line_begin = 0;
+    while (line_begin <= source.size()) {
+        size_t line_end = source.find('\n', line_begin);
+        if (line_end == std::string_view::npos) line_end = source.size();
+        std::string_view line = source.substr(line_begin, line_end - line_begin);
+        size_t first = line.find_first_not_of(" \t\r");
+        if (first != std::string_view::npos) line.remove_prefix(first);
+
+        constexpr std::string_view PARAM = "---@param";
+        constexpr std::string_view RETURN = "---@return";
+        constexpr std::string_view FUNCTION = "function ";
+
+        if (line.starts_with(PARAM)) {
+            size_t pos = PARAM.size();
+            std::string name = parse_identifier(line, pos);
+            bool optional = name.ends_with('?');
+            if (optional) name.pop_back();
+            LuaType type = name == "..." ? LuaType::any()
+                                          : parse_annotation_type(line, pos);
+            optional = optional || type.contains("nil");
+            pending_params.push_back({std::move(name), std::move(type), optional});
+        } else if (line.starts_with(RETURN)) {
+            size_t pos = RETURN.size();
+            for (;;) {
+                LuaType type = parse_annotation_type(line, pos);
+                pending_returns.push_back(std::move(type));
+                skip_spaces(line, pos);
+                if (pos >= line.size() || line[pos] != ',') break;
+                ++pos;
+            }
+        } else if (line.starts_with(FUNCTION)) {
+            size_t name_begin = FUNCTION.size();
+            size_t open = line.find('(', name_begin);
+            size_t close = open == std::string_view::npos
+                         ? std::string_view::npos : line.find(')', open + 1);
+            if (open != std::string_view::npos && close != std::string_view::npos) {
+                std::string name(line.substr(name_begin, open - name_begin));
+                while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back())))
+                    name.pop_back();
+
+                ApiFunction fn;
+                fn.name = name;
+                std::string_view args = line.substr(open + 1, close - open - 1);
+                size_t arg_pos = 0;
+                size_t annotated = 0;
+                while (arg_pos < args.size()) {
+                    size_t comma = args.find(',', arg_pos);
+                    if (comma == std::string_view::npos) comma = args.size();
+                    std::string arg(args.substr(arg_pos, comma - arg_pos));
+                    size_t a = arg.find_first_not_of(" \t");
+                    size_t b = arg.find_last_not_of(" \t");
+                    arg = a == std::string::npos ? std::string{}
+                                                 : arg.substr(a, b - a + 1);
+                    if (!arg.empty()) {
+                        if (arg == "...") {
+                            fn.variadic = true;
+                        } else {
+                            auto it = std::find_if(pending_params.begin(), pending_params.end(),
+                                [&](const ApiParam& p) { return p.name == arg; });
+                            if (it != pending_params.end()) fn.params.push_back(*it);
+                            else if (annotated < pending_params.size() &&
+                                     pending_params[annotated].name != "...")
+                                fn.params.push_back(pending_params[annotated]);
+                            else fn.params.push_back({arg, LuaType::any(), false});
+                            ++annotated;
+                        }
+                    }
+                    arg_pos = comma + 1;
+                }
+                fn.returns = pending_returns;
+                if (api.contains(name) && duplicates) duplicates->insert(name);
+                api[name] = std::move(fn);
+            }
+            pending_params.clear();
+            pending_returns.clear();
+        }
+
+        if (line_end == source.size()) break;
+        line_begin = line_end + 1;
+    }
+    return api;
+}
+
+struct ExprType {
+    std::vector<LuaType> values{LuaType::any()};
+    Token location;
+    std::string bare_name;
+
+    const LuaType& first() const { return values.front(); }
+};
+
+struct TypeAnalyzer {
+    std::vector<Token> toks;
+    size_t i = 0;
+    std::vector<std::unordered_map<std::string, LuaType>> scopes;
+    std::unordered_map<std::string, LuaType> globals;
+    const ApiMap& api;
+    std::string chunk;
+    std::vector<ScriptTypeError> errors;
+    bool failed = false;
+
+    const Token& tk() const { return toks[i]; }
+    const Token& tk2() const { return toks[i + 1 < toks.size() ? i + 1 : toks.size() - 1]; }
+    void adv() { if (i + 1 < toks.size()) ++i; }
+    bool at_eof() const { return tk().kind == Tok::Eof; }
+    bool is_op(const char* s) const { return tk().kind == Tok::Op && tk().text == s; }
+    bool is_kw(const char* s) const { return tk().kind == Tok::Keyword && tk().text == s; }
+    void expect_op(const char* s) { if (is_op(s)) adv(); else failed = true; }
+    void push() { scopes.emplace_back(); }
+    void pop() { if (!scopes.empty()) scopes.pop_back(); }
+
+    void declare(const std::string& name, LuaType type = LuaType::any()) {
+        if (!scopes.empty()) scopes.back()[name] = std::move(type);
+    }
+
+    bool has_local(const std::string& name) const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
+            if (it->contains(name)) return true;
+        return false;
+    }
+
+    LuaType lookup(const std::string& name) const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto found = it->find(name);
+            if (found != it->end()) return found->second;
+        }
+        auto global = globals.find(name);
+        if (global != globals.end()) return global->second;
+        if (api.contains(name)) return LuaType::one("function");
+        return LuaType::any();
+    }
+
+    void assign(const std::string& name, LuaType type) {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto found = it->find(name);
+            if (found != it->end()) {
+                if (found->second.contains("any") || found->second.contains("nil")) {
+                    found->second = std::move(type);
+                } else {
+                    found->second = combine(std::move(found->second), type);
+                }
+                return;
+            }
+        }
+        globals[name] = std::move(type);
+    }
+
+    void type_error(const Token& at, std::string message) {
+        errors.push_back({chunk, at.line, at.col, std::move(message)});
+    }
+
+    void validate_call(const Token& name, const std::vector<ExprType>& args) {
+        if (has_local(name.text)) return;
+        auto found = api.find(name.text);
+        if (found == api.end()) return;
+        const auto& fn = found->second;
+
+        size_t required = 0;
+        for (const auto& p : fn.params) if (!p.optional) ++required;
+        if (args.size() < required) {
+            type_error(name, name.text + " expects at least " +
+                       std::to_string(required) + " argument" +
+                       (required == 1 ? "" : "s") + ", got " +
+                       std::to_string(args.size()));
+        } else if (!fn.variadic && args.size() > fn.params.size()) {
+            type_error(name, name.text + " expects at most " +
+                       std::to_string(fn.params.size()) + " argument" +
+                       (fn.params.size() == 1 ? "" : "s") + ", got " +
+                       std::to_string(args.size()));
+        }
+
+        size_t count = std::min(args.size(), fn.params.size());
+        for (size_t n = 0; n < count; ++n) {
+            if (compatible(args[n].first(), fn.params[n].type)) continue;
+            type_error(args[n].location,
+                       name.text + " argument " + std::to_string(n + 1) +
+                       " ('" + fn.params[n].name + "') expects " +
+                       type_name(fn.params[n].type) + ", got " +
+                       type_name(args[n].first()));
+        }
+    }
+
+    std::vector<ExprType> args() {
+        std::vector<ExprType> result;
+        if (is_op("(")) {
+            adv();
+            if (!is_op(")")) result = exprlist_nodes();
+            expect_op(")");
+        } else if (tk().kind == Tok::String) {
+            ExprType value; value.values = {LuaType::one("string")}; value.location = tk();
+            result.push_back(std::move(value)); adv();
+        } else if (is_op("{")) {
+            result.push_back(table());
+        } else failed = true;
+        return result;
+    }
+
+    ExprType table() {
+        ExprType result; result.values = {LuaType::one("table")}; result.location = tk();
+        expect_op("{");
+        while (!is_op("}") && !at_eof() && !failed) {
+            if (is_op("[")) {
+                adv(); expr(); expect_op("]"); expect_op("="); expr();
+            } else if (tk().kind == Tok::Name && tk2().kind == Tok::Op && tk2().text == "=") {
+                adv(); adv(); expr();
+            } else expr();
+            if (is_op(",") || is_op(";")) adv(); else break;
+        }
+        expect_op("}");
+        return result;
+    }
+
+    ExprType primary() {
+        if (is_op("(")) {
+            Token at = tk(); adv(); ExprType value = expr(); expect_op(")");
+            value.location = at; value.bare_name.clear(); return value;
+        }
+        if (tk().kind == Tok::Name) {
+            Token name = tk(); adv();
+            ExprType value; value.values = {lookup(name.text)};
+            value.location = name; value.bare_name = name.text; return value;
+        }
+        failed = true;
+        return {};
+    }
+
+    ExprType suffixed() {
+        ExprType value = primary();
+        for (;;) {
+            if (is_op(".")) {
+                adv();
+                if (tk().kind == Tok::Name) adv(); else { failed = true; return value; }
+                value.values = {LuaType::any()}; value.bare_name.clear();
+            } else if (is_op("[")) {
+                adv(); expr(); expect_op("]");
+                value.values = {LuaType::any()}; value.bare_name.clear();
+            } else if (is_op(":")) {
+                adv();
+                if (tk().kind == Tok::Name) adv(); else { failed = true; return value; }
+                args(); value.values = {LuaType::any()}; value.bare_name.clear();
+            } else if (is_op("(") || is_op("{") || tk().kind == Tok::String) {
+                std::vector<ExprType> call_args = args();
+                if (!value.bare_name.empty()) {
+                    Token name = value.location;
+                    validate_call(name, call_args);
+                    auto found = api.find(value.bare_name);
+                    value.values = found != api.end() && !found->second.returns.empty()
+                                 ? found->second.returns
+                                 : std::vector<LuaType>{LuaType::any()};
+                } else value.values = {LuaType::any()};
+                value.bare_name.clear();
+            } else break;
+            if (failed) return value;
+        }
+        return value;
+    }
+
+    void funcbody(bool method) {
+        push();
+        if (method) declare("self");
+        expect_op("(");
+        if (!is_op(")")) {
+            for (;;) {
+                if (is_op("...")) { adv(); break; }
+                if (tk().kind == Tok::Name) { declare(tk().text); adv(); }
+                else { failed = true; break; }
+                if (is_op(",")) { adv(); continue; }
+                break;
+            }
+        }
+        expect_op(")"); block();
+        if (is_kw("end")) adv(); else failed = true;
+        pop();
+    }
+
+    ExprType simple() {
+        Token at = tk();
+        if (tk().kind == Tok::Number) {
+            adv(); ExprType v; v.values = {LuaType::one("number")}; v.location = at; return v;
+        }
+        if (tk().kind == Tok::String) {
+            adv(); ExprType v; v.values = {LuaType::one("string")}; v.location = at; return v;
+        }
+        if (is_kw("nil")) {
+            adv(); ExprType v; v.values = {LuaType::one("nil")}; v.location = at; return v;
+        }
+        if (is_kw("true") || is_kw("false")) {
+            adv(); ExprType v; v.values = {LuaType::one("boolean")}; v.location = at; return v;
+        }
+        if (is_op("...")) {
+            adv(); ExprType v; v.values = {LuaType::any()}; v.location = at; return v;
+        }
+        if (is_op("{")) return table();
+        if (is_kw("function")) {
+            adv(); funcbody(false);
+            ExprType v; v.values = {LuaType::one("function")}; v.location = at; return v;
+        }
+        if (is_op("(") || tk().kind == Tok::Name) return suffixed();
+        failed = true;
+        return {};
+    }
+
+    bool is_unop() const { return is_kw("not") || is_op("-") || is_op("#") || is_op("~"); }
+    bool is_binop() const {
+        if (is_kw("and") || is_kw("or")) return true;
+        if (tk().kind != Tok::Op) return false;
+        static const std::unordered_set<std::string> ops = {
+            "+","-","*","/","//","%","^","..","<","<=",">",">=","==","~=",
+            "&","|","~","<<",">>"};
+        return ops.contains(tk().text);
+    }
+
+    int binop_precedence() const {
+        if (is_kw("or")) return 1;
+        if (is_kw("and")) return 2;
+        if (is_op("<") || is_op("<=") || is_op(">") || is_op(">=") ||
+            is_op("==") || is_op("~=")) return 3;
+        if (is_op("|")) return 4;
+        if (is_op("~")) return 5;
+        if (is_op("&")) return 6;
+        if (is_op("<<") || is_op(">>")) return 7;
+        if (is_op("..")) return 8;
+        if (is_op("+") || is_op("-")) return 9;
+        if (is_op("*") || is_op("/") || is_op("//") || is_op("%")) return 10;
+        if (is_op("^")) return 12;
+        return 0;
+    }
+
+    ExprType expr(int min_precedence = 1) {
+        std::vector<Token> unary;
+        while (is_unop() && !failed) { unary.push_back(tk()); adv(); }
+        ExprType left = simple();
+        for (auto it = unary.rbegin(); it != unary.rend(); ++it) {
+            if (it->text == "not") left.values = {LuaType::one("boolean")};
+            else if (it->text == "#") left.values = {LuaType::one("number")};
+            else {
+                LuaType number = LuaType::one("number");
+                if (!compatible(left.first(), number))
+                    type_error(*it, "operator '" + it->text + "' expects number, got " +
+                                    type_name(left.first()));
+                left.values = {std::move(number)};
+            }
+            left.bare_name.clear();
+        }
+        while (is_binop() && !failed) {
+            int precedence = binop_precedence();
+            if (precedence < min_precedence) break;
+            Token op = tk(); adv();
+            bool right_associative = op.text == "^" || op.text == "..";
+            ExprType right = expr(precedence + (right_associative ? 0 : 1));
+            if (op.text == "and" || op.text == "or")
+                left.values = {combine(left.first(), right.first())};
+            else if (op.text == "==" || op.text == "~=" || op.text == "<" ||
+                     op.text == "<=" || op.text == ">" || op.text == ">=")
+                left.values = {LuaType::one("boolean")};
+            else if (op.text == "..")
+                left.values = {LuaType::one("string")};
+            else {
+                LuaType number = LuaType::one("number");
+                if (!compatible(left.first(), number))
+                    type_error(op, "operator '" + op.text + "' expects number, got " +
+                                   type_name(left.first()));
+                if (!compatible(right.first(), number))
+                    type_error(op, "operator '" + op.text + "' expects number, got " +
+                                   type_name(right.first()));
+                left.values = {std::move(number)};
+            }
+            left.bare_name.clear();
+        }
+        return left;
+    }
+
+    std::vector<ExprType> exprlist_nodes() {
+        std::vector<ExprType> result;
+        for (;;) {
+            ExprType value = expr();
+            if (is_op(",")) {
+                if (value.values.size() > 1) value.values.resize(1);
+                result.push_back(std::move(value));
+                adv();
+                continue;
+            }
+            Token location = value.location;
+            for (auto& type : value.values) {
+                ExprType one; one.values = {type}; one.location = location;
+                result.push_back(std::move(one));
+            }
+            break;
+        }
+        return result;
+    }
+
+    void block() {
+        while (!failed && !at_eof() && !is_kw("end") && !is_kw("else") &&
+               !is_kw("elseif") && !is_kw("until")) statement();
+    }
+
+    void function_statement() {
+        Token base = tk();
+        if (tk().kind != Tok::Name) { failed = true; return; }
+        adv();
+        bool suffixed_name = false, method = false;
+        while (is_op(".")) {
+            adv(); if (tk().kind == Tok::Name) adv(); else { failed = true; return; }
+            suffixed_name = true;
+        }
+        if (is_op(":")) {
+            adv(); if (tk().kind == Tok::Name) adv(); else { failed = true; return; }
+            suffixed_name = true; method = true;
+        }
+        if (!suffixed_name) globals[base.text] = LuaType::one("function");
+        funcbody(method);
+    }
+
+    void local_statement() {
+        adv();
+        if (is_kw("function")) {
+            adv();
+            if (tk().kind != Tok::Name) { failed = true; return; }
+            std::string name = tk().text; adv();
+            declare(name, LuaType::one("function")); funcbody(false); return;
+        }
+        std::vector<std::string> names;
+        for (;;) {
+            if (tk().kind != Tok::Name) { failed = true; return; }
+            names.push_back(tk().text); adv();
+            if (is_op("<")) { adv(); if (tk().kind == Tok::Name) adv(); expect_op(">"); }
+            if (is_op(",")) { adv(); continue; }
+            break;
+        }
+        std::vector<ExprType> values;
+        if (is_op("=")) { adv(); values = exprlist_nodes(); }
+        for (size_t n = 0; n < names.size(); ++n) {
+            LuaType type = n < values.size() ? values[n].first() : LuaType::any();
+            if (type.contains("nil")) type = LuaType::any();
+            declare(names[n], std::move(type));
+        }
+    }
+
+    void for_statement() {
+        adv();
+        if (tk().kind != Tok::Name) { failed = true; return; }
+        std::string first = tk().text; adv();
+        if (is_op("=")) {
+            adv(); expr(); expect_op(","); expr(); if (is_op(",")) { adv(); expr(); }
+            if (is_kw("do")) adv(); else { failed = true; return; }
+            push(); declare(first, LuaType::one("number")); block(); pop();
+        } else {
+            std::vector<std::string> names{first};
+            while (is_op(",")) {
+                adv(); if (tk().kind == Tok::Name) { names.push_back(tk().text); adv(); }
+                else { failed = true; return; }
+            }
+            if (is_kw("in")) adv(); else { failed = true; return; }
+            exprlist_nodes();
+            if (is_kw("do")) adv(); else { failed = true; return; }
+            push(); for (const auto& name : names) declare(name); block(); pop();
+        }
+        if (is_kw("end")) adv(); else failed = true;
+    }
+
+    void if_statement() {
+        adv(); expr();
+        if (is_kw("then")) adv(); else { failed = true; return; }
+        push(); block(); pop();
+        while (is_kw("elseif")) {
+            adv(); expr();
+            if (is_kw("then")) adv(); else { failed = true; return; }
+            push(); block(); pop();
+        }
+        if (is_kw("else")) { adv(); push(); block(); pop(); }
+        if (is_kw("end")) adv(); else failed = true;
+    }
+
+    void expression_statement() {
+        ExprType first = suffixed();
+        if (is_op("=") || is_op(",")) {
+            std::vector<std::string> targets;
+            if (!first.bare_name.empty()) targets.push_back(first.bare_name);
+            while (is_op(",")) {
+                adv(); ExprType target = suffixed();
+                if (!target.bare_name.empty()) targets.push_back(target.bare_name);
+            }
+            expect_op("=");
+            auto values = exprlist_nodes();
+            for (size_t n = 0; n < targets.size(); ++n)
+                assign(targets[n], n < values.size() ? values[n].first() : LuaType::one("nil"));
+        }
+    }
+
+    void statement() {
+        if (is_op(";")) { adv(); return; }
+        if (is_op("::")) { adv(); if (tk().kind == Tok::Name) adv(); expect_op("::"); return; }
+        if (is_kw("break")) { adv(); return; }
+        if (is_kw("goto")) { adv(); if (tk().kind == Tok::Name) adv(); return; }
+        if (is_kw("do")) { adv(); push(); block(); pop(); if (is_kw("end")) adv(); else failed = true; return; }
+        if (is_kw("while")) { adv(); expr(); if (is_kw("do")) adv(); else { failed = true; return; } push(); block(); pop(); if (is_kw("end")) adv(); else failed = true; return; }
+        if (is_kw("repeat")) { adv(); push(); block(); if (is_kw("until")) adv(); else { failed = true; pop(); return; } expr(); pop(); return; }
+        if (is_kw("if")) { if_statement(); return; }
+        if (is_kw("for")) { for_statement(); return; }
+        if (is_kw("function")) { adv(); function_statement(); return; }
+        if (is_kw("local")) { local_statement(); return; }
+        if (is_kw("return")) {
+            adv();
+            if (!at_eof() && !is_kw("end") && !is_kw("else") && !is_kw("elseif") &&
+                !is_kw("until") && !is_op(";")) exprlist_nodes();
+            if (is_op(";")) adv();
+            return;
+        }
+        expression_statement();
+    }
+
+    void run() {
+        push(); declare("..."); block(); pop();
+        if (!at_eof()) failed = true;
+    }
+};
+
+bool tokenize(std::string_view source, std::vector<Token>& tokens) {
+    Lexer lexer; lexer.src = source;
+    for (;;) {
+        Token token = lexer.next();
+        tokens.push_back(token);
+        if (token.kind == Tok::Eof) return lexer.ok;
+        if (!lexer.ok || tokens.size() > 2'000'000) return false;
+    }
+}
+
+std::unordered_set<std::string> extract_cpp_api_names(std::string_view source) {
+    std::unordered_set<std::string> names;
+    constexpr std::string_view KEY = "lua[\"";
+    size_t pos = 0;
+    while ((pos = source.find(KEY, pos)) != std::string_view::npos) {
+        pos += KEY.size();
+        size_t end = source.find('"', pos);
+        if (end == std::string_view::npos) break;
+        std::string name(source.substr(pos, end - pos));
+        if (!name.empty() && std::isupper(static_cast<unsigned char>(name[0])) &&
+            !name.starts_with("TRIGGER_PRIORITY_")) names.insert(std::move(name));
+        pos = end + 1;
+    }
+    names.insert("Player");
+    return names;
+}
+
+} // namespace
+
+std::vector<ScriptTypeError> check_types_project(
+        const std::vector<NamedSource>& scripts,
+        std::string_view api_declarations) {
+    ApiMap api = parse_api(api_declarations);
+    std::unordered_map<std::string, LuaType> globals;
+
+    for (const auto& script : scripts) {
+        std::vector<UndefinedGlobal> reads;
+        std::unordered_set<std::string> writes;
+        if (!parse_one(script.source, script.name, reads, writes)) continue;
+        for (const auto& name : writes) globals.try_emplace(name, LuaType::any());
+    }
+
+    std::vector<ScriptTypeError> result;
+    for (const auto& script : scripts) {
+        std::vector<Token> tokens;
+        if (!tokenize(script.source, tokens)) continue;
+        TypeAnalyzer analyzer{std::move(tokens), 0, {}, globals, api, script.name};
+        analyzer.run();
+        if (analyzer.failed) {
+            result.push_back({script.name, analyzer.tk().line, analyzer.tk().col,
+                              "type checker could not analyze this expression"});
+            continue;
+        }
+        result.insert(result.end(), analyzer.errors.begin(), analyzer.errors.end());
+        for (const auto& [name, type] : analyzer.globals) {
+            if (!type.contains("any")) globals[name] = type;
+        }
+    }
+    return result;
+}
+
+std::vector<ApiConsistencyError> check_api_consistency(
+        std::string_view script_cpp_src,
+        std::string_view api_declarations) {
+    std::unordered_set<std::string> duplicates;
+    ApiMap api = parse_api(api_declarations, &duplicates);
+    auto cpp_names = extract_cpp_api_names(script_cpp_src);
+
+    std::vector<ApiConsistencyError> result;
+    for (const auto& name : duplicates)
+        result.push_back({name, "duplicate declaration in api.lua"});
+    for (const auto& name : cpp_names) {
+        if (!api.contains(name))
+            result.push_back({name, "bound by ScriptEngine but missing from api.lua"});
+    }
+    for (const auto& [name, fn] : api) {
+        if (!cpp_names.contains(name))
+            result.push_back({name, "declared in api.lua but not bound by ScriptEngine"});
+    }
+    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+        return a.name < b.name;
+    });
+    return result;
+}
 
 } // namespace uldum::script

@@ -770,16 +770,14 @@ void GameServer::wire_to_network(NetworkManager& net) {
             };
     }
 
-    // Construction start / finish → S_COLD, chained onto the script callbacks
-    // (init_game installed on_construction_* to fire the map's triggers). Start
-    // syncs the under-construction state + progress so the client plays the
-    // time-scaled birth clip; finish clears it so the client transitions to Idle.
+    // Construction start / finish → S_COLD, chained onto the script callbacks.
+    // Start syncs the time-scaled birth clip; finish clears it.
     {
         auto script_start = std::move(world.on_construction_start);
         world.on_construction_start =
             [this, &net, script_start = std::move(script_start)](
-                simulation::Unit structure, simulation::Unit builder) {
-                if (script_start) script_start(structure, builder);
+                simulation::Unit builder, simulation::Unit structure) {
+                if (script_start) script_start(builder, structure);
                 const auto* c = m_simulation.world().constructions.get(structure.id);
                 if (!c) return;
                 auto pkt = build_cold_construction(structure.id, c->under_construction,
@@ -791,9 +789,8 @@ void GameServer::wire_to_network(NetworkManager& net) {
         auto script_finish = std::move(world.on_construction_finish);
         world.on_construction_finish =
             [this, &net, script_finish = std::move(script_finish)](
-                simulation::Unit structure, simulation::Unit builder) {
-                if (script_finish) script_finish(structure, builder);
-                // under_construction=false → client stops the stretched birth clip.
+                simulation::Unit builder, simulation::Unit structure) {
+                if (script_finish) script_finish(builder, structure);
                 auto pkt = build_cold_construction(structure.id, false, 0.0f, 1.0f);
                 broadcast_update(net,structure.id, pkt);
             };

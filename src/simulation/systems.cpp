@@ -2105,6 +2105,7 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
         c.build_time_total   = std::max(def->build_time, 0.0f);
         c.under_construction = c.build_time_total > 0.0f;
         c.build_progress     = c.under_construction ? 0.0f : 1.0f;
+        c.builder            = worker;
         world.constructions.add(site.id, std::move(c));
 
         // Start HP low and ramp with progress (finished if instant).
@@ -2114,7 +2115,7 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
                 : hp->max;
         }
 
-        if (world.on_construction_start) world.on_construction_start(site, worker);
+        if (world.on_construction_start) world.on_construction_start(worker, site);
     }
 
     // ── 2. Construction progress: advance every under-construction site ──
@@ -2140,8 +2141,10 @@ void system_build(World& world, float dt, Pathfinder& pathfinder,
         if (c.build_progress >= 1.0f) {
             c.build_progress = 1.0f;
             c.under_construction = false;
-            if (world.on_construction_finish)
-                world.on_construction_finish(world.unit(site_id), Unit{});
+            if (world.on_construction_finish) {
+                Unit builder = world.contains(c.builder) ? c.builder : Unit{};
+                world.on_construction_finish(builder, world.unit(site_id));
+            }
         }
     }
 }

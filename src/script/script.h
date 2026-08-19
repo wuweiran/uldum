@@ -382,9 +382,7 @@ private:
         simulation::Projectile projectile;
         simulation::Unit hit_unit;
     };
-    // Construction lifecycle (system_build). `entity` is the structure;
-    // `builder` is the worker that placed it (invalid on finish).
-    struct ConstructionEvent { simulation::Unit builder; };
+    struct ConstructionEvent { simulation::Unit structure; };
     struct GenericEvent {};
 
     struct EventFrame {
