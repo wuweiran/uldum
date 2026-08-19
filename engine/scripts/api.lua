@@ -32,34 +32,34 @@ function DestroyTrigger(trig) end
 
 --- Register a global event on a trigger.
 ---@param trig trigger
----@param event_name string
-function TriggerRegisterEvent(trig, event_name) end
+---@param event event
+function TriggerRegisterEvent(trig, event) end
 
 --- Register an event scoped to a specific unit.
 ---@param trig trigger
 ---@param unit unit
----@param event_name string
-function TriggerRegisterUnitEvent(trig, unit, event_name) end
+---@param event event
+function TriggerRegisterUnitEvent(trig, unit, event) end
 
 --- Register an event scoped to a specific player.
 ---@param trig trigger
 ---@param player player
----@param event_name string
-function TriggerRegisterPlayerEvent(trig, player, event_name) end
+---@param event event
+function TriggerRegisterPlayerEvent(trig, player, event) end
 
 --- Register an event scoped to a specific destructable. Inside the
 --- action, GetTriggerDestructable() returns the destructable.
 ---@param trig trigger
 ---@param destructable destructable
----@param event_name string  EVENT_DESTRUCTABLE_DEATH
-function TriggerRegisterDestructableEvent(trig, destructable, event_name) end
+---@param event event  EVENT_DESTRUCTABLE_DEATH
+function TriggerRegisterDestructableEvent(trig, destructable, event) end
 
 --- Register an event scoped to a specific projectile. The trigger is
 --- automatically dropped when the projectile is destroyed.
 ---@param trig trigger
 ---@param projectile projectile
----@param event_name string  EVENT_PROJECTILE_HIT or EVENT_PROJECTILE_DESTROYED
-function TriggerRegisterProjectileEvent(trig, projectile, event_name) end
+---@param event event  EVENT_PROJECTILE_HIT or EVENT_PROJECTILE_DESTROYED
+function TriggerRegisterProjectileEvent(trig, projectile, event) end
 
 --- Register a timer event on a trigger.
 ---@param trig trigger
@@ -83,7 +83,7 @@ function TriggerAddAction(trig, action) end
 --------------------------------------------------------------------------------
 
 --- Which event caused this trigger to fire.
----@return string
+---@return event
 function GetTriggerEvent() end
 
 --- The unit associated with the current event. nil when the trigger
@@ -104,8 +104,8 @@ function GetTriggerDestructable() end
 ---@return unit|destructable|nil
 function GetTriggerWidget() end
 
---- The player associated with the current event.
----@return player
+--- The player associated with the current event, or nil when none is set.
+---@return player?
 function GetTriggerPlayer() end
 
 --- The ability id associated with the current event.
@@ -143,7 +143,7 @@ function GetTriggerRegion() end
 function GetTriggerOrderType() end
 
 --- Target unit of a unit-targeted ability.
----@return unit
+---@return unit?
 function GetSpellTargetUnit() end
 
 --- Target point of a point-targeted ability.
@@ -159,11 +159,11 @@ function GetSpellTargetX() end
 function GetSpellTargetY() end
 
 --- Source of the current damage event.
----@return unit
+---@return unit?
 function GetDamageSource() end
 
 --- Target of the current damage event.
----@return unit
+---@return unit?
 function GetDamageTarget() end
 
 --- Amount of the current damage event.
@@ -179,12 +179,12 @@ function SetDamageAmount(amount) end
 function GetDamageType() end
 
 --- The unit that killed the current dying unit.
----@return unit
+---@return unit?
 function GetKillingUnit() end
 
 --- The attacker in the current EVENT_UNIT_ATTACKED / EVENT_GLOBAL_ATTACKED
 --- event. The target is `GetTriggerUnit()`.
----@return unit
+---@return unit?
 function GetAttacker() end
 
 --------------------------------------------------------------------------------
@@ -197,7 +197,7 @@ function GetAttacker() end
 ---@param x number         X position (game coords)
 ---@param y number         Y position (game coords)
 ---@param facing number?   Facing in degrees (default 0, facing +Y)
----@return unit
+---@return unit?
 function CreateUnit(type_id, player, x, y, facing) end
 
 --- Create a destructable (crate, tree, etc.) at the given position. Z is
@@ -478,7 +478,7 @@ function SetUnitStringAttribute(unit, attr_id, value) end
 --------------------------------------------------------------------------------
 
 ---@param unit unit
----@return player
+---@return player?
 function GetUnitOwner(unit) end
 
 ---@param unit unit
@@ -769,11 +769,11 @@ function DamageUnit(source, target, amount, damage_type) end
 function HealUnit(source, target, amount) end
 
 --- Source of the current heal event.
----@return unit
+---@return unit?
 function GetHealSource() end
 
 --- Target of the current heal event.
----@return unit
+---@return unit?
 function GetHealTarget() end
 
 --- Amount of the current heal event.
@@ -852,8 +852,23 @@ function IsFogEnabled() end
 ---@param y number
 ---@return boolean
 function IsPointVisible(player, x, y) end
+
+---@param player player
+---@param x number
+---@param y number
+---@return boolean
 function IsPointFogged(player, x, y) end
+
+---@param player player
+---@param x number
+---@param y number
+---@return boolean
 function IsPointMasked(player, x, y) end
+
+---@param player player
+---@param x number
+---@param y number
+---@return boolean
 function IsPointExplored(player, x, y) end
 
 --- Create a persistent fog-state override on a rectangular area for a
@@ -1477,7 +1492,7 @@ function DestroyTextTag(handle) end
 ---
 ---@param template_id string
 ---@param placement table
----@return string?
+---@return node?
 function CreateNode(template_id, placement) end
 
 --- Remove an instantiated node (and its subtree).
@@ -1485,9 +1500,9 @@ function CreateNode(template_id, placement) end
 ---@return boolean
 function DestroyNode(id) end
 
---- Return the node id when it exists, or nil.
+--- Return the node when it exists, or nil.
 ---@param id string
----@return string?
+---@return node?
 function GetNode(id) end
 
 --- Show / hide nodes.
@@ -1519,14 +1534,12 @@ function SetImageSource(id, source) end
 ---@param enabled boolean
 function SetButtonEnabled(id, enabled) end
 
---- Bind a trigger to fire on a node event filtered by node id. `node`
---- accepts the id string returned by `CreateNode` / `GetNode` (or a
---- table with a `_id` field for handle-style wrappers). Event names
---- are node-specific (e.g. "button_pressed" for Button nodes).
+--- Bind a trigger to fire on a node event. Event values are node-specific
+--- (e.g. EVENT_BUTTON_PRESSED for Button nodes).
 ---@param trig trigger
----@param node string
----@param event_name string
-function TriggerRegisterNodeEvent(trig, node, event_name) end
+---@param node node
+---@param event event
+function TriggerRegisterNodeEvent(trig, node, event) end
 
 --------------------------------------------------------------------------------
 -- HUD and user control
