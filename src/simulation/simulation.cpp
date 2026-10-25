@@ -460,11 +460,6 @@ void Simulation::client_tick(float dt) {
         }
     }
 
-    // Projectile teardown: same clip-sized death_timer drain the host runs in
-    // system_projectile. The client owns this — the host sends no S_DESTROY for
-    // projectiles.
-    tick_projectile_death(w, dt);
-
     // Recompute fog from the mirror world — the call tick() ends with. Without it
     // the client fog never advances past its init state. (true-sight queries this
     // sim's spatial_grid, which the client never ticks, so it relies on the host's

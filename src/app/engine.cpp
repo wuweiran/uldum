@@ -53,6 +53,12 @@ static void apply_camera_pan(render::CameraController& camera, u8 mode,
     }
 }
 
+void Engine::retain_projectile_visual(u32 id) {
+    auto& sim = active_sim();
+    if (sim.vision().is_unit_visible_to(sim.world(), sim, id, simulation::Player{m_args.local_slot}))
+        m_renderer.destroy_projectile(m_local_view, sim.world(), id);
+}
+
 void Engine::project_local_view(simulation::Player local) {
     auto& simulation = active_sim();
     auto& world = simulation.world();
@@ -105,6 +111,7 @@ void Engine::project_local_view(simulation::Player local) {
 
     std::vector<u32> thaw;
     for (u32 id : m_local_view.snapshot.handle_infos.ids()) {
+        if (m_local_view.snapshot.projectiles.has(id)) continue;
         if (m_local_view.visible.count(id)) continue;
         const auto* transform = m_local_view.snapshot.transforms.get(id);
         bool live = transform && tile_live_visible(transform->position);
@@ -1109,15 +1116,6 @@ bool Engine::start_session() {
                 return sim.vision().is_visible(simulation::Player{m_args.local_slot},
                                                static_cast<u32>(t.x), static_cast<u32>(t.y));
             };
-        // Renderer-owned hook so the simulation can match projectile
-        // death timers to the actual animation clip duration. Not script-facing
-        // (sim reads it during ticks), so it stays here — the script-facing
-        // wiring (attach_point / wire_host_broadcasts / scene_switch_fn) moved
-        // into init_game's pre_main hook so it exists before main() runs.
-        m_server.simulation().world().get_clip_duration =
-            [this](std::string_view model_path, std::string_view clip_name) -> f32 {
-                return m_renderer.clip_duration(model_path, clip_name);
-            };
     } else {
         // Client: install the receive callbacks that apply replicated events to
         // App-owned systems — the twin of wire_host_broadcasts.
@@ -1269,6 +1267,14 @@ void Engine::wire_host_broadcasts() {
     // start_session and scene_switch_run_main (a scene re-init reinstalls the
     // script handlers, so this must re-run to re-chain onto them).
     m_server.wire_to_network(m_network);
+    {
+        auto send = std::move(m_server.simulation().world().on_projectile_removed);
+        m_server.simulation().world().on_projectile_removed =
+            [this, send = std::move(send)](u32 id) {
+                retain_projectile_visual(id);
+                if (send) send(id);
+            };
+    }
     {
         auto send_event = std::move(m_server.script().anim_event_fn());
         m_server.script().set_anim_event_fn(
@@ -1433,6 +1439,8 @@ void Engine::wire_host_broadcasts() {
 // header for why it lives in the App, not GameClient). Called once from
 // start_session's client branch; the recv callbacks persist for the connection.
 void Engine::wire_client_callbacks() {
+    m_client.simulation().world().on_projectile_removed =
+        [this](u32 id) { retain_projectile_visual(id); };
     m_network.on_anim_event = [this](const network::AnimEventData& event) {
         switch (event.kind) {
         case network::AnimEventKind::SetQueue:
@@ -1453,13 +1461,6 @@ void Engine::wire_client_callbacks() {
     m_network.on_projectile_hit_animation = [this](u32 entity_id) {
         m_renderer.enqueue_hit(entity_id);
     };
-    // Client sizes a dying projectile's death_timer to the real "death" clip (see
-    // client_handle_projectile_dying), tearing it down when the clip finishes
-    // instead of waiting for an S_DESTROY the host no longer sends for projectiles.
-    m_client.simulation().world().get_clip_duration =
-        [this](std::string_view model_path, std::string_view clip_name) -> f32 {
-            return m_renderer.clip_duration(model_path, clip_name);
-        };
     m_network.on_sound = [this](std::string_view path, glm::vec3 pos) {
         m_audio.play_sfx(path, pos);
     };
@@ -2338,6 +2339,9 @@ void Engine::run() {
         bool have_world = (m_state == AppState::Playing && m_session_active);
         if (have_world) {
             bool is_client = this->is_client();
+            bool paused = m_network.is_paused() || m_network.is_scene_switching() ||
+                          (!is_client && m_server.script().is_paused());
+            m_local_view.update_projectiles(paused ? 0.0f : frame_dt);
             auto& world = m_local_view;
             f32 alpha = is_client ? 1.0f : (accumulator / TICK_DT);
             auto r0 = std::chrono::steady_clock::now();

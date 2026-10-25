@@ -742,9 +742,9 @@ by classification flags and presence of extra blocks (`"hero"`, `"building"`).
 }
 ```
 
-`death_type` controls the unit's corpse lifetime:
+Units, destructables, and items author `decay_time` in their type JSON: seconds from death to gameplay removal (defaults: 8 for units/destructables, 1 for items). Zero removes on the next death-system pass. The corpse plays `death`, then optional `decay`, and remains a gameplay entity throughout this window so units can be revived while decaying. Neither animation controls gameplay lifetime. There is no additional hidden cleanup interval. `death_type` controls whether a unit retains its handle after decay:
 
-- `"decay"` (default) — hide the corpse after its decay time, then remove the handle at cleanup.
+- `"decay"` (default) — remove the corpse and its handle at `decay_time`.
 - `"persistent"` — hide the corpse through `ShowUnit(unit, false)` after the same decay time, but retain its handle and state until `ReviveUnit` or `RemoveUnit`.
 
 `ReviveUnit(unit, x, y)` accepts any corpse whose handle still exists, restores it at full health, shows it, and fires the unit-revived events. Persistent units remain revivable after their corpse has disappeared. `ShowUnit(unit, show)` is the generic hidden-state primitive; hidden units retain their handle and continue internal timers but leave rendering, vision, targeting, selection, spatial queries, collision, and client projection.

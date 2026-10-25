@@ -26,7 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-namespace uldum::simulation { struct World; struct IWorldView; struct Transform; class Simulation; enum class FogVis : uldum::u8; }
+namespace uldum::simulation { struct World; struct IWorldView; struct LocalView; struct Transform; class Simulation; enum class FogVis : uldum::u8; }
 namespace uldum::platform { struct InputState; }
 namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentConfig; }
 
@@ -88,6 +88,7 @@ public:
     // particles. Called on scene switches because those instances belong to
     // entities that no longer exist.
     void clear_animations();
+    void destroy_projectile(simulation::LocalView& view, const simulation::World& world, u32 id);
 
     void update_camera(const platform::InputState& input, f32 dt);
     void handle_resize(f32 aspect);
@@ -163,11 +164,6 @@ public:
     glm::vec3 get_attachment_point(u32 entity_id, std::string_view bone_name) const;
 
     const asset::ModelBounds* model_bounds(std::string_view model_path);
-
-    // Resolve a clip's duration on a model (used by simulation to size
-    // projectile death timers to the actual animation length).
-    // Returns 0 if the model or clip is missing.
-    f32 clip_duration(std::string_view model_path, std::string_view clip_name);
 
     // ── Model viewer (editor) ────────────────────────────────────────────
     // Renders ONE model into an offscreen texture, isolated from the scene
@@ -489,6 +485,8 @@ private:
 
     // Per-entity animation playback owned by this renderer/viewer.
     std::unordered_map<u32, AnimationInstance> m_anim_instances;
+    std::array<std::vector<AnimationInstance>, rhi::MAX_FRAMES_IN_FLIGHT> m_retired_animations;
+    void release_animation(AnimationInstance& anim);
     simulation::SparseSet<simulation::AnimQueue> m_anim_queues;
     std::deque<AnimationEvent> m_animation_events;
 

@@ -148,18 +148,21 @@ Rules:
 
 ### Item animations
 
-Items are widgets too, so they share the same name-matched clip system — but only three states are meaningful for a ground item (the other clips are ignored). Carried items are hidden (no animation while in a slot), so all three only ever play on the ground:
+Units, destructables, and ground items remain gameplay corpses throughout their type's `decay_time`, measured from death (defaults: 8 seconds for units/destructables, 1 second for items). They play `death`, then optional `decay`, holding the final pose until the server removes them. A unit can be revived throughout this window; revival cancels death/decay playback. Persistent units retain their hidden handle after expiry and remain revivable. Destroyed projectiles finish `death` in the viewer's projectile copy, independently of server removal and even off-screen; missing clips mean immediate removal. The server never loads models to determine cleanup timing.
+
+Items are widgets too, so they share the same name-matched clip system. Carried items are hidden (no animation while in a slot); these clips only play on the ground:
 
 | Clip Name | When Active | Looping |
 |-----------|-------------|---------|
 | `idle` | The item is lying on the ground | Yes |
 | `birth` | Plays once when the item is dropped / created on the ground (materialize / drop-in) | No |
-| `death` | Plays once when the item is **destroyed on the ground** — a consumed `powerup`, a `charged` item spending its last charge on the ground, or Lua `RemoveItem`. Then the item is removed. | No (holds last frame) |
+| `death` | Plays when a ground item dies, until its authored `decay_time` expires. | No (holds last frame) |
+| `decay` | Plays after `death` finishes, while the gameplay corpse still exists. | No (holds last frame) |
 
 - **`idle` is the item's "stand" loop** — spinning powerups/runes, bobbing potions, a glowing tome. Author it as a looping transform baked into the model. This is the whole of item liveliness; most items need only `idle`.
 - **Pickup into an inventory is instant** — no `death` clip plays when a unit *collects* an item. `death` is for an item leaving the world *on the ground*, not for one going into a slot.
 - **Preplaced items** (authored in the map) come up already in `idle` — they do **not** replay `birth` on map load. Only items created/dropped at runtime birth.
-- All three are **optional**: with no clip for a state the bind pose is used (a static potion model just sits there — no crash, no motion).
+- All clips are **optional**; missing `decay` holds the death pose until the corpse expires.
 - Items are not skeletal fighters — `walk` / `attack` / `spell` / `hit` clips on an item model are ignored.
 
 

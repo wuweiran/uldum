@@ -136,8 +136,9 @@ struct LocalView final : IWorldView {
     // them without a wide friend surface.
     World*                  source = nullptr;   // auth World (host/offline) or network mirror (client)
     std::unordered_set<u32> visible;            // ids live-visible this tick → read source
+    void update_projectiles(f32 dt);
 
-    // Frozen last-seen copies for statics out of live sight. Only the pools a
+    // Owned copies for fog-memory statics and destroyed projectile playback. Only the pools a
     // snapshotted static is read through on a view path (others resolve to null
     // when snapshotted). owner/health/is_dead are intentionally absent:
     // every path that reads them first skips non-live entities, and the renderer
@@ -149,6 +150,7 @@ struct LocalView final : IWorldView {
         SparseSet<HandleInfo>             handle_infos;   // membership anchor + category
         SparseSet<UnitClassificationComp> classifications;// is_static_remembered_entity (dim/cull)
         SparseSet<DestructableComp>       destructables;  // right-click-attack + tree filter
+        SparseSet<ProjectileComp>         projectiles;    // destroyed: finish death playback locally
     } snapshot;
 
     // Ids whose tile the client fog has observed HIDDEN since the snapshot was
@@ -208,8 +210,9 @@ struct LocalView final : IWorldView {
     std::span<const u32> selectable_ids() const override;
     std::span<const u32> item_info_ids()  const override;
 
-    // snapshotted → Memory; live-visible → Live; else Hidden. Pure membership.
+    // Destroyed projectiles keep animating; fog-memory statics remain frozen.
     FogVis fog_mode(u32 id) const override {
+        if (snapshot.projectiles.has(id)) return FogVis::Live;
         if (snapshotted(id)) return FogVis::Memory;
         if (visible.count(id)) return FogVis::Live;
         return FogVis::Hidden;

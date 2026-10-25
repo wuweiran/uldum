@@ -1025,7 +1025,7 @@ void NetworkManager::update(f32 dt) {
         host_update_disconnected(dt);
     }
 
-    // Client derivation (cooldown decay, projectile teardown, fog) lives in
+    // Client derivation (cooldown decay, fog) lives in
     // Simulation::client_tick, driven from the engine's client branch. Corpse
     // lifecycle is host-driven: the client never advances corpse timers or hides a
     // corpse (visibility rides the synced `hidden` bit; corpse teardown is S_DESTROY).

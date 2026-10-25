@@ -1206,28 +1206,13 @@ void kill_item(World& world, Item item) {
         return;
     }
 
-    // Size the corpse window to the actual "death" clip so the item hides +
-    // frees exactly when the animation ends. No clip (or no resolver, e.g. a
-    // headless server) → instant destroy; there's no visual to hold for.
-    f32 clip = 0.0f;
-    if (world.get_clip_duration && !r->model_path.empty()) {
-        clip = world.get_clip_duration(r->model_path, "death");
-    }
-    if (clip <= 0.0f) {
-        destroy(world, item);
-        return;
-    }
-
-    // Reuse the unit corpse pipeline: the renderer plays Death while is_dead
-    // (health < threshold), and system_death Phase 2 hides then frees the item
-    // at cleanup_delay. Drive health to 0 so death is derived uniformly (an item
-    // dies by charges, not damage, so nothing else zeroed it) — this is what the
-    // client sees (health, not the host-only Corpse). Per-instance corpse window.
     if (auto* h = world.healths.get(item.id)) h->current = 0;
-    Corpse d{};
-    d.corpse_duration = clip;
-    d.cleanup_delay   = clip;
-    world.corpses.add(item.id, std::move(d));
+    Corpse corpse;
+    const auto* info = world.item_infos.get(item.id);
+    const auto* def = info ? world.types->get_item_type(info->type_id) : nullptr;
+    corpse.decay_time = def ? def->decay_time : 0;
+    world.corpses.add(item.id, std::move(corpse));
+    if (world.on_entity_died) world.on_entity_died(item.id);
 }
 
 // ── Ability API ───────────────────────────────────────────────────────────

@@ -448,10 +448,6 @@ void GameServer::broadcast_tick(NetworkManager& net, u32 tick) {
                 continue;
             }
             if (!is_visible_to(id, player)) continue;
-            if (const auto* projectile = world.projectiles.get(id);
-                projectile && projectile->dying) {
-                continue;
-            }
             visible.insert(id);
             if (!known.contains(id)) {
                 send_spawn(
@@ -473,10 +469,7 @@ void GameServer::broadcast_tick(NetworkManager& net, u32 tick) {
         for (u32 id : known) {
             if (visible.contains(id)) continue;
             const auto* carried = world.carriables.get(id);
-            const auto* projectile = world.projectiles.get(id);
-            bool silent =
-                (carried && simulation::is_non_null_handle(carried->carried_by)) ||
-                (projectile && projectile->dying);
+            bool silent = carried && simulation::is_non_null_handle(carried->carried_by);
             if (!silent) {
                 const auto* info = infos.get(id);
                 net.send_to_peer(
@@ -699,12 +692,7 @@ void GameServer::wire_to_network(NetworkManager& net) {
             auto pkt = build_cold_item_charges(item.id, charges);
             broadcast_update(net,item.id, pkt);
         };
-    // Death signal for entities off the per-tick path (destructables): they don't
-    // ride S_UNIT_STATE, so a dying crate's health→0 needs its own on-change
-    // S_COLD{Health}. The client derives death from health (health_is_dead), so
-    // this is what makes it render a corpse. Units carry health in S_UNIT_STATE and
-    // don't need this. host_broadcast_update routes only to peers that already know
-    // the entity (same visibility gate as other on-change updates).
+    // Death is reliable and immediate for all widgets, including ground items.
     world.on_entity_died =
         [this, &net, &world](u32 entity_id) {
             const auto* h = world.healths.get(entity_id);
@@ -713,6 +701,14 @@ void GameServer::wire_to_network(NetworkManager& net) {
             auto pkt = build_cold_health(entity_id, cur, mx);
             broadcast_update(net,entity_id, pkt);
         };
+    world.on_projectile_removed = [this, &net, &world](u32 id) {
+        const auto* t = world.transforms.get(id);
+        if (!t) return;
+        auto packet = build_projectile_dying(id, t->position, t->facing);
+        for (auto& [player_id, known] : m_known_by_player) {
+            if (known.erase(id)) net.host_send_to_player(player_id, packet);
+        }
+    };
     {
         auto script_revived = std::move(world.on_unit_revived);
         world.on_unit_revived =

@@ -271,8 +271,7 @@ inline bool advance_swing(Combat& c, f32 dt) {
 
 struct Corpse {
     f32 corpse_timer   = 0;
-    f32 corpse_duration = 8.0f;
-    f32 cleanup_delay  = 30.0f;
+    f32 decay_time = 8.0f;
     bool decayed = false;
     bool persistent = false;
 };
@@ -541,7 +540,7 @@ struct ProjectileComp {
     bool        is_attack     = false;   // engine routes hits through deal_attack_damage
     f32         hit_radius    = 32.0f;
     f32         max_distance  = 0;       // Linear only (0 = use lifetime)
-    f32         max_lifetime  = 10.0f;   // safety cap
+    f32         max_lifetime  = 10.0f;   // flight cap; local destroyed copies use death-clip length
     f32         elapsed       = 0;
     f32         traveled      = 0;
     bool        emitted       = false;   // false between CreateProjectile and EmitProjectile*
@@ -550,13 +549,7 @@ struct ProjectileComp {
     // Linear with pierce: every unit within hit_radius along the path
     // fires PROJECTILE_HIT. Tracked so we don't hit the same unit twice.
     std::vector<Unit> already_hit;
-    // Dying state — gameplay has ended (PROJECTILE_DESTROYED fired,
-    // triggers cleaned up, no further movement / collision) but the
-    // entity persists briefly so the renderer can play the model's
-    // `death` clip. `death_timer` counts down to 0, then the entity
-    // is silently torn down.
-    bool        dying         = false;
-    f32         death_timer   = 0;
+    bool destroying = false; // Guards destruction callbacks; view copies finish death playback.
 };
 
 // ── Rendering ──────────────────────────────────────────────────────────────

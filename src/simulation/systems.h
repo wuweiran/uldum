@@ -27,6 +27,4 @@ void system_collision(World& world, const SpatialGrid& grid,
 void system_death(World& world, float dt);
 void system_regions(World& world);
 
-void tick_projectile_death(World& world, float dt);
-
 } // namespace uldum::simulation

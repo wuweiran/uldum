@@ -374,15 +374,6 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
                 }
             }
         }
-        // Broadcast the dying state to clients that can see the
-        // projectile so they queue the death clip on their local
-        // entity. The follow-up S_DESTROY arrives ~0.6s later when the
-        // server tears down — same per-entity visibility filter
-        // applies to both.
-        if (m_unit_update_fn) {
-            auto pkt = network::build_projectile_dying(projectile.id);
-            m_unit_update_fn(projectile.id, pkt);
-        }
     };
 
     sim.world().on_death = [this](simulation::Unit dying, simulation::Unit killer) {

@@ -85,6 +85,7 @@ bool TypeRegistry::load_unit_types_from_doc(const asset::JsonDocument* doc, std:
             def.health_regen = h.value("regen", 0.0f);
         }
         def.death_type = parse_death_type(val.value("death_type", "decay"));
+        def.decay_time = std::max(0.0f, val.value("decay_time", 8.0f));
 
         if (val.contains("movement")) {
             auto& m = val["movement"];
@@ -274,6 +275,7 @@ bool TypeRegistry::load_destructable_types_from_doc(const asset::JsonDocument* d
             log::warn(TAG, "Destructable type '{}' has no models", key);
         }
         def.model_scale = val.value("model_scale", 1.0f);
+        def.decay_time = std::max(0.0f, val.value("decay_time", 8.0f));
 
         if (val.contains("health")) {
             auto& h = val["health"];
@@ -338,6 +340,7 @@ bool TypeRegistry::load_item_types_from_doc(const asset::JsonDocument* doc, std:
         def.model_path      = val.value("model", "");
         def.model_scale     = val.value("model_scale", 1.0f);
         def.item_class      = parse_item_class(val.value("type", std::string("permanent")));
+        def.decay_time      = std::max(0.0f, val.value("decay_time", 1.0f));
         def.initial_charges = val.value("initial_charges", 0);
         def.initial_level   = val.value("initial_level",   0);
         if (def.item_class != ItemClass::Charged && def.initial_charges != 0) {

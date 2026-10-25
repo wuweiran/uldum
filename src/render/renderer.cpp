@@ -379,17 +379,21 @@ static void set_playback_queue(simulation::SparseSet<simulation::AnimQueue>& que
     else queues.add(id, std::move(queue));
 }
 
+void Renderer::release_animation(AnimationInstance& anim) {
+    for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
+        m_rhi->free_descriptor_set(anim.bone_descriptor[f]);
+        m_rhi->destroy_buffer(anim.bone_buffer[f]);
+    }
+}
+
 void Renderer::clear_animations() {
     if (!m_rhi) return;
     // GPU must be idle before freeing any bone buffer still in flight.
     m_rhi->wait_idle();
-    for (auto& [eid, anim] : m_anim_instances) {
-        for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
-            m_rhi->destroy_buffer(anim.bone_buffer[f]);
-        }
-        // Descriptor sets will be freed when the pool is destroyed in
-        // shutdown(). They're cheap to leak per session for the small
-        // # of units we run; revisit when sessions are very long-lived.
+    for (auto& [eid, anim] : m_anim_instances) release_animation(anim);
+    for (auto& retired : m_retired_animations) {
+        for (auto& anim : retired) release_animation(anim);
+        retired.clear();
     }
     m_anim_instances.clear();
     m_anim_queues.clear();
@@ -435,13 +439,7 @@ void Renderer::shutdown() {
     m_rhi->destroy_buffer(m_ghost_bone_buffer);
     if (m_ghost_static_pipeline.is_valid()) m_rhi->destroy_pipeline(m_ghost_static_pipeline);
     if (m_ghost_static_layout.is_valid()) m_rhi->destroy_pipeline_layout(m_ghost_static_layout);
-    for (auto& [eid, anim] : m_anim_instances) {
-        // Descriptor sets freed implicitly when pools are destroyed below
-        for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
-            m_rhi->destroy_buffer(anim.bone_buffer[f]);
-        }
-    }
-    m_anim_instances.clear();
+    clear_animations();
     for (auto& [path, lm] : m_model_cache) {
         destroy_mesh(*m_rhi, lm.mesh);
         if (lm.diffuse_texture.texture.is_valid()) destroy_texture(*m_rhi, lm.diffuse_texture);
@@ -590,6 +588,7 @@ AnimationInstance& Renderer::get_or_create_anim(u32 entity_id, LoadedModel& mode
     bind_state(AnimState::Attack, "attack");
     bind_state(AnimState::Spell,  "spell");
     bind_state(AnimState::Death,  "death");
+    bind_state(AnimState::Decay,  "decay");
     bind_state(AnimState::Birth,  "birth");
     bind_state(AnimState::Hit,    "hit");
 
@@ -658,7 +657,14 @@ static AnimStateInfo derive_anim_state(const simulation::IWorldView& world, u32 
     using simulation::CastState;
     using simulation::AttackState;
 
-    if (world.is_dead(id)) return {AnimState::Death, 0.8f, false};
+    if (world.is_dead(id)) {
+        bool death_finished = (anim.current_state == AnimState::Death && anim.finished) ||
+                              anim.state_to_clip[static_cast<u8>(AnimState::Death)] < 0;
+        if ((death_finished || anim.current_state == AnimState::Decay) &&
+            anim.state_to_clip[static_cast<u8>(AnimState::Decay)] >= 0)
+            return {AnimState::Decay, 0, false};
+        return {AnimState::Death, 0, false};
+    }
 
     auto get_type_def = [&]() -> const simulation::UnitTypeDef* {
         auto* hi = world.handle_info(id);
@@ -2315,12 +2321,24 @@ const asset::ModelBounds* Renderer::model_bounds(std::string_view model_path) {
     return lm && lm->data.bounds.valid ? &lm->data.bounds : &m_placeholder_bounds;
 }
 
-f32 Renderer::clip_duration(std::string_view model_path, std::string_view clip_name) {
-    auto* lm = get_or_load_model(std::string(model_path));
-    if (!lm) return 0.0f;
-    i32 idx = find_clip_by_name(lm->data, clip_name);
-    if (idx < 0) return 0.0f;  // find_clip_by_name returns an in-range index or -1
-    return lm->data.animations[idx].duration;
+void Renderer::destroy_projectile(simulation::LocalView& view, const simulation::World& world, u32 id) {
+    const auto* r = world.renderables.get(id);
+    const auto* t = world.transforms.get(id);
+    const auto* info = world.handle_infos.get(id);
+    if (!r || !r->visible || !t || !info) return;
+    auto* model = get_or_load_model(r->model_path);
+    i32 index = model ? find_clip_by_name(model->data, "death") : -1;
+    if (index < 0 || model->data.animations[index].duration <= 0) return;
+    view.drop_snapshot(id);
+    view.snapshot_from(world, id);
+    auto& transform = *view.snapshot.transforms.get(id);
+    transform.prev_position = transform.position;
+    transform.prev_facing = transform.facing;
+    simulation::ProjectileComp playback;
+    playback.destroying = true;
+    playback.max_lifetime = model->data.animations[index].duration;
+    view.snapshot.projectiles.add(id, std::move(playback));
+    enqueue_animation(id, "death", false);
 }
 
 // ── Model loading + mesh cache ────────────────────────────────────────────
@@ -3906,29 +3924,17 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
         }
     }
 
-    // Clean up animation instances for entities that no longer exist in the
-    // world. Scene swaps clear the whole set up front (clear_animations); this
-    // handles the ordinary case of a unit despawning mid-scene.
+    // begin_frame waited for this slot's fence. Retire new removals until the
+    // slot comes around again, without stalling the GPU on every death.
     {
-        std::vector<u32> stale;
-        for (auto& [eid, anim] : m_anim_instances) {
-            if (!world.contains(eid)) {
-                stale.push_back(eid);
-            }
-        }
-        if (!stale.empty()) {
-            // Wait for GPU to finish using the bone buffers before destroying
-            m_rhi->wait_idle();
-        }
-        for (u32 eid : stale) {
-            auto it = m_anim_instances.find(eid);
-            if (it != m_anim_instances.end()) {
-                for (u32 f = 0; f < rhi::MAX_FRAMES_IN_FLIGHT; ++f) {
-                    m_rhi->destroy_buffer(it->second.bone_buffer[f]);
-                }
-                m_anim_instances.erase(it);
-            }
-            m_anim_queues.remove(eid);
+        auto& retired = m_retired_animations[m_rhi->frame_index()];
+        for (auto& anim : retired) release_animation(anim);
+        retired.clear();
+        for (auto it = m_anim_instances.begin(); it != m_anim_instances.end();) {
+            if (world.contains(it->first)) { ++it; continue; }
+            m_anim_queues.remove(it->first);
+            retired.push_back(std::move(it->second));
+            it = m_anim_instances.erase(it);
         }
     }
 
@@ -3992,11 +3998,8 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
 
             const auto* source_queue = world.anim_queue(id);
             auto* aq = m_anim_queues.get(id);
-            if (source_queue && (!aq ||
-                (world.projectile(id) && world.projectile(id)->dying &&
-                 (aq->clips.empty() || aq->clips.front() != source_queue->clips.front())))) {
-                if (aq) *aq = *source_queue;
-                else m_anim_queues.add(id, simulation::AnimQueue{*source_queue});
+            if (source_queue && !aq) {
+                m_anim_queues.add(id, simulation::AnimQueue{*source_queue});
                 aq = m_anim_queues.get(id);
             }
             const bool is_dying = world.is_dead(id);
@@ -4078,7 +4081,13 @@ void Renderer::draw(rhi::CommandList& cmd, rhi::Extent2D extent, simulation::IWo
                 }
             }
             f32 previous_anim_time = anim.time;
-            update_animation(anim, frame_dt);
+            if (const auto* p = world.projectile(id); p && p->destroying) {
+                anim.time = p->elapsed;
+                anim.blend_factor = 1;
+                update_animation(anim, 0);
+            } else {
+                update_animation(anim, frame_dt);
+            }
             if (anim.current_state == AnimState::Attack &&
                 previous_anim_time < anim.attack_dmg_time && anim.time >= anim.attack_dmg_time) {
                 if (const auto* info = world.handle_info(id)) {

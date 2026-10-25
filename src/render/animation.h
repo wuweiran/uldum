@@ -17,11 +17,11 @@
 namespace uldum::render {
 
 // Animation states — driven by simulation components.
-// Clip names in glTF must match: "idle", "walk", "attack", "spell", "death", "hit".
+// Clip names in glTF match the states, including "death" followed by optional "decay".
 // `Custom` is reserved for script-driven overrides (SetUnitAnimation in
 // Lua); state_to_clip[Custom] is populated at runtime from the map
 // author's clip name rather than from a fixed glTF naming convention.
-enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Birth, Hit, Custom, Count };
+enum class AnimState : u8 { Idle, Walk, Attack, Spell, Death, Decay, Birth, Hit, Custom, Count };
 
 // Per-entity animation instance with state machine.
 struct AnimationInstance {

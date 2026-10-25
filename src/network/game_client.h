@@ -38,7 +38,7 @@ public:
     void apply_unit_state(UnitStateData state);
     void apply_projectile_state(ProjectileStateData state);
     void apply_attack_start(const AnimEventData& event);
-    std::optional<u32> apply_projectile_dying(u32 entity_id);
+    std::optional<u32> apply_projectile_dying(const ProjectileDyingData& event);
     void apply_cold(ColdData cold);
 
     simulation::Simulation&       simulation()       { return m_simulation; }

@@ -102,7 +102,7 @@ enum class MsgType : u8 {
     S_COLD          = 0x54,
 
     // EVENT (reliable): discrete one-shots while in sight.
-    S_PROJECTILE_DYING = 0x55, // projectile entered dying state — play death clip once
+    S_PROJECTILE_DYING = 0x55, // projectile entered its death phase
     S_SOUND            = 0x56, // positional world SFX
     S_EFFECT_CREATE    = 0x57, // CreateEffect / CreateEffectOnUnit (with handle)
     S_EFFECT_DESTROY   = 0x58, // DestroyEffect (handle)
@@ -666,22 +666,33 @@ inline u32 parse_effect_destroy(std::span<const u8> data) {
     return r.read_u32();
 }
 
-// PROJECTILE_DYING — broadcast when a projectile enters its dying
-// state on the server (gameplay over, death animation about to play).
-// The entity itself is still alive on both sides; this just tells the
-// client to queue the model's "death" clip. The follow-up S_DESTROY
-// arrives ~0.6s later when the server tears the entity down.
-inline std::vector<u8> build_projectile_dying(u32 entity_id) {
+struct ProjectileDyingData {
+    u32 entity_id;
+    glm::vec3 position;
+    f32 facing;
+};
+
+inline std::vector<u8> build_projectile_dying(u32 entity_id, glm::vec3 position, f32 facing) {
     ByteWriter w;
     w.write_u8(static_cast<u8>(MsgType::S_PROJECTILE_DYING));
     w.write_u32(entity_id);
+    w.write_f32(position.x);
+    w.write_f32(position.y);
+    w.write_f32(position.z);
+    w.write_f32(facing);
     return std::move(w.data());
 }
 
-inline u32 parse_projectile_dying(std::span<const u8> data) {
+inline ProjectileDyingData parse_projectile_dying(std::span<const u8> data) {
     ByteReader r(data);
     r.read_u8();
-    return r.read_u32();
+    ProjectileDyingData event;
+    event.entity_id = r.read_u32();
+    event.position.x = r.read_f32();
+    event.position.y = r.read_f32();
+    event.position.z = r.read_f32();
+    event.facing = r.read_f32();
+    return event;
 }
 
 enum class AnimEventKind : u8 {

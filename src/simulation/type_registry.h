@@ -35,6 +35,7 @@ struct UnitTypeDef {
     f32 max_health = 100;
     f32 health_regen = 0;
     DeathType death_type = DeathType::Decay;
+    f32 decay_time = 8.0f; // Seconds from death to decay/removal.
 
     // Movement
     f32      move_speed = 270;
@@ -117,6 +118,7 @@ struct DestructableTypeDef {
     std::vector<std::string> models;        // one entry per visual variation; length = variation count
     f32                      model_scale = 1.0f;            // uniform render scale
     f32                      max_health = 50;
+    f32                      decay_time = 8.0f;
     std::map<std::string, f32>         attributes_numeric;  // "armor" → 0
     std::map<std::string, std::string> attributes_string;   // "armor_type" → "fortified"
     u32                      pathing_footprint_w = 0;       // tiles; 0 = no pathing block
@@ -161,6 +163,7 @@ struct ItemTypeDef {
     std::string              model_path;      // ground render model (glTF)
     f32                      model_scale  = 1.0f;
     ItemClass                item_class   = ItemClass::Permanent;
+    f32                      decay_time = 1.0f;
     // Abilities granted to the carrier while the item is in inventory.
     // Activeness is implicit — if abilities[0].form is non-passive, the
     // inventory slot fires that ability on click/hotkey; otherwise the

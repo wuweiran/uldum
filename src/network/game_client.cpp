@@ -229,7 +229,8 @@ void GameClient::apply_attack_start(const AnimEventData& event) {
     simulation::begin_swing(*combat);
 }
 
-std::optional<u32> GameClient::apply_projectile_dying(u32 entity_id) {
+std::optional<u32> GameClient::apply_projectile_dying(const ProjectileDyingData& event) {
+    u32 entity_id = event.entity_id;
     auto& world = m_simulation.world();
     const auto* projectile = world.projectiles.get(entity_id);
     std::optional<u32> hit;
@@ -237,7 +238,12 @@ std::optional<u32> GameClient::apply_projectile_dying(u32 entity_id) {
         simulation::is_non_null_handle(projectile->target)) {
         hit = projectile->target.id;
     }
-    simulation::enter_projectile_dying(world, entity_id);
+    if (auto* t = world.transforms.get(entity_id)) {
+        t->position = t->prev_position = event.position;
+        t->facing = t->prev_facing = event.facing;
+        if (world.on_projectile_removed) world.on_projectile_removed(entity_id);
+    }
+    destroy_entity(entity_id); // Keep the view's projectile until its death clip finishes.
     return hit;
 }
 

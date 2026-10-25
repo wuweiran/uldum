@@ -93,7 +93,7 @@ Message IDs are organized by top-nibble category: client/server direction + phas
 | `S_UNIT_STATE` | 0x52 | unreliable | `u32 tick, u16 count, UnitState[]` — per-tick HOT snapshot for **units** (see below). Death is derived from the health field, not a separate flag |
 | `S_PROJECTILE_STATE` | 0x53 | unreliable | `u32 tick, u16 count, ProjectileState[]` — per-tick HOT snapshot for projectiles (position + facing only) |
 | `S_COLD` | 0x54 | reliable | `u32 entity_id, u16 count, ColdRecord[]` — on-change cold state (1 record) **and** the materialize batch (N records). One grouped envelope; scripted animation state carries only the terminal looping clip |
-| `S_PROJECTILE_DYING` | 0x55 | reliable | `u32 entity_id` — projectile entered its dying window; client plays its death clip and, for a normal-attack projectile, the target's hit animation |
+| `S_PROJECTILE_DYING` | 0x55 | reliable | `u32 entity_id`, `f32 x,y,z,facing` — enter the projectile's death phase at this transform. Currently, the server removes it immediately and each viewer finishes `death` locally. Normal-attack projectiles also trigger the target's hit animation. Widgets remain gameplay corpses until `S_DESTROY`. |
 | `S_SOUND` | 0x56 | unreliable | `u16 path_len, char[] path, f32 x, f32 y, f32 z` |
 | `S_ANIM_EVENT` | 0x5B | reliable | visible-now attack starts and scripted animation commands; never replayed on materialization |
 | `S_HIDE` | 0x59 | reliable | `u32 entity_id` — entity left the player's sight (client decides whether to remember it) |

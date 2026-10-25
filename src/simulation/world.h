@@ -113,15 +113,8 @@ struct World {
     using DeathCallback = std::function<void(Unit dying, Unit killer)>;
     DeathCallback on_death;
 
-    // Engine death-transition callback — fired the moment an entity enters
-    // dead-state (health < threshold), for the NETWORK to signal death to clients.
-    // Distinct from on_death (which is the SCRIPT trigger hook, and may
-    // cancel/mutate). Needed because destructables no longer ride the per-tick
-    // snapshot (only units/projectiles do), so their health→0 can't reach the
-    // client that way — an on-change S_COLD{Health(0)} lets the client derive death
-    // and play the death clip during the corpse window before S_DESTROY removes the
-    // entity. Fires for the categories that left the per-tick path (destructables);
-    // units still sync health (→ death) via the per-tick snapshot.
+    // Publish confirmed widget death after script callbacks. Clients retain the
+    // corpse for death/decay playback and possible revival until S_DESTROY.
     using EntityDiedCallback = std::function<void(u32 entity_id)>;
     EntityDiedCallback on_entity_died;
 
@@ -216,12 +209,8 @@ struct World {
     ProjectileHitCallback       on_projectile_hit;
     ProjectileDestroyedCallback on_projectile_destroyed;
 
-    // Resolve a clip's duration on a model. Installed by the renderer so
-    // the simulation can size projectile death timers to the actual
-    // animation length. Returns 0 if model or clip is missing; callers
-    // fall back to a small default in that case.
-    using ClipDurationCallback = std::function<f32(std::string_view model_path, std::string_view clip_name)>;
-    ClipDurationCallback get_clip_duration;
+    // After gameplay callbacks, before removal: observers can retain the death visual.
+    std::function<void(u32 id)> on_projectile_removed;
 
     // Internal pathfinder bridge used when an individual blocker leaves the
     // live world. Bulk world clears reset pathfinding separately and do not
@@ -434,12 +423,6 @@ void emit_projectile_target(World& world, Projectile projectile, Widget target, 
 void emit_projectile_loc(World& world, Projectile projectile, glm::vec3 loc, f32 speed,
                          f32 hit_radius, f32 max_distance);
 void destroy_projectile(World& world, Projectile projectile);
-// Put a projectile into the Dying state (mark + size death_timer to its death
-// clip + queue the clip), with no gameplay side effects — unlike
-// destroy_projectile, which fires PROJECTILE_DESTROYED first. A network client
-// calls this on S_PROJECTILE_DYING (it never runs system_projectile); the host
-// reaches it via begin_destroy_projectile.
-void enter_projectile_dying(World& world, u32 id);
 
 // Returns false for an invalid handle or a unit without status flags.
 bool     unit_has_status(const World& world, Unit unit, u32 flag);

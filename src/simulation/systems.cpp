@@ -774,7 +774,7 @@ Projectile create_projectile(World& world, Unit source, const std::string& model
     // Loop the model's "idle" clip while the projectile is alive. The
     // renderer's script-controlled-anim path handles the lookup; if the
     // model has no "idle" clip it logs a warning and falls back to the
-    // bind pose. begin_destroy_projectile overrides this with the
+    // bind pose. The viewer replaces this with the
     // "death" clip when the projectile resolves.
     AnimQueue aq;
     aq.clips.push_back("idle");
@@ -2174,64 +2174,16 @@ static void destroy_projectile_entity(World& world, u32 id) {
     world.anim_queues.remove(id);
 }
 
-// Window the projectile lingers in the Dying state so its death clip can play
-// out before teardown. Fallback when no renderer-backed get_clip_duration is
-// wired (headless worker); real death clips are typically well under this.
-static constexpr f32 kProjectileDeathAnimSecs = 1.5f;
-
-// Size the death-clip linger to the model's actual "death" clip when a resolver
-// is wired (a renderer-backed host / client), else the fallback constant. Host
-// and client compute the SAME value so a dying projectile retires on the same
-// clock on both — which is what lets the host skip S_DESTROY for projectiles
-// (the client tears its own down via tick_projectile_death).
-static f32 projectile_death_duration(const World& world, u32 id) {
-    if (world.get_clip_duration) {
-        auto* r = world.renderables.get(id);
-        if (r && !r->model_path.empty()) {
-            f32 dur = world.get_clip_duration(r->model_path, "death");
-            if (dur > 0.0f) return dur;
-        }
-    }
-    return kProjectileDeathAnimSecs;
-}
-
-// Put a projectile into the Dying state: mark it, size its death_timer to the
-// model's death clip, and queue that clip for the renderer. NO gameplay side
-// effects (no PROJECTILE_DESTROYED). The host reaches this via
-// begin_destroy_projectile (which fires the callback first); a network client
-// calls it directly on S_PROJECTILE_DYING. Idempotent — a no-op if already dying
-// or not a projectile.
-void enter_projectile_dying(World& world, u32 id) {
+// Finish gameplay now. Observers own any remaining animation.
+void destroy_projectile(World& world, Projectile projectile) {
+    u32 id = projectile.id;
     auto* p = world.projectiles.get(id);
-    if (!p || p->dying) return;
-    p->dying       = true;
-    p->death_timer = projectile_death_duration(world, id);
-    // Queue the "death" clip. If the model has one the renderer plays it; if not
-    // it falls back to the bind pose / current clip — harmless either way.
-    AnimQueue aq;
-    aq.clips.push_back("death");
-    aq.looping = false;
-    if (auto* q = world.anim_queues.get(id)) *q = std::move(aq);
-    else world.anim_queues.add(id, std::move(aq));
-}
-
-// Begin destruction. Fires PROJECTILE_DESTROYED once (gameplay end), then enters
-// the dying state (clip + teardown timer). The actual entity removal happens in
-// system_projectile after death_timer drains.
-static void begin_destroy_projectile(World& world, u32 id) {
-    auto* p = world.projectiles.get(id);
-    if (!p || p->dying) return;
-    Projectile pu = world.projectile(id);
-    if (world.on_projectile_destroyed) world.on_projectile_destroyed(pu);
-    if (!world.contains(pu)) return;
-    enter_projectile_dying(world, id);
-}
-
-// Public entry — explicit DestroyProjectile from Lua.
-void destroy_projectile(World& world, Projectile proj_unit) {
-    if (!world.contains(proj_unit)) return;
-    if (!world.projectiles.get(proj_unit.id)) return;
-    begin_destroy_projectile(world, proj_unit.id);
+    if (!p || p->destroying) return;
+    p->destroying = true;
+    if (world.on_projectile_destroyed) world.on_projectile_destroyed(projectile);
+    if (!world.contains(projectile)) return;
+    if (world.on_projectile_removed) world.on_projectile_removed(id);
+    destroy_projectile_entity(world, id);
 }
 
 void system_projectile(World& world, float dt) {
@@ -2241,8 +2193,6 @@ void system_projectile(World& world, float dt) {
         projectiles.push_back(world.projectile(id));
     }
 
-    std::vector<Projectile> to_teardown;
-
     for (Projectile projectile : projectiles) {
         if (!world.contains(projectile)) continue;
         u32 id = projectile.id;
@@ -2251,21 +2201,12 @@ void system_projectile(World& world, float dt) {
         if (!projectile_comp || !transform) continue;
         auto& proj = *projectile_comp;
 
-        // Dying: gameplay has ended; entity persists for the death
-        // animation. Tick the death timer; when it hits zero, queue
-        // the entity for actual teardown.
-        if (proj.dying) {
-            proj.death_timer -= dt;
-            if (proj.death_timer <= 0) to_teardown.push_back(projectile);
-            continue;
-        }
-
         // Pre-emit projectiles sit at the source point — no movement,
         // no collision. Lua is still configuring side state.
         if (!proj.emitted) continue;
 
         proj.elapsed += dt;
-        if (proj.elapsed >= proj.max_lifetime) { begin_destroy_projectile(world, id); continue; }
+        if (proj.elapsed >= proj.max_lifetime) { destroy_projectile(world, projectile); continue; }
 
         if (proj.path == ProjectileComp::Path::Homing) {
             // Re-aim each tick. Target loss → drop on last known position
@@ -2275,7 +2216,7 @@ void system_projectile(World& world, float dt) {
             if (world.contains(proj.target)) {
                 auto* tt = world.transforms.get(proj.target.id);
                 if (tt) { aim = tt->position; aim.z += 32.0f; proj.target_pos = aim; }
-                else    { begin_destroy_projectile(world, id); continue; }
+                else    { destroy_projectile(world, projectile); continue; }
             } else {
                 aim = proj.target_pos;
             }
@@ -2300,7 +2241,7 @@ void system_projectile(World& world, float dt) {
                     if (attack && world.contains(target)) {
                         deal_attack_damage(world, source, target, damage);
                     }
-                    if (world.contains(pu)) begin_destroy_projectile(world, id);
+                    if (world.contains(pu)) destroy_projectile(world, pu);
                     continue;
                 }
                 f32 step = proj.speed * dt;
@@ -2336,7 +2277,7 @@ void system_projectile(World& world, float dt) {
                 if (attack && world.contains(target)) {
                     deal_attack_damage(world, source, target, damage);
                 }
-                if (world.contains(pu)) begin_destroy_projectile(world, id);
+                if (world.contains(pu)) destroy_projectile(world, pu);
                 continue;
             }
             f32 step = proj.speed * dt;
@@ -2421,42 +2362,12 @@ void system_projectile(World& world, float dt) {
             if (!p) continue;
             if ((p->max_distance > 0 && p->traveled >= p->max_distance) ||
                 dist <= 1e-3f) {
-                begin_destroy_projectile(world, id);
+                destroy_projectile(world, pu);
                 continue;
             }
         }
     }
 
-    for (Projectile projectile : to_teardown) {
-        if (world.contains(projectile)) destroy_projectile_entity(world, projectile.id);
-    }
-}
-
-// Client-side twin of the dying branch in system_projectile: drain each dying
-// projectile's death_timer and tear it down when it drains. The host runs that
-// teardown inside its full system_projectile tick; a network client — which
-// never ticks the rules systems — calls THIS from Simulation::client_tick over
-// its mirror world, so a projectile retires on the same clock it would on the
-// host. This is what lets the host stop sending S_DESTROY for projectiles: each
-// side owns its own teardown on a matching death_timer.
-void tick_projectile_death(World& world, float dt) {
-    if (dt <= 0) return;
-    std::vector<Projectile> to_teardown;
-    for (u32 id : world.projectiles.ids()) {
-        auto* p = world.projectiles.get(id);
-        if (!p || !p->dying) continue;
-        p->death_timer -= dt;
-        if (p->death_timer <= 0) to_teardown.push_back(world.projectile(id));
-    }
-    for (Projectile projectile : to_teardown) {
-        if (world.contains(projectile)) destroy_projectile_entity(world, projectile.id);
-    }
-}
-
-// ── Death + corpse system ─────────────────────────────────────────────────
-
-static void remove_all_components_and_free(World& world, Handle h) {
-    remove_all_components(world, h.id);
 }
 
 // ── Collision system ──────────────────────────────────────────────────────
@@ -2670,43 +2581,35 @@ void system_death(World& world, float dt) {
         if (category == Category::Unit) {
             const auto* def = world.types->get_unit_type(type_id);
             corpse.persistent = def->death_type == DeathType::Persistent;
+            corpse.decay_time = def->decay_time;
+        } else if (const auto* def = world.types->get_destructable_type(type_id)) {
+            corpse.decay_time = def->decay_time;
         }
         world.corpses.add(id, std::move(corpse));
 
-        // Destructables leave the per-tick snapshot (unlike units, whose health
-        // rides S_UNIT_STATE), so signal death on-change — the network layer sends
-        // S_COLD{Health(0)}, from which the client derives death + plays the clip.
-        if (world.on_entity_died && category == Category::Destructable) {
+        // Publish death immediately, including for widgets outside snapshots.
+        if (world.on_entity_died) {
             world.on_entity_died(id);
         }
     }
 
-    // Phase 2: tick corpse timers, hide then destroy
+    // Corpses remain gameplay entities throughout death and decay, allowing revival.
     std::vector<Handle> to_destroy;
 
     for (u32 i = 0; i < world.corpses.count(); ++i) {
         u32 id = world.corpses.ids()[i];
         auto& dead = world.corpses.data()[i];
 
-        dead.corpse_timer += dt;  // game-speed-scaled; corpses linger in game-time, not real-time
-
-        if (!dead.decayed && dead.corpse_timer >= dead.corpse_duration) {
-            dead.decayed = true;
-            const auto* info = world.handle_infos.get(id);
-            if (info && info->category == Category::Unit) {
-                show_unit(world, Unit{id}, false);
-            } else if (auto* renderable = world.renderables.get(id)) {
-                renderable->visible = false;
-            }
-        }
-
-        if (!dead.persistent && dead.corpse_timer >= dead.cleanup_delay) {
-            if (world.handle_infos.has(id)) to_destroy.push_back(Handle{id});
-        }
+        if (dead.decayed) continue;
+        dead.corpse_timer += dt;
+        if (dead.corpse_timer < dead.decay_time) continue;
+        dead.decayed = true;
+        if (dead.persistent) show_unit(world, Unit{id}, false);
+        else to_destroy.push_back(Handle{id});
     }
 
     for (auto h : to_destroy) {
-        remove_all_components_and_free(world, h);
+        remove_all_components(world, h.id);
     }
 }
 

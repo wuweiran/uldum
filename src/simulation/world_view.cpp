@@ -2,6 +2,7 @@
 #include "simulation/world.h"
 
 #include <type_traits>
+#include <algorithm>
 
 namespace uldum::simulation {
 
@@ -94,7 +95,7 @@ const StateBlock* LocalView::state_block(u32 id) const {
     return resolve<StateBlock>(*this, id, nullptr, source->state_blocks);
 }
 const ProjectileComp* LocalView::projectile(u32 id) const {
-    return resolve<ProjectileComp>(*this, id, nullptr, source->projectiles);
+    return resolve(*this, id, &snapshot.projectiles, source->projectiles);
 }
 const DestructableComp* LocalView::destructable(u32 id) const {
     return resolve(*this, id, &snapshot.destructables, source->destructables);
@@ -129,11 +130,29 @@ void LocalView::clear() {
     snapshot.handle_infos.clear();
     snapshot.classifications.clear();
     snapshot.destructables.clear();
+    snapshot.projectiles.clear();
     snapshot_hidden_seen.clear();
     own_selectables.clear();
     iter_renderables.clear();
     iter_transforms.clear();
     iter_item_infos.clear();
+}
+
+void LocalView::update_projectiles(f32 dt) {
+    std::vector<u32> expired;
+    for (u32 id : snapshot.projectiles.ids()) {
+        auto& p = *snapshot.projectiles.get(id);
+        p.elapsed += dt;
+        if (p.elapsed >= p.max_lifetime) expired.push_back(id);
+    }
+    if (expired.empty()) return;
+    auto done = [&](u32 id) {
+        const auto* p = snapshot.projectiles.get(id);
+        return p && p->elapsed >= p->max_lifetime;
+    };
+    std::erase_if(iter_renderables, done);
+    std::erase_if(iter_transforms, done);
+    for (u32 id : expired) drop_snapshot(id);
 }
 
 void LocalView::snapshot_from(const World& src, u32 id) {
@@ -155,6 +174,7 @@ void LocalView::drop_snapshot(u32 id) {
     snapshot.renderables.remove(id);
     snapshot.classifications.remove(id);
     snapshot.destructables.remove(id);
+    snapshot.projectiles.remove(id);
     snapshot_hidden_seen.erase(id);
 }
 

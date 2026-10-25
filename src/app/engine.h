@@ -142,6 +142,7 @@ private:
     simulation::Simulation&       active_sim();
     const simulation::Simulation& active_sim() const;
     void project_local_view(simulation::Player local);
+    void retain_projectile_visual(u32 id);
     void seed_preplaced_local_discovery();
     void clear_local_view();
 
