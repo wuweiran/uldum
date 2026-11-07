@@ -84,6 +84,7 @@ struct WorldOverlayConfig {
 // still keep a Picker* if it needs direct access; today it uses the
 // same callbacks for consistency.
 struct WorldContext {
+    bool controls_unit(u32 unit_id) const;
     const simulation::IWorldView*   world     = nullptr;   // view-world: client mirror, or host/offline projection
     const simulation::Vision*       vision    = nullptr;   // local-player vision subsystem (fog + true sight)
     const simulation::TypeRegistry*    types     = nullptr;   // for resolving `type_id` → display_name

@@ -36,6 +36,11 @@ namespace uldum::hud {
 
 static constexpr const char* TAG = "HUD";
 
+bool WorldContext::controls_unit(u32 unit_id) const {
+    const auto* owner = world ? world->owner(unit_id) : nullptr;
+    return owner && *owner == local_player;
+}
+
 // Emit a pre-built packet via the sync callback, tagged with the owner
 // of the node it applies to. Host-side only; clients never set sync_fn.
 // Defined near the top so all Hud methods below can reference it.
@@ -1446,6 +1451,7 @@ bool Hud::handle_right_click(f32 x, f32 y) {
     if (slot < 0) return false;
     u32 carrier = UINT32_MAX;
     const simulation::Inventory* invc = inventory_resolve_selected(s, &carrier);
+    if (!s.world_ctx || !s.world_ctx->controls_unit(carrier)) return false;
     simulation::Item item;
     const simulation::ItemInfo*    info = nullptr;
     const simulation::ItemTypeDef* tdef = nullptr;
@@ -1860,7 +1866,8 @@ void Hud::action_bar_drag_update(const platform::InputState& input) {
     // mid-drag we want the range ring + drag arrow origin to follow
     // along, not stay anchored where the press happened. Cancel if the
     // caster no longer exists.
-    if (!s.world_ctx->world->contains(s.drag_cast.caster.id)) {
+    if (!s.world_ctx->world->contains(s.drag_cast.caster.id) ||
+        !s.world_ctx->controls_unit(s.drag_cast.caster.id)) {
         if (s.drag_cast.inventory_slot >= 0) {
             if (static_cast<u32>(s.drag_cast.inventory_slot) < s.inventory_cfg.slots.size())
                 s.inventory_cfg.slots[s.drag_cast.inventory_slot].pressed = false;
@@ -2591,7 +2598,7 @@ void Hud::handle_hotkeys(const platform::InputState& input) {
         bool still_owned = false;
         if (s.world_ctx && s.world_ctx->world && s.world_ctx->selection) {
             const auto& sel = s.world_ctx->selection->selected();
-            if (!sel.empty()) {
+            if (!sel.empty() && s.world_ctx->controls_unit(sel.front().id)) {
                 const auto* aset = s.world_ctx->world->ability_set(sel.front().id);
                 if (aset) {
                     for (const auto& a : aset->abilities) {
@@ -2690,6 +2697,7 @@ resolve_slot_ability(u32 slot_index,
     if (!ctx.selection || !ctx.world || !ctx.abilities) return nullptr;
     const auto& sel = ctx.selection->selected();
     if (sel.empty()) return nullptr;
+    if (!ctx.controls_unit(sel.front().id)) return nullptr;
     const auto* aset = ctx.world->ability_set(sel.front().id);
     if (!aset) return nullptr;
 
@@ -2742,7 +2750,7 @@ static std::optional<OrderReject> slot_cast_reject(
 static bool slot_castable_now(const WorldContext& ctx, u32 unit_id,
                               const simulation::AbilityInstance& inst,
                               const simulation::AbilityDef& def) {
-    return !slot_cast_reject(ctx, unit_id, inst, def).has_value();
+    return ctx.controls_unit(unit_id) && !slot_cast_reject(ctx, unit_id, inst, def).has_value();
 }
 
 // ── Inventory hit-testing ───────────────────────────────────────────────
@@ -3208,7 +3216,9 @@ void Hud::handle_pointer(f32 x, f32 y, bool button_down) {
                 s.command_bar_cfg.slots[cmd_slot].press_pulse_until =
                     std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
             }
-        } else if (inv_slot >= 0) {
+        } else if (inv_slot >= 0 && s.world_ctx && s.world_ctx->selection &&
+                   !s.world_ctx->selection->selected().empty() &&
+                   s.world_ctx->controls_unit(s.world_ctx->selection->selected().front().id)) {
             // Mobile: capture into drag_cast so we can run the
             // long-press → lift gesture (matches desktop right-click)
             // and the drag-out → cast-at-target gesture (matches the

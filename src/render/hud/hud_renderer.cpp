@@ -705,6 +705,7 @@ resolve_slot_ability(u32 slot_index,
     if (!ctx.selection || !ctx.world || !ctx.abilities) return nullptr;
     const auto& sel = ctx.selection->selected();
     if (sel.empty()) return nullptr;
+    if (!ctx.controls_unit(sel.front().id)) return nullptr;
     const auto* aset = ctx.world->ability_set(sel.front().id);
     if (!aset) return nullptr;
 
@@ -1673,6 +1674,7 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
 
     u32 carrier_id = UINT32_MAX;
     const simulation::Inventory* inv = inventory_resolve_selected(s, &carrier_id);
+    const bool enabled = s.world_ctx && s.world_ctx->controls_unit(carrier_id);
 
     for (u32 i = 0; i < cfg.slots.size(); ++i) {
         const auto& slot = cfg.slots[i];
@@ -1689,8 +1691,8 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
         if (!available)        bg = slot.style.unavailable_bg;
         else if (has_item)     bg = slot.style.bg;
         else                   bg = slot.style.empty_bg;
-        if (has_item && slot.pressed)      bg = slot.style.press_bg;
-        else if (has_item && slot.hovered) bg = slot.style.hover_bg;
+        if (enabled && has_item && slot.pressed)      bg = slot.style.press_bg;
+        else if (enabled && has_item && slot.hovered) bg = slot.style.hover_bg;
         emit_rect(r, slot.rect, bg);
 
         f32 bw = (slot.style.border_width > 0.0f) ? slot.style.border_width : 0.0f;
@@ -1701,7 +1703,8 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
         }
 
         if (def && !def->abilities.empty() && carrier_id != UINT32_MAX
-            && s.world_ctx && s.world_ctx->world && s.world_ctx->abilities) {
+            && s.world_ctx && s.world_ctx->world && s.world_ctx->abilities
+            && s.world_ctx->controls_unit(carrier_id)) {
             const std::string& fa = def->abilities[0];
             const auto* aset = s.world_ctx->world->ability_set(carrier_id);
             const simulation::AbilityInstance* inst = nullptr;
@@ -1741,6 +1744,8 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
             }
         }
 
+        if (available && !enabled) emit_rect(r, icon_rect, cfg.style.disabled_tint);
+
         if (bw > 0.0f && (slot.style.border_color.rgba >> 24) != 0) {
             Rect rc = slot.rect;
             emit_rect(r, { rc.x, rc.y, rc.w, bw }, slot.style.border_color);
@@ -1749,7 +1754,7 @@ static void draw_inventory(HudRenderer::Impl& r, Hud::Impl& s) {
             emit_rect(r, { rc.x + rc.w - bw, rc.y, bw, rc.h }, slot.style.border_color);
         }
 
-        if (has_item && !slot.hotkey.empty()) {
+        if (enabled && has_item && !slot.hotkey.empty()) {
             f32 px_size = slot.rect.h * 0.28f;
             if (px_size < 10.0f) px_size = 10.0f;
             f32 text_w = measure_text(r, slot.hotkey, px_size);
