@@ -366,6 +366,10 @@ void GameServer::send_cold_batch(NetworkManager& net, u32 peer_id,
 void GameServer::send_inventory_state(NetworkManager& net, u32 peer_id,
                                       u32 carrier_id) {
     const auto& world = m_simulation.world();
+    if (const auto* carried = world.carriables.get(carrier_id);
+        carried && simulation::is_non_null_handle(carried->carried_by)) {
+        carrier_id = carried->carried_by.id;
+    }
     const auto* inventory = world.inventories.get(carrier_id);
     if (!inventory) return;
     for (u32 slot = 0; slot < inventory->slots.size(); ++slot) {
@@ -443,10 +447,6 @@ void GameServer::broadcast_tick(NetworkManager& net, u32 tick) {
             u32 id = infos.ids()[i];
             const auto& info = infos.data()[i];
             if (info.category == simulation::Category::Doodad) continue;
-            if (const auto* carried = world.carriables.get(id);
-                carried && simulation::is_non_null_handle(carried->carried_by)) {
-                continue;
-            }
             if (!is_visible_to(id, player)) continue;
             visible.insert(id);
             if (!known.contains(id)) {
@@ -468,14 +468,10 @@ void GameServer::broadcast_tick(NetworkManager& net, u32 tick) {
         std::vector<u32> forgotten;
         for (u32 id : known) {
             if (visible.contains(id)) continue;
-            const auto* carried = world.carriables.get(id);
-            bool silent = carried && simulation::is_non_null_handle(carried->carried_by);
-            if (!silent) {
-                const auto* info = infos.get(id);
-                net.send_to_peer(
-                    peer_id,
-                    !info || info->hidden ? build_destroy(id) : build_hide(id));
-            }
+            const auto* info = infos.get(id);
+            net.send_to_peer(
+                peer_id,
+                !info || info->hidden ? build_destroy(id) : build_hide(id));
             forgotten.push_back(id);
         }
         for (u32 id : forgotten) known.erase(id);
@@ -494,13 +490,8 @@ void GameServer::broadcast_update(NetworkManager& net, u32 entity_id,
                                   std::span<const u8> packet) {
     const auto& world = m_simulation.world();
     if (!world.handle_infos.has(entity_id)) return;
-    u32 visibility_id = entity_id;
-    if (const auto* carried = world.carriables.get(entity_id);
-        carried && simulation::is_non_null_handle(carried->carried_by)) {
-        visibility_id = carried->carried_by.id;
-    }
     for (const auto& [player_id, known] : m_known_by_player) {
-        if (known.contains(visibility_id)) {
+        if (known.contains(entity_id)) {
             net.host_send_to_player(player_id, packet);
         }
     }

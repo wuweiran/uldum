@@ -158,7 +158,15 @@ void GameClient::spawn_entity(const MaterializeData& data, bool play_birth) {
 }
 
 void GameClient::destroy_entity(u32 entity_id) {
-    simulation::remove_all_components(m_simulation.world(), entity_id);
+    auto& world = m_simulation.world();
+    if (const auto* carried = world.carriables.get(entity_id)) {
+        if (auto* inventory = world.inventories.get(carried->carried_by.id)) {
+            for (auto& item : inventory->slots) {
+                if (item.id == entity_id) item = {};
+            }
+        }
+    }
+    simulation::remove_all_components(world, entity_id);
 }
 
 void GameClient::apply_spawn(const MaterializeData& data, bool play_birth) {

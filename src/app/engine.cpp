@@ -85,7 +85,8 @@ void Engine::project_local_view(simulation::Player local) {
         if (const auto* carried = world.carriables.get(id);
             carried && simulation::is_non_null_handle(carried->carried_by)) {
             if (m_local_view.snapshotted(id)) m_local_view.drop_snapshot(id);
-            m_local_view.visible.insert(id);
+            if (vision.is_unit_visible_to(world, simulation, id, local))
+                m_local_view.visible.insert(id);
             continue;
         }
 

@@ -184,6 +184,10 @@ void Vision::update(World& world, const Simulation& sim) {
 bool Vision::is_unit_visible_to(const World& world, const Simulation& sim,
                                   u32 entity_id, Player player,
                                   bool remembered_ok) const {
+    if (const auto* carried = world.carriables.get(entity_id);
+        carried && is_non_null_handle(carried->carried_by)) {
+        entity_id = carried->carried_by.id;
+    }
     const u32 player_bit = 1u << player.id;
 
     const auto* info = world.handle_infos.get(entity_id);
