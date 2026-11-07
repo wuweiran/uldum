@@ -4,6 +4,7 @@
         "icon": "textures/icons/rune_book.ktx2",
         "model": "models/book.glb",
         "type": "powerup",
+        "decay_time": 2.0,
         "abilities": []
     }
 }
