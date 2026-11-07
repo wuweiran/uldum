@@ -55,6 +55,8 @@ platforms/android/.idea/
 platforms/android/.kotlin/
 platforms/android/app/.cxx/
 platforms/android/app/build/
+# Release exports outside Gradle's build directory.
+platforms/android/app/*/release/
 platforms/*/build/
 platforms/**/*.iml
 
