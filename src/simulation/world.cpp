@@ -920,6 +920,119 @@ f32 get_health(const World& world, Unit unit) {
     return h ? h->current : 0;
 }
 
+void set_facing(World& world, Unit unit, f32 radians) {
+    if (!world.contains(unit)) return;
+    auto* transform = world.transforms.get(unit.id);
+    if (!transform) return;
+    transform->facing = radians;
+    if (world.on_transform_changed) world.on_transform_changed(unit);
+}
+
+void set_animation(World& world, Unit unit, const std::string& clip, bool looping) {
+    if (!world.contains(unit)) return;
+    if (looping) {
+        AnimQueue queue;
+        queue.clips.push_back(clip);
+        queue.looping = true;
+        if (auto* existing = world.anim_queues.get(unit.id)) *existing = std::move(queue);
+        else world.anim_queues.add(unit.id, std::move(queue));
+    } else {
+        world.anim_queues.remove(unit.id);
+    }
+    if (world.on_animation_command) world.on_animation_command(unit, AnimationCommand::Set, clip, looping);
+}
+
+void queue_animation(World& world, Unit unit, const std::string& clip) {
+    if (!world.contains(unit)) return;
+    auto* queue = world.anim_queues.get(unit.id);
+    if (queue && queue->looping) {
+        queue->clips.clear();
+        queue->clips.push_back(clip);
+    }
+    if (world.on_animation_command) world.on_animation_command(unit, AnimationCommand::Queue, clip, queue && queue->looping);
+}
+
+void reset_animation(World& world, Unit unit) {
+    if (!world.contains(unit)) return;
+    world.anim_queues.remove(unit.id);
+    if (world.on_animation_command) world.on_animation_command(unit, AnimationCommand::Reset, {}, false);
+}
+
+void set_unit_attribute(World& world, Unit u, const std::string& name, f32 value) {
+    if (!world.contains(u)) return;
+    auto* ab = world.attribute_blocks.get(u.id);
+    if (!ab) return;
+    ab->base[name]    = value;
+    ab->numeric[name] = value;
+    if (world.on_unit_attribute_changed) world.on_unit_attribute_changed(u, name, value);
+}
+
+void set_unit_string_attribute(World& world, Unit u, const std::string& name, const std::string& value) {
+    if (!world.contains(u)) return;
+    auto* ab = world.attribute_blocks.get(u.id);
+    if (!ab) return;
+    ab->string_attrs[name] = value;
+    if (world.on_unit_string_attribute_changed) world.on_unit_string_attribute_changed(u, name, value);
+}
+
+void set_unit_state(World& world, Unit u, const std::string& name, f32 value) {
+    if (!world.contains(u)) return;
+    if (name == "health") {
+        set_health(world, u, value);
+        return;
+    }
+    auto* sb = world.state_blocks.get(u.id);
+    if (!sb) return;
+    auto it = sb->states.find(name);
+    if (it == sb->states.end()) return;
+    f32 v = value;
+    if (v < 0)             v = 0;
+    if (v > it->second.max) v = it->second.max;
+    it->second.current = v;
+    if (world.on_unit_state_changed) world.on_unit_state_changed(u, name, v, it->second.max);
+}
+
+void set_unit_owner(World& world, Unit u, Player p) {
+    if (!world.contains(u)) return;
+    auto* o = world.owners.get(u.id);
+    if (!o) return;
+    *o = p;
+    if (world.on_unit_owner_changed) world.on_unit_owner_changed(u, p);
+}
+
+bool set_ability_modifier(World& world, Unit u, const std::string& ability_id, const std::string& key, f32 value) {
+    if (!world.contains(u)) return false;
+    auto* aset = world.ability_sets.get(u.id);
+    if (!aset) return false;
+    bool changed = false;
+    for (auto& a : aset->abilities) {
+        if (a.ability_id == ability_id) {
+            a.active_modifiers[key] = value;
+            changed = true;
+        }
+    }
+    if (changed) {
+        recalculate_modifiers(world, u.id);
+        if (world.on_ability_modifier_changed) world.on_ability_modifier_changed(u, ability_id, key, value);
+    }
+    return changed;
+}
+
+void set_ability_cooldown(World& world, Unit u, const std::string& ability_id, f32 secs) {
+    if (!world.contains(u)) return;
+    auto* aset = world.ability_sets.get(u.id);
+    if (!aset) return;
+    f32 clamped = std::max(0.0f, secs);
+    bool changed = false;
+    for (auto& a : aset->abilities) {
+        if (a.ability_id == ability_id) {
+            a.cooldown_remaining = clamped;
+            changed = true;
+        }
+    }
+    if (changed && world.on_ability_cooldown_changed) world.on_ability_cooldown_changed(u, ability_id, clamped);
+}
+
 void set_health(World& world, Unit unit, f32 health) {
     if (!world.contains(unit) || world.corpses.has(unit.id)) return;
     auto* h = world.healths.get(unit.id);
@@ -965,6 +1078,7 @@ void set_position(World& world, Unit unit, f32 x, f32 y) {
         pathing->stuck_anchor = {x, y};
         pathing->build_clear_timer = 0.0f;
     }
+    if (world.on_transform_changed) world.on_transform_changed(unit);
 }
 
 void show_unit(World& world, Unit unit, bool show) {
@@ -1063,10 +1177,13 @@ i32 get_charges(const World& world, Item item) {
     return info ? info->charges : 0;
 }
 
+
 void set_charges(World& world, Item item, i32 charges) {
     if (!world.contains(item)) return;
     auto* info = world.item_infos.get(item.id);
-    if (info) info->charges = charges;
+    if (!info || info->charges == charges) return;
+    info->charges = charges;
+    if (world.on_item_charges_changed) world.on_item_charges_changed(item, charges);
 }
 
 ItemClass item_class(const World& world, Item item) {
@@ -1086,7 +1203,9 @@ i32 get_level(const World& world, Item item) {
 void set_level(World& world, Item item, i32 level) {
     if (!world.contains(item)) return;
     auto* info = world.item_infos.get(item.id);
-    if (info) info->level = level;
+    if (!info || info->level == level) return;
+    info->level = level;
+    if (world.on_item_level_changed) world.on_item_level_changed(item, level);
 }
 
 Unit get_item_owner(const World& world, Item item) {

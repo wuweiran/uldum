@@ -1277,29 +1277,23 @@ void Engine::wire_host_broadcasts() {
             };
     }
     {
-        auto send_event = std::move(m_server.script().anim_event_fn());
-        m_server.script().set_anim_event_fn(
-            [this, send_event = std::move(send_event)](
-                u32 entity_id, const std::vector<u8>& packet) {
-                if (send_event) send_event(entity_id, packet);
-                auto event = network::parse_anim_event(packet);
-                if (!event || event->kind == network::AnimEventKind::AttackStart) return;
-                switch (event->kind) {
-                case network::AnimEventKind::SetQueue:
-                    m_renderer.enqueue_animation(
-                        event->entity_id, event->clip, event->looping);
+        auto& world = m_server.simulation().world();
+        auto send_event = std::move(world.on_animation_command);
+        world.on_animation_command =
+            [this, send_event = std::move(send_event)](simulation::Unit unit, simulation::AnimationCommand command, std::string_view clip, bool looping) {
+                if (send_event) send_event(unit, command, clip, looping);
+                switch (command) {
+                case simulation::AnimationCommand::Set:
+                    m_renderer.enqueue_animation(unit.id, clip, looping);
                     break;
-                case network::AnimEventKind::QueueClip:
-                    m_renderer.enqueue_animation(
-                        event->entity_id, event->clip, false, true);
+                case simulation::AnimationCommand::Queue:
+                    m_renderer.enqueue_animation(unit.id, clip, false, true);
                     break;
-                case network::AnimEventKind::Reset:
-                    m_renderer.reset_animation(event->entity_id);
-                    break;
-                case network::AnimEventKind::AttackStart:
+                case simulation::AnimationCommand::Reset:
+                    m_renderer.reset_animation(unit.id);
                     break;
                 }
-            });
+            };
     }
 
     // Effect deliver/destroy: wire_to_network already SENT to every player (a

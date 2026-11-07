@@ -22,6 +22,8 @@ namespace uldum::simulation {
 
 class AbilityRegistry;
 
+enum class AnimationCommand { Set, Queue, Reset };
+
 struct World {
     // ── Component storage (handle.id-indexed) ──────────────────────────
     SparseSet<Transform>            transforms;
@@ -190,13 +192,10 @@ struct World {
     AbilityRemovedCallback              on_ability_removed;
     AbilityActionBarSlotChangedCallback on_ability_action_bar_slot_changed;
 
-    // Fired when an ability's cooldown STARTS (a cast resolved and began its
-    // cooldown). The host mirrors this to clients so the action-bar / item slot
-    // greys out for `seconds` — clients don't re-simulate ability cooldowns
-    // (only attack cadence), so without this the slot never shows the cooldown.
+    // Explicit cooldown changes (cast, set, reset), excluding the per-tick countdown.
     using AbilityCooldownCallback =
         std::function<void(Unit unit, std::string_view ability_id, f32 seconds)>;
-    AbilityCooldownCallback on_ability_cooldown_started;
+    AbilityCooldownCallback on_ability_cooldown_changed;
 
     // Projectile event callbacks. `on_projectile_hit` fires per unit
     // hit (homing: once; linear: once per unit along the path).
@@ -227,13 +226,17 @@ struct World {
     ItemPickupCallback on_item_picked_up;
     ItemDropCallback   on_item_dropped;
 
-    // Fired when the engine changes an item's charge count on its own (a
-    // charged item spending a charge). Lets the host push the new value to
-    // clients — the per-tick entity delta doesn't carry charges. Not fired
-    // for the destroy-at-0 case (S_DESTROY already syncs that) nor for Lua's
-    // own SetItemCharges (which sends its own packet).
+    // Fired by set_charges after the value changes. The server subscribes to replicate it.
     using ItemChargesChangedCallback = std::function<void(Item item, i32 charges)>;
     ItemChargesChangedCallback on_item_charges_changed;
+    std::function<void(Unit)> on_transform_changed;
+    std::function<void(Unit, AnimationCommand, std::string_view, bool)> on_animation_command;
+    std::function<void(Unit, const std::string&, f32)> on_unit_attribute_changed;
+    std::function<void(Unit, const std::string&, const std::string&)> on_unit_string_attribute_changed;
+    std::function<void(Unit, const std::string&, f32, f32)> on_unit_state_changed;
+    std::function<void(Unit, Player)> on_unit_owner_changed;
+    std::function<void(Unit, const std::string&, const std::string&, f32)> on_ability_modifier_changed;
+    std::function<void(Item, i32)> on_item_level_changed;
 
     using ConstructionCallback =
         std::function<void(Unit builder, Unit structure)>;
@@ -441,6 +444,18 @@ bool     is_dead(const World& world, Unit unit);
 bool     is_building(const World& world, Unit unit);
 // Is this handle a Unit (vs. Destructable / Item / Doodad / Projectile)?
 bool     is_unit(const World& world, Handle h);
+
+void set_facing(World& world, Unit unit, f32 radians);
+void set_animation(World& world, Unit unit, const std::string& clip, bool looping);
+void queue_animation(World& world, Unit unit, const std::string& clip);
+void reset_animation(World& world, Unit unit);
+
+void set_unit_attribute(World& world, Unit u, const std::string& name, f32 value);
+void set_unit_string_attribute(World& world, Unit u, const std::string& name, const std::string& value);
+void set_unit_state(World& world, Unit u, const std::string& name, f32 value);
+void set_unit_owner(World& world, Unit u, Player p);
+bool set_ability_modifier(World& world, Unit u, const std::string& ability_id, const std::string& key, f32 value);
+void set_ability_cooldown(World& world, Unit u, const std::string& ability_id, f32 secs);
 
 // ── Destructable API ───────────────────────────────────────────────────────
 

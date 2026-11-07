@@ -1266,8 +1266,6 @@ static void spend_item_charge(World& world, Item source_item) {
         // destroy; the rare cast from a charged item lying on the ground plays
         // its death clip. S_DESTROY (or the death corpse pipeline) syncs it.
         kill_item(world, source_item);
-    } else if (world.on_item_charges_changed) {
-        world.on_item_charges_changed(source_item, remaining);
     }
 }
 
@@ -1559,8 +1557,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                                 // cost here (effect point), not at cast start.
                                 simulation::ability_pay_cost(world, id, lvl.cost);
                                 inst->cooldown_remaining = lvl.cooldown;
-                                if (world.on_ability_cooldown_started && lvl.cooldown > 0.0f) {
-                                    world.on_ability_cooldown_started(
+                                if (world.on_ability_cooldown_changed && lvl.cooldown > 0.0f) {
+                                    world.on_ability_cooldown_changed(
                                         Unit{id}, aset->casting_id, lvl.cooldown);
                                 }
                                 aset->cast_state = CastState::Backswing;
@@ -1605,8 +1603,8 @@ void system_ability(World& world, float dt, const AbilityRegistry& abilities, co
                         if (aset->cast_timer <= 0) {
                             simulation::ability_pay_cost(world, id, lvl.cost);
                             inst->cooldown_remaining = lvl.cooldown;
-                            if (world.on_ability_cooldown_started && lvl.cooldown > 0.0f) {
-                                world.on_ability_cooldown_started(
+                            if (world.on_ability_cooldown_changed && lvl.cooldown > 0.0f) {
+                                world.on_ability_cooldown_changed(
                                     Unit{id}, aset->casting_id, lvl.cooldown);
                             }
                             aset->cast_state = CastState::Backswing;

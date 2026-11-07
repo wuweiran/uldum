@@ -844,21 +844,6 @@ void ScriptEngine::fire_player_event(std::string_view event_name, u32 player_id)
     dispatch(frame, event_name);
 }
 
-void ScriptEngine::emit_static_transform(u32 entity_id) {
-    if (!m_unit_update_fn) return;
-    auto& w = m_sim->world();
-    // Units re-sync position/facing every tick via the HOT S_UNIT_STATE snapshot,
-    // so a Transform cold message is only needed for STATICS (destructable/doodad/
-    // item), which ride no per-tick tier. Skip units — their HOT tick covers it.
-    const auto* hi = w.handle_infos.get(entity_id);
-    if (!hi || hi->category == simulation::Category::Unit) return;
-    const auto* t = w.transforms.get(entity_id);
-    if (!t) return;
-    auto pkt = network::build_cold_transform(entity_id, t->position.x, t->position.y,
-                                             t->position.z, t->facing);
-    m_unit_update_fn(entity_id, pkt);
-}
-
 void ScriptEngine::dispatch(EventFrame& frame, std::string_view event_name) {
     frame.event = event_name;
     EventScope scope(*this, frame);
@@ -1076,10 +1061,7 @@ void ScriptEngine::bind_api() {
         return t ? t->facing * 57.2957795f : 0;  // rad → deg
     };
     lua["SetUnitFacing"] = [&](simulation::Unit u, f32 degrees) {
-        if (!sim.world().contains(u)) return;
-        auto* t = sim.world().transforms.get(u.id);
-        if (t) t->facing = degrees * 0.0174532925f;  // deg → rad
-        emit_static_transform(u.id);
+        simulation::set_facing(sim.world(), u, degrees * 0.0174532925f);
     };
 
     // Script-driven animation. SetUnitAnimation replaces whatever the
@@ -1093,55 +1075,15 @@ void ScriptEngine::bind_api() {
     // the map scripted. See AnimQueue (components.h) for the contract.
     lua["SetUnitAnimation"] = [&](simulation::Unit u, const std::string& clip,
                                    sol::optional<bool> looping) {
-        auto& w = sim.world();
-        if (!w.contains(u)) return;
-        bool loop_last = looping.value_or(false);
-        if (loop_last) {
-            simulation::AnimQueue queue;
-            queue.clips.push_back(clip);
-            queue.looping = true;
-            if (auto* existing = w.anim_queues.get(u.id)) *existing = std::move(queue);
-            else w.anim_queues.add(u.id, std::move(queue));
-        } else {
-            w.anim_queues.remove(u.id);
-        }
-        if (m_anim_event_fn) {
-            m_anim_event_fn(u.id, network::build_anim_set_queue(
-                u.id, clip, loop_last));
-        }
-        if (m_unit_update_fn) {
-            m_unit_update_fn(u.id, network::build_cold_anim(
-                u.id, loop_last ? clip : std::string_view{}));
-        }
+        simulation::set_animation(sim.world(), u, clip, looping.value_or(false));
     };
 
     lua["QueueUnitAnimation"] = [&](simulation::Unit u, const std::string& clip) {
-        auto& w = sim.world();
-        if (!w.contains(u)) return;
-        auto* queue = w.anim_queues.get(u.id);
-        if (queue && queue->looping) {
-            queue->clips.clear();
-            queue->clips.push_back(clip);
-        }
-        if (m_anim_event_fn) {
-            m_anim_event_fn(u.id, network::build_anim_queue_clip(u.id, clip));
-        }
-        if (m_unit_update_fn) {
-            m_unit_update_fn(u.id, network::build_cold_anim(
-                u.id, queue && queue->looping ? clip : std::string_view{}));
-        }
+        simulation::queue_animation(sim.world(), u, clip);
     };
 
     lua["ResetUnitAnimation"] = [&](simulation::Unit u) {
-        auto& w = sim.world();
-        if (!w.contains(u)) return;
-        w.anim_queues.remove(u.id);
-        if (m_anim_event_fn) {
-            m_anim_event_fn(u.id, network::build_anim_reset(u.id));
-        }
-        if (m_unit_update_fn) {
-            m_unit_update_fn(u.id, network::build_cold_anim(u.id, {}));
-        }
+        simulation::reset_animation(sim.world(), u);
     };
 
     // Health
@@ -1215,14 +1157,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetUnitAttribute"] = [&](simulation::Unit u, const std::string& name, f32 value) {
-        if (!sim.world().contains(u)) return;
-        auto* ab = sim.world().attribute_blocks.get(u.id);
-        if (!ab) return;
-        ab->base[name]    = value;
-        ab->numeric[name] = value;
-        if (m_unit_update_fn) {
-            m_unit_update_fn(u.id, network::build_cold_attr(u.id, name, value));
-        }
+        simulation::set_unit_attribute(sim.world(), u, name, value);
     };
 
     lua["GetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name) -> std::string {
@@ -1235,14 +1170,7 @@ void ScriptEngine::bind_api() {
 
     lua["SetUnitStringAttribute"] = [&](simulation::Unit u, const std::string& name,
                                          const std::string& value) {
-        if (!sim.world().contains(u)) return;
-        auto* ab = sim.world().attribute_blocks.get(u.id);
-        if (!ab) return;
-        ab->string_attrs[name] = value;
-        if (m_unit_update_fn) {
-            auto pkt = network::build_cold_str_attr(u.id, name, value);
-            m_unit_update_fn(u.id, pkt);
-        }
+        simulation::set_unit_string_attribute(sim.world(), u, name, value);
     };
 
     // Map-defined states (mana, energy, rage, etc.), plus `health` — the
@@ -1282,23 +1210,7 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetUnitState"] = [&](simulation::Unit u, const std::string& name, f32 value) {
-        if (!sim.world().contains(u)) return;
-        if (name == "health") {
-            simulation::set_health(sim.world(), u, value);
-            return;
-        }
-        auto* sb = sim.world().state_blocks.get(u.id);
-        if (!sb) return;
-        auto it = sb->states.find(name);
-        if (it == sb->states.end()) return;
-        f32 v = value;
-        if (v < 0)             v = 0;
-        if (v > it->second.max) v = it->second.max;
-        it->second.current = v;
-        if (m_unit_update_fn) {
-            auto pkt = network::build_cold_state(u.id, name, v, it->second.max);
-            m_unit_update_fn(u.id, pkt);
-        }
+        simulation::set_unit_state(sim.world(), u, name, value);
     };
 
     // Status flags. The flag arg is a lowercase status:: key ("stunned",
@@ -1348,14 +1260,7 @@ void ScriptEngine::bind_api() {
     // transfers a unit out of a player's control should clear the
     // selection on that client separately if it matters.
     lua["SetUnitOwner"] = [&](simulation::Unit u, simulation::Player p) {
-        if (!sim.world().contains(u)) return;
-        auto* o = sim.world().owners.get(u.id);
-        if (!o) return;
-        *o = p;
-        if (m_unit_update_fn) {
-            auto pkt = network::build_cold_owner(u.id, static_cast<u8>(p.id));
-            m_unit_update_fn(u.id, pkt);
-        }
+        simulation::set_unit_owner(sim.world(), u, p);
     };
 
     // ── Order API ─────────────────────────────────────────────────────
@@ -1542,25 +1447,7 @@ void ScriptEngine::bind_api() {
     // drives the curve. Returns true if any instance was touched.
     lua["SetAbilityModifier"] = [&](simulation::Unit u, const std::string& ability_id,
                                      const std::string& key, f32 value) -> bool {
-        auto& w = sim.world();
-        if (!w.contains(u)) return false;
-        auto* aset = w.ability_sets.get(u.id);
-        if (!aset) return false;
-        bool changed = false;
-        for (auto& a : aset->abilities) {
-            if (a.ability_id == ability_id) {
-                a.active_modifiers[key] = value;
-                changed = true;
-            }
-        }
-        if (changed) {
-            simulation::recalculate_modifiers(w, u.id);
-            if (m_unit_update_fn) {
-                auto pkt = network::build_cold_ability_modifier(u.id, ability_id, key, value);
-                m_unit_update_fn(u.id, pkt);
-            }
-        }
-        return changed;
+        return simulation::set_ability_modifier(sim.world(), u, ability_id, key, value);
     };
 
     // Read side of SetAbilityModifier — the current value on the first
@@ -1609,35 +1496,11 @@ void ScriptEngine::bind_api() {
     };
 
     lua["SetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id, f32 secs) {
-        if (!sim.world().contains(u)) return;
-        auto* aset = sim.world().ability_sets.get(u.id);
-        if (!aset) return;
-        f32 clamped = std::max(0.0f, secs);
-        bool changed = false;
-        for (auto& a : aset->abilities) {
-            if (a.ability_id == ability_id) {
-                a.cooldown_remaining = clamped;
-                changed = true;
-            }
-        }
-        if (changed && m_unit_update_fn) {
-            auto pkt = network::build_cold_cooldown(u.id, ability_id, clamped);
-            m_unit_update_fn(u.id, pkt);
-        }
+        simulation::set_ability_cooldown(sim.world(), u, ability_id, secs);
     };
 
     lua["ResetAbilityCooldown"] = [&](simulation::Unit u, const std::string& ability_id) {
-        if (!sim.world().contains(u)) return;
-        auto* aset = sim.world().ability_sets.get(u.id);
-        if (!aset) return;
-        bool changed = false;
-        for (auto& a : aset->abilities) {
-            if (a.ability_id == ability_id) { a.cooldown_remaining = 0.0f; changed = true; }
-        }
-        if (changed && m_unit_update_fn) {
-            auto pkt = network::build_cold_cooldown(u.id, ability_id, 0.0f);
-            m_unit_update_fn(u.id, pkt);
-        }
+        simulation::set_ability_cooldown(sim.world(), u, ability_id, 0.0f);
     };
 
     // List the ids in a unit type's authored `abilities` array. Used
@@ -2378,21 +2241,11 @@ void ScriptEngine::bind_api() {
     };
     lua["GetItemCharges"] = [&](simulation::Item item) -> i32 { return simulation::get_charges(sim.world(), item); };
     lua["SetItemCharges"] = [&](simulation::Item item, i32 n) {
-        if (!sim.world().contains(item)) return;
         simulation::set_charges(sim.world(), item, n);
-        if (m_unit_update_fn) {
-            auto pkt = network::build_cold_item_charges(item.id, n);
-            m_unit_update_fn(item.id, pkt);
-        }
     };
     lua["GetItemLevel"]   = [&](simulation::Item item) -> i32 { return simulation::get_level(sim.world(), item); };
     lua["SetItemLevel"]   = [&](simulation::Item item, i32 n) {
-        if (!sim.world().contains(item)) return;
         simulation::set_level(sim.world(), item, n);
-        if (m_unit_update_fn) {
-            auto pkt = network::build_cold_item_level(item.id, n);
-            m_unit_update_fn(item.id, pkt);
-        }
     };
     lua["GetItemOwner"]   = [&, unit_or_nil](simulation::Item item) -> sol::object {
         return unit_or_nil(simulation::get_item_owner(sim.world(), item));

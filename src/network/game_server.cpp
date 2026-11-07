@@ -534,12 +534,27 @@ void GameServer::wire_to_network(NetworkManager& net) {
     auto& world = m_simulation.world();
 
     // ── Script → client sends ────────────────────────────────────────────
-    m_script.set_unit_update_fn([this, &net](u32 entity_id, const std::vector<u8>& pkt) {
-        broadcast_update(net,entity_id, pkt);
-    });
-    m_script.set_anim_event_fn([this, &net](u32 entity_id, const std::vector<u8>& pkt) {
-        broadcast_entity_event(net,entity_id, pkt);
-    });
+    world.on_transform_changed = [this, &net, &world](simulation::Unit unit) {
+        const auto* info = world.handle_infos.get(unit.id);
+        const auto* transform = world.transforms.get(unit.id);
+        if (!info || !transform || info->category == simulation::Category::Unit) return;
+        const auto& p = transform->position;
+        broadcast_update(net, unit.id, build_cold_transform(unit.id, p.x, p.y, p.z, transform->facing));
+    };
+    world.on_animation_command = [this, &net](simulation::Unit unit, simulation::AnimationCommand command, std::string_view clip, bool looping) {
+        switch (command) {
+        case simulation::AnimationCommand::Set:
+            broadcast_entity_event(net, unit.id, build_anim_set_queue(unit.id, clip, looping));
+            break;
+        case simulation::AnimationCommand::Queue:
+            broadcast_entity_event(net, unit.id, build_anim_queue_clip(unit.id, clip));
+            break;
+        case simulation::AnimationCommand::Reset:
+            broadcast_entity_event(net, unit.id, build_anim_reset(unit.id));
+            break;
+        }
+        broadcast_update(net, unit.id, build_cold_anim(unit.id, looping ? clip : std::string_view{}));
+    };
     m_script.set_broadcast_fn([this, &net](const std::vector<u8>& pkt) {
         net.host_broadcast(pkt);
     });
@@ -673,11 +688,29 @@ void GameServer::wire_to_network(NetworkManager& net) {
             auto pkt = build_cold_ability_action_bar_slot(unit.id, ability_id, slot);
             broadcast_update(net, unit.id, pkt);
         };
-    world.on_ability_cooldown_started =
+    world.on_ability_cooldown_changed =
         [this, &net](simulation::Unit unit, std::string_view ability_id, f32 seconds) {
             auto pkt = build_cold_cooldown(unit.id, ability_id, seconds);
             broadcast_update(net,unit.id, pkt);
         };
+    world.on_unit_attribute_changed = [this, &net](simulation::Unit u, const std::string& name, f32 value) {
+        broadcast_update(net, u.id, network::build_cold_attr(u.id, name, value));
+    };
+    world.on_unit_string_attribute_changed = [this, &net](simulation::Unit u, const std::string& name, const std::string& value) {
+        broadcast_update(net, u.id, network::build_cold_str_attr(u.id, name, value));
+    };
+    world.on_unit_state_changed = [this, &net](simulation::Unit u, const std::string& name, f32 value, f32 maximum) {
+        broadcast_update(net, u.id, network::build_cold_state(u.id, name, value, maximum));
+    };
+    world.on_unit_owner_changed = [this, &net](simulation::Unit u, simulation::Player p) {
+        broadcast_update(net, u.id, network::build_cold_owner(u.id, static_cast<u8>(p.id)));
+    };
+    world.on_ability_modifier_changed = [this, &net](simulation::Unit u, const std::string& ability_id, const std::string& key, f32 value) {
+        broadcast_update(net, u.id, network::build_cold_ability_modifier(u.id, ability_id, key, value));
+    };
+    world.on_item_level_changed = [this, &net](simulation::Item item, i32 level) {
+        broadcast_update(net, item.id, build_cold_item_level(item.id, level));
+    };
     world.on_item_charges_changed =
         [this, &net](simulation::Item item, i32 charges) {
             auto pkt = build_cold_item_charges(item.id, charges);

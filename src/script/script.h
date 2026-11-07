@@ -94,14 +94,6 @@ public:
     void set_end_game_fn(EndGameFn fn) { m_end_game_fn = std::move(fn); }
     EndGameFn& end_game_fn() { return m_end_game_fn; }
 
-    // Callback fired when a unit's attribute/state/ability changes (for network sync).
-    using UnitUpdateFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
-    void set_unit_update_fn(UnitUpdateFn fn) { m_unit_update_fn = std::move(fn); }
-
-    using AnimEventFn = std::function<void(u32 entity_id, const std::vector<u8>& packet)>;
-    void set_anim_event_fn(AnimEventFn fn) { m_anim_event_fn = std::move(fn); }
-    AnimEventFn& anim_event_fn() { return m_anim_event_fn; }
-
     // Non-entity-scoped broadcast — audio cues, sun direction,
     // free-position PlayEffect, future global notifications. Server-
     // side only; clients never set this. Offline: callback is empty;
@@ -264,8 +256,6 @@ private:
     i18n::LocaleManager*     m_i18n       = nullptr;
     AttachPointFn            m_attach_fn;
     EndGameFn                m_end_game_fn;
-    UnitUpdateFn             m_unit_update_fn;
-    AnimEventFn              m_anim_event_fn;
     BroadcastFn              m_broadcast_fn;
     EffectDeliverFn          m_effect_deliver_fn;
     EffectDestroyFn          m_effect_destroy_fn;
@@ -419,8 +409,6 @@ private:
     // command order-observer so both event paths agree. player/queued are
     // caller-set (they come from different sources on each path).
     OrderEvent order_to_event_data(const simulation::OrderPayload& payload) const;
-    // Broadcast a STATIC's transform as S_COLD Transform (units self-heal via HOT).
-    void emit_static_transform(u32 entity_id);
     EventFrame* m_event_frame = nullptr;
 
     bool m_paused        = false;  // PauseGame()/UnpauseGame() — App reads via is_paused()
