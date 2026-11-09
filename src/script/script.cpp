@@ -452,30 +452,22 @@ bool ScriptEngine::init(simulation::Simulation& sim, map::MapManager& map,
     };
 
     // Item events fired by system_items.
-    sim.world().on_item_picked_up = [fan_out](simulation::Unit unit,
+    sim.world().on_item_picked_up = [this](simulation::Unit unit,
                                           simulation::Item item, i32) {
-        fan_out(unit, ItemEvent{item}, "global_item_picked_up", "unit_item_picked_up");
+        fire_item_picked_up(unit, item);
     };
-    sim.world().on_item_dropped = [fan_out](simulation::Unit unit,
+    sim.world().on_item_dropped = [this](simulation::Unit unit,
                                         simulation::Item item) {
-        fan_out(unit, ItemEvent{item}, "global_item_dropped", "unit_item_dropped");
+        fire_item_dropped(unit, item);
     };
 
-    auto fan_out_construction = [fan_out](simulation::Unit builder,
-                                           simulation::Unit structure,
-                                           std::string_view global,
-                                           std::string_view scoped) {
-        fan_out(builder, ConstructionEvent{structure}, global, scoped);
-    };
-    sim.world().on_construction_start = [fan_out_construction](
+    sim.world().on_construction_start = [this](
             simulation::Unit builder, simulation::Unit structure) {
-        fan_out_construction(builder, structure,
-                             "global_construction_start", "unit_construction_start");
+        fire_construction_start(builder, structure);
     };
-    sim.world().on_construction_finish = [fan_out_construction](
+    sim.world().on_construction_finish = [this](
             simulation::Unit builder, simulation::Unit structure) {
-        fan_out_construction(builder, structure,
-                             "global_construction_finish", "unit_construction_finish");
+        fire_construction_finish(builder, structure);
     };
 
     // Region events fired by system_regions per tick. Region id is
@@ -842,6 +834,38 @@ void ScriptEngine::fire_player_event(std::string_view event_name, u32 player_id)
     EventFrame frame;
     frame.player = player_id;
     dispatch(frame, event_name);
+}
+
+void ScriptEngine::fire_item_picked_up(simulation::Unit unit, simulation::Item item) {
+    EventFrame frame;
+    frame.entity = frame.registered_entity = unit;
+    frame.payload = ItemEvent{item};
+    dispatch(frame, "global_item_picked_up");
+    dispatch(frame, "unit_item_picked_up");
+}
+
+void ScriptEngine::fire_item_dropped(simulation::Unit unit, simulation::Item item) {
+    EventFrame frame;
+    frame.entity = frame.registered_entity = unit;
+    frame.payload = ItemEvent{item};
+    dispatch(frame, "global_item_dropped");
+    dispatch(frame, "unit_item_dropped");
+}
+
+void ScriptEngine::fire_construction_start(simulation::Unit builder, simulation::Unit structure) {
+    EventFrame frame;
+    frame.entity = frame.registered_entity = builder;
+    frame.payload = ConstructionEvent{structure};
+    dispatch(frame, "global_construction_start");
+    dispatch(frame, "unit_construction_start");
+}
+
+void ScriptEngine::fire_construction_finish(simulation::Unit builder, simulation::Unit structure) {
+    EventFrame frame;
+    frame.entity = frame.registered_entity = builder;
+    frame.payload = ConstructionEvent{structure};
+    dispatch(frame, "global_construction_finish");
+    dispatch(frame, "unit_construction_finish");
 }
 
 void ScriptEngine::dispatch(EventFrame& frame, std::string_view event_name) {

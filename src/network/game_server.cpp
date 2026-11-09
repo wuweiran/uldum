@@ -752,69 +752,39 @@ void GameServer::wire_to_network(NetworkManager& net) {
             };
     }
 
-    // Inventory pickup / drop → S_COLD. CHAIN onto the script's trigger
-    // dispatch (init_game installed on_item_picked_up/_dropped to fire the
-    // EVENT_*_ITEM_PICKED_UP/_DROPPED triggers) — capture + call it first, then
-    // add the network sync. Overwriting would silently kill the map's item
-    // triggers (e.g. rune-pickup VFX).
-    {
-        auto script_picked_up = std::move(world.on_item_picked_up);
-        world.on_item_picked_up =
-            [this, &net, script_picked_up = std::move(script_picked_up)](
-                simulation::Unit unit, simulation::Item item, i32 slot) {
-                if (script_picked_up) script_picked_up(unit, item, slot);
-                if (slot < 0) return;  // powerup: no slot to sync
-                auto pkt = build_cold_inventory(
-                    unit.id, static_cast<u32>(slot), item.id);
-                broadcast_update(net,unit.id, pkt);
-            };
-    }
-    {
-        auto script_dropped = std::move(world.on_item_dropped);
-        world.on_item_dropped =
-            [this, &net, script_dropped = std::move(script_dropped)](
-                simulation::Unit unit, simulation::Item item) {
-                if (script_dropped) script_dropped(unit, item);
-                // Carry the item's ground position — drop_item_from_unit already
-                // set transform.position to the drop point before this fires.
-                // Items left the per-tick snapshot, so this event is their only
-                // position sync; without it the client re-shows the item at its
-                // stale spawn transform.
-                glm::vec3 pos{0};
-                if (const auto* t = m_simulation.world().transforms.get(item.id)) {
-                    pos = t->position;
-                }
-                auto pkt = build_cold_inventory(unit.id, UINT32_MAX, item.id,
-                                                  pos.x, pos.y, pos.z);
-                broadcast_update(net,unit.id, pkt);
-            };
-    }
+    // Run script triggers before replication. Reinstalling replaces these
+    // handlers outright; it must not capture and wrap a previous installation.
+    world.on_item_picked_up = [this, &net](simulation::Unit unit, simulation::Item item, i32 slot) {
+        m_script.fire_item_picked_up(unit, item);
+        if (slot < 0) return;  // powerup: no slot to sync
+        auto pkt = build_cold_inventory(unit.id, static_cast<u32>(slot), item.id);
+        broadcast_update(net, unit.id, pkt);
+    };
+    world.on_item_dropped = [this, &net](simulation::Unit unit, simulation::Item item) {
+        m_script.fire_item_dropped(unit, item);
+        // Items aren't in the per-tick snapshot; send their ground position here.
+        glm::vec3 pos{0};
+        if (const auto* t = m_simulation.world().transforms.get(item.id)) {
+            pos = t->position;
+        }
+        auto pkt = build_cold_inventory(unit.id, UINT32_MAX, item.id, pos.x, pos.y, pos.z);
+        broadcast_update(net, unit.id, pkt);
+    };
 
-    // Construction start / finish → S_COLD, chained onto the script callbacks.
     // Start syncs the time-scaled birth clip; finish clears it.
-    {
-        auto script_start = std::move(world.on_construction_start);
-        world.on_construction_start =
-            [this, &net, script_start = std::move(script_start)](
-                simulation::Unit builder, simulation::Unit structure) {
-                if (script_start) script_start(builder, structure);
-                const auto* c = m_simulation.world().constructions.get(structure.id);
-                if (!c) return;
-                auto pkt = build_cold_construction(structure.id, c->under_construction,
-                                                   c->build_time_total, c->build_progress);
-                broadcast_update(net,structure.id, pkt);
-            };
-    }
-    {
-        auto script_finish = std::move(world.on_construction_finish);
-        world.on_construction_finish =
-            [this, &net, script_finish = std::move(script_finish)](
-                simulation::Unit builder, simulation::Unit structure) {
-                if (script_finish) script_finish(builder, structure);
-                auto pkt = build_cold_construction(structure.id, false, 0.0f, 1.0f);
-                broadcast_update(net,structure.id, pkt);
-            };
-    }
+    world.on_construction_start = [this, &net](simulation::Unit builder, simulation::Unit structure) {
+        m_script.fire_construction_start(builder, structure);
+        const auto* c = m_simulation.world().constructions.get(structure.id);
+        if (!c) return;
+        auto pkt = build_cold_construction(structure.id, c->under_construction,
+                                           c->build_time_total, c->build_progress);
+        broadcast_update(net, structure.id, pkt);
+    };
+    world.on_construction_finish = [this, &net](simulation::Unit builder, simulation::Unit structure) {
+        m_script.fire_construction_finish(builder, structure);
+        auto pkt = build_cold_construction(structure.id, false, 0.0f, 1.0f);
+        broadcast_update(net, structure.id, pkt);
+    };
 
 }
 

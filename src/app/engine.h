@@ -182,10 +182,9 @@ private:
 
     void scene_switch_local_teardown(const std::string& scene_name);
     void scene_switch_run_main(const std::string& scene_name);
-    // App/render VM re-wiring installed before a switched scene's main() runs
-    // (the VM reset clears every callback). Shared by the offline run_main and
-    // the host MP finalize (GameServer::try_finish_scene_switch's pre_main).
-    network::GameServer::PreMainHook scene_pre_main();
+    // Rebind input and replication after VM init and before map scripts run.
+    // Shared by initial startup, offline scene reload, and host MP finalize.
+    network::GameServer::PreMainHook script_pre_main();
 
     // Host-side server→client wiring: calls GameServer::wire_to_network (the
     // shared sends the worker also installs) then chains the host's own

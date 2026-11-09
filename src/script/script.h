@@ -212,6 +212,10 @@ public:
     void fire_node_event(std::string_view event_name, u32 player_id,
                          std::string_view node_id);
     void fire_player_event(std::string_view event_name, u32 player_id);
+    void fire_item_picked_up(simulation::Unit unit, simulation::Item item);
+    void fire_item_dropped(simulation::Unit unit, simulation::Item item);
+    void fire_construction_start(simulation::Unit builder, simulation::Unit structure);
+    void fire_construction_finish(simulation::Unit builder, simulation::Unit structure);
 
     // Configure Lua package.path so require() resolves from these directories.
     // Searched in order: scene scripts, shared scripts, engine scripts.

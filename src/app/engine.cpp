@@ -1007,9 +1007,6 @@ bool Engine::start_session() {
     }
     u32 local_player_id_early = is_client ? UINT32_MAX : m_args.local_slot;
     m_selection.set_player(simulation::Player{local_player_id_early});
-    if (!is_client) {
-        m_server.script().set_input(&m_selection, &m_commands);
-    }
 
     // Game server phase 2 (offline/host only — client doesn't run the simulation)
     if (!is_client) {
@@ -1022,54 +1019,32 @@ bool Engine::start_session() {
         }
         m_server.simulation().set_player_names(std::move(names));
 
-        // Connect server Lua → HUD + → NetworkManager (for C_NODE_EVENT
-        // handling). Both must be set before init_game runs the map's Lua.
-        m_server.script().set_hud(&m_hud);
-        m_server.script().set_locale_manager(&m_i18n);
+        // These bindings survive Lua scene reloads; install once per session.
+        auto& script = m_server.script();
+        script.set_hud(&m_hud);
+        script.set_locale_manager(&m_i18n);
         m_server.set_hud_replay_source(&m_hud);
+        script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
+            return m_renderer.get_attachment_point(entity_id, bone);
+        });
+        script.set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
+            map::EnvironmentConfig env;
+            env.sun_direction = glm::vec3{x, y, z};
+            m_renderer.set_environment(env);
+        });
+        script.set_singleplayer(is_offline());
+        script.set_scene_switch_fn([this](std::string_view scene) {
+            m_pending_scene_switch.assign(scene);
+        });
 
-        // HUD → client sync, wired at set_hud time so nodes/tags the map
-        // creates in main() (during init_game below) are already syncing. Host
-        // mode only; offline host_hud_sync no-ops (no peers). NOT part of
-        // wire_to_network (which runs after init_game — too late for the
-        // main()-time node/tag creates).
+        // HUD sync lasts for the session and must be ready before main().
         if (is_host()) {
             m_hud.set_sync_fn([this](const std::vector<u8>& pkt, u32 owner) {
                 m_network.host_hud_sync(pkt, owner);
             });
         }
 
-        // Surface the launch mode to Lua before main() runs so scripts
-        // can branch on IsSinglePlayer() at scene-init time (e.g.
-        // build SP-only HUD nodes, register pause-aware triggers).
-        m_server.script().set_singleplayer(is_offline());
-
-        // SetSunDirection (Lua) updates the host's own renderer here;
-        // the network broadcast to peers happens inside the binding
-        // via m_broadcast_fn (script.cpp).
-        m_server.script().set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
-            map::EnvironmentConfig env;
-            env.sun_direction = glm::vec3{x, y, z};  // normalized + guarded in set_environment
-            m_renderer.set_environment(env);
-        });
-        // pre_main runs the host's script-facing wiring AFTER the Lua VM is
-        // inited (so item-sync can chain onto the script's freshly-installed
-        // triggers) but BEFORE main() runs — the worker does the same via
-        // wire_server. Without this, any callback main() invokes at scene start
-        // (notably SetControlledUnit, scripted camera) fired into an empty slot
-        // and was silently dropped on the host — the reason a host-client
-        // client never got its controlled hero. (set_input/set_hud/set_script/
-        // sun_direction/singleplayer are already installed above, before here.)
-        auto pre_main = [this](script::ScriptEngine& script) {
-            script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
-                return m_renderer.get_attachment_point(entity_id, bone);
-            });
-            wire_host_broadcasts();
-            script.set_scene_switch_fn([this](std::string_view scene) {
-                m_pending_scene_switch.assign(scene);
-            });
-        };
-        if (!m_server.init_game(m_map, &m_audio, pre_main)) {
+        if (!m_server.init_game(m_map, &m_audio, script_pre_main())) {
             log::error(TAG, "GameServer game init failed");
             return false;
         }
@@ -1085,25 +1060,14 @@ bool Engine::start_session() {
         m_server.simulation().world().on_sound = [this](std::string_view path, glm::vec3 pos) {
             m_audio.play_sfx(path, pos);
         };
-        // Build failed (worker walked to the site but couldn't build) → surface
-        // the reason on the owning player's HUD error line, same channel the
-        // click-time "can't build there" uses. Chains onto any prior handler
-        // (script's Lua fan-out) so both fire. Local-player only for now — a
-        // remote client's failure would need a network HUD route (deferred MP).
-        {
-            auto& w = m_server.simulation().world();
-            auto prior = std::move(w.on_construction_failed);
-            w.on_construction_failed =
-                [this, prior = std::move(prior)](simulation::Unit builder,
-                                                 std::string_view reason) {
-                    if (prior) prior(builder, reason);
-                    const auto& world = m_server.simulation().world();
-                    const auto* o = world.owners.get(builder.id);
-                    if (o && o->id == m_args.local_slot) {
-                        m_hud.emit_order_error("build", reason);
-                    }
-                };
-        }
+        // Local construction errors belong to the HUD; no other handler shares this slot.
+        m_server.simulation().world().on_construction_failed =
+            [this](simulation::Unit builder, std::string_view reason) {
+                const auto* owner = m_server.simulation().world().owners.get(builder.id);
+                if (owner && owner->id == m_args.local_slot) {
+                    m_hud.emit_order_error("build", reason);
+                }
+            };
         // Birth-clip gate: a unit plays its birth animation only when
         // spawned in the local player's sight. Mirrors the client's
         // S_SPAWN/S_SHOW distinction. Null on the headless server.
@@ -1186,7 +1150,9 @@ bool Engine::start_session() {
 }
 
 void Engine::end_session() {
-    if (!m_session_active) return;
+    // A prepared lobby owns resources even if start_session failed partway.
+    if (!m_session_active && !m_lobby_active) return;
+    const bool was_active = m_session_active;
     log::info(TAG, "=== Ending session ===");
 
     // Restore the OS cursor — gameplay sessions hide it (Phase 4b)
@@ -1245,8 +1211,9 @@ void Engine::end_session() {
 
     m_session_active = false;
     m_lobby_active   = false;
+    m_load_pending  = false;
     set_state(AppState::Menu);
-    m_app->on_session_ended();
+    if (was_active) m_app->on_session_ended();
     log::info(TAG, "=== Session ended ===");
 }
 
@@ -1669,37 +1636,23 @@ void Engine::scene_switch_local_teardown(const std::string& scene_name) {
     }
 }
 
-network::GameServer::PreMainHook Engine::scene_pre_main() {
+network::GameServer::PreMainHook Engine::script_pre_main() {
     return [this](script::ScriptEngine& script) {
-        // App-owned wiring (mirrors start_session). Pre-init bindings (input +
-        // hud) first so the script's main() can use them at scene init time.
+        // Selection is reset on scene changes, so rebind its script observer.
+        // This runs after ScriptEngine::init and before any map script executes.
         script.set_input(&m_selection, &m_commands);
-        script.set_hud(&m_hud);
-        m_server.set_hud_replay_source(&m_hud);
-        script.set_attach_point_fn([this](u32 entity_id, std::string_view bone) {
-            return m_renderer.get_attachment_point(entity_id, bone);
-        });
-        script.set_sun_direction_fn([this](f32 x, f32 y, f32 z) {
-            map::EnvironmentConfig env;
-            env.sun_direction = glm::normalize(glm::vec3{x, y, z});
-            m_renderer.set_environment(env);
-        });
-        script.set_singleplayer(is_offline());
         // Server→client sends + host local-apply (effects, item sync, ability /
         // cooldown / charge, EndGame, unit updates, player-leave). Re-chains onto
         // the freshly-inited script handlers — WITHOUT this, effects/items broke
         // after a LoadScene even on the host.
         wire_host_broadcasts();
-        script.set_scene_switch_fn([this](std::string_view scene) {
-            m_pending_scene_switch.assign(scene);
-        });
     };
 }
 
 // Host second half — reset the Lua VM, re-wire callbacks, and run main().
 // Terrain and preplaced entities were already loaded by local teardown.
 void Engine::scene_switch_run_main(const std::string& scene_name) {
-    if (!m_server.switch_scene(m_map, scene_name, scene_pre_main())) {
+    if (!m_server.switch_scene(m_map, scene_name, script_pre_main())) {
         log::error(TAG, "scene_switch_run_main: switch_scene failed for '{}'", scene_name);
     }
 }
@@ -1951,7 +1904,7 @@ void Engine::run() {
             // on the barrier state inside GameServer.
             if (!is_client && m_server.scene_switch_pending()) {
                 m_server.try_finish_scene_switch(m_network, m_map,
-                                                 scene_pre_main());
+                                                 script_pre_main());
             }
 
             bool should_tick = !is_client &&
