@@ -102,8 +102,8 @@ struct AttributeBlock {
 };
 
 struct Selectable {
-    f32 selection_radius = 0.0f;    // 0 = auto (renderer fills from model AABB × scale)
-    f32 selection_height = 0.0f;    // 0 = auto (renderer fills from model AABB × scale)
+    f32 selection_radius = 0.0f;    // 0 = auto (presentation resolves model AABB × scale)
+    f32 selection_height = 0.0f;    // 0 = auto (presentation resolves model AABB × scale)
     i32 priority         = 5;
 };
 

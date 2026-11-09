@@ -32,6 +32,13 @@ namespace uldum::map { struct TerrainData; struct Tileset; struct EnvironmentCon
 
 namespace uldum::render {
 
+// Resolved visual cylinder; authored dimensions override scaled model bounds.
+struct SelectionBounds {
+    f32 radius = 32.0f;
+    f32 height = 48.0f;
+    f32 z_offset = 0.0f;
+};
+
 // One primitive of a model: a slice of the mega buffer plus the
 // material that drives its draw state (texture binding, color
 // multiplier, alpha pipeline variant, cull mode). A single-material
@@ -164,6 +171,7 @@ public:
     glm::vec3 get_attachment_point(u32 entity_id, std::string_view bone_name) const;
 
     const asset::ModelBounds* model_bounds(std::string_view model_path);
+    SelectionBounds selection_bounds(const simulation::IWorldView& world, u32 id);
 
     // ── Model viewer (editor) ────────────────────────────────────────────
     // Renders ONE model into an offscreen texture, isolated from the scene

@@ -2321,6 +2321,30 @@ const asset::ModelBounds* Renderer::model_bounds(std::string_view model_path) {
     return lm && lm->data.bounds.valid ? &lm->data.bounds : &m_placeholder_bounds;
 }
 
+SelectionBounds Renderer::selection_bounds(const simulation::IWorldView& world, u32 id) {
+    SelectionBounds result;
+    const auto* sel = world.selectable(id);
+    f32 radius = sel ? sel->selection_radius : 0.0f;
+    f32 height = sel ? sel->selection_height : 0.0f;
+    const auto* transform = world.transform(id);
+    const auto* renderable = world.renderable(id);
+    if ((radius <= 0.0f || height <= 0.0f) && transform && renderable) {
+        if (const auto* bounds = model_bounds(renderable->model_path)) {
+            if (radius <= 0.0f) {
+                radius = 0.5f * std::max(bounds->max.x - bounds->min.x,
+                                         bounds->max.y - bounds->min.y) * transform->scale;
+            }
+            if (height <= 0.0f) {
+                result.z_offset = bounds->min.z * transform->scale;
+                height = (bounds->max.z - bounds->min.z) * transform->scale;
+            }
+        }
+    }
+    result.radius = sel && sel->selection_radius > 0.0f ? radius : std::max(radius, 32.0f);
+    result.height = sel && sel->selection_height > 0.0f ? height : std::max(height, 48.0f);
+    return result;
+}
+
 void Renderer::destroy_projectile(simulation::LocalView& view, const simulation::World& world, u32 id) {
     const auto* r = world.renderables.get(id);
     const auto* t = world.transforms.get(id);

@@ -85,7 +85,7 @@ static Unit build_unit(World& world, u32 id, std::string_view type_id,
     // Widget — HP is engine built-in
     world.healths.add(id, Health{def.max_health, def.max_health, def.health_regen});
     // Selection cylinder. radius/height carry the type's values, or 0 = AUTO —
-    // the renderer back-fills auto entries from the model AABB once it loads.
+    // presentation resolves auto entries from the scaled model AABB.
     world.selectables.add(id, Selectable{def.selection_radius, def.selection_height, def.selection_priority});
 
     // Map-defined states (mana, energy, etc.)

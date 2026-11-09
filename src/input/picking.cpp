@@ -1,7 +1,6 @@
 #include "input/picking.h"
 #include "simulation/world_view.h"
 
-#include "asset/model.h"
 #include "map/terrain_data.h"
 #include "render/renderer.h"
 #include "simulation/vision.h"
@@ -239,23 +238,10 @@ simulation::Widget Picker::pick_widget(f32 screen_x, f32 screen_y,
         f32 ray_t;
         glm::vec3 base = transform->position;
         base.z += simulation::unit_fly_height(*m_world, id);
-        f32 pick_radius = sel->selection_radius;
-        f32 pick_height = sel->selection_height;
-        if (const auto* renderable = m_world->renderable(id); renderable && m_renderer) {
-            if (const auto* bounds = m_renderer->model_bounds(renderable->model_path)) {
-                if (pick_radius <= 0.0f) {
-                    pick_radius = 0.5f * std::max(
-                        bounds->max.x - bounds->min.x,
-                        bounds->max.y - bounds->min.y) * transform->scale;
-                }
-                if (pick_height <= 0.0f) {
-                    base.z += bounds->min.z * transform->scale;
-                    pick_height = (bounds->max.z - bounds->min.z) * transform->scale;
-                }
-            }
-        }
-        pick_radius = std::max(pick_radius, 32.0f);
-        pick_height = std::max(pick_height, 48.0f);
+        auto bounds = m_renderer->selection_bounds(*m_world, id);
+        base.z += bounds.z_offset;
+        f32 pick_radius = std::max(bounds.radius, 32.0f);
+        f32 pick_height = std::max(bounds.height, 48.0f);
         f32 dist = ray_cylinder_dist(origin, dir, base, pick_height, ray_t);
         if (dist > pick_radius) continue;
 
@@ -304,23 +290,10 @@ simulation::Item Picker::pick_item(f32 screen_x, f32 screen_y) const {
 
         f32 ray_t;
         glm::vec3 base = transform->position;
-        f32 pick_radius = sel->selection_radius;
-        f32 pick_height = sel->selection_height;
-        if (const auto* renderable = m_world->renderable(id); renderable && m_renderer) {
-            if (const auto* bounds = m_renderer->model_bounds(renderable->model_path)) {
-                if (pick_radius <= 0.0f) {
-                    pick_radius = 0.5f * std::max(
-                        bounds->max.x - bounds->min.x,
-                        bounds->max.y - bounds->min.y) * transform->scale;
-                }
-                if (pick_height <= 0.0f) {
-                    base.z += bounds->min.z * transform->scale;
-                    pick_height = (bounds->max.z - bounds->min.z) * transform->scale;
-                }
-            }
-        }
-        pick_radius = std::max(pick_radius, 32.0f);
-        pick_height = std::max(pick_height, 48.0f);
+        auto bounds = m_renderer->selection_bounds(*m_world, id);
+        base.z += bounds.z_offset;
+        f32 pick_radius = std::max(bounds.radius, 32.0f);
+        f32 pick_height = std::max(bounds.height, 48.0f);
         f32 dist = ray_cylinder_dist(origin, dir, base, pick_height, ray_t);
         if (dist > pick_radius) continue;
 

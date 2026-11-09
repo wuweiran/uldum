@@ -2353,7 +2353,7 @@ void Engine::run() {
                             // (same fly_height the mesh renderer adds) so the
                             // ring sits under the model, not on the ground.
                             f32 fly = simulation::unit_fly_height(world, unit.id);
-                            f32 base_r = (sel->selection_radius > 0.0f) ? sel->selection_radius : 48.0f;
+                            f32 base_r = m_renderer.selection_bounds(world, unit.id).radius;
                             // Center the stroke just inside the selection radius
                             // so the outer edge matches `base_r` (matches the
                             // previous SelectionCircles visual).
@@ -2395,11 +2395,9 @@ void Engine::run() {
                         auto focus = m_hud.focus_target();
                         if (simulation::is_non_null_handle(focus) && world.contains(focus.id)) {
                             const auto* tf  = world.transform(focus.id);
-                            const auto* sel = world.selectable(focus.id);
                             if (tf) {
                                 glm::vec3 ip = tf->interp_position(alpha);
-                                f32 base_r = (sel && sel->selection_radius > 0.0f)
-                                                ? sel->selection_radius : 48.0f;
+                                f32 base_r = m_renderer.selection_bounds(world, focus.id).radius;
                                 f32 ring_r = base_r * 1.20f;
                                 constexpr u32 kSamples = 48;
                                 constexpr f32 kStroke  = 5.0f;
@@ -2457,9 +2455,7 @@ void Engine::run() {
                                 if (auto* tf = world.transform(m_target_ping.unit.id)) {
                                     anchor = tf->interp_position(alpha);
                                 }
-                                if (auto* sl = world.selectable(m_target_ping.unit.id)) {
-                                    if (sl->selection_radius > 0.0f) base_r = sl->selection_radius;
-                                }
+                                base_r = m_renderer.selection_bounds(world, m_target_ping.unit.id).radius;
                                 // Air target: lift the ping to hull height so
                                 // it sits under the flying model, not on the
                                 // ground below it (matches the selection ring).

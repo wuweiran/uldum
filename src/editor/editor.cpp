@@ -2306,11 +2306,8 @@ void Editor::draw_overlays() {
 
     // Selection ring: ground-hugging circle around the currently
     // selected entity. Only drawn in the Select tool — during Place
-    // the ghost preview is the relevant indicator. Radius prefers
-    // `selection_radius` (the authored visual extent, matches HUD).
-    // Falls back to `collision_radius * 1.2` so the ring sits just
-    // outside the physical collider when the type didn't set a
-    // selection radius (e.g. destructables).
+    // the ghost preview is the relevant indicator. Use the same model-based
+    // sizing as runtime selection rings and picking.
     if (m_mode == EditMode::Object && m_object_tool == ObjectTool::Select) {
         u32 sel_id = UINT32_MAX;
         if      (simulation::is_non_null_handle(m_selected_unit))         sel_id = m_selected_unit.id;
@@ -2321,12 +2318,8 @@ void Editor::draw_overlays() {
             const auto& world = m_simulation.world();
             const auto* t = world.transforms.get(sel_id);
             if (t) {
-                f32 radius = 32.0f;
-                if (auto* s = world.selectables.get(sel_id); s && s->selection_radius > 1.5f) {
-                    radius = s->selection_radius;
-                } else if (auto* m = world.movements.get(sel_id); m && m->collision_radius > 0) {
-                    radius = m->collision_radius * 1.2f;
-                }
+                simulation::WorldView view{m_simulation.world()};
+                f32 radius = m_renderer.selection_bounds(view, sel_id).radius;
                 const glm::vec4 sel_color{ 1.00f, 0.90f, 0.31f, 1.00f };
                 add_world_circle({ t->position.x, t->position.y, 0 }, radius, sel_color);
             }
