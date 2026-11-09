@@ -248,7 +248,9 @@ All build / test / asset-util scripts are PowerShell (`.ps1`). The helper at `sc
 | `build_server.ps1` | server-side targets (`uldum_worker`, `uldum_server`) | `engine.uldpak`, every map in `maps/` |
 | `convert_skybox.py` | — (asset util) | EXR → KTX2 cubemap faces |
 
-Output: `build/bin/`. Engine scripts never write to `dist/` and never touch a game project.
+Output: `build/bin/`, except `build_server.ps1`, which uses `build/server/bin/` to keep its headless configuration separate. Engine scripts never write to `dist/` and never touch a game project.
+
+For a headless build, configure with `cmake -S . -B build/server -DULDUM_BUILD_GRAPHICS=OFF`, then run `cmake --build build/server --target uldum_worker uldum_server`. This omits graphical clients, the editor, rendering libraries, ImGui, FreeType, VMA, and shader compilation; neither the Vulkan SDK nor glslc is required. Engine data and maps are still packed for the worker. Graphics remain enabled by default; Android builds require them.
 
 ### Game scripts
 

@@ -7,9 +7,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_lib\vcvars.ps1')
 
 $Root  = Split-Path -Parent $PSScriptRoot
-$Build = Join-Path $Root 'build'
+$Build = Join-Path $Root 'build/server'
 
-cmake -S $Root -B $Build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake -S $Root -B $Build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DULDUM_BUILD_GRAPHICS=OFF
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 
 cmake --build $Build --target uldum_worker uldum_server

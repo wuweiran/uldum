@@ -9,6 +9,10 @@ add_library(uldum_input STATIC
 target_include_directories(uldum_input PUBLIC ${ULDUM_SRC})
 target_link_libraries(uldum_input PUBLIC uldum_core uldum_platform nlohmann_json::nlohmann_json)
 
+if(NOT ULDUM_BUILD_GRAPHICS)
+    return()
+endif()
+
 # ── uldum_input_router — input → game-action routing ────────────────────
 # Picker (screen→world, unit/item pick) + input presets (RTS / action).
 # Pulls render::Camera for screen-to-world raycasts and the various

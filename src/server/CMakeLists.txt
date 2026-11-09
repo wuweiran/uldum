@@ -22,9 +22,8 @@ set(ULDUM_WORKER_LIBS
 add_executable(uldum_worker worker_main.cpp)
 target_include_directories(uldum_worker PRIVATE ${ULDUM_SRC})
 target_link_libraries(uldum_worker PRIVATE ${ULDUM_WORKER_LIBS} nlohmann_json::nlohmann_json)
-# Workers need engine assets. pack_engine_maps lives in src/app/ under
-# the desktop ENGINE build branch; only depend on it there.
-if(NOT ULDUM_GAME_PROJECT_DIR AND TARGET pack_engine_maps)
+# Workers need engine assets; headless packaging does not compile shaders.
+if(TARGET pack_engine_maps)
     add_dependencies(uldum_worker pack_engine_maps)
 endif()
 

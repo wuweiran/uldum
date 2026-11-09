@@ -299,32 +299,6 @@ else()
         ${ULDUM_ENGINE_STAGING}/shaders
     )
 
-    # Glob every .uldmap folder in maps/ so new dev maps land automatically.
-    file(GLOB ULDUM_ENGINE_MAP_DIRS LIST_DIRECTORIES true
-        RELATIVE ${ULDUM_ROOT}/maps
-        ${ULDUM_ROOT}/maps/*.uldmap)
-    set(PACK_ENGINE_MAP_COMMANDS "")
-    foreach(MAP ${ULDUM_ENGINE_MAP_DIRS})
-        list(APPEND PACK_ENGINE_MAP_COMMANDS
-            COMMAND $<TARGET_FILE:uldum_pack> pack
-                ${ULDUM_ROOT}/maps/${MAP}
-                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/maps/${MAP})
-    endforeach()
-
-    add_custom_target(pack_engine_maps ALL
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${ULDUM_ROOT}/engine
-            ${ULDUM_ENGINE_STAGING}
-        COMMAND $<TARGET_FILE:uldum_pack> pack
-            ${ULDUM_ENGINE_STAGING}
-            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/engine.uldpak
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/maps
-        ${PACK_ENGINE_MAP_COMMANDS}
-        COMMENT "Packing engine assets + dev maps"
-        VERBATIM
-    )
-    add_dependencies(pack_engine_maps uldum_pack uldum_dev_shaders)
     add_dependencies(uldum_dev pack_engine_maps)
 
 endif()

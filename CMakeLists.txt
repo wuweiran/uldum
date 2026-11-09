@@ -17,14 +17,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Vulkan SDK is required:
-#   • on Windows for the Vulkan backend implementation + glslc shader compiler;
-#   • on every desktop build (even GLES-target packaging) for glslc, since
-#     shaders are authored as GLSL and compiled to SPIR-V at desktop build
-#     time, then optionally cross-compiled to GLSL ES for the Android bundle.
-# Android-only builds (compiled with the NDK) never link Vulkan; the GLES
-# runtime comes from libGLESv3 / libEGL.
-if(NOT ANDROID)
+option(ULDUM_BUILD_GRAPHICS "Build graphical clients, editor, and rendering libraries" ON)
+if(ANDROID AND NOT ULDUM_BUILD_GRAPHICS)
+    message(FATAL_ERROR "Android builds require ULDUM_BUILD_GRAPHICS=ON")
+endif()
+
+# Only graphical desktop builds need Vulkan and the shader compiler.
+if(ULDUM_BUILD_GRAPHICS AND NOT ANDROID)
     find_package(Vulkan REQUIRED COMPONENTS glslc)
 endif()
 
@@ -63,6 +62,7 @@ elseif(ANDROID)
     add_compile_definitions(ULDUM_PLATFORM_ANDROID)
 endif()
 
+if(ULDUM_BUILD_GRAPHICS)
 # RHI backend selection. Each backend ships its own implementation of the
 # `rhi::Rhi` class with an identical public interface. Consumer code is
 # backend-agnostic — only the build system picks one.
@@ -96,6 +96,7 @@ elseif(ULDUM_BACKEND_VULKAN)
 else()
     message(FATAL_ERROR "No RHI backend selected. Enable ULDUM_BACKEND_VULKAN or ULDUM_BACKEND_GLES.")
 endif()
+endif()
 
 # Debug defines
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -114,7 +115,7 @@ endif()
 # dev/editor/server builds avoid the ~minute-long FreeType+RmlUi build.
 # Game flavor on Android sets ULDUM_GAME_PROJECT_DIR via Gradle's
 # -DULDUM_GAME_PROJECT_DIR=... cmake argument, so this catches it too.
-if(ULDUM_GAME_PROJECT_DIR)
+if(ULDUM_BUILD_GRAPHICS AND ULDUM_GAME_PROJECT_DIR)
     set(ULDUM_SHELL_UI TRUE)
 endif()
 
@@ -122,7 +123,7 @@ endif()
 # desktop `uldum_dev` target only. Engine-dev-only iteration tool — not in
 # editor (has its own ImGui), not in game (Shell UI), not in server (headless),
 # not on Android (dev flavor uses a different flow).
-if(NOT ANDROID AND NOT ULDUM_GAME_PROJECT_DIR)
+if(ULDUM_BUILD_GRAPHICS AND NOT ANDROID AND NOT ULDUM_GAME_PROJECT_DIR)
     set(ULDUM_DEV_UI TRUE)
 endif()
 

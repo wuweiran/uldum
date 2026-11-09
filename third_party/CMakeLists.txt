@@ -74,6 +74,7 @@ FetchContent_Declare(sol2
 )
 FetchContent_MakeAvailable(sol2)
 
+if(ULDUM_BUILD_GRAPHICS)
 # ── Dear ImGui (dev console + editor) ─────────────────────────────────────
 # Used by uldum_editor (desktop, Vulkan) and uldum_dev (desktop Vulkan +
 # Android GLES). The renderer backend is picked at compile time:
@@ -117,6 +118,7 @@ endif()
 if(MSVC)
     target_compile_options(imgui PRIVATE /W0)
 endif()
+endif()
 
 # ── miniaudio (audio playback) — header-only ──────────────────────────────
 message(STATUS "Fetching miniaudio...")
@@ -136,7 +138,7 @@ endif()
 # ── VMA (Vulkan Memory Allocator) — header-only ───────────────────────────
 # Only consumed by the Vulkan RHI backend (rhi/vulkan/vulkan_rhi.cpp). Skip
 # on builds that select a different backend (e.g. Android GLES).
-if(ULDUM_BACKEND_VULKAN)
+if(ULDUM_BUILD_GRAPHICS AND ULDUM_BACKEND_VULKAN)
     message(STATUS "Fetching VMA...")
     FetchContent_Declare(vma
         URL      https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
@@ -232,8 +234,9 @@ if(MSVC)
     target_compile_options(basisu_transcoder PRIVATE /W0)
 endif()
 
+if(ULDUM_BUILD_GRAPHICS)
 # ── FreeType (font rasterization) ────────────────────────────────────────
-# Fetched unconditionally: needed by uldum_render's MSDF glyph pipeline
+# Needed by uldum_render's MSDF glyph pipeline
 # (font.cpp) and by uldum_shell / RmlUi (game builds only). Minimal —
 # strip brotli, zlib, harfbuzz, png, bzip2 backends we don't use.
 #
@@ -272,6 +275,7 @@ endif()
 # Restore the caller's BUILD_SHARED_LIBS setting.
 set(BUILD_SHARED_LIBS ${_ULDUM_SAVED_BUILD_SHARED_LIBS} CACHE BOOL "" FORCE)
 unset(_ULDUM_SAVED_BUILD_SHARED_LIBS)
+endif()
 
 # ── RmlUi (Shell UI framework) ───────────────────────────────────────────
 # Used only by uldum_game (desktop) and the Android `game` flavor — never
@@ -316,7 +320,7 @@ endif()
 # basisu_encoder still builds because uldum_editor links it (for in-process
 # PNG → KTX2 in the Import dialog). Desktop-only: Android skips this to avoid
 # cross-compiling an encoder that would never run on device.
-if(NOT ANDROID)
+if(ULDUM_BUILD_GRAPHICS AND NOT ANDROID)
     add_subdirectory(${basisu_SOURCE_DIR} ${basisu_BINARY_DIR} EXCLUDE_FROM_ALL)
     # Expose the encoder headers so in-process callers (uldum_editor's PNG
     # import) can #include "encoder/basisu_comp.h". basisu's own CMake leaves
